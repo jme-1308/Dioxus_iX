@@ -375,7 +375,7 @@ Native checks use **synthetic DOM click/key/input events in a hidden WebView**, 
 | G03 Deferred Input/Textarea commit / tooltip | Upstream changed-value ixChange and showTextAsTooltip | Unimplemented in this batch; NumberInput is separate B04 | Not established | Not established | Implement Input Enter+changed-blur deduplication; Textarea Enter inserts newline and changed blur commits; port feedback tooltip in a future bounded batch |
 | G04 Workflow / remaining navigation | Parent-managed WorkflowSteps selection and complete menu/category roving navigation | Initial mappings only outside B01/B02 | Not established | Not established | Establish source contract and acceptance criteria before a new batch |
 | G05 Contract completeness | Every current upstream property/method/event/slot/part tied to Rust behavior and evidence | Read-only audit inventories 1,139 known members; review statuses unreviewed | Not established | Not established | Recover nine internal metadata omissions and review members against source/tests; inventory is not parity |
-| G06 Release readiness | Stable public Rust API, license/assets and supported platform policy | Development crate only | No release certification | No release certification | API review, licensing/attribution audit, registry availability and supported OS matrix before publication |
+| G06 Release readiness | Stable public Rust API, license/assets and supported platform policy | Development crate only | No release certification | No release certification | API review, licensing/attribution audit (including the unidentified holder in the upstream 2018 package notice), registry availability and supported OS matrix before publication |
 | X01 Exclusions | No deprecated/legacy UI, company marks or separately licensed corporate assets | Excluded: menu-settings-item/menu-about-item; eight legacy fixtures; logos/wordmarks/logo icons; corporate fonts/theme archive | Exclusion is scope, not a parity failure | Same scope | Preserve MIT notices; do not reintroduce these to increase coverage counts |
 
 ## Validate and package
@@ -418,6 +418,8 @@ The implementation goal remains paused. This follow-up adds no component behavio
 
 The v15 runtime evidence below remains applicable to unchanged Rust sources. Cargo's explicit inclusion list changed only to distribute the two license files. `cargo fmt --all -- --check` and `cargo package --allow-dirty` both exited 0. The licensing package check verified **68 archive files**, verbatim notices, and exclusion of development tooling; supporting log: `target/review/license-package.log`. The current 63-file source/Cargo manifest is `target/review/license-source-freeze.txt`, SHA256 `C973276155AF0616C1CBC759B026CD8F13474F2DA33625DEDA65947E7101706E`. Only Cargo.toml differs from the v15 source freeze, to include the license files. The next implementation action remains the bounded contract audit described below; acquire exclusive checkout ownership first.
 
+Attribution clarification: the README reproduces the port's own LICENSE rather than merging upstream holders into a new notice. Both pinned 2018 package files explicitly use MIT; their absent holder is documented as unresolved, with source links and verbatim notices retained. No Rust or Cargo files changed in this clarification; `cargo package --allow-dirty` and inspection of the 68-file archive verify the updated documentation and notices.
+
 ### v15 implementation closeout
 
 **Batch v15 is closed; no next implementation batch is active.** The old persistent goal is being paused at this handoff boundary. A fresh chat must confirm the old goal is paused before acquiring checkout ownership. No agent retains edit ownership after the integration freeze. All source work is frozen at the hash above; README and approved workflow tooling are the final record changes.
@@ -435,17 +437,11 @@ This port is distributed under the [MIT license](LICENSE), also declared by `lic
 
 Siemens' [theme usage documentation](https://ix.siemens.io/docs/styles/theming/usage-developers) limits the Corporate Brand Theme to official Siemens AG products. Its [published font terms](https://opensource.siemens.com/_licenses.html) impose separate restrictions on Siemens corporate fonts. Consumers are responsible for authorization to supply external theme values and fonts; the token adapter does not supply those assets or permissions.
 
-The summary below retains the MIT permission text and aggregated copyright lines. The original notices are reproduced in THIRD_PARTY_NOTICES.md: the repository/ECharts package's 2024 Siemens AG notice, core/AG Grid packages' literal 2018 notice, the icon package's 2022 Siemens AG notice, and source notices from 2022 through 2026. Existing source-file copyright headers remain intact. Attribution is not an endorsement or permission to imply an official association.
+The port's own MIT license is reproduced below. Upstream contributions retain their separate original notices in THIRD_PARTY_NOTICES.md: the repository/ECharts package's 2024 Siemens AG notice, the icon package's 2022 Siemens AG notice, and source notices from 2022 through 2026. The pinned iX core and AG Grid theme-adapter package license files also explicitly use MIT, but their 2018 copyright line omits the holder. That notice is preserved verbatim in THIRD_PARTY_NOTICES.md; identifying its holder remains an upstream attribution question. Existing source-file copyright headers remain intact. Attribution is not an endorsement or permission to imply an official association.
 
 ```text
 MIT License
 
-Copyright (c) 2018
-Copyright (c) 2022 Siemens AG
-Copyright (c) 2023 Siemens AG
-Copyright (c) 2024 Siemens AG
-Copyright (c) 2025 Siemens AG
-Copyright (c) 2026 Siemens AG
 Copyright (c) 2026 Dioxus iX contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

@@ -21,9 +21,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## Core and AG Grid package notice
+## iX core and AG Grid theme-adapter package notice
 
-The pinned upstream `packages/core/LICENSE` and `packages/aggrid/LICENSE` contain the following notice. Its copyright line is preserved exactly, including the absent holder name.
+The pinned upstream [packages/core/LICENSE](https://github.com/siemens/ix/blob/8bf599bc68365d7752e12832e71b625883b93d7a/packages/core/LICENSE) and [packages/aggrid/LICENSE](https://github.com/siemens/ix/blob/8bf599bc68365d7752e12832e71b625883b93d7a/packages/aggrid/LICENSE) both explicitly use MIT and contain the following notice. These are the iX core and AG Grid theme-adapter packages. The copyright line is preserved exactly, including the absent holder name. The holder is not identified by these pinned notices and remains unresolved; no holder name has been inferred from a package name or inserted into the original text.
 
 ```text
 MIT License
