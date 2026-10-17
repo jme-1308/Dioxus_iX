@@ -170,17 +170,17 @@ pub fn LayoutExamples() -> Element {
         }
         section { class: "gallery-section", id: "workflow",
             h2 { "Workflow" }
-            WorkflowSteps {
+            WorkflowSteps { clickable: true, selected_index: workflow() as isize, onstepselected: move |event: WorkflowStepSelectedEvent| workflow.set(event.index),
                 for (index, status) in [WorkflowStatus::Done, WorkflowStatus::Success, WorkflowStatus::Open, WorkflowStatus::Warning, WorkflowStatus::Error].into_iter().enumerate() {
-                    WorkflowStep { label: format!("Step {}", index + 1), status, clickable: true, selected: workflow() == index, onselect: move |_| workflow.set(index) }
+                    WorkflowStep { label: format!("Step {}", index + 1), status }
                 }
                 WorkflowStep { label: "Step 6", disabled: true }
             }
             p { role: "status", "Selected step: {workflow() + 1}" }
             h3 { "Workflow vertical" }
-            WorkflowSteps { vertical: true,
+            WorkflowSteps { vertical: true, clickable: true, selected_index: workflow() as isize, onstepselected: move |event: WorkflowStepSelectedEvent| workflow.set(event.index),
                 for (index, status) in [WorkflowStatus::Done, WorkflowStatus::Success, WorkflowStatus::Open, WorkflowStatus::Warning, WorkflowStatus::Error].into_iter().enumerate() {
-                    WorkflowStep { label: format!("Step {}", index + 1), status, clickable: true, selected: workflow() == index, onselect: move |_| workflow.set(index) }
+                    WorkflowStep { label: format!("Step {}", index + 1), status }
                 }
                 WorkflowStep { label: "Step 6", disabled: true }
             }

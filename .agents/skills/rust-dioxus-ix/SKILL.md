@@ -3,22 +3,20 @@ name: rust-dioxus-ix
 description: Implement, review, and debug Rust/Dioxus components ported from Siemens iX. Use for component behavior, controlled state, events, lifecycle, accessibility, and web/desktop compatibility.
 ---
 
-Use [AGENTS.md](../../../AGENTS.md) for permanent project rules and version pins. Consult the relevant rows in the [README parity ledger](../../../README.md#parity-ledger), not the entire project history.
+Follow [AGENTS.md](../../../AGENTS.md) and consult only the relevant [parity ledger](../../../IMPLEMENTATION.md#parity-ledger) rows.
 
-## Establish the contract
+## Contract
 
-Inspect the relevant pinned upstream component and its tests. State the missing behavior, controlled/uncontrolled semantics, event order and cancellation, and acceptance criteria. Treat the contract audit as an inventory aid: missing metadata and unreviewed members remain explicit gaps, never inferred parity.
+Read the pinned upstream component and tests before editing. State observable behavior, controlled state, event order/cancellation, and acceptance criteria; keep unknown or unreviewed members explicit.
 
-## Implement and integrate
+Use rust-analyzer MCP for semantic lookups when available. Positions are zero-based: when unknown, call `symbols`, then place hover or definition on the declaration identifier (ranges may start at docs or attributes). Use references only when text search is ambiguous or cross-module. The project already configures the workspace and `web` feature.
 
-Keep component state and behavior in Rust; reuse existing helpers and dependencies. Guard asynchronous results against supersession and unmount, release owned observers/listeners/tasks, and avoid borrow or lock guards across `.await`. Preserve native form, keyboard, focus, and controlled-value behavior.
+## Implementation
 
-Assign agents distinct files or components and name shared read-only files. Require a handoff listing changed behavior, tests, limitations, and frozen files. Integrate focused tests and code review before freezing source; no agent edits after freeze unless a confirmed defect is reassigned.
+Keep behavior and application state in Rust. Preserve form, keyboard, focus, and controlled-value semantics. Cancel stale async work, release owned resources, and do not hold borrows or locks across `.await`.
 
-## Verify and record
+Give delegated tasks their established contract and exclusive files. Handoffs state behavior, tests, limitations, and frozen files; reopen only confirmed defects.
 
-Choose checks that cover the changed contract. After integration freezes, run the relevant web/desktop checks together once. Reuse build caches and repeat only invalidated checks after a defect fix. Use Impeccable for relevant visual design/review rather than as a compulsory second implementation workflow.
+## Evidence
 
-Update the README ledger with implementation status, separate web and desktop evidence, exact commands/results, and remaining gaps. Label synthetic DOM checks and physical input separately. Keep mapping counts outside completion claims.
-
-At a batch boundary, update the README handoff with active processes, unresolved work, and the exact next action. Honor the single-chat ownership rule before continuing in another chat.
+Run focused tests, review, then freeze. Run relevant web/desktop checks once after integration, preserve caches, and repeat only invalidated checks. Update changed ledger evidence and the batch handoff; distinguish synthetic DOM evidence from physical input.

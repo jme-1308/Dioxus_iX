@@ -32,8 +32,8 @@ Bring the Siemens iX interface system to the explicitly selected Dioxus release,
 
 ## Operating Context
 
-- Project: `C:\Users\johan\Documents\code\Dioxus_iX`.
-- User-provided upstream checkout: `C:\Users\johan\Documents\code\ix`.
+- Project: `/run/media/johan/storage/Dioxus_iX`.
+- User-provided upstream checkout: `/run/media/johan/storage/ix`.
 - Upstream repository: https://github.com/siemens/ix
 - Upstream documentation entry point: https://ix.siemens.io
 - Consult the upstream implementation, examples, patterns, and applicable guidelines when defining component behavior and scope.

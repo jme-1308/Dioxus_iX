@@ -70,6 +70,117 @@ impl FieldState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct FieldFeedback {
+    text: String,
+    state: FieldState,
+}
+
+fn field_feedback(
+    state: FieldState,
+    helper: Option<String>,
+    invalid: Option<String>,
+    valid: Option<String>,
+    info: Option<String>,
+    warning: Option<String>,
+) -> Option<FieldFeedback> {
+    let active = match state {
+        FieldState::Invalid => invalid,
+        FieldState::Valid => valid,
+        FieldState::Info => info,
+        FieldState::Warning => warning,
+        FieldState::Default => None,
+    };
+    if let Some(text) = active.filter(|text| !text.trim().is_empty()) {
+        Some(FieldFeedback { text, state })
+    } else {
+        helper
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| FieldFeedback {
+                text,
+                state: FieldState::Default,
+            })
+    }
+}
+
+fn render_field_feedback(feedback: FieldFeedback, id: Option<String>) -> Element {
+    let state = feedback.state;
+    let icon = match state {
+        FieldState::Invalid => Some("error"),
+        FieldState::Valid => Some("success"),
+        FieldState::Info => Some("info"),
+        FieldState::Warning => Some("warning"),
+        FieldState::Default => None,
+    };
+    rsx! {
+        div { id, class: "ix-helper {state.class()}",
+            role: if state == FieldState::Invalid { "alert" } else { "status" },
+            if let Some(icon) = icon { crate::Icon { name: icon, size: 16, class: "ix-helper-icon" } }
+            "{feedback.text}"
+        }
+    }
+}
+
+#[component]
+fn TextControlFeedback(
+    feedback: Option<FieldFeedback>,
+    id: String,
+    anchor_id: String,
+    show_text_as_tooltip: bool,
+) -> Element {
+    rsx! {
+        if let Some(feedback) = feedback {
+            if show_text_as_tooltip {
+                crate::TooltipFor { id, anchor_id, placement: crate::TooltipPlacement::Bottom, show_delay: 500,
+                    {render_field_feedback(feedback, None)}
+                }
+            } else {
+                {render_field_feedback(feedback, Some(id))}
+            }
+        }
+    }
+}
+
+/// The current value is always the latest controlled prop, never an unaccepted
+/// native edit. Updating props alone does not emit a commit.
+#[derive(Default)]
+struct TextCommitState {
+    current: String,
+    baseline: Option<String>,
+}
+
+impl TextCommitState {
+    fn focus(&mut self) {
+        self.baseline = Some(self.current.clone());
+    }
+
+    fn commit(&mut self) -> Option<String> {
+        if self.baseline.as_ref() == Some(&self.current) {
+            return None;
+        }
+        let value = self.current.clone();
+        self.baseline = Some(value.clone());
+        Some(value)
+    }
+}
+
+fn use_text_commit(
+    value: &str,
+    onchange: EventHandler<String>,
+) -> (EventHandler<()>, EventHandler<()>) {
+    let tracker = use_hook(|| Rc::new(std::cell::RefCell::new(TextCommitState::default())));
+    tracker.borrow_mut().current = value.to_string();
+    let focus_tracker = tracker.clone();
+    let focus = use_callback(move |_| focus_tracker.borrow_mut().focus());
+    let commit = use_callback(move |_| {
+        let changed = tracker.borrow_mut().commit();
+        if let Some(value) = changed {
+            onchange.call(value);
+        }
+    });
+    (focus, commit)
+}
+
 /// Label associated with a native control through `html_for`.
 #[component]
 pub fn FieldLabel(
@@ -97,22 +208,15 @@ pub fn HelperText(
     #[props(default)] warning_text: Option<String>,
     #[props(default)] state: FieldState,
 ) -> Element {
-    let text = match state {
-        FieldState::Invalid => invalid_text,
-        FieldState::Valid => valid_text,
-        FieldState::Info => info_text,
-        FieldState::Warning => warning_text,
-        FieldState::Default => None,
-    }
-    .or(helper_text);
-    rsx! {
-        if let Some(text) = text {
-            div { id, class: "ix-helper {state.class()}",
-                role: if state == FieldState::Invalid { "alert" } else { "status" },
-                "{text}"
-            }
-        }
-    }
+    let feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
+    rsx! { if let Some(feedback) = feedback { {render_field_feedback(feedback, id)} } }
 }
 
 /// Layout for a label, arbitrary control content and associated helper text.
@@ -167,7 +271,12 @@ pub fn CustomField(
     } }
 }
 
-/// Branded native text input. `onvaluechange` runs on input; `onchange` runs on commit.
+/// Branded native text input. `onvaluechange` reports edits; `onchange` commits the
+/// changed controlled value on Enter or blur. Focus snapshots the current value;
+/// Enter resets that baseline so the following blur does not repeat the commit.
+/// `onixblur` runs before blur commits. Programmatic updates emit only when a
+/// commit trigger follows; rejected edits never replace the controlled value.
+/// `show_text_as_tooltip` moves nonblank feedback into a delayed bottom tooltip.
 /// `input_type` accepts native types including text, password, email, number, date and time.
 /// `allowed_characters_pattern` uses Rust's regex syntax per inserted character;
 /// JavaScript-only features such as lookarounds are unsupported. Invalid patterns
@@ -198,6 +307,7 @@ pub fn Input(
     #[props(default)] info_text: Option<String>,
     #[props(default)] warning_text: Option<String>,
     #[props(default)] state: FieldState,
+    #[props(default)] show_text_as_tooltip: bool,
     #[props(default)] suppress_submit_on_enter: bool,
     #[props(default)] text_alignment_end: bool,
     #[props(default)] start: Option<Element>,
@@ -213,6 +323,7 @@ pub fn Input(
     #[props(default)] class: String,
 ) -> Element {
     let id = field_id(id);
+    let (focus_commit, commit) = use_text_commit(&value, onchange);
     let has_value = if input_type == "number" {
         number_has_valid_value(&value, required)
     } else {
@@ -258,19 +369,22 @@ pub fn Input(
         input_type
     };
     let length = value.encode_utf16().count();
-    let has_bottom = max_length.is_some_and(|limit| limit > 0)
-        || helper_text.is_some()
-        || match state {
-            FieldState::Invalid => invalid_text.is_some(),
-            FieldState::Valid => valid_text.is_some(),
-            FieldState::Info => info_text.is_some(),
-            FieldState::Warning => warning_text.is_some(),
-            FieldState::Default => false,
-        };
+    let feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
+    let has_feedback = feedback.is_some();
+    let has_bottom =
+        max_length.is_some_and(|limit| limit > 0) || (!show_text_as_tooltip && has_feedback);
+    let anchor_id = format!("{id}-input-wrap");
     rsx! {
         div { class: "ix-field {state.class()} {class}",
             if let Some(text) = label { FieldLabel { text, html_for: id.clone(), required, invalid: state == FieldState::Invalid } }
-            div { class: "ix-input-wrap",
+            div { id: anchor_id.clone(), class: "ix-input-wrap",
                 if let Some(start) = start { span { class: "ix-input-start", {start} } }
                 input { id, class: "ix-input", name, r#type: native_type, value, placeholder,
                     required, disabled, readonly, pattern, minlength: min_length, maxlength: max_length,
@@ -278,16 +392,16 @@ pub fn Input(
                     style: if text_alignment_end { "text-align:end" } else { "text-align:start" },
                     "aria-label": aria_label,
                     "aria-invalid": (state == FieldState::Invalid).to_string(),
-                    "aria-describedby": help_id.clone(),
-                    "aria-errormessage": (state == FieldState::Invalid).then(||help_id.clone()),
+                    "aria-describedby": has_feedback.then(|| help_id.clone()),
+                    "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                     "data-ix-touched": lifecycle.touched.to_string(),
                     onmounted: move |event| mounted.call(event.data()),
                     oninput: move |event| { onvaluechange.call(event.value()); observe.call(false); },
-                    onchange: move |event| onchange.call(event.value()),
-                    onfocus,
-                    onblur: move |event| { observe.call(true); onixblur.call(()); onblur.call(event); },
+                    onfocus: move |event| { focus_commit.call(()); onfocus.call(event); },
+                    onblur: move |event| { onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
                     onkeydown: move |event| {
                         onkeydown.call(event.clone());
+                        if event.key() == Key::Enter { commit.call(()); }
                         if suppress_submit_on_enter && event.key() == Key::Enter { event.prevent_default(); }
                         if !event.is_composing() && !event.modifiers().intersects(Modifiers::CONTROL | Modifiers::META | Modifiers::ALT) {
                             if let Key::Character(text) = event.key() { if !allowed.read().allows(&text) { event.prevent_default(); } }
@@ -306,8 +420,9 @@ pub fn Input(
                     }
                 }
             }
+            if show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: true } }
             if has_bottom { div { class: "ix-field-bottom",
-                HelperText { id: help_id.clone(), helper_text, invalid_text, valid_text, info_text, warning_text, state }
+                if !show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: false } }
                 if let Some(limit) = max_length.filter(|limit| *limit > 0) { span { class: "ix-field-counter", "{length}/{limit}" } }
             } }
         }
@@ -315,6 +430,10 @@ pub fn Input(
 }
 
 /// Multiline input with native length limits and configurable resize behavior.
+/// `onvaluechange` reports edits; `onchange` commits changed controlled values on
+/// blur, after `onixblur`. Enter retains its native newline behavior. The focus
+/// baseline and programmatic-update rules match [`Input`].
+/// `show_text_as_tooltip` moves nonblank feedback into a delayed bottom tooltip.
 #[component]
 pub fn Textarea(
     #[props(default)] value: String,
@@ -339,16 +458,19 @@ pub fn Textarea(
     #[props(default)] info_text: Option<String>,
     #[props(default)] warning_text: Option<String>,
     #[props(default)] state: FieldState,
+    #[props(default)] show_text_as_tooltip: bool,
     #[props(default)] onvaluechange: EventHandler<String>,
     #[props(default)] onchange: EventHandler<String>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] onfocus: EventHandler<FocusEvent>,
+    #[props(default)] onkeydown: EventHandler<KeyboardEvent>,
     #[props(default)] onixblur: EventHandler<()>,
     #[props(default)] onvaliditystatechange: EventHandler<ValidityStateChangeEvent>,
     #[props(default)] controller: Option<TextControlController>,
     #[props(default)] class: String,
 ) -> Element {
     let id = field_id(id);
+    let (focus_commit, commit) = use_text_commit(&value, onchange);
     let lifecycle =
         crate::form_control::use_control(&id, !value.is_empty(), controller, onvaliditystatechange);
     let supplied = crate::form_control::validation_class_state(&class);
@@ -394,31 +516,36 @@ pub fn Textarea(
             })
     );
     let length = value.encode_utf16().count();
-    let has_bottom = max_length.is_some_and(|limit| limit > 0)
-        || helper_text.is_some()
-        || match state {
-            FieldState::Invalid => invalid_text.is_some(),
-            FieldState::Valid => valid_text.is_some(),
-            FieldState::Info => info_text.is_some(),
-            FieldState::Warning => warning_text.is_some(),
-            FieldState::Default => false,
-        };
+    let feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
+    let has_feedback = feedback.is_some();
+    let has_bottom =
+        max_length.is_some_and(|limit| limit > 0) || (!show_text_as_tooltip && has_feedback);
+    let anchor_id = id.clone();
     rsx! {
         div { class: "ix-field {state.class()} {class}",
             if let Some(text) = label { FieldLabel { text, html_for: id.clone(), required, invalid: state == FieldState::Invalid } }
             textarea { id, class: "ix-input ix-textarea", name, value, placeholder,
                 required, disabled, readonly, rows, cols, minlength: min_length, maxlength: max_length,
                 style: dimensions, "aria-label": aria_label, "aria-invalid": (state == FieldState::Invalid).to_string(),
-                "aria-describedby": help_id.clone(),
-                "aria-errormessage": (state == FieldState::Invalid).then(||help_id.clone()),
+                "aria-describedby": has_feedback.then(|| help_id.clone()),
+                "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                 "data-ix-touched": lifecycle.touched.to_string(),
                 onmounted: move |event| mounted.call(event.data()),
                 oninput: move |event| { onvaluechange.call(event.value()); observe.call(false); },
-                onchange: move |event| onchange.call(event.value()), onfocus,
-                onblur: move |event| { observe.call(true); onixblur.call(()); onblur.call(event); },
+                onfocus: move |event| { focus_commit.call(()); onfocus.call(event); },
+                onkeydown,
+                onblur: move |event| { onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
             }
+            if show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: true } }
             if has_bottom { div { class: "ix-field-bottom",
-                HelperText { id: help_id.clone(), helper_text, invalid_text, valid_text, info_text, warning_text, state }
+                if !show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: false } }
                 if let Some(limit) = max_length.filter(|limit| *limit > 0) { span { class: "ix-field-counter", "{length}/{limit}" } }
             } }
         }
@@ -2368,9 +2495,9 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-field{display:flex;flex-direction:column;gap:.375rem;min-width:0;width:100%;font:inherit}
 .ix-theme .ix-field-label{display:block;color:var(--ix-color-text);font-size:.875rem;line-height:1.5rem;margin:0;padding:0;font-weight:400}
 .ix-theme .ix-field-bottom{display:flex;justify-content:space-between;gap:.5rem;align-items:flex-start}.ix-theme .ix-field-bottom>.ix-helper{flex:1;min-width:0}.ix-theme .ix-field-counter{flex:none;margin-inline-start:auto;font-size:.75rem;line-height:1.125rem;color:var(--ix-color-text-secondary);font-variant-numeric:tabular-nums}.ix-theme .ix-password-toggle{display:flex;align-items:center;justify-content:center;flex:none;width:2rem;min-height:2rem;margin-inline-end:.25rem;border:0;background:transparent;color:var(--ix-color-text-secondary);cursor:pointer}.ix-theme .ix-password-toggle:hover{color:var(--ix-color-primary)}.ix-theme .ix-password-toggle:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
-.ix-theme .ix-required{color:inherit}.ix-theme .ix-helper{font-size:.75rem;line-height:1.125rem;color:var(--ix-color-text-secondary);min-height:1.125rem;overflow-wrap:anywhere}
-.ix-theme .ix-field-invalid .ix-helper,.ix-theme .ix-helper.ix-field-invalid{color:var(--ix-color-danger-text)}
-.ix-theme .ix-helper.ix-field-valid{color:var(--ix-color-success)}.ix-theme .ix-helper.ix-field-info{color:var(--ix-color-info-text)}.ix-theme .ix-helper.ix-field-warning{color:var(--ix-color-warning-text)}
+.ix-theme .ix-required{color:inherit}.ix-theme .ix-helper{display:flex;align-items:flex-start;gap:.25rem;font-size:.75rem;line-height:1.125rem;color:var(--ix-color-text-secondary);min-height:1.125rem;overflow-wrap:anywhere}
+.ix-theme .ix-helper.ix-field-invalid{color:var(--ix-color-danger-text)}
+.ix-theme .ix-helper.ix-field-valid,.ix-theme .ix-helper.ix-field-info,.ix-theme .ix-helper.ix-field-warning{color:var(--ix-color-text)}.ix-theme .ix-helper.ix-field-valid>.ix-helper-icon{color:var(--ix-color-success)}.ix-theme .ix-helper.ix-field-info>.ix-helper-icon{color:var(--ix-color-info-text)}.ix-theme .ix-helper.ix-field-warning>.ix-helper-icon{color:var(--ix-color-warning-text)}
 .ix-theme .ix-input-wrap{display:flex;position:relative;align-items:center;min-width:0;width:100%;background:var(--ix-color-surface-1);border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);overflow:hidden}
 .ix-theme .ix-input{box-sizing:border-box;display:block;min-width:0;width:100%;min-height:2.5rem;padding:.5rem .75rem;color:var(--ix-color-text);background:var(--ix-color-surface-1);border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);font:inherit;font-size:.875rem;line-height:1.375rem;caret-color:var(--ix-color-primary)}
 .ix-theme .ix-input-wrap>.ix-input{border:0;border-radius:0;background:transparent}.ix-theme .ix-input::placeholder{color:var(--ix-color-text-secondary);opacity:1}
@@ -2427,6 +2554,206 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_commit_snapshots_focus_and_deduplicates_enter_then_blur() {
+        let mut tracker = TextCommitState {
+            current: "initial".into(),
+            baseline: None,
+        };
+        tracker.focus();
+        assert_eq!(tracker.commit(), None, "unchanged blur is silent");
+        tracker.current = "changed".into();
+        assert_eq!(
+            tracker.commit().as_deref(),
+            Some("changed"),
+            "Enter commits"
+        );
+        assert_eq!(tracker.commit(), None, "repeated Enter and blur are silent");
+        tracker.current.clear();
+        assert_eq!(
+            tracker.commit().as_deref(),
+            Some(""),
+            "clearing is a change"
+        );
+        tracker.current = "programmatic before focus".into();
+        tracker.focus();
+        assert_eq!(tracker.commit(), None, "refocus snapshots latest prop");
+        tracker.current = "programmatic while focused".into();
+        assert_eq!(
+            tracker.commit().as_deref(),
+            Some("programmatic while focused")
+        );
+    }
+
+    #[derive(Default)]
+    struct TextCommitTestConfig {
+        value: String,
+        callback_revision: usize,
+        callbacks: Option<(EventHandler<()>, EventHandler<()>)>,
+        events: Vec<String>,
+    }
+
+    fn text_commit_fixture(config: Rc<std::cell::RefCell<TextCommitTestConfig>>) -> Element {
+        let value = config.borrow().value.clone();
+        let revision = config.borrow().callback_revision;
+        let output = config.clone();
+        let onchange = use_callback(move |value| {
+            output
+                .borrow_mut()
+                .events
+                .push(format!("{revision}:{value}"))
+        });
+        let callbacks = use_text_commit(&value, onchange);
+        config.borrow_mut().callbacks = Some(callbacks);
+        VNode::empty()
+    }
+
+    #[test]
+    fn text_commit_uses_latest_controlled_props_and_callbacks_without_emitting_on_render() {
+        let config = Rc::new(std::cell::RefCell::new(TextCommitTestConfig {
+            value: "initial".into(),
+            ..Default::default()
+        }));
+        let mut dom = VirtualDom::new_with_props(text_commit_fixture, config.clone());
+        dom.rebuild_in_place();
+        let (focus, commit) = config.borrow().callbacks.unwrap();
+        dom.in_runtime(|| focus.call(()));
+        // A parent-rejected native edit leaves the controlled prop unchanged.
+        dom.in_runtime(|| commit.call(()));
+        assert!(config.borrow().events.is_empty());
+        // Parent transforms an edit before acknowledging it through props.
+        config.borrow_mut().value = "ACCEPTED".into();
+        config.borrow_mut().callback_revision = 1;
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        assert!(
+            config.borrow().events.is_empty(),
+            "prop changes alone emit nothing"
+        );
+        dom.in_runtime(|| commit.call(()));
+        dom.in_runtime(|| commit.call(()));
+        assert_eq!(config.borrow().events, ["1:ACCEPTED"]);
+        config.borrow_mut().value = "programmatic".into();
+        config.borrow_mut().callback_revision = 2;
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        assert_eq!(config.borrow().events.len(), 1);
+        dom.in_runtime(|| commit.call(()));
+        assert_eq!(config.borrow().events, ["1:ACCEPTED", "2:programmatic"]);
+    }
+
+    #[test]
+    fn field_feedback_ignores_blank_and_inactive_messages_and_keeps_helper_fallback_neutral() {
+        for state in [
+            FieldState::Invalid,
+            FieldState::Warning,
+            FieldState::Info,
+            FieldState::Valid,
+        ] {
+            let feedback = field_feedback(
+                state,
+                Some("Helper".into()),
+                Some(" ".into()),
+                Some("\t".into()),
+                None,
+                Some("\n".into()),
+            )
+            .unwrap();
+            assert_eq!(feedback.text, "Helper");
+            assert_eq!(feedback.state, FieldState::Default);
+        }
+        assert!(
+            field_feedback(
+                FieldState::Default,
+                Some(" \t".into()),
+                Some("Ignored".into()),
+                None,
+                None,
+                None
+            )
+            .is_none()
+        );
+        let feedback = field_feedback(
+            FieldState::Invalid,
+            Some("Helper".into()),
+            Some("Required".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(feedback.text, "Required");
+        assert_eq!(feedback.state, FieldState::Invalid);
+    }
+
+    fn text_feedback_fixture() -> Element {
+        rsx! {
+            Input { id: "input-feedback", value: "a😀", max_length: 4,
+                show_text_as_tooltip: true, state: FieldState::Invalid,
+                helper_text: "Inactive input helper", invalid_text: "Input error" }
+            Textarea { id: "textarea-feedback", value: "a😀", max_length: 4,
+                show_text_as_tooltip: true, state: FieldState::Warning,
+                helper_text: "Inactive textarea helper", warning_text: "Textarea warning" }
+        }
+    }
+
+    #[test]
+    fn text_feedback_tooltips_describe_controls_keep_counters_and_render_state_icons_once() {
+        let mut dom = VirtualDom::new(text_feedback_fixture);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        for id in ["input-feedback", "textarea-feedback"] {
+            assert!(
+                html.contains(&format!("aria-describedby=\"{id}-help\"")),
+                "{html}"
+            );
+            assert!(html.contains(&format!("id=\"{id}-help\"")), "{html}");
+        }
+        assert!(html.contains("data-anchor-id=\"input-feedback-input-wrap\""));
+        assert!(html.contains("data-anchor-id=\"textarea-feedback\""));
+        assert_eq!(html.matches("role=\"tooltip\"").count(), 2);
+        assert_eq!(html.matches("data-placement=\"bottom\"").count(), 2);
+        assert_eq!(html.matches("Input error").count(), 1);
+        assert_eq!(html.matches("Textarea warning").count(), 1);
+        assert_eq!(
+            html.matches("3/4").count(),
+            2,
+            "counters remain outside tooltips"
+        );
+        assert_eq!(html.matches("ix-helper-icon").count(), 2);
+        assert!(!html.contains("Inactive input helper"));
+        assert!(!html.contains("Inactive textarea helper"));
+    }
+
+    fn blank_text_feedback_fixture() -> Element {
+        rsx! {
+            Input { id: "blank-input", show_text_as_tooltip: true, helper_text: " \t", invalid_text: "Ignored inactive error" }
+            Textarea { id: "blank-textarea", show_text_as_tooltip: true, state: FieldState::Invalid, invalid_text: " ", helper_text: "\n" }
+            Input { id: "inline-input", state: FieldState::Invalid, invalid_text: " ", helper_text: "Inline helper fallback" }
+            Textarea { id: "inline-textarea", state: FieldState::Valid, valid_text: "Accepted textarea" }
+        }
+    }
+
+    #[test]
+    fn blank_tooltips_are_absent_and_inline_feedback_has_matching_accessible_ids() {
+        let mut dom = VirtualDom::new(blank_text_feedback_fixture);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(!html.contains("role=\"tooltip\""));
+        assert!(!html.contains("blank-input-help"));
+        assert!(!html.contains("blank-textarea-help"));
+        assert!(!html.contains("Ignored inactive error"));
+        assert!(html.contains("id=\"inline-input-help\""));
+        assert!(html.contains("id=\"inline-textarea-help\""));
+        assert_eq!(html.matches("Inline helper fallback").count(), 1);
+        assert_eq!(html.matches("Accepted textarea").count(), 1);
+        assert_eq!(
+            html.matches("ix-helper-icon").count(),
+            1,
+            "helper fallback has no state icon"
+        );
+    }
     #[test]
     fn upload_policy_rejects_multiple_plain_files_but_allows_folder_contents() {
         assert_eq!(

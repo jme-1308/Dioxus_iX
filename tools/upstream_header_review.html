@@ -1,0 +1,236 @@
+<!doctype html>
+<!-- Excluded development fixture: exact pinned components own behavior. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="ix-icons:path" content="/www/node_modules/@siemens/ix-icons/svg">
+  <title>Pinned upstream header review</title>
+  <link rel="stylesheet" href="/keyboard-foundation.css">
+  <script type="module" src="/www/build/siemens-ix.esm.js"></script>
+  <script nomodule src="/www/build/siemens-ix.js"></script>
+  <style>
+    body[data-ix-theme] { --theme-font-family:system-ui,sans-serif; --si-sys-sizing-icon-sm:1rem; --si-sys-sizing-icon-lg:1.5rem; --si-sys-sizing-size-50:1rem; --si-sys-sizing-size-70:1.5rem; --si-sys-sizing-size-80:2rem; margin:0; background:#f4f6f8; color:#202932; font:1rem/1.5 system-ui,sans-serif; }
+    main { max-width:76rem; margin:auto; padding:clamp(16px,3vw,36px); }
+    h1 { font-size:1.75rem; line-height:1.2; margin:0 0 16px; } h2 { font-size:1.2rem; margin:24px 0 8px; }
+    p { max-width:76ch; } fieldset { min-width:0; border:1px solid #bdc6ce; margin:16px 0; padding:12px; }
+    .controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:8px 0; }
+    label { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px; }
+    button,input,select { font:inherit; max-width:100%; box-sizing:border-box; } button,select,input:not([type=checkbox]) { min-height:36px; }
+    button { border:1px solid #7d8b98; border-radius:4px; background:white; color:#202932; padding:4px 10px; cursor:pointer; } button:disabled { opacity:.5; cursor:default; }
+    input:not([type=checkbox]) { width:15rem; } :focus-visible { outline:2px solid #075c9d; outline-offset:3px; }
+    #upstream-header-mount { position:relative; min-width:0; height:24rem; border:1px solid #bdc6ce; background:white; }
+    #upstream-header-application { height:100%; width:100%; } #upstream-header-menu { --ix-menu--width:calc(3rem + .25rem); --ix-menu--expanded-width:calc(15rem + 1rem); }
+    pre { max-height:22rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; padding:12px; border:1px solid #bdc6ce; background:white; }
+    iframe { width:100%; height:10rem; box-sizing:border-box; border:1px solid #bdc6ce; background:white; } summary { cursor:pointer; padding:8px 0; }
+    ::selection { background:#bddcf2; color:#102c42; } a { color:#075c9d; text-underline-offset:.2em; }
+  </style>
+</head>
+<body data-ix-theme="brand" data-ix-color-schema="light">
+<main>
+  <h1>Pinned upstream header review</h1>
+  <p>Source revision <code>8bf599bc68365d7752e12832e71b625883b93d7a</code>. One native header case is mounted at a time. Foundation CSS, system fonts, neutral data images and provisional public sizing aliases only; this is a behavior diagnostic, not Brand geometry proof. No company marks, Classic stylesheet or corporate fonts are loaded.</p>
+  <p id="upstream-header-status" role="status">Waiting for the pinned runtime…</p>
+  <div class="controls">
+    <button id="upstream-header-contained" type="button" disabled>Fresh contained large case</button>
+    <button id="upstream-header-standalone" type="button" disabled>Fresh standalone case</button>
+    <button id="upstream-header-clear" type="button">Clear observations</button>
+    <button id="upstream-header-snapshot" type="button">Capture live state</button>
+  </div>
+  <fieldset><legend>Header source properties</legend>
+    <div class="controls">
+      <label>Name mode <select id="upstream-header-name-mode"><option value="present">Provided name</option><option value="omitted">Omitted</option><option value="empty">Empty string</option></select></label>
+      <label>Name <input id="upstream-header-name" value="Review application"></label>
+      <label>Suffix <input id="upstream-header-suffix" value="Development"></label>
+      <label><input id="upstream-header-image" type="checkbox" checked>Neutral app image</label>
+      <label>App image alt <input id="upstream-header-image-alt" value="Neutral application symbol"></label>
+      <label><input id="upstream-header-outline" type="checkbox">Image outline</label>
+      <label>Logo <select id="upstream-header-logo"><option value="slot">Neutral custom slot</option><option value="property">Neutral companyLogo property</option></select></label>
+      <label>Logo alt <input id="upstream-header-logo-alt" value="Neutral example identity"></label>
+    </div>
+    <div class="controls">
+      <label>Switch label mode <select id="upstream-header-switch-label-mode"><option value="custom">Custom</option><option value="omitted">Omitted</option><option value="empty">Empty</option></select></label>
+      <label>Switch button name <input id="upstream-header-switch-label" value="Switch review application"></label>
+      <label>More label mode <select id="upstream-header-more-label-mode"><option value="custom">Custom</option><option value="omitted">Omitted</option><option value="empty">Empty</option></select></label>
+      <label>More button name <input id="upstream-header-more-label" value="More review actions"></label>
+      <label><input id="upstream-header-border" type="checkbox">Hide bottom border</label>
+      <label><input id="upstream-header-show-menu" type="checkbox">showMenu property</label>
+      <label><input id="upstream-header-top-layer" type="checkbox">Overflow enableTopLayer</label>
+      <button id="upstream-header-apply-content" type="button" disabled>Apply header properties</button>
+    </div>
+  </fieldset>
+  <fieldset><legend>Application switch source configuration</legend>
+    <div class="controls">
+      <button id="upstream-header-config-none" type="button" data-config disabled>Remove config</button>
+      <button id="upstream-header-config-loading" type="button" data-config disabled>Set loading config</button>
+      <button id="upstream-header-config-populated" type="button" data-config disabled>Set populated config</button>
+      <label>Current application <select id="upstream-header-current"><option value="alpha">Alpha</option><option value="beta">Beta</option><option value="missing">Missing id</option></select></label>
+      <label>Modal title <input id="upstream-header-title" value="Switch to review application"></label>
+      <label>Loading text <input id="upstream-header-loading" value="Loading review applications…"></label>
+      <label>Navigation target <select id="upstream-header-target"><option value="header-review-target">Named iframe</option><option value="_blank">_blank</option><option value="_self">_self</option><option value="_parent">_parent</option><option value="_top">_top</option></select></label>
+      <button id="upstream-header-config-update" type="button" data-config disabled>Update current config</button>
+    </div>
+    <label><input id="upstream-header-veto" type="checkbox">Prevent the source openAppSwitch request</label>
+    <label>During openAppSwitch <select id="upstream-header-request-config"><option value="unchanged">Keep config</option><option value="none">Remove config</option><option value="loading">Set loading config</option><option value="populated">Set populated config</option></select></label>
+    <p>Use the real source switch button for initial and repeated opening. The veto checkbox cancels only the source request; observers never cancel clicks or keys or move focus. Config is an Application property, so standalone config controls are disabled. Self, parent and top targets navigate away: run each in an isolated tab/window and preserve observations first. Empty translation fields are intentional.</p>
+  </fieldset>
+  <fieldset><legend>Arm a public property or removal action for the next opening</legend>
+    <div class="controls">
+      <label>Next-open action <select id="upstream-header-arm-action"><option value="update-current-config">Update current config</option><option value="remove-config">Remove config</option><option value="loading">Set loading config</option><option value="populated">Set populated config</option><option value="remove-header">Remove header</option><option value="remove-app">Remove application</option></select></label>
+      <label>Delay after native open (ms) <input id="upstream-header-arm-delay" type="number" min="0" step="100" value="600"></label>
+      <button id="upstream-header-arm" type="button" disabled>Arm next open</button>
+      <button id="upstream-header-arm-cancel" type="button">Cancel armed action</button>
+    </div>
+    <p id="upstream-header-arm-status" role="status">No action armed.</p>
+    <p>A real modal makes outside controls inert. Choose new configuration fields above without applying them, then arm and open the source switch button. The fixture captures those fields at arming and waits until it observes a real native dialog open before scheduling the public property/DOM action. Zero delay probes the opening race. Remount clears only the fixture's queued intent; it does not dismiss or cancel a source modal.</p>
+  </fieldset>
+  <div class="controls">
+    <button id="upstream-header-remove-header" type="button" disabled>Remove / restore header</button>
+    <button id="upstream-header-remove-application" type="button" disabled>Remove / restore application</button>
+  </div>
+  <p>Removing or remounting a header/application does not remove body-attached source modals. This is intentional for ownership and stale-update observation; dismiss an existing modal before starting an independent case.</p>
+  <button id="upstream-header-before" type="button">Before source header</button>
+  <div id="upstream-header-mount"></div>
+  <button id="upstream-header-after" type="button">After source header</button>
+  <h2>Same-origin navigation destination</h2>
+  <iframe id="upstream-header-frame" name="header-review-target" title="Application navigation observation" src="/upstream_header_navigation_target.html?trial=initial"></iframe>
+  <h2>Native observations</h2>
+  <p>The window.open wrapper and each discovered modal's public dismissModal wrapper record and forward the exact original call and return value. The modal wrapper shadows its inherited method on that instance only; no source or prototype is changed. Installation success or unavailability is logged. The destination remains a real document. Dismiss invocation, native closure and navigation are separate observations; no completion order is supplied by this fixture.</p>
+  <pre id="upstream-header-state" tabindex="0">{}</pre>
+  <pre id="upstream-header-events" tabindex="0">[]</pre>
+  <details><summary>Native key, click and focus traces</summary><pre id="upstream-header-trace" tabindex="0">[]</pre></details>
+</main>
+<script type="module">
+  const revision="8bf599bc68365d7752e12832e71b625883b93d7a",journalKey="ix-header-review-navigation";
+  const byId=name=>document.getElementById(`upstream-header-${name}`),events=[],trace=[];
+  let current=null,generation=0,sequence=0,busy=false,scheduled=false,armed=null;
+  const status=byId("status"),mount=byId("mount"),observed=new WeakSet(),eventIds=new WeakMap(),nodeIds=new WeakMap();let nodeSequence=0;
+  const neutralImage="data:image/svg+xml,"+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="6" fill="#31566c"/><path d="M10 12h20v16H10z" fill="#fff"/><path d="M15 17h10v6H15z" fill="#31566c"/></svg>');
+  function describe(node){
+    if(node===window)return{tag:"window"};if(node===document)return{tag:"#document"};if(node instanceof ShadowRoot)return{tag:"#shadow-root",host:node.host.id||node.host.tagName};
+    if(!(node instanceof Element))return{tag:node?.nodeName??null};
+    if(!nodeIds.has(node))nodeIds.set(node,++nodeSequence);
+    return{observationId:nodeIds.get(node),tag:node.tagName.toLowerCase(),id:node.id||null,role:node.getAttribute("role"),label:node.getAttribute("aria-label"),labelledby:node.getAttribute("aria-labelledby"),describedby:node.getAttribute("aria-describedby"),ariaExpanded:node.getAttribute("aria-expanded"),ariaHidden:node.getAttribute("aria-hidden"),text:(node.textContent??"").trim().slice(0,100),open:node instanceof HTMLDialogElement?node.open:null};
+  }
+  function nativeButton(host){if(!host?.shadowRoot)return null;const button=host.shadowRoot.querySelector("button");if(button)return button;for(const child of host.shadowRoot.querySelectorAll("*")){const inner=nativeButton(child);if(inner)return inner;}return null;}
+  function controlState(host){return{host:describe(host),native:describe(nativeButton(host))};}
+  function deepFocus(){const chain=[];let node=document.activeElement;while(node){chain.push(describe(node));const next=node.shadowRoot?.activeElement;if(!next||next===node)break;node=next;}return chain;}
+  function roots(){const result=[];function walk(root){result.push(root);for(const el of root.querySelectorAll("*"))if(el.shadowRoot)walk(el.shadowRoot);}walk(document);return result;}
+  function dialogs(){return roots().flatMap(root=>[...root.querySelectorAll("dialog")]);}
+  function snapshot(){
+    const header=current?.header,root=header?.shadowRoot;
+    return{revision,generation,generationMeaning:"fixture generation at observation, not ownership of an asynchronously created modal",mode:current?.mode??null,ready:status.dataset.ready==="true",armedAction:armState(),focus:deepFocus(),header:header?{connected:header.isConnected,name:header.name??null,nameSuffix:header.nameSuffix??null,showMenu:header.showMenu,appIcon:header.appIcon??null,appIconAlt:header.appIconAlt??null,appIconOutline:header.appIconOutline,companyLogo:header.companyLogo??null,companyLogoAlt:header.companyLogoAlt??null,hideBottomBorder:header.hideBottomBorder,enableTopLayer:header.enableTopLayer,headings:[...(root?.querySelectorAll("h1")??[])].map(describe),images:[...(root?.querySelectorAll("img")??[])].map(img=>({src:img.getAttribute("src"),alt:img.getAttribute("alt")})),menuToggle:controlState(root?.querySelector("ix-menu-expand-icon")),switch:controlState(root?.querySelector(".app-switch")),more:controlState(root?.querySelector("[data-context-menu]"))}:null,application:current?.application?{connected:current.application.isConnected,config:current.application.appSwitchConfig??null}:null,modals:[...document.querySelectorAll("ix-application-switch-modal")].map(modal=>({node:describe(modal),connected:modal.isConnected,config:modal.config??null})),dialogs:dialogs().map(describe)};
+  }
+  function schedule(){if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;byId("state").textContent=JSON.stringify(snapshot(),null,2);byId("events").textContent=JSON.stringify(events,null,2);byId("trace").textContent=JSON.stringify(trace,null,2);});}
+  function append(list,entry,limit=600){list.push({seq:++sequence,generation,...entry});if(list.length>limit)list.splice(0,list.length-limit);schedule();}
+  const detail=value=>value===undefined?{$type:"undefined"}:JSON.parse(JSON.stringify(value));
+  function record(type,extra={}){append(events,{type,...extra,focus:deepFocus()});}
+  const sourceNames=["menuToggle","openAppSwitch","dialogClose","dialogDismiss","closeClick"];
+  function observeEvent(event,site,capture){
+    const path=event.composedPath(),listenerHost=event.currentTarget instanceof ShadowRoot?event.currentTarget.host:null;
+    if(!path.some(node=>node instanceof Element&&node.matches("ix-application-header,ix-modal,ix-application-switch-modal"))&&!listenerHost?.matches("ix-application-header,ix-modal,ix-application-switch-modal"))return;
+    if(!eventIds.has(event)){eventIds.set(event,++sequence);setTimeout(()=>{append(trace,{dispatch:eventIds.get(event),site:"after-dispatch-task",type:event.type,key:event.key??null,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,focus:deepFocus()});},0);}
+    append(trace,{dispatch:eventIds.get(event),type:event.type,site,phase:capture?"capture":"bubble",eventPhase:event.eventPhase,key:event.key??null,code:event.code??null,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,cancelBubbleDuringDispatch:event.cancelBubble,target:describe(event.target),path:path.map(describe),focus:deepFocus()});
+  }
+  function instrument(root){
+    if(observed.has(root))return;observed.add(root);
+    for(const type of ["click","keydown","keyup","focusin","focusout","close","cancel","beforetoggle","toggle"]){for(const capture of [true,false])root.addEventListener(type,event=>observeEvent(event,root instanceof ShadowRoot?`shadow:${root.host.tagName}`:root.nodeName,capture),{capture,passive:true});}
+    if(root instanceof ShadowRoot)observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:["class","open","hidden","aria-hidden"]});
+  }
+  function descriptorFacts(descriptor){return descriptor?{configurable:descriptor.configurable,enumerable:descriptor.enumerable,kind:"value" in descriptor?"data":"accessor",writable:"writable" in descriptor?descriptor.writable:null}:null;}
+  function observeDismiss(modal){
+    if(modal.tagName!=="IX-MODAL"||dismissObservers.has(modal))return;dismissObservers.add(modal);
+    modal.componentOnReady().then(()=>{
+      const original=modal.dismissModal,own=Object.getOwnPropertyDescriptor(modal,"dismissModal"),extensible=Object.isExtensible(modal);
+      let prototype=Object.getPrototypeOf(modal),inherited,depth=1;
+      while(prototype){inherited=Object.getOwnPropertyDescriptor(prototype,"dismissModal");if(inherited)break;prototype=Object.getPrototypeOf(prototype);depth++;}
+      const descriptors={extensible,own:descriptorFacts(own),inherited:inherited?{depth,...descriptorFacts(inherited)}:null};
+      record("modal-dismiss-descriptor",{node:describe(modal),descriptors});
+      if(typeof original!=="function"||(!own&&!extensible)||(own&&!own.configurable)){record("modal-dismiss-observer-unavailable",{node:describe(modal),descriptors});return;}
+      const wrapper=function(...args){record("modal-dismiss-call",{node:describe(this),args:args.map(value=>value===undefined?{$type:"undefined"}:value)});try{return Reflect.apply(original,this,args);}catch(error){record("modal-dismiss-throw",{message:String(error)});throw error;}};
+      // Stencil installs inherited nonwritable methods. Define an own shadow
+      // only on this extensible instance; ordinary assignment cannot do that.
+      Object.defineProperty(modal,"dismissModal",{value:wrapper,configurable:true,writable:true,enumerable:own?.enumerable??false});
+      if(Object.getOwnPropertyDescriptor(modal,"dismissModal")?.value!==wrapper){record("modal-dismiss-observer-unavailable",{node:describe(modal),descriptors});return;}
+      record("modal-dismiss-observer-ready",{node:describe(modal),descriptors,installedOwn:descriptorFacts(Object.getOwnPropertyDescriptor(modal,"dismissModal"))});
+    }).catch(error=>record("modal-dismiss-observer-error",{node:describe(modal),message:String(error)}));
+  }
+  function discover(){for(const root of roots()){instrument(root);for(const modal of root.querySelectorAll("ix-modal,ix-application-switch-modal")){if(!seenModals.has(modal)){seenModals.add(modal);record("modal-attach",{node:describe(modal)});}observeDismiss(modal);}}for(const dialog of dialogs())if(dialog.open)startArmedAction(dialog);schedule();}
+  const seenModals=new WeakSet(),dismissObservers=new WeakSet(),observer=new MutationObserver(records=>{const relevant=records.filter(m=>!((m.target instanceof Element?m.target:m.target.parentElement)?.closest("#upstream-header-state,#upstream-header-events,#upstream-header-trace")));if(!relevant.length)return;for(const m of relevant)for(const node of m.removedNodes)if(node instanceof Element&&(node.matches("ix-modal,ix-application-switch-modal")||node.querySelector("ix-modal,ix-application-switch-modal")))record("modal-remove",{node:describe(node)});discover();});
+  observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:["class","open","hidden","aria-hidden"]});
+  for(const type of sourceNames)document.addEventListener(type,event=>{let payload;try{payload=detail(event.detail);}catch{payload={$type:"unserializable"};}record(type,{detail:payload,target:describe(event.target),trusted:event.isTrusted,defaultPrevented:event.defaultPrevented});},{capture:true,passive:true});
+  const nativeOpen=window.open;
+  window.open=function(...args){record("window-open-call",{args});try{sessionStorage.setItem(journalKey,JSON.stringify({revision,state:snapshot(),events,trace}));}catch(error){record("journal-error",{message:String(error)});}try{const result=Reflect.apply(nativeOpen,this,args);record("window-open-return",{wasNull:result===null});return result;}catch(error){record("window-open-throw",{message:String(error)});throw error;}};
+  window.addEventListener("message",event=>{if(event.origin===location.origin&&event.data?.fixture==="pinned-header-navigation")record("navigation-document-message",{data:event.data,sourceFrame:event.source===byId("frame").contentWindow});},{passive:true});
+  byId("frame").addEventListener("load",()=>{let href;try{href=byId("frame").contentWindow.location.href;}catch{href="unreadable";}record("navigation-frame-load",{href});},{passive:true});
+  function setEnabled(enabled){for(const id of ["contained","standalone","apply-content","remove-header","arm"])byId(id).disabled=!enabled;byId("remove-application").disabled=!enabled||current?.mode!=="contained";for(const button of document.querySelectorAll("[data-config]"))button.disabled=!enabled||current?.mode!=="contained";}
+  function applyContent(){
+    if(!current)return;const header=current.header,nameMode=byId("name-mode").value;
+    header.name=nameMode==="omitted"?undefined:nameMode==="empty"?"":byId("name").value;header.nameSuffix=byId("suffix").value;
+    header.appIcon=byId("image").checked?neutralImage:undefined;header.appIconAlt=byId("image-alt").value;header.appIconOutline=byId("outline").checked;
+    header.companyLogoAlt=byId("logo-alt").value;current.logo.alt=byId("logo-alt").value;
+    if(byId("logo").value==="property"){header.companyLogo=neutralImage;current.logo.remove();}else{header.companyLogo=undefined;if(current.logo.parentElement!==header)header.append(current.logo);}
+    header.hideBottomBorder=byId("border").checked;header.showMenu=byId("show-menu").checked;header.enableTopLayer=byId("top-layer").checked;
+    const label=kind=>byId(`${kind}-label-mode`).value==="omitted"?undefined:byId(`${kind}-label-mode`).value==="empty"?"":byId(`${kind}-label`).value;
+    header.ariaLabelAppSwitchIconButton=label("switch");header.ariaLabelMoreMenuIconButton=label("more");record("fixture-properties");
+  }
+  function config(kind){if(kind==="none")return undefined;return{currentAppId:byId("current").value,i18nAppSwitch:byId("title").value,i18nLoadingApps:byId("loading").value,apps:kind==="loading"?[]:["alpha","beta"].map(id=>({id,name:`${id==="alpha"?"Alpha":"Beta"} application`,description:`Neutral ${id} destination`,iconSrc:neutralImage,url:`/upstream_header_navigation_target.html?app=${id}`,target:byId("target").value}))};}
+  function applyConfig(kind){if(!current?.application)return;current.configKind=kind;current.application.appSwitchConfig=config(kind);record("fixture-config",{kind});}
+  function armState(){if(!armed)return null;const{action,delay,ownerGeneration,status,armedAt,observedOpenAt,executedAt,payload}=armed;return{action,delay,ownerGeneration,status,armedAt,observedOpenAt:observedOpenAt??null,executedAt:executedAt??null,payload:payload??null};}
+  function cancelArmedAction(reason){if(!armed)return;const previous=armState();if(armed.timer!==null)clearTimeout(armed.timer);armed=null;byId("arm-status").textContent=`Action cleared: ${reason}.`;record("fixture-action-canceled",{reason,previous,timestamp:Date.now(),performanceTime:performance.now()});}
+  function armNextOpen(){
+    if(!current)return;const action=byId("arm-action").value,delay=Number(byId("arm-delay").value);
+    if(!Number.isFinite(delay)||delay<0){byId("arm-status").textContent="Use a nonnegative delay.";return;}
+    if(action!=="remove-header"&&!current.application){byId("arm-status").textContent="Choose a contained case for this action.";return;}
+    cancelArmedAction("rearmed");
+    const kind=action==="update-current-config"?current.configKind:action==="remove-config"?"none":action;
+    const payload=["none","loading","populated"].includes(kind)?config(kind):undefined;
+    armed={action,delay,ownerGeneration:generation,owner:current,kind,payload,status:"armed",timer:null,armedAt:Date.now(),armedPerformance:performance.now(),excludedOpenDialogs:new WeakSet(dialogs().filter(dialog=>dialog.open))};
+    byId("arm-status").textContent=`Armed ${action} for the next native dialog open, then ${delay}ms.`;
+    record("fixture-action-armed",{...armState(),performanceTime:armed.armedPerformance});
+  }
+  function startArmedAction(dialog){
+    const plan=armed;if(!plan||plan.status!=="armed"||plan.excludedOpenDialogs.has(dialog))return;
+    plan.status="waiting";plan.observedOpenAt=Date.now();plan.observedOpenPerformance=performance.now();
+    byId("arm-status").textContent=`Native opening observed; ${plan.action} queued.`;
+    record("fixture-action-start",{...armState(),dialog:describe(dialog),performanceTime:plan.observedOpenPerformance});
+    plan.timer=setTimeout(()=>{
+      if(armed!==plan)return;plan.timer=null;
+      const before=snapshot();
+      try{
+        if(plan.action==="remove-header")plan.owner.header.remove();
+        else if(plan.action==="remove-app")plan.owner.application.remove();
+        else{plan.owner.configKind=plan.kind;plan.owner.application.appSwitchConfig=plan.payload;}
+        plan.status="executed";plan.executedAt=Date.now();
+        byId("arm-status").textContent=`Executed ${plan.action}.`;
+        record("fixture-action-executed",{...armState(),performanceTime:performance.now(),elapsedAfterOpen:performance.now()-plan.observedOpenPerformance,before,after:snapshot()});
+      }catch(error){plan.status="error";record("fixture-action-error",{...armState(),message:String(error),timestamp:Date.now(),performanceTime:performance.now()});}
+    },plan.delay);
+  }
+  async function remount(mode){
+    if(busy)return false;cancelArmedAction("remount");busy=true;setEnabled(false);status.dataset.ready="false";status.textContent=`Mounting ${mode} source case…`;generation++;
+    try{
+      mount.replaceChildren();const header=document.createElement("ix-application-header");header.id="upstream-header-source";
+      const logo=document.createElement("img");logo.slot="logo";logo.src=neutralImage;logo.alt=byId("logo-alt").value;logo.width=32;logo.height=32;header.append(logo);
+      const overflowAction=document.createElement("button");overflowAction.type="button";overflowAction.slot="overflow";overflowAction.id="upstream-header-overflow-action";overflowAction.textContent="Overflow action";header.append(overflowAction);
+      const application=mode==="contained"?document.createElement("ix-application"):null;
+      if(application){application.id="upstream-header-application";application.breakpoints=["lg"];}
+      current={header,logo,application,mode,configKind:"none"};applyContent();
+      header.addEventListener("openAppSwitch",event=>{if(byId("veto").checked)event.preventDefault();const mutation=byId("request-config").value;if(mutation!=="unchanged")applyConfig(mutation);record("request-decision",{veto:byId("veto").checked,defaultPrevented:event.defaultPrevented,configMutation:mutation});});
+      if(application){const menu=document.createElement("ix-menu");menu.id="upstream-header-menu";menu.pinned=true;const item=document.createElement("ix-menu-item");item.label="Navigation item";menu.append(item);application.append(header,menu);mount.append(application);await application.componentOnReady();await menu.componentOnReady();}else mount.append(header);
+      await header.componentOnReady();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);discover();status.dataset.ready="true";status.textContent=`Ready · ${mode} · generation ${generation}`;record("fixture-remount",{mode});return true;
+    }catch(error){record("fixture-error",{message:String(error)});status.textContent=`Setup failed: ${error.message}`;return false;}finally{busy=false;setEnabled(status.dataset.ready==="true");}
+  }
+  byId("contained").addEventListener("click",()=>remount("contained"));byId("standalone").addEventListener("click",()=>remount("standalone"));
+  byId("apply-content").addEventListener("click",applyContent);
+  for(const kind of ["none","loading","populated"])byId(`config-${kind}`).addEventListener("click",()=>applyConfig(kind));
+  byId("config-update").addEventListener("click",()=>applyConfig(current?.configKind??"none"));
+  byId("arm").addEventListener("click",armNextOpen);byId("arm-cancel").addEventListener("click",()=>cancelArmedAction("explicit cancel"));
+  byId("remove-header").addEventListener("click",()=>{if(!current)return;if(current.header.parentElement)current.header.remove();else(current.application??mount).prepend(current.header);record("fixture-header-presence",{connected:current.header.isConnected});});
+  byId("remove-application").addEventListener("click",()=>{if(!current?.application)return;if(current.application.parentElement)current.application.remove();else mount.append(current.application);record("fixture-application-presence",{connected:current.application.isConnected});});
+  byId("clear").addEventListener("click",()=>{events.length=0;trace.length=0;sequence=0;schedule();});byId("snapshot").addEventListener("click",schedule);
+  window.upstreamHeaderReview={revision,events,trace,snapshot,remount,applyContent,applyConfig};
+  try{const{defineCustomElements}=await import("/www/node_modules/@siemens/ix-icons/loader/index.es2017.js");defineCustomElements();await Promise.all(["ix-application","ix-application-header","ix-menu"].map(tag=>customElements.whenDefined(tag)));await remount("contained");}catch(error){status.textContent=`Runtime unavailable: ${error.message}`;record("bootstrap-error",{message:String(error)});}
+</script>
+</body>
+</html>

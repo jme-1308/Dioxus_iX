@@ -2,14 +2,13 @@
 name = "dioxus-ix"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
 description = "Rust UI components for Dioxus, porting the Industrial Experience design system"
 repository = "https://github.com/jme-1308/Dioxus_iX"
 license = "MIT"
 readme = "README.md"
 keywords = ["dioxus", "components", "ui", "industrial", "design-system"]
 categories = ["gui", "web-programming"]
-include = ["src/**/*.rs", "examples/**/*.rs", "tests/**/*.rs", "Cargo.toml", "README.md", "Cargo.lock", "LICENSE", "THIRD_PARTY_NOTICES.md"]
+include = ["src/**/*.rs", "examples/**/*.rs", "!examples/contract_audit.rs", "!examples/desktop_probe.rs", "!examples/native_bridge_probe.rs", "!examples/native_bridge_probe/**", "tests/**/*.rs", "Cargo.toml", "README.md", "IMPLEMENTATION.md", "Cargo.lock", "LICENSE", "THIRD_PARTY_NOTICES.md"]
 
 [features]
 default = []
@@ -51,5 +50,70 @@ name = "native_bridge_probe"
 path = "examples/native_bridge_probe.rs"
 required-features = ["desktop"]
 
+[[example]]
+name = "text_commit_probe"
+path = "tools/text_commit_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "workflow_probe"
+path = "tools/workflow_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "filter_reset_probe"
+path = "tools/filter_reset_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "filter_mode_probe"
+path = "tools/filter_mode_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "filter_state_probe"
+path = "tools/filter_state_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "filter_order_probe"
+path = "tools/filter_order_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "filter_keyboard_probe"
+path = "tools/filter_keyboard_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "menu_navigation_probe"
+path = "tools/menu_navigation_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "menu_category_probe"
+path = "tools/menu_category_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "header_switch_probe"
+path = "tools/header_switch_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "header_layout_probe"
+path = "tools/header_layout_probe.rs"
+required-features = ["desktop"]
+
+# Preserve existing nested-if style when Clippy enables let-chain suggestions.
+[lints.clippy]
+collapsible_if = "allow"
+
 [package.metadata.docs.rs]
 features = ["ssr"]
+
+[profile.dev]
+debug = "line-tables-only"   # backtraces keep line numbers
+
+[profile.dev.package."*"]
+debug = false                # no debug info for dependencies

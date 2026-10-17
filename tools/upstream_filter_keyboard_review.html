@@ -1,0 +1,331 @@
+<!doctype html>
+<!-- Development-only fixture for the pinned upstream build; no component behavior is implemented here. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="ix-icons:path" content="/www/node_modules/@siemens/ix-icons/svg" />
+    <title>Pinned upstream filter keyboard review</title>
+    <link rel="stylesheet" href="/keyboard-foundation.css" />
+    <script type="module" src="/www/build/siemens-ix.esm.js"></script>
+    <script nomodule src="/www/build/siemens-ix.js"></script>
+    <style>
+      body[data-ix-theme] { --theme-font-family: system-ui, sans-serif; --si-sys-sizing-icon-sm: 1rem; --si-sys-sizing-size-50: 1rem; --si-sys-sizing-size-70: 1.5rem; --si-sys-sizing-size-80: 2rem; margin: 0; background: #f4f6f8; color: #202932; font-family: var(--theme-font-family); line-height: 1.5; }
+      main { max-width: 70rem; margin: auto; padding: clamp(16px, 4vw, 40px); }
+      h1 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.2; margin: 0 0 16px; }
+      h2 { font-size: 1.2rem; margin: 0 0 8px; }
+      h3 { font-size: 1rem; margin: 24px 0 8px; }
+      p { max-width: 72ch; margin: 8px 0 16px; }
+      nav, .controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-block: 16px; }
+      button { font: inherit; min-height: 36px; padding: 4px 12px; border: 1px solid #7d8b98; border-radius: 4px; background: #fff; color: #202932; cursor: pointer; }
+      button:disabled { opacity: .5; cursor: default; }
+      button:focus-visible, a:focus-visible { outline: 2px solid #075c9d; outline-offset: 3px; }
+      a { color: #075c9d; text-underline-offset: .2em; }
+      .case { min-width: 0; padding-block: 24px; border-top: 1px solid #bdc6ce; scroll-margin-top: 16px; }
+      .mount { max-width: 48rem; min-width: 0; margin-block: 16px; }
+      ix-category-filter { max-width: 100%; }
+      .observations { min-width: 0; margin-top: 32px; }
+      pre { box-sizing: border-box; max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border: 1px solid #bdc6ce; background: #fff; font-size: .8rem; line-height: 1.45; }
+      #upstream-status { font-weight: 600; }
+      summary { cursor: pointer; font-weight: 600; padding-block: 8px; }
+      ::selection { background: #bddcf2; color: #102c42; }
+    </style>
+  </head>
+  <body data-ix-theme="brand" data-ix-color-schema="light">
+    <main id="upstream-filter-review">
+      <h1>Pinned upstream filter keyboard review</h1>
+      <p>Native components from commit <code>8bf599bc68365d7752e12832e71b625883b93d7a</code>. This page observes events and focus. It supplies no keyboard handlers that cancel events or move focus.</p>
+      <p>Foundation styles and the system font are used without Classic or corporate theme assets. Four provisional public-source sizing aliases keep icons and their controls measurable: icon-sm and size-50 are 1rem, size-70 is 1.5rem, and size-80 is 2rem. Other missing tokens remain unset. These captures establish keyboard behavior, not complete Brand visual parity.</p>
+      <p id="upstream-status" role="status">Waiting for the pinned runtime…</p>
+      <nav aria-label="Review cases">
+        <a href="#upstream-category-case">Category options</a>
+        <a href="#upstream-suggestions-case">Plain suggestions</a>
+        <a href="#upstream-top-layer-case">Top layer options</a>
+      </nav>
+      <div class="controls">
+        <button id="upstream-remount" type="button" disabled>Remount all empty filters</button>
+        <button id="upstream-clear-log" type="button">Clear observations</button>
+        <button id="upstream-snapshot" type="button">Capture state</button>
+      </div>
+      <p>Compare closed and open input, first and last options, and unmatched text. Observe Arrow keys, Enter, literal Space, Tab, Shift+Tab and Escape. Home/End and Shift+Home/End should be checked in the input with the caret visible.</p>
+
+      <section class="case" id="upstream-category-case" aria-labelledby="category-heading">
+        <h2 id="category-heading">Category options</h2>
+        <p>Vendor: Alpha, Beta. Product: X, Y. Options are the upstream native buttons. The before and after buttons are direct element siblings of this filter, allowing observation of the source host-sibling focus path.</p>
+        <button id="upstream-category-before" type="button">Before category filter</button>
+        <div class="mount" id="upstream-category-mount"></div>
+        <div class="controls">
+          <button id="upstream-category-after" type="button">After category filter</button>
+          <button id="upstream-category-reset" type="button" disabled>Remount category filter</button>
+        </div>
+      </section>
+      <section class="case" id="upstream-suggestions-case" aria-labelledby="suggestions-heading">
+        <h2 id="suggestions-heading">Plain suggestions</h2>
+        <p>Categories are omitted. Suggestions: Apple, Banana.</p>
+        <button id="upstream-suggestions-before" type="button">Before suggestions filter</button>
+        <div class="mount" id="upstream-suggestions-mount"></div>
+        <div class="controls">
+          <button id="upstream-suggestions-after" type="button">After suggestions filter</button>
+          <button id="upstream-suggestions-reset" type="button" disabled>Remount suggestions filter</button>
+        </div>
+      </section>
+      <section class="case" id="upstream-top-layer-case" aria-labelledby="top-layer-heading">
+        <h2 id="top-layer-heading">Top layer category options</h2>
+        <p>The same category data with upstream <code>enableTopLayer</code> enabled.</p>
+        <button id="upstream-top-layer-before" type="button">Before top layer filter</button>
+        <div class="mount" id="upstream-top-layer-mount"></div>
+        <div class="controls">
+          <button id="upstream-top-layer-after" type="button">After top layer filter</button>
+          <button id="upstream-top-layer-reset" type="button" disabled>Remount top layer filter</button>
+        </div>
+      </section>
+
+      <section class="observations" aria-labelledby="observations-heading">
+        <h2 id="observations-heading">Native observations</h2>
+        <p>Only these text leaves update while interacting. Event details preserve empty strings and null; an undefined detail is marked explicitly. Keyboard traces include real/synthetic origin, propagation phases and final flags after dispatch.</p>
+        <h3>Deep focus and current state</h3>
+        <pre id="upstream-focus" tabindex="0">{}</pre>
+        <h3>Component events</h3>
+        <pre id="upstream-events" tabindex="0">[]</pre>
+        <details>
+          <summary>Keyboard and focus propagation</summary>
+          <pre id="upstream-keyboard" tabindex="0">[]</pre>
+        </details>
+      </section>
+    </main>
+    <script type="module">
+      const caseNames = ["category", "suggestions", "top-layer"];
+      const events = [];
+      const keyboard = [];
+      const mounts = new Map();
+      const eventIds = new WeakMap();
+      let sequence = 0;
+      let dispatchSequence = 0;
+      let generation = 0;
+      let framePending = false;
+      const status = document.getElementById("upstream-status");
+      const sourceEvents = ["filterChanged", "inputChanged", "categoryChanged", "filterCleared"];
+
+      function describe(node) {
+        if (node === window) return { tag: "window" };
+        if (node === document) return { tag: "#document" };
+        if (node instanceof ShadowRoot) return { tag: "#shadow-root", host: node.host.tagName.toLowerCase() };
+        if (!(node instanceof Element)) return { tag: node?.nodeName ?? "unknown" };
+        return {
+          tag: node.tagName.toLowerCase(), id: node.id || null,
+          class: node.className instanceof Object ? node.getAttribute("class") : node.className,
+          role: node.getAttribute("role"), dataId: node.getAttribute("data-id"),
+          text: node.matches("button,a,ix-icon-button") ? (node.textContent ?? "").trim().slice(0, 100) : null,
+          ariaLabel: node.getAttribute("aria-label")
+        };
+      }
+
+      function deepFocus() {
+        const chain = [];
+        let active = document.activeElement;
+        while (active) {
+          chain.push(describe(active));
+          const inner = active.shadowRoot?.activeElement;
+          if (!inner || inner === active) break;
+          active = inner;
+        }
+        return chain;
+      }
+
+      function rect(node) {
+        if (!node) return null;
+        const { x, y, width, height } = node.getBoundingClientRect();
+        return { x, y, width, height };
+      }
+
+      function detailValue(value) {
+        if (value === undefined) return { $type: "undefined" };
+        return JSON.parse(JSON.stringify(value));
+      }
+
+      function snapshot() {
+        const rootStyle = getComputedStyle(document.body);
+        const cases = {};
+        for (const name of caseNames) {
+          const host = document.getElementById(`upstream-${name}`);
+          const root = host?.shadowRoot;
+          const input = root?.querySelector("input");
+          const dropdown = root?.querySelector("ix-dropdown");
+          const optionButtons = [...(root?.querySelectorAll("button.dropdown-item") ?? [])];
+          cases[name] = {
+            mounted: Boolean(host), hydrated: host?.hasAttribute("hydrated") ?? false,
+            generation: host?.dataset.reviewGeneration ?? null,
+            inputValue: input?.value ?? null,
+            selectionStart: input?.selectionStart ?? null, selectionEnd: input?.selectionEnd ?? null,
+            selectionDirection: input?.selectionDirection ?? null,
+            inputRect: rect(input), hostRect: rect(host),
+            dropdownShow: dropdown?.show ?? null,
+            topLayer: dropdown?.enableTopLayer ?? null,
+            popoverOpen: dropdown?.shadowRoot?.querySelector("[popover]")?.matches(":popover-open") ?? false,
+            preview: root?.querySelector(".category-preview")?.textContent?.trim() ?? null,
+            chips: [...(root?.querySelectorAll("ix-filter-chip") ?? [])].map(chip => chip.textContent.trim()),
+            options: optionButtons.map(button => ({ ...describe(button), tabIndex: button.tabIndex, rect: rect(button), visible: button.getClientRects().length > 0 }))
+          };
+        }
+        return {
+          revision: "8bf599bc68365d7752e12832e71b625883b93d7a",
+          focus: deepFocus(), cases,
+          tokens: {
+            size90: rootStyle.getPropertyValue("--si-sys-sizing-size-90").trim(),
+            textPrimary: rootStyle.getPropertyValue("--si-sys-color-text-primary").trim(),
+            font: rootStyle.getPropertyValue("--theme-font-family").trim()
+          }
+        };
+      }
+
+      function renderLeaves() {
+        document.getElementById("upstream-events").textContent = JSON.stringify(events, null, 2);
+        document.getElementById("upstream-keyboard").textContent = JSON.stringify(keyboard, null, 2);
+        document.getElementById("upstream-focus").textContent = JSON.stringify(snapshot(), null, 2);
+      }
+
+      function scheduleObservation() {
+        if (framePending) return;
+        framePending = true;
+        requestAnimationFrame(() => {
+          framePending = false;
+          renderLeaves();
+        });
+      }
+
+      function appendBounded(list, entry, limit) {
+        list.push(entry);
+        if (list.length > limit) list.splice(0, list.length - limit);
+      }
+
+      function caseFor(event) {
+        const host = event.composedPath().find(node => node instanceof Element && node.matches("ix-category-filter[data-review-case]"));
+        return host?.dataset.reviewCase ?? null;
+      }
+
+      function trace(event, site, capture) {
+        const name = caseFor(event);
+        if (!name) return;
+        const origin = event.composedPath()[0];
+        if (!eventIds.has(event)) {
+          const dispatch = ++dispatchSequence;
+          eventIds.set(event, dispatch);
+          setTimeout(() => {
+            appendBounded(keyboard, {
+              seq: ++sequence, dispatch, case: name, type: event.type, site: "after-dispatch-task",
+              key: event.key ?? null, code: event.code ?? null, trusted: event.isTrusted,
+              inputType: event.inputType ?? null, data: event.data ?? null,
+              value: origin instanceof HTMLInputElement ? origin.value : null,
+              defaultPrevented: event.defaultPrevented, cancelBubble: event.cancelBubble,
+              focus: deepFocus()
+            }, 600);
+            scheduleObservation();
+          }, 0);
+        }
+        appendBounded(keyboard, {
+          seq: ++sequence, dispatch: eventIds.get(event), case: name, type: event.type,
+          site, listenerPhase: capture ? "capture" : "bubble", eventPhase: event.eventPhase,
+          key: event.key ?? null, code: event.code ?? null, trusted: event.isTrusted,
+          inputType: event.inputType ?? null, data: event.data ?? null,
+          value: origin instanceof HTMLInputElement ? origin.value : null,
+          shift: event.shiftKey ?? false, ctrl: event.ctrlKey ?? false, alt: event.altKey ?? false, meta: event.metaKey ?? false,
+          defaultPrevented: event.defaultPrevented, cancelBubble: event.cancelBubble,
+          target: describe(event.target), origin: describe(event.composedPath()[0]),
+          path: event.composedPath().map(describe), focus: deepFocus()
+        }, 600);
+        scheduleObservation();
+      }
+
+      function instrument(target, site, signal) {
+        if (!target) return;
+        for (const type of ["keydown", "keyup", "click", "input", "focusin", "focusout"]) {
+          for (const capture of [true, false]) {
+            target.addEventListener(type, event => trace(event, site, capture), { capture, signal });
+          }
+        }
+      }
+
+      async function remountCase(name) {
+        mounts.get(name)?.abort();
+        const lifecycle = new AbortController();
+        mounts.set(name, lifecycle);
+        const host = document.createElement("ix-category-filter");
+        host.id = `upstream-${name}`;
+        host.dataset.reviewCase = name;
+        host.dataset.reviewGeneration = String(++generation);
+        host.ariaLabelFilterInput = `Upstream ${name} filter`;
+        host.ariaLabelResetButton = `Clear ${name} filters`;
+        host.ariaLabelOperatorButton = `Toggle ${name} comparison operator`;
+        host.placeholder = "Filter by";
+        if (name === "suggestions") host.suggestions = ["Apple", "Banana"];
+        else host.categories = {
+          vendor: { label: "Vendor", options: ["Alpha", "Beta"] },
+          product: { label: "Product", options: ["X", "Y"] }
+        };
+        host.enableTopLayer = name === "top-layer";
+        for (const type of sourceEvents) {
+          host.addEventListener(type, event => {
+            appendBounded(events, {
+              seq: ++sequence, case: name, type, detail: detailValue(event.detail),
+              trusted: event.isTrusted, defaultPrevented: event.defaultPrevented,
+              focus: deepFocus()
+            }, 200);
+            scheduleObservation();
+          }, { signal: lifecycle.signal });
+        }
+        const mount = document.getElementById(`upstream-${name}-mount`);
+        if (name === "category") {
+          const before = document.getElementById("upstream-category-before");
+          const after = document.getElementById("upstream-category-after");
+          mount.replaceChildren(before, host, after);
+        } else {
+          mount.replaceChildren(host);
+        }
+        await host.componentOnReady();
+        const dropdown = host.shadowRoot?.querySelector("ix-dropdown");
+        if (dropdown?.componentOnReady) await dropdown.componentOnReady();
+        if (lifecycle.signal.aborted) return;
+        instrument(host, "host", lifecycle.signal);
+        instrument(host.shadowRoot?.querySelector("form"), "form", lifecycle.signal);
+        instrument(host.shadowRoot?.querySelector("input"), "input", lifecycle.signal);
+        instrument(dropdown, "dropdown", lifecycle.signal);
+        scheduleObservation();
+      }
+
+      function clearLog() {
+        events.length = 0;
+        keyboard.length = 0;
+        sequence = 0;
+        scheduleObservation();
+      }
+
+      instrument(document, "document");
+      document.addEventListener("click", scheduleObservation, true);
+      document.addEventListener("selectionchange", scheduleObservation);
+      document.getElementById("upstream-clear-log").addEventListener("click", clearLog);
+      document.getElementById("upstream-snapshot").addEventListener("click", scheduleObservation);
+      document.getElementById("upstream-remount").addEventListener("click", async () => {
+        clearLog();
+        await Promise.all(caseNames.map(remountCase));
+      });
+      for (const name of caseNames) {
+        document.getElementById(`upstream-${name}-reset`).addEventListener("click", () => remountCase(name));
+      }
+      window.upstreamFilterReview = { revision: "8bf599bc68365d7752e12832e71b625883b93d7a", events, keyboard, snapshot, remountCase, clearLog };
+      try {
+        const { defineCustomElements } = await import("/www/node_modules/@siemens/ix-icons/loader/index.es2017.js");
+        defineCustomElements();
+        await customElements.whenDefined("ix-category-filter");
+        await Promise.all(caseNames.map(remountCase));
+        status.textContent = "Ready · three fresh native filters mounted.";
+        status.dataset.ready = "true";
+        for (const button of document.querySelectorAll("#upstream-remount, [id$='-reset']")) button.disabled = false;
+        renderLeaves();
+      } catch (error) {
+        status.textContent = `Runtime setup failed: ${error.message}`;
+        status.dataset.ready = "false";
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Header navigation destination</title>
+<style>body{font:1rem/1.5 system-ui,sans-serif;color:#202932;background:#fff;margin:16px}h1{font-size:1.25rem}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto}a{color:#075c9d;text-underline-offset:.2em}:focus-visible{outline:2px solid #075c9d;outline-offset:3px}</style></head>
+<body>
+<h1>Application navigation reached</h1>
+<p>This same-origin document is the actual destination of the pinned source application button.</p>
+<pre id="navigation-result"></pre>
+<details><summary>Pre-navigation observation journal</summary><pre id="navigation-journal"></pre></details>
+<p><a href="/upstream_header_review.html">Return to header review</a></p>
+<script>
+  const observation={fixture:"pinned-header-navigation",href:location.href,targetName:window.name,framed:window.parent!==window,hasOpener:!!window.opener};
+  document.getElementById("navigation-result").textContent=JSON.stringify(observation,null,2);
+  try{document.getElementById("navigation-journal").textContent=sessionStorage.getItem("ix-header-review-navigation")??"No navigation journal in this browsing context.";}catch(error){document.getElementById("navigation-journal").textContent=String(error);}
+  if(window.parent!==window)window.parent.postMessage(observation,location.origin);
+  if(window.opener)window.opener.postMessage(observation,location.origin);
+</script>
+</body>
+</html>

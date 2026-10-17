@@ -2,6 +2,14 @@
 use crate::Icon;
 use dioxus::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 /// Semantic card surface treatment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -921,41 +929,399 @@ impl WorkflowStatus {
             Self::Error => "error",
         }
     }
-    fn icon(self) -> &'static str {
+    fn icon(self, selected: bool) -> &'static str {
         match self {
+            Self::Open if selected => "circle-dot",
             Self::Open => "circle",
-            Self::Success | Self::Done => "check",
+            Self::Success => "success",
+            Self::Done => "circle-filled",
             Self::Warning => "warning",
             Self::Error => "error",
         }
     }
+    fn icon_label(self, selected: bool) -> &'static str {
+        match self {
+            Self::Open if selected => "Circle dot",
+            Self::Open => "Circle",
+            Self::Success => "Success",
+            Self::Done => "Done",
+            Self::Warning => "Warning",
+            Self::Error => "Error",
+        }
+    }
 }
 
-/// Ordered workflow, horizontal by default and vertical for sidebar layouts.
+/// Cancelable request emitted before a workflow selection changes.
+/// Repeated activation of the selected step still emits this request.
+#[derive(Clone, Debug)]
+pub struct WorkflowStepSelectedEvent {
+    pub index: usize,
+    pub previous: Option<usize>,
+    prevented: Rc<Cell<bool>>,
+}
+impl WorkflowStepSelectedEvent {
+    pub fn prevent_default(&self) {
+        self.prevented.set(true);
+    }
+    pub fn default_prevented(&self) -> bool {
+        self.prevented.get()
+    }
+}
+
+static WORKFLOW_ID: AtomicUsize = AtomicUsize::new(1);
+fn workflow_mount_id() -> String {
+    format!(
+        "ix-workflow-{}",
+        WORKFLOW_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct WorkflowSettings {
+    selected_index: isize,
+    clickable: bool,
+    vertical: bool,
+}
+
+struct WorkflowModel {
+    settings: WorkflowSettings,
+    order: Vec<String>,
+    members: BTreeMap<String, Arc<dyn Fn() + Send + Sync>>,
+    selected: Option<String>,
+    onstepselected: Option<EventHandler<WorkflowStepSelectedEvent>>,
+    alive: bool,
+}
+impl Default for WorkflowModel {
+    fn default() -> Self {
+        Self {
+            settings: WorkflowSettings::default(),
+            order: Vec::new(),
+            members: BTreeMap::new(),
+            selected: None,
+            onstepselected: None,
+            alive: true,
+        }
+    }
+}
+impl WorkflowModel {
+    fn reset_selection(&mut self) {
+        self.selected = usize::try_from(self.settings.selected_index)
+            .ok()
+            .and_then(|index| self.order.get(index))
+            .cloned();
+    }
+    #[cfg(any(test, feature = "web", feature = "desktop"))]
+    fn set_order(&mut self, order: Vec<String>) -> bool {
+        let mut seen = BTreeSet::new();
+        let order: Vec<_> = order
+            .into_iter()
+            .filter(|id| self.members.contains_key(id) && seen.insert(id.clone()))
+            .collect();
+        if !self.alive || self.order == order {
+            return false;
+        }
+        self.order = order;
+        self.reset_selection();
+        true
+    }
+    fn position(&self, id: &str) -> &'static str {
+        match (
+            self.order.iter().position(|entry| entry == id),
+            self.order.len(),
+        ) {
+            (Some(_), 1) => "single",
+            (Some(0), _) => "first",
+            (Some(index), length) if index + 1 == length => "last",
+            _ => "undefined",
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct WorkflowContext(Rc<RefCell<WorkflowModel>>);
+impl WorkflowContext {
+    fn notify(&self) {
+        let callbacks: Vec<_> = {
+            let model = self.0.borrow();
+            if !model.alive {
+                return;
+            }
+            model.members.values().cloned().collect()
+        };
+        for callback in callbacks {
+            callback();
+        }
+    }
+    fn register(&self, id: String, update: Arc<dyn Fn() + Send + Sync>) {
+        {
+            let mut model = self.0.borrow_mut();
+            if !model.alive {
+                return;
+            }
+            model.members.insert(id.clone(), update);
+            model.order.push(id);
+            model.reset_selection();
+        }
+        self.notify();
+    }
+    fn unregister(&self, id: &str) {
+        {
+            let mut model = self.0.borrow_mut();
+            model.members.remove(id);
+            model.order.retain(|entry| entry != id);
+            model.reset_selection();
+        }
+        self.notify();
+    }
+    #[cfg(any(test, feature = "web", feature = "desktop"))]
+    fn observe_order(&self, order: Vec<String>) {
+        let changed = self.0.borrow_mut().set_order(order);
+        if changed {
+            self.notify();
+        }
+    }
+    fn apply(
+        &self,
+        settings: WorkflowSettings,
+        onstepselected: EventHandler<WorkflowStepSelectedEvent>,
+    ) {
+        let changed = {
+            let mut model = self.0.borrow_mut();
+            let previous = (model.settings, model.selected.clone());
+            model.settings = settings;
+            model.onstepselected = Some(onstepselected);
+            model.reset_selection();
+            previous != (settings, model.selected.clone())
+        };
+        if changed {
+            self.notify();
+        }
+    }
+}
+
+fn request_workflow_selection(
+    context: &WorkflowContext,
+    id: &str,
+    disabled: bool,
+    before: impl FnOnce(WorkflowStepSelectedEvent),
+) -> bool {
+    let event = {
+        let model = context.0.borrow();
+        if !model.alive || disabled || !model.settings.clickable {
+            return false;
+        }
+        let Some(index) = model.order.iter().position(|entry| entry == id) else {
+            return false;
+        };
+        WorkflowStepSelectedEvent {
+            index,
+            previous: model
+                .selected
+                .as_ref()
+                .and_then(|selected| model.order.iter().position(|entry| entry == selected)),
+            prevented: Default::default(),
+        }
+    };
+    before(event.clone());
+    if event.default_prevented() {
+        return false;
+    }
+    {
+        let mut model = context.0.borrow_mut();
+        if !model.alive || !model.settings.clickable || !model.order.iter().any(|entry| entry == id)
+        {
+            return false;
+        }
+        model.selected = Some(id.to_string());
+    }
+    context.notify();
+    true
+}
+
+// Reports native DOM topology only. Rust owns order interpretation, selection,
+// cancellation, settings propagation and all activation behavior.
+#[cfg(any(feature = "web", feature = "desktop"))]
+const WORKFLOW_ORDER_BRIDGE: &str = r#"
+const rootId = await dioxus.recv();
+const root = document.getElementById(rootId);
+if (!root) return;
+let previous = '';
+const report = () => {
+  const order = Array.from(root.querySelectorAll('[data-workflow-mount]'))
+    .filter(node => node.closest('[data-workflow-root]') === root)
+    .map(node => node.dataset.workflowMount);
+  const serialized = JSON.stringify(order);
+  if (serialized !== previous) { previous = serialized; dioxus.send(order); }
+};
+const observer = new MutationObserver(report);
+observer.observe(root, {childList:true,subtree:true});
+report();
+try { await dioxus.recv(); } finally { observer.disconnect(); }
+"#;
+
+/// Ordered workflow with parent-authoritative settings and cancelable navigation.
+/// Accepted activation selects a step locally without changing `selected_index`;
+/// a later render of this component or topology change reapplies that prop.
+/// Negative and out-of-range indices select nothing; Rust indices exclude the
+/// JavaScript fractional/NaN domain. Descendants may be wrapped in components.
+/// Native DOM observation supplies current order; SSR uses registration order
+/// after pending descendant renders settle. Nested workflows form independent
+/// ownership boundaries, so an outer workflow does not own inner steps.
 #[component]
 pub fn WorkflowSteps(
     children: Element,
+    #[props(default)] id: Option<String>,
+    #[props(default)] class: String,
     #[props(default)] vertical: bool,
+    #[props(default)] clickable: bool,
+    #[props(default)] selected_index: isize,
     #[props(default = "Workflow".to_string())] label: String,
+    #[props(default)] onstepselected: EventHandler<WorkflowStepSelectedEvent>,
 ) -> Element {
-    rsx! { ol { class: "ix-workflow-steps", "data-vertical": vertical, "aria-label": label, {children} } }
+    let generated = use_hook(workflow_mount_id);
+    let id = id.unwrap_or(generated);
+    let context = use_context_provider(WorkflowContext::default);
+    context.apply(
+        WorkflowSettings {
+            selected_index,
+            clickable,
+            vertical,
+        },
+        onstepselected,
+    );
+    let transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
+    let drop_context = context.clone();
+    let drop_transport = transport.clone();
+    use_drop(move || {
+        drop_context.0.borrow_mut().alive = false;
+        if let Some(task) = drop_transport.borrow_mut().take() {
+            let _ = task.send("finish");
+        }
+    });
+    let observe_id = id.clone();
+    rsx! {
+        div { id, class: "ix-workflow-steps {class}", role: "group", "aria-label": label,
+            "data-workflow-root": "true", "data-vertical": vertical,
+            onclick: move |event| event.stop_propagation(),
+            onkeydown: move |event| if event.key() == Key::Enter || event.key() == Key::Character(" ".into()) { event.stop_propagation(); },
+            onmounted: move |_| {
+                #[cfg(any(feature = "web", feature = "desktop"))]
+                {
+                    let id = observe_id.clone(); let context = context.clone(); let transport = transport.clone();
+                    spawn(async move {
+                        if !context.0.borrow().alive { return; }
+                        let mut stream = dioxus::document::eval(WORKFLOW_ORDER_BRIDGE);
+                        if stream.send(id).is_err() { return; }
+                        *transport.borrow_mut() = Some(stream);
+                        while let Ok(order) = stream.recv::<Vec<String>>().await {
+                            if !context.0.borrow().alive { break; }
+                            context.observe_order(order);
+                        }
+                    });
+                }
+                #[cfg(not(any(feature = "web", feature = "desktop")))]
+                { let _ = (&observe_id, &context, &transport); }
+            },
+            {children}
+        }
+    }
 }
 
-/// Parent-controlled workflow action with explicit status and selection.
+/// Workflow content with its own status and disabled state. Within a workflow,
+/// parent settings override `selected`, `clickable`, and `vertical`. Each enabled
+/// clickable step is independently tabbable; Enter and Space activate it.
+/// `custom_icon` replaces both built-in icon layers. `children` supplies arbitrary
+/// default content, replacing `label`; `label` is the plain-text fallback.
+/// Standalone steps retain the legacy accepted `onselect` callback.
 #[component]
 pub fn WorkflowStep(
-    label: String,
+    #[props(default)] label: String,
+    #[props(default)] children: Option<Element>,
+    #[props(default)] id: Option<String>,
+    #[props(default)] custom_icon: Option<Element>,
     #[props(default)] status: WorkflowStatus,
     #[props(default)] selected: bool,
     #[props(default)] disabled: bool,
     #[props(default)] clickable: bool,
+    #[props(default)] vertical: bool,
     #[props(default)] onselect: EventHandler<()>,
 ) -> Element {
-    let content = rsx! { span { class: "ix-workflow-marker", Icon { name: status.icon().to_string() } } span { class: "ix-workflow-label", "{label}" } };
-    rsx! { li { class: "ix-workflow-step ix-workflow-{status.class()}", "data-selected": selected, "data-disabled": disabled, "aria-current": if selected { Some("step") } else { None },
-        if clickable { button { class: "ix-workflow-step-content", r#type: "button", disabled, "aria-label": "{label}: {status.class()}", onclick: move |_| onselect.call(()), {content} } }
-        else { div { class: "ix-workflow-step-content", "aria-disabled": disabled, "aria-label": "{label}: {status.class()}", {content} } }
-    } }
+    let context = try_use_context::<WorkflowContext>();
+    let registration_context = context.clone();
+    let update = dioxus::core::schedule_update();
+    let mount_id = use_hook(move || {
+        let id = workflow_mount_id();
+        if let Some(context) = registration_context {
+            context.register(id.clone(), update);
+        }
+        id
+    });
+    let drop_context = context.clone();
+    let drop_id = mount_id.clone();
+    use_drop(move || {
+        if let Some(context) = drop_context {
+            context.unregister(&drop_id);
+        }
+    });
+    let (selected, clickable, vertical, position, index) = if let Some(context) = &context {
+        let model = context.0.borrow();
+        (
+            model.selected.as_ref() == Some(&mount_id),
+            model.settings.clickable,
+            model.settings.vertical,
+            model.position(&mount_id),
+            model.order.iter().position(|id| id == &mount_id),
+        )
+    } else {
+        (selected, clickable, vertical, "single", None)
+    };
+    let marker_id = mount_id.clone();
+    let activate = use_callback(move |_| {
+        if disabled || !clickable {
+            return;
+        }
+        if let Some(context) = &context {
+            let before = context.0.borrow().onstepselected;
+            if request_workflow_selection(context, &mount_id, disabled, |event| {
+                if let Some(before) = before {
+                    before.call(event);
+                }
+            }) {
+                onselect.call(());
+            }
+        } else {
+            onselect.call(());
+        }
+    });
+    let icon_name = status.icon(selected);
+    let icon_label = status.icon_label(selected);
+    // Caller IDs never participate in native registry identity.
+    rsx! {
+        div { id, class: "ix-workflow-step ix-workflow-{status.class()}",
+            "data-workflow-mount": marker_id,
+            "data-selected": selected, "data-disabled": disabled, "data-vertical": vertical, "data-clickable": clickable,
+            "data-position": position, "data-index": index.map(|index| index.to_string()),
+            div { class: "ix-workflow-step-content", role: clickable.then_some("button"),
+                tabindex: if disabled || !clickable { -1 } else { 0 },
+                "aria-disabled": disabled.then_some("true"), "aria-current": selected.then_some("step"),
+                onclick: move |_| activate.call(()),
+                onkeydown: move |event| if matches!(event.key(), Key::Enter) || event.key() == Key::Character(" ".into()) {
+                    event.prevent_default(); activate.call(());
+                },
+                div { class: "ix-workflow-marker-wrap",
+                    span { class: "ix-workflow-line", "aria-hidden": "true" }
+                    span { class: "ix-workflow-marker",
+                        if let Some(custom_icon) = custom_icon { {custom_icon} }
+                        else {
+                            Icon { name: if status == WorkflowStatus::Warning { "triangle-filled" } else { "circle-filled" }, class: "ix-workflow-icon-underlay" }
+                            Icon { name: icon_name, label: icon_label.to_string(), class: "ix-workflow-status-icon" }
+                        }
+                    }
+                }
+                div { class: "ix-workflow-label", if let Some(children) = children { {children} } else { "{label}" } }
+            }
+        }
+    }
 }
 
 pub(crate) const STYLES: &str = r#"
@@ -978,10 +1344,21 @@ pub(crate) const STYLES: &str = r#"
 .ix-key-value{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--ix-color-border);min-width:0}.ix-key-value dl{display:flex;flex-direction:column;gap:4px;min-width:0;margin:0;width:100%}.ix-key-value dt{font-size:14px;line-height:20px;color:var(--ix-color-text-secondary)}.ix-key-value dd{margin:0;line-height:24px;overflow-wrap:anywhere}.ix-key-value[data-horizontal=true]{border:0}.ix-key-value[data-horizontal=true] dl{flex-direction:row;gap:16px}.ix-key-value[data-horizontal=true] dt{min-width:100px}.ix-key-value-list{display:flex;flex-direction:column}.ix-key-value-list[data-horizontal=true]{flex-direction:row;flex-wrap:wrap;gap:24px}.ix-key-value-list[data-horizontal=true]>.ix-key-value{flex:1;border:0}
 .ix-kpi{display:flex;align-items:baseline;gap:16px;min-height:40px;min-width:0;padding:4px;border-bottom:2px solid var(--ix-color-border);font-variant-numeric:tabular-nums}.ix-kpi-label{display:flex;align-items:center;gap:4px;color:var(--ix-color-text-secondary);font-size:14px;flex:1}.ix-kpi-measurement{display:flex;align-items:baseline;gap:8px}.ix-kpi-measurement strong{font-size:24px;line-height:32px;font-weight:600}.ix-kpi-measurement>span{font-size:14px}.ix-kpi-warning{border-color:var(--ix-color-warning-text)}.ix-kpi-alarm{border-color:var(--ix-color-danger-text)}.ix-kpi[data-vertical=true]{flex-direction:column;gap:4px;align-items:flex-start;min-height:72px}
 .ix-event-list{display:flex;flex-direction:column;gap:8px}.ix-event-list[data-compact=true]{gap:1px}.ix-event-list-item{--ix-event-status:transparent;display:flex;align-items:center;gap:12px;position:relative;width:100%;min-height:48px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);padding:8px 12px 8px 20px;overflow:hidden;background:transparent;color:var(--ix-color-text);font:inherit;text-align:start;cursor:pointer}.ix-event-list-item[data-filled=true]{background:var(--ix-color-surface-1);border-color:transparent}.ix-event-list-item:hover:not(:disabled){background:var(--ix-color-surface-2)}.ix-event-list-item[data-selected=true]{border-color:var(--ix-color-primary);background:var(--ix-color-surface-2)}.ix-event-list-item:disabled{opacity:.4;cursor:default}.ix-event-indicator{position:absolute;inset-block:0;left:0;width:4px;background:var(--ix-event-status)}.ix-event-content{display:flex;align-items:center;gap:16px;flex:1;min-width:0}.ix-event-status-alarm{--ix-event-status:var(--ix-color-danger)}.ix-event-status-warning{--ix-event-status:var(--ix-color-warning)}.ix-event-status-success{--ix-event-status:var(--ix-color-success)}.ix-event-status-info{--ix-event-status:var(--ix-color-info)}.ix-event-status-critical{--ix-event-status:var(--ix-color-critical,#eb780a)}.ix-event-status-primary{--ix-event-status:var(--ix-color-primary)}
-.ix-workflow-steps{display:flex;list-style:none;padding:0;margin:0;max-width:100%;overflow-x:auto}.ix-workflow-step{position:relative;flex:1;min-width:80px;max-width:192px;--ix-step-color:var(--ix-color-text-secondary)}.ix-workflow-step>.ix-workflow-step-content{display:flex;flex-direction:column;gap:12px;align-items:center;width:100%;min-height:96px;padding:12px 8px;border:0;border-radius:2px;background:transparent;color:var(--ix-color-text);font:inherit;cursor:pointer}.ix-workflow-step[data-disabled=true]{opacity:.4}.ix-workflow-step>div.ix-workflow-step-content{cursor:default}.ix-workflow-step>button:disabled{cursor:default}.ix-workflow-step>button:hover:not(:disabled),.ix-workflow-step[data-selected=true]>.ix-workflow-step-content{background:var(--ix-color-surface-2)}.ix-workflow-marker{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--ix-color-surface);color:var(--ix-step-color);border:1px solid currentColor;border-radius:50%}.ix-workflow-step::before,.ix-workflow-step::after{content:"";position:absolute;top:28px;width:calc(50% - 16px);height:1px;background:var(--ix-step-color)}.ix-workflow-step::before{left:0}.ix-workflow-step::after{right:0}.ix-workflow-step:first-child::before,.ix-workflow-step:last-child::after{display:none}.ix-workflow-label{font-size:14px;line-height:20px;text-align:center}.ix-workflow-done,.ix-workflow-step[data-selected=true]{--ix-step-color:var(--ix-color-primary)}.ix-workflow-success{--ix-step-color:var(--ix-color-success)}.ix-workflow-warning{--ix-step-color:var(--ix-color-warning-text)}.ix-workflow-error{--ix-step-color:var(--ix-color-danger-text)}.ix-workflow-steps[data-vertical=true]{flex-direction:column}.ix-workflow-steps[data-vertical=true] .ix-workflow-step{max-width:none;min-width:0}.ix-workflow-steps[data-vertical=true] .ix-workflow-step>.ix-workflow-step-content{flex-direction:row;min-height:64px;padding:16px}.ix-workflow-steps[data-vertical=true] .ix-workflow-step::before,.ix-workflow-steps[data-vertical=true] .ix-workflow-step::after{left:32px;width:1px;height:calc(50% - 16px)}.ix-workflow-steps[data-vertical=true] .ix-workflow-step::before{top:0}.ix-workflow-steps[data-vertical=true] .ix-workflow-step::after{top:auto;bottom:0}
+.ix-workflow-steps{display:flex;position:relative;width:fit-content;height:fit-content;min-width:var(--ix-workflow-steps--min-width,var(--si-sys-sizing-size-80,80px));max-width:100%;overflow-x:auto}.ix-workflow-steps[data-vertical=true]{flex-direction:column}
+.ix-workflow-step{display:inline-block;position:relative;flex:none;width:var(--ix-workflow-step-horizontal--width,calc(var(--si-sys-sizing-size-150,160px) + var(--si-sys-sizing-spacing-x-90,32px)));height:var(--ix-workflow-step--height,var(--si-sys-sizing-size-110,96px));min-width:var(--ix-workflow-step-horizontal--min-width,var(--si-sys-sizing-size-80,80px));min-height:var(--ix-workflow-step-horizontal--min-height,var(--si-sys-sizing-size-110,96px));max-width:var(--ix-workflow-step-horizontal--max-width,calc(var(--si-sys-sizing-size-150,160px) + var(--si-sys-sizing-spacing-x-90,32px)));--ix-step-icon:var(--ix-workflow-step-icon-default--color,var(--ix-color-text-secondary));--ix-step-line:var(--ix-step-icon)}
+.ix-workflow-step-content{display:flex;flex-direction:column;align-items:center;border-radius:var(--ix-workflow-step--border-radius,calc(var(--si-sys-sizing-border-radius-xs,4px)/2));padding:var(--ix-workflow-step-step--padding,calc(var(--si-sys-sizing-spacing-y-60,12px) + var(--si-sys-sizing-spacing-y-10,4px)) 0 var(--si-sys-sizing-spacing-y-40,8px));background:var(--ix-workflow-step--background,transparent);color:var(--ix-color-text);font:inherit}
+.ix-workflow-step-content[aria-current=step]{background:var(--ix-workflow-step--background--selected,var(--si-sys-color-background-accent-secondary-active,var(--ix-color-surface-2)))}.ix-workflow-step-content[role=button]:not([aria-disabled=true]){cursor:pointer}.ix-workflow-step-content[role=button]:not([aria-disabled=true]):hover{background:var(--ix-workflow-step--background--hover,var(--si-sys-color-background-hover,var(--ix-color-surface-2)))}.ix-workflow-step-content[role=button]:not([aria-disabled=true]):active{background:var(--ix-workflow-step--background--active,var(--si-sys-color-background-accent-secondary-active,var(--ix-color-surface-2)))}
+.ix-workflow-marker-wrap{display:flex;width:100%;align-items:center;justify-content:center;position:relative}.ix-workflow-line{width:100%;height:var(--ix-workflow-step-line--height,var(--si-sys-sizing-size-10,1px));background:var(--ix-step-line)}.ix-workflow-step[data-position=first]>.ix-workflow-step-content>.ix-workflow-marker-wrap>.ix-workflow-line{width:50%;margin-inline-start:auto}.ix-workflow-step[data-position=last]>.ix-workflow-step-content>.ix-workflow-marker-wrap>.ix-workflow-line{width:50%;margin-inline-end:auto}.ix-workflow-step[data-position=single]>.ix-workflow-step-content>.ix-workflow-marker-wrap>.ix-workflow-line{width:0}
+.ix-workflow-marker{display:flex;align-items:center;justify-content:center;position:absolute;width:24px;height:24px;color:var(--ix-step-icon)}.ix-workflow-marker>.ix-icon{position:absolute}.ix-workflow-icon-underlay{color:var(--si-sys-color-background-0,var(--ix-color-surface))}.ix-workflow-label{margin-top:var(--ix-workflow-step-text--margin-top,var(--si-sys-sizing-spacing-y-60,12px));width:100%;padding:var(--ix-workflow-step-text--padding,0 var(--si-sys-sizing-spacing-x-40,8px));white-space:nowrap;text-overflow:ellipsis;overflow:hidden;text-align:center;font-size:.875rem;line-height:1.25rem}
+.ix-workflow-step[data-selected=true]{--ix-step-icon:var(--ix-workflow-step-icon-default--color--selected,var(--si-sys-color-text-accent-active,var(--ix-color-primary)))}.ix-workflow-done{--ix-step-icon:var(--ix-workflow-step-icon-done--color,var(--si-sys-color-text-accent,var(--ix-color-primary)))}.ix-workflow-done[data-selected=true]{--ix-step-icon:var(--ix-workflow-step-icon-done--color--selected,var(--si-sys-color-text-accent-active,var(--ix-color-primary)))}.ix-workflow-success{--ix-step-icon:var(--ix-workflow-step-icon-success--color,var(--ix-color-success));--ix-step-line:var(--ix-workflow-step-line--background--success,var(--ix-color-success))}.ix-workflow-warning{--ix-step-icon:var(--ix-workflow-step-icon-warning--color,var(--ix-color-warning-text));--ix-step-line:var(--ix-workflow-step-line--background--warning,var(--ix-color-warning-text))}.ix-workflow-error{--ix-step-icon:var(--ix-workflow-step-icon-error--color,var(--ix-color-danger-text));--ix-step-line:var(--ix-workflow-step-line--background--error,var(--ix-color-danger-text))}
+.ix-workflow-success[data-selected=true]{--ix-step-icon:var(--ix-workflow-step-icon-success--color,var(--ix-color-success))}.ix-workflow-warning[data-selected=true]{--ix-step-icon:var(--ix-workflow-step-icon-warning--color,var(--ix-color-warning-text))}.ix-workflow-error[data-selected=true]{--ix-step-icon:var(--ix-workflow-step-icon-error--color,var(--ix-color-danger-text))}
+.ix-workflow-done[data-disabled=false][data-clickable=true]:hover{--ix-step-icon:var(--ix-workflow-step-icon-done--color--hover,var(--si-sys-color-text-accent-hover,var(--ix-color-primary)))}.ix-workflow-done[data-disabled=false][data-clickable=true]:active{--ix-step-icon:var(--ix-workflow-step-icon-done--color--active,var(--si-sys-color-text-accent-active,var(--ix-color-primary)))}.ix-workflow-open[data-selected=true][data-disabled=false][data-clickable=true]:hover{--ix-step-icon:var(--ix-workflow-step-icon-default--color--selected--hover,var(--si-sys-color-text-accent-active,var(--ix-color-primary)))}.ix-workflow-open[data-selected=true][data-disabled=false][data-clickable=true]:active{--ix-step-icon:var(--ix-workflow-step-icon-default--color--selected--active,var(--si-sys-color-text-accent-active,var(--ix-color-primary)))}.ix-workflow-done[data-selected=true][data-disabled=false][data-clickable=true]:hover{--ix-step-icon:var(--ix-workflow-step-icon-done--color--selected--hover,var(--si-sys-color-text-accent-active,var(--ix-color-primary)))}.ix-workflow-done[data-selected=true][data-disabled=false][data-clickable=true]:active{--ix-step-icon:var(--ix-workflow-step-icon-done--color--selected--active,var(--si-sys-color-text-accent-active,var(--ix-color-primary)))}
+.ix-workflow-step[data-disabled=true]{--ix-step-icon:var(--ix-workflow-step-icon-status--color--disabled,var(--si-sys-color-text-disabled,var(--ix-color-text-secondary)));--ix-step-line:var(--ix-workflow-step-icon-default--color--disabled,var(--si-sys-color-text-disabled,var(--ix-color-text-secondary)))}.ix-workflow-step[data-disabled=true]>.ix-workflow-step-content{background:var(--ix-workflow-step--background--disabled,transparent);color:var(--ix-workflow-step--color--disabled,var(--si-sys-color-text-disabled,var(--ix-color-text-secondary)))}
+.ix-workflow-step[data-vertical=true]{width:100%;min-width:var(--ix-workflow-step-vertical--min-width,var(--si-sys-sizing-size-110,64px));min-height:var(--ix-workflow-step-vertical--min-height,var(--si-sys-sizing-size-80,64px));max-height:var(--ix-workflow-step-vertical--max-height,calc(var(--si-sys-sizing-size-150,160px) + var(--si-sys-sizing-spacing-y-90,32px)));max-width:none}.ix-workflow-step[data-vertical=true]>.ix-workflow-step-content{flex-direction:row;padding:0;height:100%}.ix-workflow-step[data-vertical=true]>.ix-workflow-step-content>.ix-workflow-marker-wrap{width:auto;padding-inline-start:var(--ix-workflow-step-wrapper-vertical--padding-left,calc(var(--si-sys-sizing-spacing-x-60,20px) + var(--si-sys-sizing-spacing-x-10,4px)));height:100%}.ix-workflow-step[data-vertical=true]>.ix-workflow-step-content>.ix-workflow-marker-wrap>.ix-workflow-line{width:var(--ix-workflow-step-line--width,var(--si-sys-sizing-size-10,1px));height:100%;margin:0}.ix-workflow-step[data-vertical=true][data-position=first]>.ix-workflow-step-content>.ix-workflow-marker-wrap>.ix-workflow-line{height:50%;margin-block-start:auto}.ix-workflow-step[data-vertical=true][data-position=last]>.ix-workflow-step-content>.ix-workflow-marker-wrap>.ix-workflow-line{height:50%;margin-block-end:auto}.ix-workflow-step[data-vertical=true][data-position=single]>.ix-workflow-step-content>.ix-workflow-marker-wrap>.ix-workflow-line{width:0}.ix-workflow-step[data-vertical=true]>.ix-workflow-step-content>.ix-workflow-label{margin:var(--ix-workflow-step-text-vertical--margin,0 var(--si-sys-sizing-spacing-x-60,20px));padding:0;width:auto;text-align:start}
+.ix-workflow-step-content:focus-visible{outline:var(--ix-workflow-step--outline-width--focus,var(--si-sys-sizing-border-width-default,1px)) solid var(--ix-workflow-step-step--outline-color--focus,var(--ix-color-focus));outline-offset:var(--ix-workflow-step-step--outline-offset,var(--si-sys-sizing-focus-ring-offset,-2px))}
 .ix-tabs[data-rounded=true] .ix-tab-wrapper{border-radius:0;overflow:visible;background:transparent}.ix-tabs[data-rounded=true] .ix-tab{position:relative;width:72px;height:72px;padding:12px;background:transparent}.ix-tab-rounded-circle{display:flex;align-items:center;justify-content:center;overflow:hidden;width:48px;height:48px;border:2px solid transparent;border-radius:50%;background:var(--ix-color-surface-1);color:var(--ix-color-text)}.ix-tabs[data-rounded=true] .ix-tab-wrapper[data-selected=true]{background:transparent}.ix-tab-wrapper[data-selected=true] .ix-tab-rounded-circle{background:transparent;border-color:var(--ix-color-primary);color:var(--ix-color-primary)}.ix-tabs[data-rounded=true] .ix-tab-counter{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);min-width:24px;text-align:center;border:1px solid var(--ix-color-border)}.ix-tile-header>span{flex:1;min-width:0}.ix-content-header-title-line{display:flex;align-items:center;gap:8px;min-width:0}.ix-content-header-title-line>h1{min-width:0}.ix-content-header[data-ellipsis=true] .ix-content-header-titles h1,.ix-content-header[data-ellipsis=true] .ix-content-header-titles p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ix-content-header[data-ellipsis=true] .ix-content-header-title-line>h1{flex:1}.ix-tabs-shell{display:flex;align-items:stretch;min-width:0;width:100%}.ix-tabs-shell>.ix-tabs{flex:1;min-width:0}.ix-tabs-overflow{flex-shrink:0;align-self:center}.ix-tabs-overflow>.ix-dropdown-trigger{font-size:0;width:32px;min-width:32px;padding:4px;gap:0}.ix-tabs-overflow>.ix-dropdown-trigger>.ix-icon:last-child{display:none}.ix-blind-heading{display:flex;align-items:center;min-width:0}.ix-blind-header{flex:1;min-width:0}.ix-blind-actions{display:flex;align-items:center;gap:4px;padding-inline-end:8px}.ix-group-header-row{display:flex;align-items:center;min-height:64px;background:var(--ix-color-surface-1);border-radius:var(--ix-radius) var(--ix-radius) 0 0}.ix-group-header-row[data-selected=true]{background:var(--ix-color-surface-2);box-shadow:inset 2px 0 0 var(--ix-color-primary)}.ix-group-header-row>.ix-group-header{width:auto;flex:1;min-width:0;background:transparent}.ix-group-expand{display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;margin-right:8px;border:0;border-radius:var(--ix-radius);background:transparent;color:var(--ix-color-text);cursor:pointer}.ix-group-expand:hover{background:var(--ix-color-surface-2)}.ix-group-expand:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}.ix-group-custom-item{cursor:default}.ix-key-value-list[data-striped=true]>.ix-key-value:nth-child(odd){background:var(--ix-color-surface-1)}.ix-key-value-list>.ix-key-value{border-bottom:1px solid var(--ix-color-border);padding-inline:8px}.ix-event-list-item{height:var(--ix-event-height,40px);min-height:var(--ix-event-height,40px);max-height:var(--ix-event-height,40px);padding-left:24px}.ix-event-indicator{width:8px}.ix-event-list[data-compact=true]{gap:0}.ix-event-list[data-compact=true] .ix-event-list-item{border-radius:0}.ix-table{border-collapse:collapse;border-spacing:0;width:100%;margin-bottom:16px;color:var(--ix-color-text);font-size:14px;line-height:20px;text-align:left}.ix-table th,.ix-table td{padding:8px;border-bottom:1px solid var(--ix-color-border);text-align:left;vertical-align:top}.ix-table thead{vertical-align:bottom}.ix-table-striped>tbody>tr:nth-child(odd)>*{background:var(--ix-color-surface-1)}.ix-table-striped>tbody>tr:nth-child(even)>*{background:var(--ix-color-surface)}
 .ix-card-list-items[hidden],.ix-card-accordion-content[hidden],.ix-blind-content[hidden],.ix-group-content[hidden]{display:none}
-.ix-card:focus-visible,.ix-disclosure-button:focus-visible,.ix-layout-icon-button:focus-visible,.ix-page-button:focus-visible,.ix-tab:focus-visible,.ix-tab-close:focus-visible,.ix-breadcrumb-item>a:focus-visible,.ix-breadcrumb-item>button:focus-visible,.ix-pagination-input:focus-visible,.ix-pagination-count select:focus-visible,.ix-blind-header:focus-visible,.ix-group-header:focus-visible,.ix-group-item:focus-visible,.ix-empty-state-action:focus-visible,.ix-workflow-step>button:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
+.ix-card:focus-visible,.ix-disclosure-button:focus-visible,.ix-layout-icon-button:focus-visible,.ix-page-button:focus-visible,.ix-tab:focus-visible,.ix-tab-close:focus-visible,.ix-breadcrumb-item>a:focus-visible,.ix-breadcrumb-item>button:focus-visible,.ix-pagination-input:focus-visible,.ix-pagination-count select:focus-visible,.ix-blind-header:focus-visible,.ix-group-header:focus-visible,.ix-group-item:focus-visible,.ix-empty-state-action:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
 @media(max-width:600px){.ix-content{padding:16px}.ix-content-header{flex-wrap:wrap}.ix-content-header-actions{width:100%}.ix-content-header h1{font-size:24px;line-height:32px}.ix-empty-state-compact{flex-wrap:wrap;justify-content:flex-start}.ix-event-content{flex-wrap:wrap;gap:4px 12px}.ix-pagination-count{margin-inline-start:8px}}
 @media(prefers-reduced-motion:reduce){.ix-chevron{transition:none}}
 "#;
@@ -989,6 +1366,397 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn workflow_model_fixture() -> WorkflowContext {
+        let context = WorkflowContext::default();
+        context.0.borrow_mut().settings.clickable = true;
+        for id in ["a", "b", "c"] {
+            context.register(id.to_string(), Arc::new(|| {}));
+        }
+        context
+    }
+
+    #[test]
+    fn workflow_requests_are_cancelable_before_mutation_and_repeat_selected_activation() {
+        let context = workflow_model_fixture();
+        let mut events = Vec::new();
+        assert!(!request_workflow_selection(&context, "c", false, |event| {
+            assert_eq!(context.0.borrow().selected.as_deref(), Some("a"));
+            assert_eq!((event.index, event.previous), (2, Some(0)));
+            event.prevent_default();
+        }));
+        assert_eq!(context.0.borrow().selected.as_deref(), Some("a"));
+        for _ in 0..2 {
+            assert!(request_workflow_selection(&context, "c", false, |event| {
+                events.push((event.index, event.previous));
+            }));
+        }
+        assert_eq!(events, [(2, Some(0)), (2, Some(2))]);
+        assert_eq!(
+            context.0.borrow().settings.selected_index,
+            0,
+            "local selection never mutates the parent prop"
+        );
+        assert!(!request_workflow_selection(
+            &context,
+            "b",
+            true,
+            |_| panic!("disabled event")
+        ));
+        context.0.borrow_mut().settings.clickable = false;
+        assert!(!request_workflow_selection(
+            &context,
+            "b",
+            false,
+            |_| panic!("nonclickable event")
+        ));
+    }
+
+    #[test]
+    fn workflow_topology_reconciles_ordinals_positions_signed_indices_and_stale_events() {
+        let context = workflow_model_fixture();
+        assert_eq!(context.0.borrow().position("a"), "first");
+        assert_eq!(context.0.borrow().position("b"), "undefined");
+        assert_eq!(context.0.borrow().position("c"), "last");
+        assert!(request_workflow_selection(&context, "c", false, |_| {}));
+        context.observe_order(vec!["b".into(), "c".into(), "a".into()]);
+        assert_eq!(
+            context.0.borrow().selected.as_deref(),
+            Some("b"),
+            "topology reapplies parent index"
+        );
+        assert!(request_workflow_selection(
+            &context,
+            "a",
+            false,
+            |event| assert_eq!(event.index, 2)
+        ));
+        context.unregister("b");
+        context.unregister("c");
+        assert_eq!(context.0.borrow().position("a"), "single");
+        assert_eq!(context.0.borrow().selected.as_deref(), Some("a"));
+        for index in [-1, 3] {
+            let mut model = context.0.borrow_mut();
+            model.settings.selected_index = index;
+            model.reset_selection();
+            assert!(model.selected.is_none());
+        }
+        assert!(!request_workflow_selection(
+            &context,
+            "missing",
+            false,
+            |_| panic!("unmounted event")
+        ));
+        context.0.borrow_mut().alive = false;
+        context.observe_order(vec![]);
+        assert_eq!(context.0.borrow().order, ["a"]);
+        assert!(!request_workflow_selection(
+            &context,
+            "a",
+            false,
+            |_| panic!("stale event")
+        ));
+    }
+
+    #[derive(Clone, Default)]
+    struct WorkflowCapture(Rc<RefCell<Option<WorkflowContext>>>);
+    impl PartialEq for WorkflowCapture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    #[component]
+    fn CaptureWorkflow(capture: WorkflowCapture, children: Element) -> Element {
+        *capture.0.borrow_mut() = Some(consume_context::<WorkflowContext>());
+        children
+    }
+    #[component]
+    fn WrappedWorkflowStep(label: String) -> Element {
+        rsx! { WorkflowStep { id: label.clone(), label, selected: true, clickable: false, vertical: false } }
+    }
+    #[derive(Clone)]
+    struct WorkflowTestConfig {
+        capture: WorkflowCapture,
+        index: isize,
+        clickable: bool,
+        vertical: bool,
+        steps: Vec<String>,
+    }
+    fn workflow_reactive_fixture(config: Rc<RefCell<WorkflowTestConfig>>) -> Element {
+        let config = config.borrow().clone();
+        rsx! { WorkflowSteps { id: "test-workflow", selected_index: config.index,
+            clickable: config.clickable, vertical: config.vertical,
+            CaptureWorkflow { capture: config.capture,
+                for label in config.steps { WrappedWorkflowStep { key: "{label}", label } }
+            }
+        } }
+    }
+
+    #[test]
+    fn workflow_wrapped_descendants_inherit_parent_settings_and_parent_renders_reset_local_selection()
+     {
+        let capture = WorkflowCapture::default();
+        let config = Rc::new(RefCell::new(WorkflowTestConfig {
+            capture: capture.clone(),
+            index: 1,
+            clickable: true,
+            vertical: true,
+            steps: vec!["Alpha".into(), "Beta".into(), "Gamma".into()],
+        }));
+        let mut dom = VirtualDom::new_with_props(workflow_reactive_fixture, config.clone());
+        dom.rebuild_in_place();
+        // SSR registration cannot inspect opaque component props. Settle the
+        // registered children before inspecting order-dependent output.
+        dom.render_immediate_to_vec();
+        let context = capture.0.borrow().clone().unwrap();
+        let original = context.0.borrow().order.clone();
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(html.matches("role=\"button\"").count(), 3);
+        assert_eq!(
+            html.matches("tabindex=0").count(),
+            3,
+            "each enabled step is tabbable"
+        );
+        assert_eq!(html.matches("data-selected=true").count(), 1);
+        assert_eq!(html.matches("data-vertical=true").count(), 4);
+        assert_eq!(context.0.borrow().selected.as_ref(), original.get(1));
+        dom.in_runtime(|| {
+            assert!(request_workflow_selection(
+                &context,
+                &original[2],
+                false,
+                |_| {}
+            ))
+        });
+        dom.render_immediate_to_vec();
+        assert_eq!(
+            context.0.borrow().selected.as_ref(),
+            original.get(2),
+            "child rerenders preserve local activation"
+        );
+        config.borrow_mut().vertical = false;
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        assert_eq!(
+            context.0.borrow().selected.as_ref(),
+            original.get(1),
+            "parent render reapplies selected_index"
+        );
+        assert!(!dioxus_ssr::render(&dom).contains("data-vertical=true"));
+        config.borrow_mut().steps = vec!["Gamma".into(), "Alpha".into(), "Beta".into()];
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        // A native observer reports rendered keyed order without caller indices.
+        dom.in_runtime(|| {
+            context.observe_order(vec![
+                original[2].clone(),
+                original[0].clone(),
+                original[1].clone(),
+            ])
+        });
+        dom.render_immediate_to_vec();
+        assert_eq!(context.0.borrow().selected.as_ref(), original.first());
+        assert_eq!(context.0.borrow().position(&original[2]), "first");
+        config.borrow_mut().steps = vec!["Alpha".into()];
+        config.borrow_mut().index = 0;
+        config.borrow_mut().clickable = false;
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        dom.render_immediate_to_vec();
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.contains("data-position=\"single\""));
+        assert_eq!(html.matches("data-selected=true").count(), 1);
+        assert!(!html.contains("role=\"button\""));
+        assert_eq!(html.matches("tabindex=-1").count(), 1);
+    }
+
+    fn nested_workflow_fixture(captures: (WorkflowCapture, WorkflowCapture)) -> Element {
+        rsx! {
+            WorkflowSteps { vertical: true, clickable: true,
+                CaptureWorkflow { capture: captures.0,
+                    WorkflowStep { label: "Outer first", children: rsx! {
+                        WorkflowSteps { vertical: false,
+                            CaptureWorkflow { capture: captures.1,
+                                WrappedWorkflowStep { label: "Inner only" }
+                            }
+                        }
+                    } }
+                    WrappedWorkflowStep { label: "Outer last" }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_workflows_have_separate_registration_and_orientation_boundaries() {
+        let outer = WorkflowCapture::default();
+        let inner = WorkflowCapture::default();
+        let mut dom =
+            VirtualDom::new_with_props(nested_workflow_fixture, (outer.clone(), inner.clone()));
+        dom.rebuild_in_place();
+        dom.render_immediate_to_vec();
+        let outer = outer.0.borrow().clone().unwrap();
+        let inner = inner.0.borrow().clone().unwrap();
+        assert_eq!(outer.0.borrow().order.len(), 2);
+        assert_eq!(inner.0.borrow().order.len(), 1);
+        assert!(outer.0.borrow().settings.vertical);
+        assert!(!inner.0.borrow().settings.vertical);
+        assert!(
+            !inner.0.borrow().settings.clickable,
+            "nearest parent overrides child props"
+        );
+        assert_eq!(
+            inner.0.borrow().position(&inner.0.borrow().order[0]),
+            "single"
+        );
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(html.matches("data-position=\"single\"").count(), 1);
+        assert_eq!(html.matches("role=\"button\"").count(), 2);
+        assert!(
+            !STYLES.contains("] .ix-workflow-line"),
+            "connector selectors must stop at their own step"
+        );
+        assert!(
+            !STYLES.contains("] .ix-workflow-label"),
+            "orientation selectors must stop at their own step"
+        );
+    }
+
+    struct WorkflowMouse;
+    impl dioxus::html::InteractionLocation for WorkflowMouse {
+        fn client_coordinates(&self) -> dioxus::html::geometry::ClientPoint {
+            Default::default()
+        }
+        fn page_coordinates(&self) -> dioxus::html::geometry::PagePoint {
+            Default::default()
+        }
+        fn screen_coordinates(&self) -> dioxus::html::geometry::ScreenPoint {
+            Default::default()
+        }
+    }
+    impl dioxus::html::InteractionElementOffset for WorkflowMouse {
+        fn element_coordinates(&self) -> dioxus::html::geometry::ElementPoint {
+            Default::default()
+        }
+    }
+    impl dioxus::html::ModifiersInteraction for WorkflowMouse {
+        fn modifiers(&self) -> Modifiers {
+            Modifiers::empty()
+        }
+    }
+    impl dioxus::html::PointerInteraction for WorkflowMouse {
+        fn trigger_button(&self) -> Option<dioxus::html::input_data::MouseButton> {
+            None
+        }
+        fn held_buttons(&self) -> dioxus::html::input_data::MouseButtonSet {
+            Default::default()
+        }
+    }
+    impl dioxus::html::HasMouseData for WorkflowMouse {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    struct WorkflowEventConverter;
+    macro_rules! workflow_event_converter {
+        (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
+            impl dioxus::html::HtmlEventConverter for WorkflowEventConverter {
+                $(fn $convert(&self, _: &dioxus::html::PlatformEventData) -> dioxus::html::$data { workflow_event_converter!(@data $group) })*
+            }
+        };
+        (@data Mouse) => { dioxus::html::MouseData::new(WorkflowMouse) };
+        (@data $other:ident) => { panic!("Unexpected non-mouse workflow test event") };
+    }
+    dioxus::html::with_html_event_groups!(workflow_event_converter);
+
+    fn nested_workflow_event_fixture(events: Rc<RefCell<Vec<&'static str>>>) -> Element {
+        let outer_events = events.clone();
+        rsx! {
+            WorkflowSteps { clickable: true, onstepselected: move |_| outer_events.borrow_mut().push("outer"),
+                WorkflowStep { label: "Outer", children: rsx! {
+                    WorkflowSteps { clickable: true, onstepselected: move |_| events.borrow_mut().push("inner"),
+                        WorkflowStep { label: "Inner" }
+                    }
+                } }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_workflow_click_dispatch_does_not_activate_the_enclosing_step() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut dom = VirtualDom::new_with_props(nested_workflow_event_fixture, events.clone());
+        dioxus::html::set_event_converter(Box::new(WorkflowEventConverter));
+        let mutations = dom.rebuild_to_vec();
+        let mut current_id = dioxus::core::ElementId::ROOT;
+        let mut inner_step = None;
+        for mutation in mutations.edits {
+            match mutation {
+                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
+                    current_id = id
+                }
+                dioxus::core::Mutation::NewEventListener { name } if name == "click" => {
+                    inner_step = Some(current_id)
+                }
+                _ => {}
+            }
+        }
+        dom.render_immediate_to_vec();
+        dom.runtime().handle_event(
+            "click",
+            Event::new(
+                Rc::new(dioxus::html::PlatformEventData::new(Box::new(()))),
+                true,
+            ),
+            inner_step.expect("inner step click target"),
+        );
+        dom.render_immediate_to_vec();
+        assert_eq!(
+            *events.borrow(),
+            ["inner"],
+            "the nested group stops native bubbling before the outer step"
+        );
+    }
+
+    fn workflow_icon_fixture() -> Element {
+        rsx! {
+            WorkflowSteps { clickable: true,
+                WorkflowStep { label: "Open" }
+                WorkflowStep { label: "Done", status: WorkflowStatus::Done }
+                WorkflowStep { label: "Success", status: WorkflowStatus::Success }
+                WorkflowStep { label: "Warning", status: WorkflowStatus::Warning }
+                WorkflowStep { label: "Error", status: WorkflowStatus::Error, disabled: true }
+                WorkflowStep { label: "Duplicate fallback", custom_icon: rsx! { span { "Custom icon" } },
+                    span { "Slot content" }
+                }
+            }
+        }
+    }
+    #[test]
+    fn workflow_icons_content_slots_and_accessibility_follow_source_contracts() {
+        let mut dom = VirtualDom::new(workflow_icon_fixture);
+        dom.rebuild_in_place();
+        dom.render_immediate_to_vec();
+        let html = dioxus_ssr::render(&dom);
+        for label in ["Circle dot", "Done", "Success", "Warning", "Error"] {
+            assert!(html.contains(&format!("aria-label=\"{label}\"")), "{html}");
+        }
+        assert_eq!(html.matches("ix-workflow-icon-underlay").count(), 5);
+        assert_eq!(html.matches("ix-workflow-status-icon").count(), 5);
+        assert_eq!(html.matches("aria-disabled=\"true\"").count(), 1);
+        assert_eq!(html.matches("tabindex=0").count(), 5);
+        assert_eq!(html.matches("aria-current=\"step\"").count(), 1);
+        assert!(html.contains("Custom icon"));
+        assert!(html.contains("Slot content"));
+        assert!(!html.contains("Duplicate fallback"));
+        assert_eq!(WorkflowStatus::Open.icon(false), "circle");
+        assert_eq!(WorkflowStatus::Open.icon(true), "circle-dot");
+        assert_ne!(
+            WorkflowStatus::Done.icon(false),
+            WorkflowStatus::Success.icon(false)
+        );
+    }
     #[test]
     fn breadcrumb_truncation_keeps_the_current_location_visible() {
         assert_eq!(hidden_breadcrumb_count(5, 3), 2);

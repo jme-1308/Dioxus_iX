@@ -18,12 +18,21 @@ mod dialog_scenarios;
 mod dialogs;
 mod dropdown_review;
 mod feedback_scenarios;
+mod filter_keyboard_review;
+mod filter_mode_review;
+mod filter_order_review;
+mod filter_reset_review;
+mod filter_state_review;
 mod form_scenarios;
 mod forms;
 mod grid_scenarios;
+mod header_layout_review;
+mod header_switch_review;
 mod icon_scenarios;
 mod layout;
 mod layout_scenarios;
+mod menu_category_review;
+mod menu_navigation_review;
 mod menu_overlay_review;
 mod native_field_review;
 mod number_input_review;
@@ -31,7 +40,9 @@ mod pattern_scenarios;
 mod patterns;
 mod source_examples;
 mod tabs_review;
+mod text_commit_review;
 mod tree;
+mod workflow_review;
 
 fn main() {
     dioxus::launch(Gallery);
@@ -116,6 +127,9 @@ impl GalleryPage {
 
 #[component]
 fn Gallery() -> Element {
+    if let Some(app) = header_switch_review::navigation_destination() {
+        return rsx! { header_switch_review::HeaderReviewDestination { app } };
+    }
     #[cfg(all(target_arch = "wasm32", feature = "web", debug_assertions))]
     use_hook(|| {
         // Install after the web renderer's development hook so failed Rust
@@ -182,16 +196,16 @@ fn Gallery() -> Element {
                     match page() {
                         GalleryPage::Actions => rsx! { actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples {} },
-                        GalleryPage::Forms => rsx! { native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
-                        GalleryPage::Layout => rsx! { layout::LayoutExamples {} },
+                        GalleryPage::Forms => rsx! { text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
+                        GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { grid_scenarios::GridExamples {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
-                        GalleryPage::Application => rsx! { menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
+                        GalleryPage::Application => rsx! { header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
                         GalleryPage::Feedback => rsx! { dropdown_review::DropdownOrderReview {} FeedbackExamples {} },
                         GalleryPage::Composition => rsx! { tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat::ChatExamples {} },
-                        GalleryPage::Patterns => rsx! { patterns::PatternExamples {} },
+                        GalleryPage::Patterns => rsx! { filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
                         GalleryPage::Dialogs => rsx! { dialogs::DialogExamples {} },
                         GalleryPage::Icons => rsx! { IconExamples {} },
                         GalleryPage::Coverage => rsx! { CoverageExamples {} },

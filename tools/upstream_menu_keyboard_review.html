@@ -1,0 +1,378 @@
+<!doctype html>
+<!-- Development-only observer fixture. Native pinned iX components own all navigation. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="ix-icons:path" content="/www/node_modules/@siemens/ix-icons/svg" />
+    <title>Pinned upstream menu keyboard review</title>
+    <link rel="stylesheet" href="/keyboard-foundation.css" />
+    <script type="module" src="/www/build/siemens-ix.esm.js"></script>
+    <script nomodule src="/www/build/siemens-ix.js"></script>
+    <style>
+      body[data-ix-theme] { --theme-font-family: system-ui, sans-serif; --si-sys-sizing-icon-sm: 1rem; --si-sys-sizing-icon-lg: 1.5rem; --si-sys-sizing-size-50: 1rem; --si-sys-sizing-size-70: 1.5rem; --si-sys-sizing-size-80: 2rem; margin: 0; background: #f4f6f8; color: #202932; font-family: var(--theme-font-family); line-height: 1.5; }
+      main { max-width: 72rem; margin: auto; padding: clamp(16px, 4vw, 40px); }
+      h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 16px; }
+      h2 { font-size: 1.2rem; margin: 0 0 8px; }
+      h3 { font-size: 1rem; margin: 24px 0 8px; }
+      p { max-width: 76ch; margin: 8px 0 16px; }
+      .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 16px; }
+      button { font: inherit; min-height: 36px; padding: 4px 12px; border: 1px solid #7d8b98; border-radius: 4px; background: #fff; color: #202932; cursor: pointer; }
+      button:disabled { opacity: .5; cursor: default; }
+      button:focus-visible, a:focus-visible { outline: 2px solid #075c9d; outline-offset: 3px; }
+      a { color: #075c9d; text-underline-offset: .2em; }
+      .stage { position: relative; height: 44rem; min-width: 0; margin-block: 12px; border: 1px solid #bdc6ce; background: #fff; }
+      #upstream-application { width: 100%; height: 100%; }
+      #upstream-menu { position: relative; height: 100%; --ix-menu--width: calc(3rem + .25rem); --ix-menu--expanded-width: calc(15rem + 1rem); }
+      #upstream-menu ix-menu-item { --ix-menu-item-height: 40px; }
+      .observations { min-width: 0; margin-top: 32px; }
+      pre { box-sizing: border-box; max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border: 1px solid #bdc6ce; background: #fff; font-size: .8rem; line-height: 1.45; }
+      #upstream-status { font-weight: 600; }
+      summary { cursor: pointer; font-weight: 600; padding-block: 8px; }
+      ::selection { background: #bddcf2; color: #102c42; }
+      @media (max-width: 480px) { h1 { font-size: 1.5rem; } }
+    </style>
+  </head>
+  <body data-ix-theme="brand" data-ix-color-schema="light">
+    <main id="upstream-menu-review">
+      <h1>Pinned upstream menu keyboard review</h1>
+      <p>Native source components from commit <code>8bf599bc68365d7752e12832e71b625883b93d7a</code>. Upstream has one global menu controller, so this page mounts one menu at a time. Explicit remount buttons select expanded pinned or collapsed pinned cases.</p>
+      <p>Foundation CSS and system fonts only: no Classic stylesheet, company marks or corporate assets. This diagnostic stage supplies public menu widths of 52px/256px, using the pinned menu width formula and its available reference dimensions, and 40px item height from the category source constant. Icon/control aliases are provisional. These geometry overrides establish measurable focus targets, not Brand sizing, color or visual parity.</p>
+      <p id="upstream-status" role="status">Waiting for the pinned runtime…</p>
+      <div class="controls">
+        <button id="upstream-expanded" type="button" disabled>Remount expanded pinned</button>
+        <button id="upstream-collapsed" type="button" disabled>Remount collapsed pinned</button>
+        <button id="upstream-clear-log" type="button">Clear observations</button>
+        <button id="upstream-snapshot" type="button">Capture live state</button>
+      </div>
+      <div class="controls" aria-label="Source property and DOM mutations">
+        <button id="upstream-reorder" type="button" data-mutation disabled>Move Omega before Alpha / restore</button>
+        <button id="upstream-remove" type="button" data-mutation disabled>Remove / restore Link wrapper</button>
+        <button id="upstream-disable" type="button" data-mutation disabled>Toggle Disabled attribute</button>
+        <button id="upstream-disable-property" type="button" data-mutation disabled>Toggle Disabled property only</button>
+        <button id="upstream-hide" type="button" data-mutation disabled>Toggle Omega hidden</button>
+        <button id="upstream-inline-hide" type="button" data-mutation disabled>Toggle Link wrapper display</button>
+      </div>
+      <p>Observe menu-container entry, remembered focus, wrapped links, enabled/disabled descendants, independent categories, utilities and current DOM order. The controls above only change fixture properties/topology. No fixture listener cancels keys, opens categories or moves focus.</p>
+      <div class="controls" aria-label="Category source mutations">
+        <button id="upstream-expanded-active" type="button" data-mutation disabled>Remount expanded with One active</button>
+        <button id="upstream-nested-active" type="button" data-mutation disabled>Toggle One active</button>
+        <button id="upstream-nested-reorder" type="button" data-mutation disabled>Move Two first / restore</button>
+        <button id="upstream-nested-wrap" type="button" data-mutation disabled>Wrap / unwrap Two</button>
+        <button id="upstream-nested-empty" type="button" data-mutation disabled>Empty / restore category</button>
+      </div>
+      <section aria-labelledby="menu-heading">
+        <h2 id="menu-heading">One native menu</h2>
+        <button id="upstream-menu-before" type="button">Before source menu</button>
+        <div id="upstream-menu-mount" class="stage"></div>
+        <button id="upstream-menu-after" type="button">After source menu</button>
+      </section>
+      <section class="observations" aria-labelledby="observations-heading">
+        <h2 id="observations-heading">Native observations</h2>
+        <p>Observation leaves update independently of the source application. For settled assertions use the live <code>upstreamMenuReview.snapshot()</code> API. Post-dispatch cancelBubble resets; listener reach and in-dispatch flags remain recorded separately.</p>
+        <h3>Deep focus, order, tab indices and positions</h3>
+        <pre id="upstream-focus" tabindex="0">{}</pre>
+        <h3>Source events</h3>
+        <pre id="upstream-events" tabindex="0">[]</pre>
+        <details><summary>Key, focus and click propagation</summary><pre id="upstream-keyboard" tabindex="0">[]</pre></details>
+        <details><summary>Fixture mutations</summary><pre id="upstream-actions" tabindex="0">[]</pre></details>
+      </section>
+    </main>
+    <script type="module">
+      const revision = "8bf599bc68365d7752e12832e71b625883b93d7a";
+      const events = [], keyboard = [], actions = [];
+      const eventIds = new WeakMap();
+      let sequence = 0, dispatchSequence = 0, generation = 0, framePending = false, busy = false;
+      let current = null, lifecycle = null, observer = null;
+      const status = document.getElementById("upstream-status");
+      const sourceEvents = ["expandChange", "mapExpandChange", "openSettings", "openAbout", "openAppSwitch", "closeOtherCategories", "ixMenuCategoryItemSelect", "close", "tabChange"];
+
+      function describe(node) {
+        if (node === window) return { tag: "window" };
+        if (node === document) return { tag: "#document" };
+        if (node instanceof ShadowRoot) return { tag: "#shadow-root", host: node.host.id || node.host.tagName.toLowerCase() };
+        if (!(node instanceof Element)) return { tag: node?.nodeName ?? "unknown" };
+        return {
+          tag: node.tagName.toLowerCase(), id: node.id || null, key: node.getAttribute("data-review-key"),
+          class: node.getAttribute("class"), role: node.getAttribute("role"),
+          label: node.getAttribute("aria-label") ?? node.getAttribute("label"),
+          text: node.matches("button,a,ix-menu-item") ? (node.textContent ?? "").trim().slice(0, 100) : null,
+          tabIndex: node instanceof HTMLElement ? node.tabIndex : null,
+          ariaExpanded: node.getAttribute("aria-expanded"), ariaDisabled: node.getAttribute("aria-disabled"),
+          ariaCurrent: node.getAttribute("aria-current"), ariaPosition: node.getAttribute("aria-posinset"), ariaSetSize: node.getAttribute("aria-setsize")
+        };
+      }
+      function deepFocus() {
+        const chain = [];
+        let active = document.activeElement;
+        while (active) {
+          chain.push(describe(active));
+          const inner = active.shadowRoot?.activeElement;
+          if (!inner || inner === active) break;
+          active = inner;
+        }
+        return chain;
+      }
+      function rect(node) {
+        if (!node) return null;
+        const { x, y, width, height } = node.getBoundingClientRect();
+        return { x, y, width, height };
+      }
+      function itemState(host) {
+        const native = host.shadowRoot?.querySelector("a.tab,button.tab");
+        return {
+          ...describe(host), label: host.label ?? null, disabled: host.disabled ?? null, disabledAttribute: host.hasAttribute("disabled"), hidden: host.hidden,
+          active: host.active ?? null, connected: host.isConnected, rect: rect(host),
+          display: getComputedStyle(host).display, visibility: getComputedStyle(host).visibility,
+          inlineDisplay: host.style.display, parent: host.parentElement?.id || host.parentElement?.tagName.toLowerCase(),
+          native: native ? { ...describe(native), disabled: native.disabled ?? null, href: native.getAttribute("href"), rect: rect(native) } : null
+        };
+      }
+      function categoryState(host) {
+        const root = host.shadowRoot, parent = root?.querySelector(".category-parent"), panel = root?.querySelector(".menu-items"), dropdown = root?.querySelector("ix-dropdown");
+        return {
+          ...describe(host), label: host.label ?? null, rect: rect(host), parent: parent ? itemState(parent) : null,
+          expandedPanel: panel?.classList.contains("menu-items--expanded") ?? false,
+          panel: panel ? { ...describe(panel), rect: rect(panel) } : null,
+          dropdown: dropdown ? { show: dropdown.show, rect: rect(dropdown), role: dropdown.getAttribute("role"), navigationMode: dropdown.navigationMode } : null,
+          items: [...host.querySelectorAll("ix-menu-item")].map(itemState)
+        };
+      }
+      function snapshot() {
+        const menu = current?.menu, nav = menu?.shadowRoot?.querySelector(".menu-navigation");
+        return {
+          revision, generation, mode: current?.mode ?? null, ready: status.dataset.ready === "true",
+          focus: deepFocus(), menu: menu ? {
+            ...describe(menu), expand: menu.expand, pinned: menu.pinned, rect: rect(menu),
+            navigation: nav ? { ...describe(nav), rect: rect(nav), description: nav.getAttribute("aria-description") } : null,
+            directOrder: [...menu.children].map(describe),
+            items: [...menu.querySelectorAll("ix-menu-item")].map(itemState),
+            categories: [...menu.querySelectorAll("ix-menu-category")].map(categoryState),
+            utility: [...(menu.shadowRoot?.querySelectorAll(".menu-utility-controls > ix-menu-item") ?? [])].map(itemState),
+            links: [...menu.querySelectorAll(":scope > a")].map(link => ({ ...describe(link), display: getComputedStyle(link).display, connected: link.isConnected }))
+          } : null,
+          geometry: { diagnosticOnly: true, collapsedWidth: "calc(3rem + .25rem)", expandedWidth: "calc(15rem + 1rem)", itemHeight: "40px", foundationOnly: true }
+        };
+      }
+      function appendBounded(list, entry, limit) {
+        list.push(entry);
+        if (list.length > limit) list.splice(0, list.length - limit);
+      }
+      function renderLeaves() {
+        for (const [id, value] of [["upstream-focus", snapshot()], ["upstream-events", events], ["upstream-keyboard", keyboard], ["upstream-actions", actions]]) {
+          document.getElementById(id).textContent = JSON.stringify(value, null, 2);
+        }
+      }
+      function scheduleObservation() {
+        if (framePending) return;
+        framePending = true;
+        requestAnimationFrame(() => { framePending = false; renderLeaves(); });
+      }
+      function trace(event, site, capture) {
+        const path = event.composedPath(), host = path.find(node => node instanceof Element && node.matches("ix-menu[data-review-generation]"));
+        if (!host) return;
+        const context = { generation: host.dataset.reviewGeneration, mode: host.dataset.reviewCase };
+        if (!eventIds.has(event)) {
+          const dispatch = ++dispatchSequence;
+          eventIds.set(event, dispatch);
+          setTimeout(() => {
+            appendBounded(keyboard, { seq: ++sequence, dispatch, ...context, type: event.type, site: "after-dispatch-task", key: event.key ?? null, code: event.code ?? null, trusted: event.isTrusted, defaultPrevented: event.defaultPrevented, cancelBubble: event.cancelBubble, focus: deepFocus() }, 1000);
+            scheduleObservation();
+          }, 0);
+        }
+        appendBounded(keyboard, {
+          seq: ++sequence, dispatch: eventIds.get(event), ...context, type: event.type, site,
+          listenerPhase: capture ? "capture" : "bubble", eventPhase: event.eventPhase,
+          key: event.key ?? null, code: event.code ?? null, trusted: event.isTrusted,
+          shift: event.shiftKey ?? false, ctrl: event.ctrlKey ?? false, alt: event.altKey ?? false, meta: event.metaKey ?? false,
+          defaultPrevented: event.defaultPrevented, cancelBubble: event.cancelBubble,
+          target: describe(event.target), origin: describe(path[0]), path: path.map(describe), focus: deepFocus()
+        }, 1000);
+        scheduleObservation();
+      }
+      function instrument(target, site, signal) {
+        if (!target) return;
+        for (const type of ["keydown", "keyup", "click", "focusin", "focusout"]) {
+          for (const capture of [true, false]) target.addEventListener(type, event => trace(event, site, capture), { capture, passive: true, signal });
+        }
+      }
+      function menuItem(key, label, properties = {}) {
+        const host = document.createElement("ix-menu-item");
+        host.id = `upstream-menu-${key}`;
+        host.dataset.reviewKey = key;
+        host.label = label;
+        Object.assign(host, properties);
+        if (properties.disabled) host.setAttribute("disabled", "");
+        return host;
+      }
+      function category(key, label, children) {
+        const host = document.createElement("ix-menu-category");
+        host.id = `upstream-menu-${key}`;
+        host.dataset.reviewKey = key;
+        host.label = label;
+        host.append(...children);
+        return host;
+      }
+      function controlsEnabled(enabled) {
+        for (const button of document.querySelectorAll("#upstream-expanded,#upstream-collapsed,[data-mutation]")) button.disabled = !enabled;
+      }
+      function recordAction(type, detail) {
+        appendBounded(actions, { seq: ++sequence, generation, mode: current?.mode, type, detail, focus: deepFocus() }, 100);
+        scheduleObservation();
+      }
+      async function remount(mode = "expanded", initiallyActive = false) {
+        if (busy) return false;
+        if (!["expanded", "collapsed"].includes(mode)) throw new Error("Unknown menu case");
+        busy = true;
+        controlsEnabled(false);
+        status.dataset.ready = "false";
+        status.textContent = `Mounting ${mode} pinned source menu…`;
+        lifecycle?.abort();
+        observer?.disconnect();
+        const mount = document.getElementById("upstream-menu-mount");
+        mount.replaceChildren();
+        current = null;
+        const thisGeneration = ++generation;
+        lifecycle = new AbortController();
+        const signal = lifecycle.signal;
+        try {
+          const application = document.createElement("ix-application");
+          application.id = "upstream-application";
+          application.breakpoints = ["lg"];
+          const menu = document.createElement("ix-menu");
+          menu.id = "upstream-menu";
+          menu.dataset.reviewCase = mode;
+          menu.dataset.reviewGeneration = String(thisGeneration);
+          menu.pinned = true;
+          menu.startExpanded = mode === "expanded";
+          menu.enableToggleTheme = true;
+          menu.applicationName = "Keyboard diagnostic application";
+          const alpha = menuItem("alpha", "Alpha"), disabled = menuItem("disabled", "Disabled", { disabled: true });
+          const link = menuItem("link", "Link"), wrapper = document.createElement("a");
+          wrapper.id = "upstream-menu-link-wrapper";
+          wrapper.dataset.reviewKey = "link-wrapper";
+          wrapper.href = "#source-menu-link-destination";
+          wrapper.append(link);
+          const one = menuItem("one", "One", { active: initiallyActive }), disabledChild = menuItem("disabled-child", "Disabled child", { disabled: true }), two = menuItem("two", "Two");
+          const primary = category("category", "Category", [one, disabledChild, two]);
+          const solo = menuItem("solo", "Solo"), secondary = category("second-category", "Second category", [solo]);
+          const omega = menuItem("omega", "Omega"), footer = menuItem("footer", "Footer");
+          footer.slot = "bottom";
+          const settings = document.createElement("ix-menu-settings"), about = document.createElement("ix-menu-about");
+          settings.id = "upstream-menu-settings-content";
+          settings.suppressLegacyTabs = true;
+          settings.textContent = "Diagnostic settings content.";
+          about.id = "upstream-menu-about-content";
+          about.suppressLegacyTabs = true;
+          about.textContent = "Diagnostic about content. No company artwork or identity assets.";
+          menu.append(alpha, disabled, wrapper, primary, secondary, omega, footer, settings, about);
+          application.append(menu);
+          current = { application, menu, mode, alpha, disabled, wrapper, link, primary, secondary, omega, footer, one, disabledChild, two, solo };
+          for (const type of sourceEvents) menu.addEventListener(type, event => {
+            let detail;
+            try { detail = event.detail === undefined ? { $type: "undefined" } : JSON.parse(JSON.stringify(event.detail)); }
+            catch { detail = { $type: "unserializable", value: String(event.detail) }; }
+            appendBounded(events, { seq: ++sequence, generation: thisGeneration, mode, type, detail, trusted: event.isTrusted, defaultPrevented: event.defaultPrevented, target: describe(event.target), focus: deepFocus() }, 250);
+            scheduleObservation();
+          }, { passive: true, signal });
+          mount.append(application);
+          await application.componentOnReady();
+          await menu.componentOnReady();
+          await Promise.all([...menu.querySelectorAll("ix-menu-item,ix-menu-category,ix-menu-settings,ix-menu-about")].map(node => node.componentOnReady()));
+          for (const host of [...menu.querySelectorAll("ix-menu-category")]) {
+            const dropdown = host.shadowRoot?.querySelector("ix-dropdown");
+            if (dropdown) await dropdown.componentOnReady();
+          }
+          // Settle source rAF hydration/initial tabindex work without supplying
+          // a component interaction or focus/open behavior from this fixture.
+          await new Promise(requestAnimationFrame);
+          await new Promise(requestAnimationFrame);
+          if (signal.aborted || thisGeneration !== generation) return false;
+          instrument(menu, "menu-host", signal);
+          instrument(menu.shadowRoot?.querySelector(".menu-navigation"), "menu-navigation", signal);
+          for (const host of [...menu.querySelectorAll("ix-menu-category")]) {
+            instrument(host, `${host.dataset.reviewKey}-host`, signal);
+            instrument(host.shadowRoot?.querySelector(".category-parent"), `${host.dataset.reviewKey}-parent`, signal);
+            instrument(host.shadowRoot?.querySelector(".menu-items"), `${host.dataset.reviewKey}-items`, signal);
+            instrument(host.shadowRoot?.querySelector("ix-dropdown"), `${host.dataset.reviewKey}-dropdown`, signal);
+          }
+          observer = new MutationObserver(scheduleObservation);
+          observer.observe(application, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "disabled", "tabindex", "aria-posinset", "aria-setsize"] });
+          status.dataset.ready = "true";
+          status.textContent = `Ready · ${mode} pinned menu · generation ${thisGeneration}.`;
+          recordAction("remount", { mode });
+          renderLeaves();
+          return true;
+        } catch (error) {
+          status.textContent = `Runtime setup failed: ${error.message}`;
+          console.error(error);
+          return false;
+        } finally {
+          busy = false;
+          controlsEnabled(status.dataset.ready === "true");
+        }
+      }
+      function mutate(type) {
+        if (!current || busy) return;
+        const { menu, alpha, omega, wrapper, primary, disabled } = current;
+        if (type === "reorder") {
+          const omegaBeforeAlpha = Boolean(omega.compareDocumentPosition(alpha) & Node.DOCUMENT_POSITION_FOLLOWING);
+          if (omegaBeforeAlpha) menu.insertBefore(omega, current.footer);
+          else menu.insertBefore(omega, alpha);
+        } else if (type === "remove") {
+          if (wrapper.isConnected) wrapper.remove();
+          else menu.insertBefore(wrapper, primary);
+        } else if (type === "disable") disabled.toggleAttribute("disabled");
+        else if (type === "disable-property") disabled.disabled = !disabled.disabled;
+        else if (type === "hide") omega.hidden = !omega.hidden;
+        else if (type === "inline-hide") wrapper.style.display = wrapper.style.display === "none" ? "" : "none";
+        else if (type === "nested-active") current.one.active = !current.one.active;
+        else if (type === "nested-reorder") {
+          if (!current.two.parentElement) return;
+          const target = current.two.parentElement.tagName === "A" ? current.two.parentElement : current.two;
+          if (primary.firstElementChild === target) primary.append(target);
+          else primary.prepend(target);
+        } else if (type === "nested-wrap") {
+          if (!current.two.parentElement) return;
+          if (current.two.parentElement.tagName === "A") current.two.parentElement.replaceWith(current.two);
+          else {
+            const anchor = document.createElement("a"); anchor.id = "upstream-menu-nested-wrapper"; anchor.href = "#source-menu-link-destination";
+            current.two.replaceWith(anchor); anchor.append(current.two);
+          }
+        } else if (type === "nested-empty") {
+          if (current.savedNested) { primary.append(...current.savedNested); current.savedNested = null; }
+          else { current.savedNested = Array.from(primary.children); primary.replaceChildren(); }
+        }
+        recordAction(type, {
+          order: [...menu.children].map(node => node.dataset.reviewKey || node.id),
+          disabled: disabled.disabled, disabledAttribute: disabled.hasAttribute("disabled"), omegaHidden: omega.hidden, linkConnected: wrapper.isConnected, linkDisplay: wrapper.style.display
+        });
+      }
+      function clearLog() {
+        events.length = 0;
+        keyboard.length = 0;
+        actions.length = 0;
+        sequence = 0;
+        scheduleObservation();
+      }
+      instrument(document, "document");
+      document.getElementById("upstream-expanded").addEventListener("click", () => remount("expanded"));
+      document.getElementById("upstream-collapsed").addEventListener("click", () => remount("collapsed"));
+      document.getElementById("upstream-expanded-active").addEventListener("click", () => remount("expanded", true));
+      document.getElementById("upstream-clear-log").addEventListener("click", clearLog);
+      document.getElementById("upstream-snapshot").addEventListener("click", scheduleObservation);
+      for (const type of ["reorder", "remove", "disable", "disable-property", "hide", "inline-hide", "nested-active", "nested-reorder", "nested-wrap", "nested-empty"]) document.getElementById(`upstream-${type}`).addEventListener("click", () => mutate(type));
+      window.upstreamMenuReview = { revision, events, keyboard, actions, snapshot, remount, mutate, clearLog };
+      try {
+        const { defineCustomElements } = await import("/www/node_modules/@siemens/ix-icons/loader/index.es2017.js");
+        defineCustomElements();
+        await Promise.all(["ix-application", "ix-menu", "ix-menu-item", "ix-menu-category"].map(tag => customElements.whenDefined(tag)));
+        await remount("expanded");
+      } catch (error) {
+        status.textContent = `Runtime setup failed: ${error.message}`;
+        status.dataset.ready = "false";
+        console.error(error);
+      }
+    </script>
+  </body>
+</html>

@@ -20,8 +20,22 @@
 
 #![forbid(unsafe_code)]
 
+// Dioxus's HTML event converter is process-global. Actual-listener regressions
+// hold this guard once per test, before their DOMs, so parallel test modules
+// cannot replace the converter while another test dispatches an event.
+#[cfg(test)]
+static TEST_EVENT_CONVERTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn test_event_converter_guard() -> std::sync::MutexGuard<'static, ()> {
+    TEST_EVENT_CONVERTER_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub mod actions;
 pub mod application;
+mod application_viewport;
 pub mod catalog;
 pub mod chart_advanced;
 pub mod chart_export;
@@ -35,6 +49,7 @@ pub mod dialogs;
 mod dom_query;
 pub mod form_control;
 pub mod forms;
+mod header_layout;
 pub mod icons;
 pub mod layout;
 pub mod notifications;

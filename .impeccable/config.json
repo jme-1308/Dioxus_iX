@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          "tools/upstream_filter_keyboard_review.html"
+        ],
+        "createdAt": "2026-10-17T12:47:31.488Z",
+        "reason": "Agent review: detector omits the responsive h1 clamp(1.5rem, 3vw, 2rem); its minimum 24px is 1.25 times the 19.2px h2 and 1.5 times the 16px body in this development fixture."
+      }
+    ]
+  }
+}

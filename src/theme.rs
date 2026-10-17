@@ -63,6 +63,7 @@ pub fn IxTheme(
         style { {BASE_STYLES} }
         style { {crate::actions::STYLES} }
         style { {crate::application::STYLES} }
+        style { {crate::header_layout::STYLES} }
         style { {crate::chat::STYLES} }
         style { {crate::charts::STYLES} }
         style { {crate::chart_advanced::STYLES} }

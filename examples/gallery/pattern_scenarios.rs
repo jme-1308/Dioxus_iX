@@ -75,9 +75,9 @@ fn FilterScenario(suggestions: bool) -> Element {
         }
     });
     let categories = if suggestions {
-        vec![]
+        None
     } else {
-        vec![
+        Some(vec![
             FilterCategory::new(
                 "ID_1",
                 "Vendor",
@@ -88,7 +88,7 @@ fn FilterScenario(suggestions: bool) -> Element {
                 "Product",
                 vec!["iPhone X".into(), "Windows".into(), "APS".into()],
             ),
-        ]
+        ])
     };
     rsx! { CategoryFilter { placeholder: "Filter by", categories,
         suggestions: if suggestions { vec!["Item 1".into(), "Item 2".into()] } else { vec![] },

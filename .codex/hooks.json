@@ -1,4 +1,5 @@
 {
+  "description": "UI review and Rust compile gates for dioxus-ix",
   "hooks": {
     "PostToolUse": [
       {
@@ -12,6 +13,40 @@
             "statusMessage": "Checking UI changes"
           }
         ]
+      },
+      {
+        "matcher": "^mcp__rust_analyzer__rust_analyzer_(hover|definition|references|completion|code_actions|rename)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/rust_analyzer_feedback.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking rust-analyzer result",
+            "additionalContextLimit": 300
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__rust_analyzer__rust_analyzer_symbols$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/rust_analyzer_symbols_compact.py\"",
+            "timeout": 5,
+            "statusMessage": "Compacting rust-analyzer symbols"
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__argon__argon_spawn$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/argon_claim.py\"",
+            "timeout": 5,
+            "statusMessage": "Recording Argon jobs for this session"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -23,6 +58,31 @@
             "commandWindows": "cmd /c if exist \".agents\\skills\\impeccable\\scripts\\impeccable.cmd\" \".agents\\skills\\impeccable\\scripts\\impeccable.cmd\" hook",
             "timeout": 30,
             "statusMessage": "Design deep pass"
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/rust_check.py\"",
+            "timeout": 300,
+            "statusMessage": "Running cargo check"
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/argon_guard.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking for unread Argon results"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__argon__(argon_spawn|ask_argon)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/argon_brief.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking Argon fleet capacity"
           }
         ]
       }

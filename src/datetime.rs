@@ -332,17 +332,15 @@ pub struct DateSelection {
 impl DateSelection {
     /// Apply the upstream first-date / second-date / restart-range selection rules.
     pub fn select(self, date: IxDate, single: bool) -> Self {
-        if single || self.from.is_none() || self.to.is_some() {
-            Self {
-                from: Some(date),
-                to: None,
-            }
-        } else {
-            let from = self.from.unwrap();
-            Self {
+        match (single, self.from, self.to) {
+            (false, Some(from), None) => Self {
                 from: Some(from.min(date)),
                 to: Some(from.max(date)),
-            }
+            },
+            _ => Self {
+                from: Some(date),
+                to: None,
+            },
         }
     }
     /// Whether a day is an endpoint of the selection.
@@ -2538,13 +2536,16 @@ mod tests {
             }
         );
         assert_eq!(completed.select(first, false), pending);
-        assert_eq!(
-            completed.select(earlier, true),
-            DateSelection {
-                from: Some(earlier),
-                to: None
-            }
-        );
+        let single = date(2026, 10, 24);
+        for selection in [DateSelection::default(), pending, completed] {
+            assert_eq!(
+                selection.select(single, true),
+                DateSelection {
+                    from: Some(single),
+                    to: None
+                }
+            );
+        }
     }
     #[test]
     fn date_formats_reject_impossible_dates() {

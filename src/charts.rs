@@ -1342,6 +1342,7 @@ mod tests {
 
     #[test]
     fn cartesian_mobile_mount_measures_and_rerenders() {
+        let _event_converter_guard = crate::test_event_converter_guard();
         fn app() -> Element {
             rsx! { CartesianChart { categories: vec!["Product A".into(),"Product B".into(),"Product C".into(),"Product D".into(),"Product E".into(),"Product F".into()], series: vec![ChartSeries::new("",vec![10.3,9.2,7.3,6.4,6.2,4.4],ChartKind::Bar)], x_title: "Product", y_title: "Number of sold products\n (in Mio)" } }
         }

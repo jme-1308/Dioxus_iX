@@ -1,1 +1,5 @@
 /target/
+/.cargo/config.toml
+/.codex/config.toml
+/.codex/argon-runs/
+__pycache__/

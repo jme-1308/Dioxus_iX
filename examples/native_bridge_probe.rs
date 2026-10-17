@@ -97,6 +97,13 @@ async fn exercise(
 ) -> Result<(), String> {
     futures_timer::Delay::new(Duration::from_millis(500)).await;
     initialize_hidden_focus_delivery().await?;
+    // Run the navigation boundary independently when an unrelated broad probe
+    // fails before reaching it. The default remains the complete regression.
+    if std::env::var("DIOXUS_IX_PROBE_SCOPE").as_deref() == Ok("navigation") {
+        native_navigation_probe::verify().await?;
+        println!("Scoped native navigation regression passed (menu overlays and tabs).");
+        return Ok(());
+    }
     verify_native_query_lifecycle().await?;
     verify_theme_tokens().await?;
     verify_native_surface().await?;

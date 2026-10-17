@@ -1,0 +1,194 @@
+<!doctype html>
+<!-- Excluded development observer. Pinned components own layout and behavior. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="ix-icons:path" content="/www/node_modules/@siemens/ix-icons/svg">
+  <title>Pinned upstream Header layout review</title>
+  <link rel="stylesheet" href="/keyboard-foundation.css">
+  <script type="module" src="/www/build/siemens-ix.esm.js"></script>
+  <script nomodule src="/www/build/siemens-ix.js"></script>
+  <style>
+    body[data-ix-theme]{--theme-font-family:system-ui,sans-serif;--si-sys-sizing-icon-sm:1rem;--si-sys-sizing-icon-lg:1.5rem;--si-sys-sizing-size-50:1rem;--si-sys-sizing-size-70:1.5rem;--si-sys-sizing-size-80:2rem;margin:0;background:#f4f6f8;color:#202932;font:1rem/1.5 system-ui,sans-serif}
+    main{max-width:76rem;margin:auto;padding:clamp(16px,3vw,36px)}h1{font-size:1.75rem;line-height:1.2;margin:0 0 16px}h2{font-size:1.2rem;margin:24px 0 8px}p{max-width:75ch}
+    fieldset{min-width:0;border:1px solid #bdc6ce;margin:16px 0;padding:12px}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:8px 0}label{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px}
+    button,input,select{font:inherit;max-width:100%;box-sizing:border-box;caret-color:#075c9d}button,select,input:not([type=checkbox]){min-height:36px}button{border:1px solid #7d8b98;border-radius:4px;background:white;color:#202932;padding:4px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:default}input:not([type=checkbox]){width:14rem}input::placeholder{color:#526271}:focus-visible{outline:2px solid #075c9d;outline-offset:3px}
+    #upstream-header-layout-mount{position:relative;min-width:0;max-width:100%;height:24rem;border:1px solid #bdc6ce;background:white;margin-block:12px}
+    #upstream-header-layout-application{height:100%;width:100%}#upstream-header-layout-menu{--ix-menu--width:calc(3rem + .25rem);--ix-menu--expanded-width:calc(15rem + 1rem)}
+    #upstream-header-layout-source>input{width:8rem;margin-inline:4px;border:1px solid #7d8b98;border-radius:4px;padding:4px 8px;background:white;color:#202932}#upstream-header-layout-source>ix-button{margin-inline:4px}
+    .source-body{padding:12px}.source-sidebar{padding:12px;max-width:10rem}.source-logo{display:block;width:32px;height:32px}
+    pre{max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:normal .8rem/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;padding:12px;border:1px solid #bdc6ce;background:white;scrollbar-color:#7d8b98 #f4f6f8}summary{cursor:pointer;padding:8px 0}::selection{background:#bddcf2;color:#102c42}a{color:#075c9d;text-underline-offset:.2em}
+  </style>
+</head>
+<body data-ix-theme="brand" data-ix-color-schema="light">
+<main>
+  <h1>Pinned upstream Header layout review</h1>
+  <p>One source Header, persistent slotted controls, and live native observations. Revision <code>8bf599bc68365d7752e12832e71b625883b93d7a</code>. Foundation CSS, system fonts, neutral data images and the incumbent public sizing aliases only. Missing Brand tokens and forced breakpoint/media mismatches make this a behavior diagnostic, not Brand geometry or responsive parity proof.</p>
+  <p id="upstream-header-layout-status" data-fixture-output role="status">Waiting for the pinned runtime…</p>
+  <div class="controls">
+    <button id="upstream-header-layout-contained" type="button" data-source-control disabled>Fresh contained Header</button>
+    <button id="upstream-header-layout-standalone" type="button" data-source-control disabled>Fresh standalone Header</button>
+    <button id="upstream-header-layout-snapshot" type="button">Capture live state</button>
+    <button id="upstream-header-layout-clear" type="button">Clear observations</button>
+  </div>
+  <fieldset><legend>Public source layout and context</legend>
+    <div class="controls">
+      <label>Application forceBreakpoint <select id="upstream-header-layout-force"><option value="auto">Automatic viewport</option><option value="sm">sm</option><option value="md">md</option><option value="lg">lg</option></select></label>
+      <label>Supported breakpoints <select id="upstream-header-layout-supported"><option value="all">sm, md, lg</option><option value="large">lg only</option><option value="small">sm only</option></select></label>
+      <button id="upstream-header-layout-apply-layout" type="button" data-source-control disabled>Apply public Application layout</button>
+      <label>Stage width <select id="upstream-header-layout-width"><option value="100%">Available width</option><option value="360px">360px</option><option value="600px">600px</option><option value="900px">900px</option></select></label>
+    </div>
+    <p>Application layout controls are disabled for a standalone Header: resize the actual viewport there. Narrowing only the stage does not change the source global breakpoint. Actual viewport CSS uses the 48em / 80em media queries independently of a forced mode.</p>
+    <div class="controls">
+      <button id="upstream-header-layout-config-none" type="button" data-context-control disabled>Remove app-switch config</button>
+      <button id="upstream-header-layout-config-present" type="button" data-context-control disabled>Set loading config</button>
+      <button id="upstream-header-layout-config-replace" type="button" data-context-control disabled>Replace config / emit context</button>
+      <label><input id="upstream-header-layout-sidebar" type="checkbox">Public application-sidebar slot</label>
+    </div>
+  </fieldset>
+  <fieldset><legend>Header props and event consumers</legend>
+    <div class="controls">
+      <label>Name <input id="upstream-header-layout-name" value="Layout review"></label>
+      <label>Suffix <input id="upstream-header-layout-suffix" value="Persistent slots"></label>
+      <label><input id="upstream-header-layout-show-menu" type="checkbox">Late showMenu write</label>
+      <label><input id="upstream-header-layout-top-layer" type="checkbox">Overflow enableTopLayer</label>
+      <label><input id="upstream-header-layout-property-logo" type="checkbox">Also supply neutral companyLogo</label>
+      <button id="upstream-header-layout-apply-header" type="button" data-source-control disabled>Apply public Header props</button>
+    </div>
+    <div class="controls">
+      <label>Switch label <input id="upstream-header-layout-switch-label" value="Switch review application"></label>
+      <label>More label <input id="upstream-header-layout-more-label" value="More review actions"></label>
+      <label><input id="upstream-header-layout-veto-menu" type="checkbox">Cancel menuToggle only</label>
+      <label><input id="upstream-header-layout-veto-expand" type="checkbox">Cancel Menu expandChange only</label>
+      <label><input id="upstream-header-layout-veto-switch" type="checkbox" checked>Cancel openAppSwitch request</label>
+      <label><input id="upstream-header-layout-veto-overflow" type="checkbox">Cancel Header overflow showChange only</label>
+    </div>
+    <p>These are separate ordinary event consumers. Selected vetoes call preventDefault on that source CustomEvent only. No fixture key handling, popup state or focus behavior is supplied. The app-switch request starts canceled to keep the layout trial modal-free; uncheck explicitly to allow it.</p>
+  </fieldset>
+  <fieldset><legend>Persistent light children</legend>
+    <div class="controls">
+      <label><input id="upstream-header-layout-present-default" type="checkbox" checked>Default input and action</label>
+      <label><input id="upstream-header-layout-present-secondary" type="checkbox" checked>Secondary input and action</label>
+      <label><input id="upstream-header-layout-present-overflow" type="checkbox" checked>Overflow input and action</label>
+      <label><input id="upstream-header-layout-present-avatar" type="checkbox" checked>Source avatar and action</label>
+      <label><input id="upstream-header-layout-present-logo" type="checkbox" checked>Neutral logo slot</label>
+      <button id="upstream-header-layout-apply-slots" type="button" data-source-control disabled>Apply slot presence</button>
+    </div>
+    <p>Type into the source slotted inputs and click their actions. Breakpoint and popup changes do not cause a fixture rerender. Presence controls deliberately remove/restore the same retained nodes; Fresh Header creates a new generation. Observe focus and caret changes rather than assuming preservation.</p>
+  </fieldset>
+  <fieldset><legend>One-shot public update after overflow opens</legend>
+    <div class="controls">
+      <label>Captured update <select id="upstream-header-layout-arm-action"><option value="sm">forceBreakpoint sm</option><option value="lg">forceBreakpoint lg</option><option value="auto">forceBreakpoint automatic</option><option value="config">Replace loading config / context</option><option value="sidebar">Toggle retained sidebar / context</option></select></label>
+      <label>Delay (ms) <input id="upstream-header-layout-arm-delay" type="number" min="0" value="600"></label>
+      <button id="upstream-header-layout-arm" type="button" data-context-control disabled>Arm next overflow showChanged(true)</button>
+      <button id="upstream-header-layout-disarm" type="button">Cancel fixture update</button>
+    </div>
+    <p id="upstream-header-layout-arm-status" data-fixture-output role="status">No update armed.</p>
+    <p>The source visibility event starts this captured timer once. Native dialog.open and popover membership are recorded separately; the event itself does not prove native presentation. Remount cancels only the fixture timer.</p>
+  </fieldset>
+  <button id="upstream-header-layout-before" type="button">Before source Header</button>
+  <div id="upstream-header-layout-mount"></div>
+  <button id="upstream-header-layout-after" type="button">After source Header</button>
+  <h2>Source state and native identity</h2>
+  <pre id="upstream-header-layout-state" data-fixture-output tabindex="0">{}</pre>
+  <h2>Source and fixture events</h2>
+  <pre id="upstream-header-layout-events" data-fixture-output tabindex="0">[]</pre>
+  <details><summary>Native input, focus and final cancellation traces</summary><pre id="upstream-header-layout-trace" data-fixture-output tabindex="0">[]</pre></details>
+</main>
+<script type="module">
+  const revision="8bf599bc68365d7752e12832e71b625883b93d7a",byId=name=>document.getElementById(`upstream-header-layout-${name}`);
+  const events=[],trace=[],nodeIds=new WeakMap(),eventIds=new WeakMap(),roots=new Map();
+  const status=byId("status"),mount=byId("mount"),sourceSelector="ix-application-header,ix-application,ix-menu,ix-avatar,ix-dropdown,ix-modal,ix-application-switch-modal";
+  const neutralImage="data:image/svg+xml,"+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="6" fill="#31566c"/><path d="M10 12h20v16H10z" fill="#fff"/><path d="M15 17h10v6H15z" fill="#31566c"/></svg>');
+  let current=null,generation=0,sequence=0,nodeSequence=0,busy=false,scheduled=false,armed=null;
+  function describe(node){
+    if(node===window)return{tag:"window"};if(node===document)return{tag:"#document"};
+    if(node instanceof ShadowRoot)return{tag:"#shadow-root",host:describe(node.host)};
+    if(!(node instanceof Element))return{tag:node?.nodeName??null};
+    if(!nodeIds.has(node))nodeIds.set(node,++nodeSequence);
+    return{observationId:nodeIds.get(node),tag:node.tagName.toLowerCase(),id:node.id||null,slot:node.getAttribute("slot"),role:node.getAttribute("role"),label:node.getAttribute("aria-label"),expanded:node.getAttribute("aria-expanded"),hidden:node.getAttribute("aria-hidden"),text:(node.textContent??"").trim().slice(0,90)};
+  }
+  function deepFocus(){const result=[];let node=document.activeElement;while(node){result.push(describe(node));node=node.shadowRoot?.activeElement??null;}return result;}
+  function composedParents(node){const result=[];const seen=new Set();while(node&&!seen.has(node)){seen.add(node);result.push(describe(node));node=node.assignedSlot??node.parentNode??(node instanceof ShadowRoot?node.host:null);}return result;}
+  function geometry(node){if(!(node instanceof Element))return null;const style=getComputedStyle(node),rect=node.getBoundingClientRect();return{display:style.display,visibility:style.visibility,opacity:style.opacity,position:style.position,overflow:style.overflow,rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},clientRects:node.getClientRects().length,composedParents:composedParents(node)};}
+  function serialize(value){if(value===undefined)return{$type:"undefined"};try{return JSON.parse(JSON.stringify(value));}catch{return{$type:"unserializable",kind:typeof value};}}
+  function append(list,entry,limit){list.push({seq:++sequence,generation,time:performance.now(),...entry});if(list.length>limit)list.splice(0,list.length-limit);schedule();}
+  function record(type,extra={}){append(events,{type,...extra,focus:deepFocus()},250);}
+  function nativeControl(host){const native=host?.shadowRoot?.querySelector("button,input,[tabindex]");return{host:describe(host),native:describe(native),geometry:geometry(host)};}
+  function popupState(dropdown){const dialog=dropdown?.shadowRoot?.querySelector("dialog");let popoverOpen=null;try{popoverOpen=dialog?.matches(":popover-open")??false;}catch{}return{host:describe(dropdown),show:dropdown?.show??null,visible:dropdown?.visible??null,geometry:geometry(dropdown),nativeDialog:dialog?{node:describe(dialog),open:dialog.open,popover:dialog.getAttribute("popover"),popoverOpen,geometry:geometry(dialog)}:null};}
+  function nodeState(node){let selection=null;if(node instanceof HTMLInputElement)try{selection={start:node.selectionStart,end:node.selectionEnd,direction:node.selectionDirection};}catch{}return{node:describe(node),connected:node.isConnected,identityMatchesDocument:document.getElementById(node.id)===node,documentIdCount:node.id?document.querySelectorAll(`[id="${node.id}"]`).length:0,assignedSlot:describe(node.assignedSlot),value:node instanceof HTMLInputElement?node.value:null,selection,count:node.dataset.fixtureCount??null,geometry:geometry(node)};}
+  function armedState(){if(!armed)return null;const{action,delay,ownerGeneration,status,armedAt,startedAt,executedAt}=armed;return{action,delay,ownerGeneration,status,armedAt,startedAt:startedAt??null,executedAt:executedAt??null};}
+  function snapshot(){
+    const header=current?.header,shadow=header?.shadowRoot,overflow=shadow?.querySelector("ix-dropdown[data-overflow-dropdown]");
+    const slots=[...(shadow?.querySelectorAll("slot")??[])].map(slot=>({node:describe(slot),name:slot.name||"default",parent:describe(slot.parentElement),assigned:slot.assignedElements({flatten:true}).map(describe),geometry:geometry(slot)}));
+    return{revision,generation,ready:status.dataset.ready==="true",mode:current?.mode??null,viewport:{width:innerWidth,height:innerHeight,rootFontSize:getComputedStyle(document.documentElement).fontSize,sm:matchMedia("(max-width:48em)").matches,md:matchMedia("(min-width:48.0625em) and (max-width:80em)").matches,lg:matchMedia("(min-width:80.0625em)").matches},stage:geometry(mount),focus:deepFocus(),armed:armedState(),observedShadowRoots:roots.size,
+      header:header?{node:describe(header),connected:header.isConnected,className:header.className,showMenu:header.showMenu,enableTopLayer:header.enableTopLayer,name:header.name,nameSuffix:header.nameSuffix,geometry:geometry(header),menu:nativeControl(shadow?.querySelector("ix-menu-expand-icon")),switch:nativeControl(shadow?.querySelector(".app-switch")),more:nativeControl(shadow?.querySelector("[data-context-menu]")),regions:[...(shadow?.querySelectorAll(".left-side,.right-side,.content,.secondary,.logo,.app-icon,.name,.slot-content")??[])].map(node=>({node:describe(node),className:node.className,geometry:geometry(node)})),slots,overflow:popupState(overflow)}:null,
+      application:current?.application?{node:describe(current.application),forceBreakpoint:serialize(current.application.forceBreakpoint),breakpoints:serialize(current.application.breakpoints),className:current.application.className,config:serialize(current.application.appSwitchConfig),sidebarConnected:current.sidebar.isConnected,sidebarSlot:current.application.shadowRoot?.querySelector('slot[name="application-sidebar"]')?.assignedElements({flatten:true}).map(describe)??[]}:null,
+      menu:current?.menu?{node:describe(current.menu),expand:current.menu.expand,pinned:current.menu.pinned}:null,
+      retainedNodes:current?Object.fromEntries(Object.entries(current.nodes).map(([key,node])=>[key,nodeState(node)])):{},avatarDropdown:popupState(current?.avatar.shadowRoot?.querySelector("ix-dropdown"))};
+  }
+  function schedule(){if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;byId("state").textContent=JSON.stringify(snapshot(),null,2);byId("events").textContent=JSON.stringify(events,null,2);byId("trace").textContent=JSON.stringify(trace,null,2);});}
+  const tracedTypes=["click","pointerdown","pointerup","keydown","keyup","input","change","focusin","focusout","slotchange","beforetoggle","toggle","close","cancel","menuToggle","expandChange","mapExpandChange","openAppSwitch","showChange","showChanged"];
+  function observeEvent(event,site,capture){
+    const path=event.composedPath(),host=event.currentTarget instanceof ShadowRoot?event.currentTarget.host:null;
+    if(!path.some(node=>node instanceof Element&&node.matches(sourceSelector))&&!host?.matches(sourceSelector))return;
+    if(!eventIds.has(event)){eventIds.set(event,++sequence);setTimeout(()=>append(trace,{dispatch:eventIds.get(event),site:"after-dispatch-task",type:event.type,key:event.key??null,detail:serialize(event.detail),trusted:event.isTrusted,bubbles:event.bubbles,cancelable:event.cancelable,composed:event.composed,defaultPrevented:event.defaultPrevented,cancelBubbleAfterDispatchResettable:event.cancelBubble,propagationNote:"Dispatch resets stop flags; use reached stages and cancelBubbleDuringDispatch for propagation evidence.",focus:deepFocus()},650),0);}
+    append(trace,{dispatch:eventIds.get(event),type:event.type,site,phase:capture?"capture":"bubble",eventPhase:event.eventPhase,key:event.key??null,code:event.code??null,shift:event.shiftKey??null,alt:event.altKey??null,ctrl:event.ctrlKey??null,meta:event.metaKey??null,inputType:event.inputType??null,data:event.data??null,value:event.target instanceof HTMLInputElement?event.target.value:null,detail:serialize(event.detail),trusted:event.isTrusted,bubbles:event.bubbles,cancelable:event.cancelable,composed:event.composed,defaultPrevented:event.defaultPrevented,cancelBubbleDuringDispatch:event.cancelBubble,target:describe(event.target),path:path.map(describe),focus:deepFocus()},650);
+  }
+  function relevantMutation(mutation){const element=mutation.target instanceof Element?mutation.target:mutation.target.parentElement;return !element?.closest("[data-fixture-output]");}
+  function attach(root){if(roots.has(root))return;const abort=new AbortController(),observer=new MutationObserver(records=>{if(records.some(relevantMutation))discover();});roots.set(root,{abort,observer});for(const type of tracedTypes)for(const capture of [true,false])root.addEventListener(type,event=>observeEvent(event,root instanceof ShadowRoot?`shadow:${root.host.id||root.host.tagName}`:"#document",capture),{capture,passive:true,signal:abort.signal});observer.observe(root===document?document.body:root,{subtree:true,childList:true,attributes:true,attributeFilter:["class","style","open","popover","hidden","slot","aria-hidden","aria-expanded","hydrated"]});}
+  function discover(){
+    for(const[root,entry]of roots)if(root instanceof ShadowRoot&&!root.host.isConnected){entry.abort.abort();entry.observer.disconnect();roots.delete(root);}
+    const queue=[document];while(queue.length){const root=queue.shift();attach(root);for(const node of root.querySelectorAll("*"))if(node.shadowRoot)queue.push(node.shadowRoot);}
+    const overflow=current?.header.shadowRoot?.querySelector("ix-dropdown[data-overflow-dropdown]");
+    if(overflow&&!current.observedOverflows.has(overflow)){const owner=current;current.observedOverflows.add(overflow);overflow.addEventListener("showChange",event=>{if(current!==owner||!overflow.isConnected||event.composedPath()[0]!==overflow)return;if(byId("veto-overflow").checked)event.preventDefault();record("overflow-request-decision",{detail:serialize(event.detail),veto:byId("veto-overflow").checked,defaultPrevented:event.defaultPrevented,target:describe(overflow)});},{signal:owner.consumers.signal});overflow.addEventListener("showChanged",event=>{if(current!==owner||!overflow.isConnected||event.composedPath()[0]!==overflow)return;if(event.detail===false&&armed?.status==="armed")armed.seenClosed=true;if(event.detail===true)startArmed();record("overflow-completed",{detail:serialize(event.detail),state:popupState(overflow)});},{signal:owner.consumers.signal});}
+    schedule();
+  }
+  function enableControls(enabled){for(const button of document.querySelectorAll("[data-source-control]"))button.disabled=!enabled;for(const control of document.querySelectorAll("[data-context-control]"))control.disabled=!enabled||!current?.application;for(const id of ["force","supported","apply-layout","sidebar"])byId(id).disabled=!enabled||!current?.application;}
+  function applyHeader(){if(!current)return;const header=current.header;header.name=byId("name").value;header.nameSuffix=byId("suffix").value;header.showMenu=byId("show-menu").checked;header.enableTopLayer=byId("top-layer").checked;header.companyLogo=byId("property-logo").checked?neutralImage:undefined;header.companyLogoAlt="Neutral property logo";header.ariaLabelAppSwitchIconButton=byId("switch-label").value;header.ariaLabelMoreMenuIconButton=byId("more-label").value;record("fixture-header-props",{showMenu:header.showMenu,enableTopLayer:header.enableTopLayer});}
+  function supported(){return byId("supported").value==="large"?["lg"]:byId("supported").value==="small"?["sm"]:["sm","md","lg"];}
+  function applyLayout(){if(!current?.application)return;current.application.breakpoints=supported();current.application.forceBreakpoint=byId("force").value==="auto"?undefined:byId("force").value;record("fixture-public-layout",{force:serialize(current.application.forceBreakpoint),supported:supported()});}
+  function nextConfig(){return{currentAppId:"review",i18nAppSwitch:`Layout context ${++current.configRevision}`,i18nLoadingApps:"Loading layout applications…",apps:[]};}
+  function applyConfig(present){if(!current?.application)return;current.application.appSwitchConfig=present?nextConfig():undefined;record("fixture-public-config",{config:serialize(current.application.appSwitchConfig)});}
+  function applySidebar(value=byId("sidebar").checked){if(!current?.application)return;if(value){if(current.sidebar.parentElement!==current.application)current.application.append(current.sidebar);}else current.sidebar.remove();record("fixture-sidebar-slot",{present:value,node:describe(current.sidebar)});}
+  function applySlots(){if(!current)return;for(const[group,nodes]of Object.entries(current.groups)){if(byId(`present-${group}`).checked){for(const node of nodes)if(node.parentElement!==current.header)current.header.append(node);}else for(const node of nodes)node.remove();}record("fixture-slot-presence",{present:Object.fromEntries(Object.keys(current.groups).map(group=>[group,byId(`present-${group}`).checked]))});}
+  function cancelArmed(reason){if(!armed)return;const previous=armedState();if(armed.timer!==null)clearTimeout(armed.timer);armed=null;byId("arm-status").textContent=`Fixture update canceled: ${reason}.`;record("fixture-arm-canceled",{reason,previous});}
+  function arm(){if(!current?.application)return;const delay=Number(byId("arm-delay").value);if(!Number.isFinite(delay)||delay<0){byId("arm-status").textContent="Use a nonnegative delay.";return;}cancelArmed("rearmed");const action=byId("arm-action").value,overflow=current.header.shadowRoot?.querySelector("ix-dropdown[data-overflow-dropdown]");armed={action,delay,owner:current,ownerGeneration:generation,status:"armed",timer:null,armedAt:performance.now(),seenClosed:!overflow?.show,payload:action==="config"?nextConfig():null,sidebarPresent:!current.sidebar.isConnected};byId("arm-status").textContent=`Armed ${action} for the next source showChanged(true), then ${delay}ms.`;record("fixture-armed",armedState());}
+  function startArmed(){const plan=armed;if(!plan||plan.status!=="armed"||!plan.seenClosed)return;plan.status="waiting";plan.startedAt=performance.now();record("fixture-arm-start",{...armedState(),overflow:popupState(plan.owner.header.shadowRoot?.querySelector("ix-dropdown[data-overflow-dropdown]"))});plan.timer=setTimeout(()=>{if(armed!==plan||current!==plan.owner||generation!==plan.ownerGeneration)return;plan.timer=null;try{if(plan.action==="config")plan.owner.application.appSwitchConfig=plan.payload;else if(plan.action==="sidebar"){if(plan.sidebarPresent)plan.owner.application.append(plan.owner.sidebar);else plan.owner.sidebar.remove();}else plan.owner.application.forceBreakpoint=plan.action==="auto"?undefined:plan.action;plan.status="executed";plan.executedAt=performance.now();byId("arm-status").textContent=`Executed ${plan.action}.`;record("fixture-arm-executed",{...armedState(),elapsed:plan.executedAt-plan.startedAt});}catch(error){plan.status="error";record("fixture-arm-error",{message:String(error),...armedState()});}},plan.delay);}
+  function inputNode(kind,slot){const input=document.createElement("input");input.id=`upstream-header-layout-${kind}-input`;if(slot)input.slot=slot;input.setAttribute("aria-label",`${kind} persistent input`);input.placeholder=`${kind} value`;input.value=`${kind} initial`;input.autocomplete="off";return input;}
+  function actionNode(kind,slot){const action=document.createElement("ix-button");action.id=`upstream-header-layout-${kind}-action`;if(slot)action.slot=slot;action.dataset.fixtureCount="0";action.textContent=`${kind} action (0)`;action.addEventListener("click",()=>{const count=Number(action.dataset.fixtureCount)+1;action.dataset.fixtureCount=String(count);action.textContent=`${kind} action (${count})`;record("fixture-slot-action",{kind,count,node:describe(action)});});return action;}
+  async function remount(mode){
+    if(busy)return;busy=true;cancelArmed("fresh Header");enableControls(false);status.dataset.ready="false";status.textContent=`Mounting ${mode} source case…`;
+    try{
+      if(current?.application){current.application.forceBreakpoint=undefined;current.application.breakpoints=["sm","md","lg"];await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);}
+      current?.consumers.abort();mount.replaceChildren();generation++;
+      const header=document.createElement("ix-application-header");header.id="upstream-header-layout-source";header.appIcon=neutralImage;header.appIconAlt="Neutral application symbol";
+      const defaultInput=inputNode("default",""),defaultAction=actionNode("default",""),secondaryInput=inputNode("secondary","secondary"),secondaryAction=actionNode("secondary","secondary"),overflowInput=inputNode("overflow","overflow"),overflowAction=actionNode("overflow","overflow");
+      const logo=document.createElement("img");logo.id="upstream-header-layout-logo";logo.slot="logo";logo.className="source-logo";logo.src=neutralImage;logo.alt="Neutral slotted logo";logo.width=32;logo.height=32;
+      const avatar=document.createElement("ix-avatar");avatar.id="upstream-header-layout-avatar";avatar.slot="ix-application-header-avatar";avatar.initials="RV";avatar.username="Review user";avatar.tooltipText="Review user";const avatarAction=actionNode("avatar","");avatar.append(avatarAction);
+      // Initially provide the neutral logo even if its presence control is off.
+      // Apply the requested presence only after source componentDidLoad, so its
+      // excluded automatic company-mark path is never needed by this fixture.
+      header.append(defaultInput,defaultAction,secondaryInput,secondaryAction,overflowInput,overflowAction,logo,avatar);
+      const application=mode==="contained"?document.createElement("ix-application"):null,menu=application?document.createElement("ix-menu"):null,sidebar=document.createElement("div");sidebar.id="upstream-header-layout-sidebar-content";sidebar.slot="application-sidebar";sidebar.className="source-sidebar";sidebar.textContent="Retained neutral sidebar";
+      current={header,application,menu,sidebar,avatar,mode,configRevision:0,consumers:new AbortController(),observedOverflows:new WeakSet(),groups:{default:[defaultInput,defaultAction],secondary:[secondaryInput,secondaryAction],overflow:[overflowInput,overflowAction],avatar:[avatar],logo:[logo]},nodes:{defaultInput,defaultAction,secondaryInput,secondaryAction,overflowInput,overflowAction,avatar,avatarAction,logo,sidebar}};
+      applyHeader();
+      header.addEventListener("menuToggle",event=>{if(byId("veto-menu").checked)event.preventDefault();record("menu-toggle-consumer",{detail:serialize(event.detail),veto:byId("veto-menu").checked,defaultPrevented:event.defaultPrevented});},{signal:current.consumers.signal});
+      header.addEventListener("openAppSwitch",event=>{if(byId("veto-switch").checked)event.preventDefault();record("switch-request-consumer",{detail:serialize(event.detail),veto:byId("veto-switch").checked,defaultPrevented:event.defaultPrevented});},{signal:current.consumers.signal});
+      if(application){application.id="upstream-header-layout-application";application.breakpoints=supported();application.forceBreakpoint=byId("force").value==="auto"?undefined:byId("force").value;application.appSwitchConfig=nextConfig();menu.id="upstream-header-layout-menu";menu.pinned=false;const item=document.createElement("ix-menu-item");item.label="Navigation item";menu.append(item);menu.addEventListener("expandChange",event=>{if(byId("veto-expand").checked)event.preventDefault();record("menu-expand-consumer",{detail:serialize(event.detail),veto:byId("veto-expand").checked,defaultPrevented:event.defaultPrevented});},{signal:current.consumers.signal});const body=document.createElement("div");body.className="source-body";body.textContent="Source Application content. Resize the viewport or use public Application props; the retained slotted inputs and actions are never re-rendered by the fixture.";application.append(header,menu,body);mount.append(application);}else mount.append(header);
+      await Promise.all([header,avatar,...Object.values(current.nodes).filter(node=>node.tagName==="IX-BUTTON"),...(application?[application,menu]:[])].map(node=>node.componentOnReady()));
+      applySlots();applySidebar();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);discover();status.dataset.ready="true";status.textContent=`Ready · ${mode} · generation ${generation}`;record("fixture-ready",{mode,header:describe(header)});
+    }catch(error){status.textContent=`Setup failed: ${error.message}`;record("fixture-error",{message:String(error)});}finally{busy=false;enableControls(status.dataset.ready==="true");}
+  }
+  attach(document);
+  byId("contained").addEventListener("click",()=>remount("contained"));byId("standalone").addEventListener("click",()=>remount("standalone"));
+  byId("apply-header").addEventListener("click",applyHeader);byId("apply-layout").addEventListener("click",applyLayout);byId("apply-slots").addEventListener("click",applySlots);byId("sidebar").addEventListener("change",()=>applySidebar());
+  byId("config-none").addEventListener("click",()=>applyConfig(false));byId("config-present").addEventListener("click",()=>applyConfig(true));byId("config-replace").addEventListener("click",()=>applyConfig(true));
+  byId("width").addEventListener("change",()=>{mount.style.width=byId("width").value;record("fixture-stage-width",{value:byId("width").value});});
+  byId("arm").addEventListener("click",arm);byId("disarm").addEventListener("click",()=>cancelArmed("explicit"));byId("snapshot").addEventListener("click",schedule);byId("clear").addEventListener("click",()=>{events.length=0;trace.length=0;schedule();});
+  window.addEventListener("resize",()=>{record("fixture-viewport-resize",{width:innerWidth,height:innerHeight});},{passive:true});
+  try{const{defineCustomElements}=await import("/www/node_modules/@siemens/ix-icons/loader/index.es2017.js");defineCustomElements();await Promise.all(["ix-application","ix-application-header","ix-menu","ix-button","ix-avatar"].map(tag=>customElements.whenDefined(tag)));await remount("contained");}catch(error){status.textContent=`Runtime unavailable: ${error.message}`;record("bootstrap-error",{message:String(error)});}
+</script>
+</body>
+</html>
