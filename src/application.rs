@@ -531,12 +531,44 @@ struct CategoryModel {
     #[cfg(test)]
     requested: Option<Option<usize>>,
 }
-// The root retains modality across Menu remounts. Raw listeners are Menu-owned:
-// events while no Menu exists and separate VDOM roots remain outside this adapter.
-#[derive(Default)]
+// Document input policy belongs to the VDOM root, including intervals with no
+// Menu. The native journal contains only unacknowledged raw facts; Rust owns
+// key membership, modality and sequence acceptance. Separate VDOMs remain an
+// explicit scope adaptation to the source module's document-global detector.
 struct CategoryModality {
     keyboard: bool,
     owners: BTreeMap<String, u64>,
+    document_owner: String,
+    document_sequence: u64,
+    #[cfg(any(feature = "web", feature = "desktop", test))]
+    document_started: bool,
+}
+impl Default for CategoryModality {
+    fn default() -> Self {
+        Self {
+            keyboard: false,
+            owners: BTreeMap::new(),
+            document_owner: format!(
+                "ix-document-input-{}",
+                NAV_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            document_sequence: 0,
+            #[cfg(any(feature = "web", feature = "desktop", test))]
+            document_started: false,
+        }
+    }
+}
+#[derive(serde::Deserialize)]
+struct CategoryDocumentInput {
+    sequence: u64,
+    kind: String,
+    #[serde(default)]
+    key: String,
+}
+#[derive(serde::Deserialize)]
+struct CategoryDocumentBatch {
+    owner: String,
+    entries: Vec<CategoryDocumentInput>,
 }
 #[derive(Clone, Default)]
 struct CategoryHoverCoordinator(
@@ -557,6 +589,15 @@ impl CategoryHoverCoordinator {
     fn unregister_owner(&self, owner: &str) {
         self.1.borrow_mut().owners.remove(owner);
     }
+    fn notify_categories(&self) {
+        let categories = self.0.borrow().values().cloned().collect::<Vec<_>>();
+        for category in categories
+            .into_iter()
+            .filter_map(|category| category.upgrade())
+        {
+            CategoryNavigation(category).notify();
+        }
+    }
     fn broadcast(&self, source: usize, active_categories: &[usize]) {
         let categories = self.0.borrow().values().cloned().collect::<Vec<_>>();
         for category in categories
@@ -566,31 +607,77 @@ impl CategoryHoverCoordinator {
             CategoryNavigation(category).hide_for_other(source, active_categories);
         }
     }
+    fn document_observation(&self, batch: CategoryDocumentBatch) -> Option<u64> {
+        let (changed, sequence) = {
+            let mut modality = self.1.borrow_mut();
+            if batch.owner != modality.document_owner {
+                return None;
+            }
+            let previous = modality.keyboard;
+            for input in batch.entries {
+                if input.sequence <= modality.document_sequence
+                    || !matches!(input.kind.as_str(), "keydown" | "mousedown" | "touchstart")
+                {
+                    continue;
+                }
+                modality.document_sequence = input.sequence;
+                match input.kind.as_str() {
+                    "mousedown" | "touchstart" => modality.keyboard = false,
+                    "keydown"
+                        if matches!(
+                            input.key.as_str(),
+                            "Tab"
+                                | "ArrowDown"
+                                | "Space"
+                                | "Escape"
+                                | " "
+                                | "Shift"
+                                | "Enter"
+                                | "ArrowLeft"
+                                | "ArrowRight"
+                                | "ArrowUp"
+                                | "Home"
+                                | "End"
+                        ) =>
+                    {
+                        modality.keyboard = true
+                    }
+                    _ => {}
+                }
+            }
+            (previous != modality.keyboard, modality.document_sequence)
+        };
+        if changed {
+            self.notify_categories();
+        }
+        Some(sequence)
+    }
     fn observation(&self, owner: &str, event: FormEvent) {
+        // A live Menu remains the synchronous event bridge, but does not own
+        // the document sequence. The same journal also arrives on the root
+        // stream; rejecting duplicates prevents an older async batch rollback.
+        if let Ok(batch) = serde_json::from_str::<CategoryDocumentBatch>(&event.value()) {
+            if self.1.borrow().owners.contains_key(owner) {
+                self.document_observation(batch);
+            }
+            return;
+        }
         let Ok(message) = serde_json::from_str::<CategoryHoverReport>(&event.value()) else {
             return;
         };
         if message.owner != owner {
             return;
         }
-        let document = message.surface == "document"
-            && message.category == 0
-            && matches!(
-                message.kind.as_str(),
-                "keydown" | "mousedown" | "touchstart"
-            );
         let category = self
             .0
             .borrow()
             .get(&message.category)
             .and_then(std::rc::Weak::upgrade);
-        if !document
-            && category
-                .as_ref()
-                .is_none_or(|core| core.owner != owner || !core.model.borrow().alive)
-        {
+        let Some(category) =
+            category.filter(|core| core.owner == owner && core.model.borrow().alive)
+        else {
             return;
-        }
+        };
         {
             let mut modality = self.1.borrow_mut();
             let Some(previous) = modality.owners.get_mut(owner) else {
@@ -601,49 +688,65 @@ impl CategoryHoverCoordinator {
             }
             *previous = message.sequence;
         }
-        if document {
-            let next = match message.kind.as_str() {
-                "mousedown" | "touchstart" => Some(false),
-                "keydown"
-                    if matches!(
-                        message.key.as_str(),
-                        "Tab"
-                            | "ArrowDown"
-                            | "Space"
-                            | "Escape"
-                            | " "
-                            | "Shift"
-                            | "Enter"
-                            | "ArrowLeft"
-                            | "ArrowRight"
-                            | "ArrowUp"
-                            | "Home"
-                            | "End"
-                    ) =>
-                {
-                    Some(true)
-                }
-                _ => None,
-            };
-            let changed = next.is_some_and(|next| {
-                let mut modality = self.1.borrow_mut();
-                let changed = modality.keyboard != next;
-                modality.keyboard = next;
-                changed
-            });
-            if changed {
-                let categories = self.0.borrow().values().cloned().collect::<Vec<_>>();
-                for category in categories
-                    .into_iter()
-                    .filter_map(|category| category.upgrade())
-                {
-                    CategoryNavigation(category).notify();
+        CategoryNavigation(category).hover(message);
+    }
+    #[cfg(any(feature = "web", feature = "desktop", test))]
+    fn start_document_input(&self) {
+        let owner = {
+            let mut modality = self.1.borrow_mut();
+            if modality.document_started {
+                return;
+            }
+            modality.document_started = true;
+            modality.document_owner.clone()
+        };
+        let categories = Rc::downgrade(&self.0);
+        let modality = Rc::downgrade(&self.1);
+        // Desktop alpha.2 provides its Document below ROOT (Window/Portal).
+        // Capture the renderer provider here, allocate its Eval in the root task.
+        let document = dioxus::document::document();
+        // The receiver task belongs to ROOT so Menu removal cannot cancel it.
+        // Its owned guard releases the renderer's Eval when that task ends.
+        dioxus::core::spawn_forever(async move {
+            let owner =
+                serde_json::to_string(&owner).expect("document input identity serialization");
+            let script =
+                crate::menu_hover_dom::MENU_DOCUMENT_INPUT.replace("__DOCUMENT_OWNER__", &owner);
+            let mut guard = CategoryDocumentEval(document.eval(script));
+            while let Ok(batch) = guard.0.recv::<CategoryDocumentBatch>().await {
+                let (Some(categories), Some(modality)) = (categories.upgrade(), modality.upgrade())
+                else {
+                    break;
+                };
+                let coordinator = CategoryHoverCoordinator(categories, modality);
+                if let Some(sequence) = coordinator.document_observation(batch) {
+                    let _ = guard.0.send(serde_json::json!({"ack":sequence}));
                 }
             }
-        } else if let Some(category) = category {
-            CategoryNavigation(category).hover(message);
-        }
+            if let Some(modality) = modality.upgrade() {
+                modality.borrow_mut().document_started = false;
+            }
+        });
     }
+}
+#[cfg(any(feature = "web", feature = "desktop", test))]
+struct CategoryDocumentEval(dioxus::document::Eval);
+#[cfg(any(feature = "web", feature = "desktop", test))]
+impl Drop for CategoryDocumentEval {
+    fn drop(&mut self) {
+        // Eval is Copy and has no Drop cleanup. Release native listeners when
+        // the root task ends, including renderer teardown or channel failure.
+        let _ = self.0.send("finish");
+    }
+}
+fn use_category_hover_coordinator() -> CategoryHoverCoordinator {
+    let coordinator = use_root_context(CategoryHoverCoordinator::default);
+    #[cfg(any(feature = "web", feature = "desktop"))]
+    use_effect({
+        let coordinator = coordinator.clone();
+        move || coordinator.start_document_input()
+    });
+    coordinator
 }
 #[derive(serde::Deserialize)]
 struct CategoryHoverReport {
@@ -664,8 +767,6 @@ struct CategoryHoverReport {
     #[serde(default)]
     related_flyout_shadow: bool,
     sequence: u64,
-    #[serde(default)]
-    key: String,
     #[serde(default)]
     active_categories: Vec<usize>,
 }
@@ -1820,6 +1921,7 @@ fn menu_roving_bridge(owner: &str) -> String {
 const root=document.getElementById(__MENU_ROOT__), bar=root?.querySelector('[role="menubar"]'), transport=root?.querySelector('input[data-menu-observer]');
 if (!root || !bar || !transport) return;
 const hoverTransport=root.querySelector('input[data-menu-hover-observer]');
+document[Symbol.for('dioxus-ix-document-input')]?.get(hoverTransport?.dataset.menuDocumentOwner)?.sync();
 const hover=installMenuCategoryHover(root,message=>{if(hoverTransport?.isConnected){hoverTransport.value=JSON.stringify(message);hoverTransport.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));}});
 const events=new AbortController(); let previous='',sequence=0;const categoryPrevious=new Map();
 const send=(kind,event,extra={}) => {
@@ -2855,7 +2957,7 @@ pub fn Menu(
     let cleanup_bridge = bridge.clone();
     let cleanup_roving = roving_bridge.clone();
     let lifetime_roving = roving.clone();
-    let hover_coordinator = use_root_context(CategoryHoverCoordinator::default);
+    let hover_coordinator = use_category_hover_coordinator();
     hover_coordinator.register_owner(&menu_id);
     let cleanup_hover = hover_coordinator.clone();
     let cleanup_owner = menu_id.clone();
@@ -2877,6 +2979,7 @@ pub fn Menu(
     let roving_mount = menu_id.clone();
     let input_roving = roving.clone();
     let hover_owner = menu_id.clone();
+    let document_owner = hover_coordinator.1.borrow().document_owner.clone();
     let focus_roving = roving.clone();
     let blur_roving = roving.clone();
     let _ = (roving.revision)();
@@ -2893,7 +2996,7 @@ pub fn Menu(
         nav { id: menu_id.clone(), class: "ix-menu", "aria-label": application_name.clone(), "data-menu-root":"", "data-menu-focus-generation":focus_generation, "data-expanded": expanded().to_string(),
             onmounted: move |_| { *bridge.borrow_mut() = Some(dioxus::document::eval(&menu_focus_bridge(&mount_id))); },
             input {r#type:"hidden","data-menu-observer":menu_id.clone(),oninput:move |event|input_roving.observation(event)},
-            input {r#type:"hidden","data-menu-hover-observer":menu_id.clone(),oninput:move |event|hover_coordinator.observation(&hover_owner,event)},
+            input {r#type:"hidden","data-menu-hover-observer":menu_id.clone(),"data-menu-document-owner":document_owner,oninput:move |event|hover_coordinator.observation(&hover_owner,event)},
             if let Some(name) = application_name.clone() { div { class: "ix-menu-app-name", "{name}" } }
             button { class: "ix-menu-toggle ix-menu-item", r#type: "button", "data-menu-expansion-control":menu_id.clone(), "aria-label": if expanded() { "Collapse" } else { "Expand" }, "aria-expanded": expanded().to_string(),
                 onclick: move |_| request_expansion.call(None),
@@ -3202,7 +3305,7 @@ pub fn MenuCategory(
     let category_owner = owner
         .clone()
         .unwrap_or_else(|| format!("ix-menu-category-standalone-{id}"));
-    let hover_coordinator = use_root_context(CategoryHoverCoordinator::default);
+    let hover_coordinator = use_category_hover_coordinator();
     let category = use_hook(|| {
         CategoryNavigation::new(
             id,
@@ -4021,6 +4124,10 @@ pub(crate) const STYLES: &str = r#"
 "#;
 
 #[cfg(test)]
+#[path = "application_document_tests.rs"]
+mod document_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     struct MenuTestMouse;
@@ -4542,7 +4649,11 @@ mod tests {
         fn document_mode(&mut self, kind: &str, key: &str, sequence: u64) {
             let owner = self.context.model.borrow().owner.clone();
             let target = self.hover_inputs[&owner];
-            menu_dispatch(&self.dom, "input", target, serde_json::json!({"owner":owner,"category":0,"surface":"document","kind":kind,"key":key,"sequence":sequence}).to_string());
+            let coordinator = self
+                .dom
+                .in_scope(ScopeId::ROOT, consume_context::<CategoryHoverCoordinator>);
+            let document_owner = coordinator.1.borrow().document_owner.clone();
+            menu_dispatch(&self.dom, "input", target, serde_json::json!({"owner":document_owner,"entries":[{"kind":kind,"key":key,"sequence":sequence}]}).to_string());
             self.settle();
         }
         fn hover_active(&mut self, label: &str, kind: &str, sequence: u64, active: &[usize]) {
@@ -4989,6 +5100,163 @@ mod tests {
         assert!(
             !coordinator.keyboard(),
             "disposed owner reports are rejected"
+        );
+    }
+
+    #[test]
+    fn menu_category_document_journal_preserves_gap_keys_before_later_ignored_inputs_and_replays() {
+        let coordinator = CategoryHoverCoordinator::default();
+        let owner = coordinator.1.borrow().document_owner.clone();
+        let batch = |owner: &str, entries: &[(u64, &str, &str)]| CategoryDocumentBatch {
+            owner: owner.to_string(),
+            entries: entries
+                .iter()
+                .map(|&(sequence, kind, key)| CategoryDocumentInput {
+                    sequence,
+                    kind: kind.into(),
+                    key: key.into(),
+                })
+                .collect(),
+        };
+        assert!(coordinator.1.borrow().owners.is_empty());
+        // A live bootstrap may overtake the async root stream. It carries the
+        // unacknowledged gap key as well as the newer irrelevant key.
+        assert_eq!(
+            coordinator.document_observation(batch(
+                &owner,
+                &[(1, "keydown", "Tab"), (2, "keydown", "x"),]
+            )),
+            Some(2)
+        );
+        assert!(coordinator.keyboard());
+        coordinator.document_observation(batch(&owner, &[(1, "mousedown", "")]));
+        assert!(
+            coordinator.keyboard(),
+            "late async replay cannot undo newer state"
+        );
+        coordinator.document_observation(batch(
+            &owner,
+            &[
+                (2, "keydown", "x"),
+                (3, "touchstart", ""),
+                (4, "keydown", "x"),
+            ],
+        ));
+        assert!(
+            !coordinator.keyboard(),
+            "later ignored key must not erase earlier reset"
+        );
+        assert_eq!(
+            coordinator.document_observation(batch("wrong-root", &[(99, "keydown", "Tab")])),
+            None
+        );
+        assert_eq!(coordinator.1.borrow().document_sequence, 4);
+        coordinator.document_observation(batch(&owner, &[(99, "pointermove", "")]));
+        assert_eq!(
+            coordinator.1.borrow().document_sequence,
+            4,
+            "unrecognized transport kind cannot supersede input"
+        );
+        coordinator.document_observation(batch(&owner, &[(5, "keydown", "Home")]));
+        assert!(coordinator.keyboard());
+    }
+
+    #[test]
+    fn menu_category_document_mode_survives_zero_owners_and_is_inherited_by_fresh_menu() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = MenuHarness::new();
+        let original = h.category("Category");
+        let coordinator = original.0.hover_coordinator.clone();
+        let owner = coordinator.1.borrow().document_owner.clone();
+        h.config.borrow_mut().visible = false;
+        h.update();
+        assert!(coordinator.1.borrow().owners.is_empty());
+        assert!(coordinator.0.borrow().is_empty());
+        assert!(!original.0.model.borrow().alive);
+        let ack = coordinator.document_observation(CategoryDocumentBatch {
+            owner: owner.clone(),
+            entries: vec![
+                CategoryDocumentInput {
+                    sequence: 1,
+                    kind: "keydown".into(),
+                    key: "Tab".into(),
+                },
+                CategoryDocumentInput {
+                    sequence: 2,
+                    kind: "keydown".into(),
+                    key: "x".into(),
+                },
+            ],
+        });
+        assert_eq!(ack, Some(2));
+        h.config.borrow_mut().visible = true;
+        h.update();
+        let new_root = h
+            .dom
+            .in_scope(ScopeId::ROOT, consume_context::<CategoryHoverCoordinator>);
+        assert!(Rc::ptr_eq(&coordinator.1, &new_root.1));
+        assert!(new_root.keyboard());
+        assert_eq!(new_root.1.borrow().document_owner, owner);
+        let fresh = new_root
+            .0
+            .borrow()
+            .values()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect::<Vec<_>>();
+        assert_eq!(fresh.len(), 2);
+        assert!(
+            fresh
+                .iter()
+                .all(|category| category.model.borrow().alive && category.id != original.0.id)
+        );
+        assert!(
+            fresh
+                .iter()
+                .all(|category| category.hover_coordinator.keyboard())
+        );
+    }
+
+    #[test]
+    fn menu_category_document_sequence_is_independent_of_pointer_transport_and_menu_owners() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = MenuHarness::new();
+        let category = h.category("Category");
+        let coordinator = category.0.hover_coordinator.clone();
+        h.document_mode("keydown", "Tab", 1);
+        h.hover("Category", "host", "enter", 500, "mouse", &[]);
+        h.document_mode("mousedown", "", 2);
+        assert!(
+            !coordinator.keyboard(),
+            "a larger pointer sequence cannot block document reset"
+        );
+        h.document_mode("keydown", "Enter", 3);
+        assert!(coordinator.keyboard());
+        let owner = category.0.owner.clone();
+        let target = h.hover_inputs[&owner];
+        let doc_owner = coordinator.1.borrow().document_owner.clone();
+        coordinator.unregister_owner(&owner);
+        menu_dispatch(
+            &h.dom,
+            "input",
+            target,
+            serde_json::json!({"owner":doc_owner,"entries":[{"sequence":4,"kind":"touchstart"}]})
+                .to_string(),
+        );
+        assert!(
+            coordinator.keyboard(),
+            "a disposed live Menu transport cannot modify root state"
+        );
+        coordinator.document_observation(CategoryDocumentBatch {
+            owner: doc_owner,
+            entries: vec![CategoryDocumentInput {
+                sequence: 4,
+                kind: "touchstart".into(),
+                key: String::new(),
+            }],
+        });
+        assert!(
+            !coordinator.keyboard(),
+            "root stream remains authorized without that Menu owner"
         );
     }
 
