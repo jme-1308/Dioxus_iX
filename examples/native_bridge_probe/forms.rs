@@ -263,27 +263,27 @@ async fn verify_numbers() -> Result<(), String> {
 }
 
 async fn verify_dropdown_order() -> Result<(), String> {
-    run("document.querySelector('#dropdown-order-review .ix-dropdown-trigger').click();return null;").await?;
+    run("document.querySelector('#dropdown-order-review [role=button][data-ix-overlay-trigger]').click();return null;").await?;
     super::wait_native_observation("Native reorderable Dropdown opens and focuses its first enabled item", r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-root-menu'),active=document.activeElement;
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown:not(.ix-dropdown-submenu-surface) > .ix-dropdown-root-menu'),active=document.activeElement;
         return {ok:!!menu&&active?.closest('[role=menu]')===menu&&active.textContent.trim()==='A',active:active?.tagName==='BODY'?'BODY':active?.textContent?.slice(0,120)};
     "#).await?;
     let focused: bool = super::native_eval(r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-root-menu');
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown:not(.ix-dropdown-submenu-surface) > .ix-dropdown-root-menu');
         const c=[...menu.querySelectorAll('[data-ix-dropdown-item]')].find(node=>node.closest('[role=menu]')===menu&&node.textContent.trim()==='C');window.__ixProbeFocus(c);const focused=document.activeElement===c;window.__ixProbeDropdownC=c;c.click();return focused;
     "#).await?;
     if !focused {
         return Err("Native Dropdown C did not receive actual focus before selection.".into());
     }
     super::wait_native_observation("Native Dropdown keyed C remains focused after reorder", r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-root-menu');
-        const items=[...menu?.querySelectorAll('[data-ix-dropdown-item]')??[]].filter(node=>node.closest('[role=menu]')===menu&&!node.disabled);
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown:not(.ix-dropdown-submenu-surface) > .ix-dropdown-root-menu');
+        const items=[...menu?.querySelectorAll('[data-ix-dropdown-item]')??[]].filter(node=>node.closest('[role=menu]')===menu&&node.getAttribute('aria-disabled')!=='true');
         return {ok:items.map(node=>node.textContent.trim()).join(',')==='C,A,B,Tools'&&document.activeElement===items[0]&&items[0]===window.__ixProbeDropdownC,labels:items.map(node=>node.textContent.trim()),sameNode:items[0]===window.__ixProbeDropdownC,active:document.activeElement?.tagName==='BODY'?'BODY':document.activeElement?.textContent?.slice(0,120)};
     "#).await?;
     // Queue parent navigation, then open another level in the same browser
     // turn. The parent measurement must not steal the newer submenu focus.
     run(r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-root-menu');
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown:not(.ix-dropdown-submenu-surface) > .ix-dropdown-root-menu');
         const c=window.__ixProbeDropdownC,tools=[...menu.querySelectorAll('[data-ix-dropdown-item]')].find(node=>node.closest('[role=menu]')===menu&&node.textContent.trim()==='Tools');
         if(document.activeElement!==c)throw new Error('Rapid-navigation fixture lost C focus');
         c.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true,cancelable:true}));
@@ -292,8 +292,8 @@ async fn verify_dropdown_order() -> Result<(), String> {
         return null;
     "#).await?;
     const RAPID_SUBMENU: &str = r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-menu'),active=document.activeElement;
-        const tools=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-trigger');
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-surface > .ix-dropdown-root-menu'),active=document.activeElement;
+        const tools=document.querySelector('#dropdown-order-review .ix-dropdown-submenu > [data-ix-dropdown-item]');
         return {ok:!!menu&&tools?.getAttribute('aria-expanded')==='true'&&active?.closest('[role=menu]')===menu&&active.textContent.trim()==='A',
           open:tools?.getAttribute('aria-expanded'),menu:!!menu,activeTag:active?.tagName,active:active?.tagName==='BODY'?'BODY':active?.textContent?.slice(0,120)};
     "#;
@@ -311,10 +311,10 @@ async fn verify_dropdown_order() -> Result<(), String> {
             "Rapid Dropdown submenu lost newer focus after another paint/turn: {after_paint}"
         ));
     }
-    run("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));return null;").await?;
-    super::wait_native_observation("Rapid Dropdown child closes independently", r#"
-        const tools=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-trigger');
-        return {ok:tools?.getAttribute('aria-expanded')==='false'&&document.activeElement===tools&&!!document.querySelector('#dropdown-order-review .ix-dropdown-root-menu')};
+    run("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',code:'ArrowLeft',bubbles:true,cancelable:true}));return null;").await?;
+    super::wait_native_observation("Explicit-roving Dropdown Left closes child and retains root", r#"
+        const tools=document.querySelector('#dropdown-order-review .ix-dropdown-submenu > [data-ix-dropdown-item]');
+        return {ok:tools?.getAttribute('aria-expanded')==='false'&&document.activeElement===tools&&!document.querySelector('#dropdown-order-review .ix-dropdown:not(.ix-dropdown-submenu-surface) > .ix-dropdown-root-menu').hidden};
     "#).await?;
     for (key, expected) in [("Home", "C"), ("ArrowDown", "A"), ("End", "Tools")] {
         run(&format!("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{{key:'{key}',code:'{key}',bubbles:true,cancelable:true}}));return null;")).await?;
@@ -322,24 +322,24 @@ async fn verify_dropdown_order() -> Result<(), String> {
     }
     run("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',bubbles:true,cancelable:true}));return null;").await?;
     super::wait_native_observation("Native Dropdown submenu owns focus independently", r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-menu');return {ok:!!menu&&document.activeElement.closest('[role=menu]')===menu&&document.activeElement.textContent.trim()==='A'};
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-surface > .ix-dropdown-root-menu');return {ok:!!menu&&document.activeElement.closest('[role=menu]')===menu&&document.activeElement.textContent.trim()==='A'};
     "#).await?;
     run(r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-menu');
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-surface > .ix-dropdown-root-menu');
         const c=[...menu.querySelectorAll('[data-ix-dropdown-item]')].find(node=>node.textContent.trim()==='C');window.__ixProbeFocus(c);c.click();return null;
     "#).await?;
     super::wait_native_observation("Native submenu keyed reorder retains focus", r#"
-        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-menu');
-        return {ok:[...menu.querySelectorAll('[data-ix-dropdown-item]')].filter(node=>!node.disabled).map(node=>node.textContent.trim()).join(',')==='C,A,B'&&document.activeElement.textContent.trim()==='C'};
+        const menu=document.querySelector('#dropdown-order-review .ix-dropdown-submenu-surface > .ix-dropdown-root-menu');
+        return {ok:[...menu.querySelectorAll('[data-ix-dropdown-item]')].filter(node=>node.getAttribute('aria-disabled')!=='true').map(node=>node.textContent.trim()).join(',')==='C,A,B'&&document.activeElement.textContent.trim()==='C'};
     "#).await?;
     for (key, expected) in [("Home", "C"), ("ArrowDown", "A"), ("End", "B")] {
         run(&format!("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{{key:'{key}',code:'{key}',bubbles:true,cancelable:true}}));return null;")).await?;
-        super::wait_native_observation("Native submenu traversal excludes parent items", &format!("return {{ok:document.activeElement?.textContent.trim()==='{expected}'&&document.activeElement.closest('[role=menu]').classList.contains('ix-dropdown-submenu-menu'),active:document.activeElement?.textContent}};")).await?;
+        super::wait_native_observation("Native submenu traversal excludes parent items", &format!("return {{ok:document.activeElement?.textContent.trim()==='{expected}'&&document.activeElement.closest('[role=menu]').parentElement.classList.contains('ix-dropdown-submenu-surface'),active:document.activeElement?.textContent}};")).await?;
     }
-    run("document.querySelector('#dropdown-order-review .ix-dropdown-backdrop').click();return null;").await?;
+    run("document.getElementById('dropdown-order-outside').click();return null;").await?;
     super::wait_native_observation(
         "Native keyed Dropdown closes",
-        "return {ok:!document.querySelector('#dropdown-order-review [role=menu]')};",
+        "const menus=[...document.querySelectorAll('#dropdown-order-review [role=menu]')];return {ok:menus.length===2&&menus.every(menu=>menu.hidden)};",
     )
     .await?;
     Ok(())

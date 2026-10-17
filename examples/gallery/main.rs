@@ -27,11 +27,13 @@ mod form_scenarios;
 mod forms;
 mod grid_scenarios;
 mod header_layout_review;
+mod header_nested_review;
 mod header_switch_review;
 mod icon_scenarios;
 mod layout;
 mod layout_scenarios;
 mod menu_category_review;
+mod menu_hover_review;
 mod menu_navigation_review;
 mod menu_overlay_review;
 mod native_field_review;
@@ -201,7 +203,7 @@ fn Gallery() -> Element {
                         GalleryPage::DateTime => rsx! { date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { grid_scenarios::GridExamples {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
-                        GalleryPage::Application => rsx! { header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
+                        GalleryPage::Application => rsx! { header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
                         GalleryPage::Feedback => rsx! { dropdown_review::DropdownOrderReview {} FeedbackExamples {} },
                         GalleryPage::Composition => rsx! { tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat::ChatExamples {} },

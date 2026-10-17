@@ -196,8 +196,19 @@ pub fn DropdownButton(
     #[props(default)] loading: bool,
     aria_label: Option<String>,
     #[props(default)] class: String,
+    #[props(default)] navigation_mode: crate::DropdownNavigationMode,
+    #[props(default)] close_behavior: crate::DropdownCloseBehavior,
+    #[props(default)] enable_top_layer: bool,
+    #[props(default)] disable_focus_handling: bool,
+    #[props(default = true)] disable_focus_trap: bool,
+    #[props(default)] focus_checked_item: bool,
+    #[props(default)] onbeforechange: EventHandler<crate::DropdownChangeEvent>,
+    #[props(default)] onchange: EventHandler<bool>,
 ) -> Element {
-    rsx! { Dropdown { label, disabled, loading, variant, icon, aria_label, class, {children} } }
+    rsx! { Dropdown { label, disabled, loading, variant, icon, aria_label, class,
+        navigation_mode, close_behavior, enable_top_layer, disable_focus_handling,
+        disable_focus_trap, focus_checked_item, onbeforechange, onchange, {children}
+    } }
 }
 
 /// Horizontal group of quick action controls inside an open dropdown.

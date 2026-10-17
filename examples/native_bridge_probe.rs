@@ -529,18 +529,18 @@ async fn verify_native_grid_editing() -> Result<(), String> {
 
 async fn verify_native_dropdown_form() -> Result<(), String> {
     native_query(
-        "document.querySelector('#native-dropdown-form .ix-dropdown-trigger').click();return null;",
+        "document.querySelector('#native-dropdown-form [role=button][data-ix-overlay-trigger]').click();return null;",
     )
     .await?;
     wait_native_observation(
         "Dropdown in a form opens",
-        "return {ok:!!document.querySelector('#native-dropdown-form [role=menu]')};",
+        "const menu=document.querySelector('#native-dropdown-form [role=menu]');return {ok:!!menu&&!menu.hidden&&menu.getClientRects().length>0};",
     )
     .await?;
-    native_query("document.querySelector('#native-dropdown-form .ix-dropdown-backdrop').click();return null;").await?;
+    native_query("document.getElementById('native-dropdown-outside').click();return null;").await?;
     wait_native_observation("Dropdown outside dismissal does not submit", r#"
         const count=document.getElementById('native-dropdown-submits').textContent;
-        return {ok:!document.querySelector('#native-dropdown-form [role=menu]') && count==='0',submits:count};
+        const menu=document.querySelector('#native-dropdown-form [role=menu]');return {ok:!!menu&&menu.hidden&&count==='0',submits:count};
     "#).await?;
     println!("Native dropdown outside dismissal preserved its containing form without submission.");
     Ok(())
@@ -1247,6 +1247,7 @@ fn NativeDropdownFormProbe() -> Element {
             Dropdown {label:"Native form dropdown",DropdownItem {label:"Native form action"}}
         }
         output {id:"native-dropdown-submits","{submits}"}
+        button {id:"native-dropdown-outside",r#type:"button","Outside native form dropdown"}
     }
 }
 

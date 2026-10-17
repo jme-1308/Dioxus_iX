@@ -79,4 +79,4 @@ SPDX-FileCopyrightText: 2026 Siemens AG
 SPDX-License-Identifier: MIT
 ```
 
-The port also retains `Copyright (c) 2023-2026 Siemens AG` in `src/overlays.rs` and `Copyright (c) 2025-2026 Siemens AG` in `src/tooltip.rs`. All of these source-derived portions are covered by the MIT permission and warranty text reproduced above.
+The port also retains `Copyright (c) 2023-2026 Siemens AG` in `src/overlays.rs` and `src/dropdown.rs`, and `Copyright (c) 2025-2026 Siemens AG` in `src/tooltip.rs`. All of these source-derived portions are covered by the MIT permission and warranty text reproduced above.

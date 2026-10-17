@@ -20,7 +20,7 @@ pub fn DropdownOrderReview() -> Element {
     rsx! { section { id: "dropdown-order-review", class: "demo-section",
         h2 { "Dropdown item order" }
         p { "Select C to move it before A without replacing the focused item. Home, End and arrow keys follow the visible order and skip Unavailable. Tools repeats the same interaction in an independent submenu." }
-        Dropdown { label: "Reorderable actions",
+        Dropdown { label: "Reorderable actions", navigation_mode: DropdownNavigationMode::RovingTabindex,
             for label in labels {
                 DropdownItem { key: "{label}", label, disabled: label == "Unavailable", keep_open: true,
                     onclick: move |_| {
@@ -29,7 +29,7 @@ pub fn DropdownOrderReview() -> Element {
                     },
                 }
             }
-            DropdownSubmenu { label: "Tools",
+            DropdownSubmenu { label: "Tools", navigation_mode: DropdownNavigationMode::RovingTabindex,
                 for label in nested_labels {
                     DropdownItem { key: "{label}", label, disabled: label == "Unavailable", keep_open: true,
                         onclick: move |_| {
@@ -40,6 +40,7 @@ pub fn DropdownOrderReview() -> Element {
                 }
             }
         }
+        button { id: "dropdown-order-outside", r#type: "button", "Outside dropdown" }
         p { role: "status", "{selected}" }
     } }
 }

@@ -112,6 +112,31 @@ collapsible_if = "allow"
 [package.metadata.docs.rs]
 features = ["ssr"]
 
+[[example]]
+name = "header_nested_probe"
+path = "tools/header_nested_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "source_menu_hover_probe"
+path = "tools/source_menu_hover_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "menu_hover_probe"
+path = "tools/menu_hover_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "source_menu_focus_probe"
+path = "tools/source_menu_focus_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "menu_focus_probe"
+path = "tools/menu_focus_probe.rs"
+required-features = ["desktop"]
+
 [profile.dev]
 debug = "line-tables-only"   # backtraces keep line numbers
 

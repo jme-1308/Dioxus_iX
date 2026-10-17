@@ -35,6 +35,8 @@ function facts(kind,event){
   const path=event?.composedPath()||[];
   const target=path[0]||event?.target;
   return {
+    hosts:path.filter(n=>n instanceof Element&&n.hasAttribute("data-ix-overlay-host")).map(n=>n.getAttribute("data-ix-overlay-host")),
+    triggers:path.filter(n=>n instanceof Element&&n.hasAttribute("data-ix-overlay-trigger")).map(n=>n.getAttribute("data-ix-overlay-trigger")),
     owner,generation:Number(generation()),sequence:++sequence,connected:root.isConnected,kind,
     key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,default_prevented:!!event?.defaultPrevented,
     presence:groups.map(group=>!!group&&group.children.length>0),focus_count:items.length,

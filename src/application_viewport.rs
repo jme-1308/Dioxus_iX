@@ -185,6 +185,12 @@ pub(crate) struct ApplicationViewport {
     revision: Signal<u64>,
 }
 impl ApplicationViewport {
+    pub(crate) fn is_ready(&self) -> bool {
+        let _ = (self.revision)();
+        let model = self.model.borrow();
+        model.force.is_some() || model.facts.is_some()
+    }
+
     pub(crate) fn breakpoint(&self) -> ApplicationBreakpoint {
         let _ = (self.revision)();
         self.model.borrow().breakpoint()

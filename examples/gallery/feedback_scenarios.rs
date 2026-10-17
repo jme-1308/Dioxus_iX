@@ -139,7 +139,9 @@ pub fn FeedbackScenario(name: String) -> Element {
             } }
         }
         "dropdown" | "dropdown-roving-tabindex" => {
-            rsx! { DropdownTrigger { dropdown, "Open" } Dropdown { controller: dropdown, label: "Open", variant: ButtonVariant::Primary, DropdownHeader { label: "Category" }
+            rsx! { DropdownTrigger { dropdown, "Open" } Dropdown { controller: dropdown, label: "Open", variant: ButtonVariant::Primary,
+                navigation_mode: if name == "dropdown-roving-tabindex" { DropdownNavigationMode::RovingTabindex } else { DropdownNavigationMode::ActiveDescendant },
+                DropdownHeader { label: "Category" }
                 DropdownItem { label: "Item 2", onclick: move |_| selected.set("Item 2".into()) }
                 DropdownItem { label: "Item 3", onclick: move |_| selected.set("Item 3".into()) }
                 DropdownItem { label: "Item 4", onclick: move |_| selected.set("Item 4".into()) }

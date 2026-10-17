@@ -41,7 +41,7 @@ try {
  const command=id=>{get(id).focus();get(id).click();};
  const ready=()=>menu()?.dataset.menuNative==='true';
  const fresh=async()=>{const old=menu();command('reset');await wait(()=>menu()&&menu()!==old&&ready()&&events().length===0,'fresh ready fixture');};
- const go=async(node,name,label,shift=false)=>{node.focus();const prevented=key(node,name,shift);await wait(()=>document.activeElement===item(label),name+' focuses '+label);assert(prevented,name+' prevented');};
+ const go=async(node,name,label,shift=false)=>{node.focus();const prevented=key(node,name,shift);await wait(()=>document.activeElement===item(label)&&item(label)?.tabIndex===0,name+' focuses committed roving target '+label);assert(prevented,name+' prevented');};
  const checks=[];
  await wait(()=>bar()&&ready(),'native observer mount');await fresh();
  assert(bar().tabIndex===0&&bar().getAttribute('aria-orientation')==='vertical','native vertical menubar entry');

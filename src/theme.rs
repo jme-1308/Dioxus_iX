@@ -76,6 +76,7 @@ pub fn IxTheme(
         style { {crate::layout::STYLES} }
         style { {crate::notifications::STYLES} }
         style { {crate::overlays::STYLES} }
+        style { {crate::dropdown::STYLES} }
         style { {crate::patterns::STYLES} }
         style { {crate::tree::STYLES} }
         div {
