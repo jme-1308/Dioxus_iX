@@ -975,6 +975,29 @@ impl Drop for PopoverOpeningGuard {
     }
 }
 
+// Created before spawning: even a never-polled close task must release its
+// suppression interval when canceled, without clearing a newer operation.
+struct PopoverFocusSuppression {
+    popover: PopoverHandle,
+    generation: u64,
+}
+
+impl Drop for PopoverFocusSuppression {
+    fn drop(&mut self) {
+        if self
+            .popover
+            .surface
+            .generation
+            .try_peek()
+            .is_ok_and(|value| *value == self.generation)
+        {
+            if let Ok(mut suppressed) = self.popover.suppress_focus_open.try_write() {
+                *suppressed = false;
+            }
+        }
+    }
+}
+
 /// Create a stable popover controller in a component.
 pub fn use_popover() -> PopoverHandle {
     PopoverHandle {
@@ -1018,6 +1041,7 @@ impl PopoverHandle {
         }
         let generation = self.surface.generation.peek().wrapping_add(1);
         self.surface.generation.set(generation);
+        self.suppress_focus_open.set(false);
         self.surface.restore_after_mount.set(None);
         self.opening.set(true);
         let _opening = PopoverOpeningGuard {
@@ -1202,6 +1226,10 @@ impl PopoverHandle {
         // Hide the same native surface. Removing/replacing it would destroy
         // nested component state and vetoed child overlays.
         self.reported_open.set(false);
+        let suppression = PopoverFocusSuppression {
+            popover: self,
+            generation,
+        };
         #[cfg(any(
             all(feature = "web", target_arch = "wasm32"),
             all(feature = "desktop", not(target_arch = "wasm32"))
@@ -1212,13 +1240,34 @@ impl PopoverHandle {
                     callback.call(false);
                 }
             }
+            if self
+                .surface
+                .generation
+                .try_peek()
+                .is_ok_and(|value| *value == generation)
+                && self
+                    .suppress_focus_open
+                    .try_peek()
+                    .is_ok_and(|value| *value)
+            {
+                // Source resets after the restoration frame even when focus()
+                // emits no event because the trigger was already focused.
+                let _ =
+                    crate::dom_query::eval("await new Promise(requestAnimationFrame);return true;")
+                        .join::<bool>()
+                        .await;
+            }
+            drop(suppression);
         });
         #[cfg(not(any(
             all(feature = "web", target_arch = "wasm32"),
             all(feature = "desktop", not(target_arch = "wasm32"))
         )))]
-        if let Some(callback) = *self.onshowchanged.peek() {
-            callback.call(false);
+        {
+            drop(suppression);
+            if let Some(callback) = *self.onshowchanged.peek() {
+                callback.call(false);
+            }
         }
     }
 }
@@ -1304,13 +1353,14 @@ pub fn PopoverTrigger(
                 else { spawn(async move { let _=popover.show_native(false).await; }); }
             },
             onmouseenter: move |_| if !disabled && trigger_mode == PopoverTriggerMode::Hover {
+                popover.cancel_hover_hide();
                 popover.surface.remember_invoker(trigger.peek().clone());
                 spawn(async move { let _ = popover.show_native(false).await; });
             },
             onmouseleave: move |_| popover.schedule_hover_hide(false),
             onfocus: move |_| if !disabled && trigger_mode == PopoverTriggerMode::Hover {
-                let mut suppress = popover.suppress_focus_open;
-                if *suppress.peek() { suppress.set(false); return; }
+                popover.cancel_hover_hide();
+                if *popover.suppress_focus_open.peek() { return; }
                 popover.surface.remember_invoker(trigger.peek().clone());
                 spawn(async move { let _ = popover.show_native(false).await; });
             },
@@ -1415,6 +1465,7 @@ pub fn Popover(
             surface.generation.set(generation);
             let mut popover = popover;
             popover.opening.set(false);
+            popover.suppress_focus_open.set(false);
             popover.reported_open.set(false);
             popover.onshowchanged.set(None);
             popover.onshowchange.set(None);
@@ -1501,7 +1552,7 @@ pub fn PopoverHeader(
             if let Some(icon) = icon { span { style: icon_color.map(|name| format!("color:var({name})")), crate::Icon { name: icon, size: 24 } } }
             h3 { class: "ix-popover-title", {children} }
             {additional_items}
-            if !hide_close { button { class: "ix-dialog-close", r#type: "button", "aria-label": close_label, disabled: popover.is_none(), autofocus: true,
+            if !hide_close { button { class: "ix-dialog-close", r#type: "button", "aria-label": close_label, disabled: popover.is_none(),
                 onclick: move |event| { if let Some(callback) = oncloseclick { callback.call(event.clone()); }
                     if event.default_action_enabled() { if let Some(popover) = popover { popover.hide(); } } },
                 crate::Icon { name: "close".to_string(), size: 24 }

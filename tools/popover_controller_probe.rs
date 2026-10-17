@@ -53,6 +53,7 @@ struct ProbeContext {
     veto: Signal<[bool; 5]>,
     veto_open: Signal<[bool; 5]>,
     rows: Signal<Vec<Value>>,
+    nested_child_host: bool,
 }
 
 const NAMES: [&str; 5] = ["parent", "child", "unrelated", "sticky", "sibling"];
@@ -60,6 +61,8 @@ const NAMES: [&str; 5] = ["parent", "child", "unrelated", "sticky", "sibling"];
 #[component]
 fn Probe() -> Element {
     let mut generation = use_signal(|| 0_usize);
+    let mut nested_child_host = use_signal(|| true);
+    let mut hover_parent = use_signal(|| false);
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
@@ -90,14 +93,18 @@ fn Probe() -> Element {
             p { "Public Rust show/hide calls and callback vetoes. Desktop replay uses synthetic input only; web controls enable real browser inspection." }
             button { id: "popover-fresh-button", onclick: move |_| generation += 1, "Fresh fixture" }
             input { id: "popover-fresh", r#type: "hidden", oninput: move |_| generation += 1 }
+            button { id: "popover-topology-nested", onclick: move |_| { nested_child_host.set(true); hover_parent.set(false); generation += 1; }, "Fresh nested child host" }
+            button { id: "popover-topology-sibling", onclick: move |_| { nested_child_host.set(false); hover_parent.set(false); generation += 1; }, "Fresh sibling child host; nested trigger" }
+            button { id: "popover-topology-hover", onclick: move |_| { nested_child_host.set(true); hover_parent.set(true); generation += 1; }, "Fresh hover parent trigger" }
+            input { id: "popover-topology", r#type: "hidden", oninput: move |event| { let value = event.value(); nested_child_host.set(value != "sibling"); hover_parent.set(value == "hover"); generation += 1; } }
             button { id: "popover-outside", "Outside focus and Escape target" }
-            for current in [generation()] { Fixture { key: "{current}", generation: current } }
+            for current in [generation()] { Fixture { key: "{current}", generation: current, nested_child_host: nested_child_host(), hover_parent: hover_parent() } }
         }
     } }
 }
 
 #[component]
-fn Fixture(generation: usize) -> Element {
+fn Fixture(generation: usize, nested_child_host: bool, hover_parent: bool) -> Element {
     let handles = [
         use_popover(),
         use_popover(),
@@ -113,6 +120,7 @@ fn Fixture(generation: usize) -> Element {
         veto,
         veto_open,
         rows,
+        nested_child_host,
     };
     use_context_provider(|| context);
     let mut completed = use_signal(|| 0_usize);
@@ -123,7 +131,7 @@ fn Fixture(generation: usize) -> Element {
     .unwrap();
     let logs = serde_json::to_string(&*rows.read()).unwrap();
     rsx! {
-        section { id: "popover-fixture", "data-generation": generation.to_string(), "data-state": state, "data-completed": completed().to_string(),
+        section { id: "popover-fixture", "data-generation": generation.to_string(), "data-topology": if hover_parent { "hover" } else if nested_child_host { "nested" } else { "sibling" }, "data-state": state, "data-completed": completed().to_string(),
             input { id: "popover-command", r#type: "hidden", oninput: move |event| {
                 let command: Value = match serde_json::from_str(&event.value()) { Ok(value) => value, Err(_) => return };
                 let action = command["action"].as_str().unwrap_or("").to_owned();
@@ -158,8 +166,9 @@ fn Fixture(generation: usize) -> Element {
                     label { input { id: "popover-{name}-veto-open", r#type: "checkbox", checked: veto_open()[index], oninput: move |event| { let mut veto_open = veto_open; veto_open.write()[index] = event.checked(); } } "Veto {name} opening" }
                 }
             }
-            PopoverTrigger { popover: handles[0], "Parent native trigger" }
+            PopoverTrigger { popover: handles[0], trigger_mode: if hover_parent { PopoverTriggerMode::Hover } else { PopoverTriggerMode::Click }, "Parent native trigger" }
             Panel { index: 0 }
+            if !nested_child_host { Panel { index: 1 } }
             PopoverTrigger { popover: handles[2], "Unrelated native trigger" }
             Panel { index: 2 }
             PopoverTrigger { popover: handles[3], "Sticky native trigger" }
@@ -176,6 +185,7 @@ fn Panel(index: usize) -> Element {
         veto,
         veto_open,
         rows,
+        nested_child_host,
     } = use_context();
     let popover = handles[index];
     let name = NAMES[index];
@@ -192,7 +202,7 @@ fn Panel(index: usize) -> Element {
                     input { id: "popover-{name}-focus", r#type: "text", "aria-label": "Controller {name} focus", placeholder: "Native {name} focus" }
                     if index == 0 {
                         PopoverTrigger { popover: handles[1], "Child native trigger" }
-                        Panel { index: 1 }
+                        if nested_child_host { Panel { index: 1 } }
                         PopoverTrigger { popover: handles[4], "Sibling native trigger" }
                         Panel { index: 4 }
                     }
@@ -218,16 +228,18 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
+const observations=[],driverJournal=[],assertions=[];
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
- const observations=[],driverJournal=[],assertions=[],objects=new WeakMap();let scenario='initial',objectSequence=0;
+ const objects=new WeakMap();let scenario='initial',objectSequence=0;
  const objectId=node=>{if(!node)return null;if(!objects.has(node))objects.set(node,++objectSequence);return objects.get(node);};
  const fixture=()=>get('popover-fixture'),read=()=>JSON.parse(fixture()?.dataset.state??'{}'),logs=()=>JSON.parse(get('popover-controller-log')?.textContent??'[]');
  const native=name=>get('popover-'+name+'-wrapper')?.dataset.nativeId?get(get('popover-'+name+'-wrapper').dataset.nativeId):null;
  const describe=n=>n?{id:n.id,tag:n.tagName,label:n.getAttribute?.('aria-label'),objectId:objectId(n)}:null;
  const local=()=>{const node=get('popover-child-local');return{node:describe(node),instance:node?.dataset.instance,draft:node?.dataset.draft,count:node?.dataset.count,input:describe(get('popover-child-draft')),inputValue:get('popover-child-draft')?.value};};
- const snapshot=()=>({state:read(),veto:Object.fromEntries(names.map(name=>[name,get('popover-'+name+'-veto')?.checked])),vetoOpen:Object.fromEntries(names.map(name=>[name,get('popover-'+name+'-veto-open')?.checked])),native:Object.fromEntries(names.map(name=>{const host=native(name);let open=false;try{open=!!host?.matches(':popover-open');}catch{}return[name,{host:describe(host),connected:!!host?.isConnected,open,generation:host?.dataset.surfaceGeneration,overlayOpen:host?.dataset.ixOverlayOpen}];})),childLocal:local(),active:describe(document.activeElement),log:logs()});
+ const geometry=host=>{if(!host)return null;const box=host.getBoundingClientRect(),style=getComputedStyle(host),ancestor=host.parentElement?.closest('[popover]');return{box:{x:box.x,y:box.y,width:box.width,height:box.height},clientRectCount:host.getClientRects().length,display:style.display,visibility:style.visibility,opacity:style.opacity,inert:host.inert,hidden:host.hidden,nativeParent:describe(host.parentElement),popoverAncestor:describe(ancestor),ancestorPopoverOpen:ancestor?.matches(':popover-open')??null,ancestors:(()=>{const rows=[];let node=host.parentElement;while(node&&rows.length<10){const value=getComputedStyle(node);rows.push({...describe(node),display:value.display,visibility:value.visibility,inert:node.inert,hidden:node.hidden});node=node.parentElement;}return rows;})()};};
+ const snapshot=()=>({topology:fixture()?.dataset.topology,state:read(),veto:Object.fromEntries(names.map(name=>[name,get('popover-'+name+'-veto')?.checked])),vetoOpen:Object.fromEntries(names.map(name=>[name,get('popover-'+name+'-veto-open')?.checked])),native:Object.fromEntries(names.map(name=>{const host=native(name);let open=false;try{open=!!host?.matches(':popover-open');}catch{}return[name,{host:describe(host),connected:!!host?.isConnected,open,generation:host?.dataset.surfaceGeneration,overlayOpen:host?.dataset.ixOverlayOpen,geometry:geometry(host)}];})),childLocal:local(),active:describe(document.activeElement),log:logs()});
  const assert=(value,label)=>{if(!value)throw Error(label+' '+JSON.stringify({scenario,snapshot:snapshot()}));assertions.push({scenario,label});};
  const expect=(expected)=>{const current=snapshot();for(const name of names){const open=expected.includes(name);assert(current.state[name]===open,name+' Rust visibility '+open);assert(current.native[name].connected&&current.native[name].open===open,name+' connected native visibility '+open);}};
  const expectFocus=name=>assert(document.activeElement?.closest('[data-ix-overlay-host]')===native(name),'native focus belongs to opening '+name+' surface');
@@ -239,7 +251,8 @@ try {
  const input=(id,value)=>{const el=get(id);if(!el)throw Error('Missing input '+id);el.value=value;el.dispatchEvent(new Event('input',{bubbles:true,composed:true}));};
  const command=async(action,target,value)=>{const previous=Number(fixture().dataset.completed),detail={action,target,value};driverJournal.push({scenario,kind:'public-Rust-command-via-synthetic-input',detail});input('popover-command',JSON.stringify(detail));await wait(()=>Number(fixture()?.dataset.completed)>previous,'command '+action+' '+target);await settle();};
  const fresh=async(label)=>{scenario=label;let old=fixture();input('popover-fresh','');await wait(()=>fixture()&&fixture()!==old&&names.every(name=>native(name)),'fresh fixture native mounts');await settle();};
- const save=()=>observations.push({label:scenario,snapshot:snapshot()});
+ const freshTopology=async(topology,label)=>{scenario=label;const old=fixture();input('popover-topology',topology);await wait(()=>fixture()&&fixture()!==old&&fixture().dataset.topology===topology&&names.every(name=>native(name)),'fresh actual '+topology+' topology');await settle();};
+ const save=(extra={})=>observations.push({label:scenario,...extra,snapshot:snapshot()});
  const pair=async()=>{await command('show','parent');await command('show','child');};
  await wait(()=>fixture()&&names.every(name=>native(name)),'initial native mounts');await settle();expect([]);save();
  await fresh('public parent show and repeated show');await command('show','parent');const repeatBaseline=logs().length;await command('show','parent');expect(['parent']);assert(requests('parent',true).length===1,'one true parent request across repeated show');assert(logs().slice(repeatBaseline).every(row=>row.kind!=='request'&&row.kind!=='completed'),'repeat show emits no request or completion');expectFocus('parent');save();
@@ -260,6 +273,30 @@ try {
  input('popover-child-draft','retained draft via synthetic native input');get('popover-child-increment').click();driverJournal.push({scenario,kind:'synthetic-input-and-Rust-button-click',draft:'retained draft via synthetic native input',button:'popover-child-increment'});await settle();assert(local().draft==='retained draft via synthetic native input'&&local().count==='1','actual Rust child local draft and counter updated');
  await command('hide','parent');expect([]);assert(native('parent')===retained.parent&&native('child')===retained.child&&get('popover-child-local')===retained.local&&get('popover-child-draft')===retained.input,'native parent, child, local section and input HTMLElement identity retained while closed');assert(local().instance===retained.instance&&local().draft==='retained draft via synthetic native input'&&local().count==='1','Rust component token, draft and local counter retained while closed');expectTrigger('parent');save();
  await command('show','parent');await command('show','child');expect(['parent','child']);assert(native('parent')===retained.parent&&native('child')===retained.child&&get('popover-child-local')===retained.local&&get('popover-child-draft')===retained.input,'same actual native objects reused after reopening');assert(local().instance===retained.instance&&local().draft==='retained draft via synthetic native input'&&local().inputValue==='retained draft via synthetic native input'&&local().count==='1','same Rust component and local state survive reopen');expectFocus('child');save();
- return {ok:true,observations,assertions,driverJournal,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within this fixture','no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error)}; }
+ for(const topology of ['nested','sibling']){
+  await freshTopology(topology,'actual '+topology+' child host: vetoed child survives parent hide/reopen');await pair();
+  input('popover-child-draft','retained '+topology+' topology draft');get('popover-child-increment').click();await settle();
+  const held={parent:native('parent'),child:native('child'),local:get('popover-child-local'),input:get('popover-child-draft'),instance:local().instance};
+  assert((native('parent').contains(native('child'))) === (topology==='nested'),'actual native child host DOM nesting matches '+topology);
+  const trigger=document.querySelector('[popovertarget="'+native('child').id+'"]');assert(native('parent').contains(trigger),'actual child trigger remains nested inside parent in '+topology);
+  await command('veto','child',true);await command('hide','parent');expect(['child']);
+  assert(native('parent')===held.parent&&native('child')===held.child&&get('popover-child-local')===held.local&&get('popover-child-draft')===held.input,'actual native node identities retained after '+topology+' parent closes');
+  assert(local().instance===held.instance&&local().draft==='retained '+topology+' topology draft'&&local().count==='1','Rust local instance and draft/count retained in closed '+topology+' topology');save();
+  await command('show','parent');expect(['parent','child']);
+  assert(native('parent')===held.parent&&native('child')===held.child&&get('popover-child-local')===held.local&&get('popover-child-draft')===held.input,'actual native node identities retained after '+topology+' parent reopens');
+  assert(local().instance===held.instance&&local().draft==='retained '+topology+' topology draft'&&local().count==='1','Rust local instance and draft/count retained after '+topology+' reopen');save();
+ }
+ await freshTopology('hover','hover already-focused restore permits later fresh focus activation');
+ const hoverTrigger=document.querySelector('[popovertarget="'+native('parent').id+'"]'),hoverFocusRows=[];
+ const focusListener=event=>{const row={scenario,kind:'actual-native-focus-on-hover-trigger',trusted:event.isTrusted,activeIsTrigger:document.activeElement===hoverTrigger};hoverFocusRows.push(row);driverJournal.push(row);};
+ hoverTrigger.addEventListener('focus',focusListener);
+ driverJournal.push({scenario,kind:'programmatic-native-focus',target:describe(hoverTrigger),phase:'initial-hover-focus'});hoverTrigger.focus();
+ await wait(()=>read().parent===true&&native('parent').matches(':popover-open'),'hover trigger focus actually opens parent');await settle();expect(['parent']);assert(document.activeElement===hoverTrigger,'hover opening preserves actual trigger focus');
+ const hoverRepeatBaseline=logs().length;await command('show','parent');expect(['parent']);assert(logs().slice(hoverRepeatBaseline).every(row=>row.kind!=='request'&&row.kind!=='completed'),'public show of focus-opened hover parent is request-free');assert(document.activeElement===hoverTrigger,'repeated public show keeps hover trigger focused');save({phase:'hover-open-trigger-still-focused'});
+ const closeFocusBaseline=hoverFocusRows.length;await command('hide','parent');expect([]);assert(document.activeElement===hoverTrigger,'already-focused hover trigger remains focused after public hide and following RAFs');assert(hoverFocusRows.length===closeFocusBaseline,'restoring already-focused trigger dispatches no new native focus event');save({phase:'closed-after-restore-and-following-frames'});
+ driverJournal.push({scenario,kind:'programmatic-native-focus',target:describe(get('popover-outside')),phase:'outside-before-refocus'});get('popover-outside').focus();await settle();expect([]);assert(document.activeElement===get('popover-outside'),'actual outside focus occurs before fresh trigger focus');save({phase:'outside-focus-before-refocus'});
+ driverJournal.push({scenario,kind:'programmatic-native-focus',target:describe(hoverTrigger),phase:'fresh-focus-after-restore'});hoverTrigger.focus();
+ await wait(()=>read().parent===true&&native('parent').matches(':popover-open'),'fresh focus reopens hover parent after already-focused restoration');await settle();expect(['parent']);assert(hoverFocusRows.length===closeFocusBaseline+1,'fresh refocus dispatches one actual native focus event');assert(document.activeElement===hoverTrigger,'fresh hover focus opening keeps focus on trigger');save({phase:'fresh-focus-reopened'});hoverTrigger.removeEventListener('focus',focusListener);
+ return {ok:true,observations,assertions,driverJournal,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal}; }
 "#;

@@ -109,3 +109,65 @@ fn dropping_superseded_opening_future_preserves_newer_admission() {
         );
     });
 }
+
+#[test]
+fn canceling_unpolled_close_future_releases_hover_focus_suppression() {
+    let capture: Capture = Rc::new(RefCell::new(None));
+    let mut dom = VirtualDom::new(fixture).with_root_context(capture.clone());
+    dom.rebuild_in_place();
+    let mut popover = capture.borrow().unwrap();
+
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.surface.generation.set(11);
+        popover.suppress_focus_open.set(true);
+        // Close commits suppression before spawn. The guard must already be a
+        // captured future field, since a canceled task may never be polled.
+        let suppression = PopoverFocusSuppression {
+            popover,
+            generation: 11,
+        };
+        let close = Box::pin(async move {
+            let _suppression = suppression;
+            std::future::pending::<()>().await;
+        });
+        assert!(*popover.suppress_focus_open.peek());
+        drop(close);
+        assert!(
+            !*popover.suppress_focus_open.peek(),
+            "an unpolled close cannot leave a retained trigger suppressed"
+        );
+    });
+}
+
+#[test]
+fn old_focus_suppression_guard_preserves_newer_close_operation() {
+    let capture: Capture = Rc::new(RefCell::new(None));
+    let mut dom = VirtualDom::new(fixture).with_root_context(capture.clone());
+    dom.rebuild_in_place();
+    let mut popover = capture.borrow().unwrap();
+
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.surface.generation.set(21);
+        popover.suppress_focus_open.set(true);
+        let old = PopoverFocusSuppression {
+            popover,
+            generation: 21,
+        };
+        popover.surface.generation.set(22);
+        let current = PopoverFocusSuppression {
+            popover,
+            generation: 22,
+        };
+        drop(old);
+        assert!(
+            *popover.suppress_focus_open.peek(),
+            "an old close cannot release the newer restore-focus interval"
+        );
+        assert_eq!(*popover.surface.generation.peek(), 22);
+        drop(current);
+        assert!(
+            !*popover.suppress_focus_open.peek(),
+            "the current close still releases its own suppression"
+        );
+    });
+}
