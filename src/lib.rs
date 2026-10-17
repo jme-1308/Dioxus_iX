@@ -61,6 +61,7 @@ mod overlay_registry_dom;
 mod overlay_runtime;
 pub mod overlays;
 pub mod patterns;
+mod popover_focus;
 pub mod theme;
 pub mod tooltip;
 pub mod tree;

@@ -230,7 +230,7 @@ impl Surface {
                 .owner_document()
                 .and_then(|document| document.active_element())
                 .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok());
-            if remember_focus {
+            if remember_focus && !element.matches(".ix-popover").unwrap_or(false) {
                 let mut surface = self;
                 surface.native_invoker.set(active.clone());
                 surface.invoker.set(None);
@@ -249,7 +249,6 @@ impl Surface {
                 let panel = element
                     .dyn_into::<web_sys::HtmlElement>()
                     .map_err(|_| NativeSurfaceError::UnsupportedRenderer)?;
-                let options = web_sys::ShowPopoverOptions::new();
                 if panel.matches(".ix-popover").unwrap_or(false) {
                     let explicit = panel
                         .owner_document()
@@ -263,35 +262,27 @@ impl Surface {
                                         == Some(&self.id())
                                 })
                         });
-                    let has_explicit = explicit.is_some();
                     if remember_focus {
                         if let Some(trigger) = explicit.as_ref() {
                             let mut surface = self;
                             surface.native_invoker.set(Some(trigger.clone()));
                         }
                     }
-                    let saved = self.native_invoker.peek().clone();
-                    let source = explicit
-                        .or(if remember_focus { active } else { saved })
-                        .filter(|source| {
-                            source.is_connected()
-                                && !matches!(source.tag_name().as_str(), "BODY" | "HTML")
-                                && !panel.contains(Some(source.as_ref()))
-                                && source.get_bounding_client_rect().width() > 0.0
-                                && source.get_bounding_client_rect().height() > 0.0
-                        });
-                    if let Some(source) = source {
+                    let source = explicit.filter(|source| {
+                        source.is_connected()
+                            && !matches!(source.tag_name().as_str(), "BODY" | "HTML")
+                            && !panel.contains(Some(source.as_ref()))
+                            && source.get_bounding_client_rect().width() > 0.0
+                            && source.get_bounding_client_rect().height() > 0.0
+                    });
+                    if source.is_some() {
                         let _ = panel.remove_attribute("data-unanchored");
-                        if !has_explicit {
-                            let _ = panel.style().set_property("position-anchor", "auto");
-                        }
-                        options.set_source(&source);
                     } else {
                         let _ = panel.set_attribute("data-unanchored", "true");
                     }
                 }
                 panel
-                    .show_popover_with_options(&options)
+                    .show_popover()
                     .map_err(|error| NativeSurfaceError::Rejected(format!("{error:?}")))?;
                 if !panel.matches(":popover-open").unwrap_or(false) {
                     return Err(NativeSurfaceError::Prevented);
@@ -318,14 +309,6 @@ impl Surface {
             let id = serde_json::to_string(&self.id()).expect("string serialization");
             let focus_id = serde_json::to_string(&format!("{}-return-{generation}", self.id()))
                 .expect("string serialization");
-            let saved_focus_id = serde_json::to_string(
-                &self
-                    .bridge_invoker
-                    .peek()
-                    .as_ref()
-                    .map(|target| target.id.clone()),
-            )
-            .expect("optional string serialization");
             let script = format!(
                 r#"
                 const element=document.getElementById({id});
@@ -345,17 +328,16 @@ impl Surface {
                         if(element.matches('.ix-popover')){{
                             const explicit=Array.from(document.querySelectorAll('[popovertarget]')).find(trigger=>trigger.getAttribute('popovertarget')==={id});
                             if(explicit instanceof HTMLElement)returnTarget=explicit;
-                            source=explicit||({remember_focus}?active:document.getElementById({saved_focus_id}));
+                            source=explicit;
                             if(source instanceof HTMLElement&&source.isConnected&&!['BODY','HTML'].includes(source.tagName)&&!element.contains(source)&&source.getBoundingClientRect().width>0&&source.getBoundingClientRect().height>0){{
                                 element.removeAttribute('data-unanchored');
-                                if(!explicit)element.style.setProperty('position-anchor','auto');
                             }}else{{source=undefined;element.setAttribute('data-unanchored','true');}}
                         }}
-                        element.showPopover(source?{{source}}:undefined);
+                        element.showPopover();
                     }}
                     const opened={modal}?element.open:element.matches(':popover-open');
                     let focus_target=null;
-                    if(opened&&{remember_focus}&&returnTarget instanceof HTMLElement){{
+                    if(opened&&{remember_focus}&&!element.matches('.ix-popover')&&returnTarget instanceof HTMLElement){{
                         const temporary=!returnTarget.id;
                         if(temporary)returnTarget.id={focus_id};
                         focus_target={{id:returnTarget.id,temporary}};
@@ -948,6 +930,8 @@ pub struct PopoverHandle {
     onbeforechange: Signal<Option<EventHandler<PopoverChangeEvent>>>,
     dispatching_change: Signal<bool>,
     opening: Signal<bool>,
+    focusable_at_open: Signal<bool>,
+    focus_trigger: Signal<Option<String>>,
     overlay: Signal<Option<crate::overlay_runtime::NodeHandle>>,
 }
 
@@ -1011,13 +995,15 @@ pub fn use_popover() -> PopoverHandle {
         onbeforechange: use_signal(|| None),
         dispatching_change: use_signal(|| false),
         opening: use_signal(|| false),
+        focusable_at_open: use_signal(|| false),
+        focus_trigger: use_signal(|| None),
         overlay: use_signal(|| None),
     }
 }
 
 impl PopoverHandle {
     /// Show the real native top-layer popover. Dismissal restores its configured
-    /// trigger, falling back to the current focus target. Opening is cancelable.
+    /// trigger when the opening had focusable content. Opening is cancelable.
     pub async fn show(self) -> Result<(), NativeSurfaceError> {
         self.show_native(true).await
     }
@@ -1044,6 +1030,8 @@ impl PopoverHandle {
         self.suppress_focus_open.set(false);
         self.surface.restore_after_mount.set(None);
         self.opening.set(true);
+        self.focusable_at_open.set(false);
+        self.focus_trigger.set(None);
         let _opening = PopoverOpeningGuard {
             popover: self,
             generation,
@@ -1099,8 +1087,14 @@ impl PopoverHandle {
             all(feature = "web", target_arch = "wasm32"),
             all(feature = "desktop", not(target_arch = "wasm32"))
         ))]
-        if !*self.hover_mode.peek() {
-            let _ = popover_native::focus_open(self.surface, generation).await;
+        {
+            if let Some(facts) = popover_native::snapshot(self.surface, generation).await {
+                self.focusable_at_open.set(!facts.candidates.is_empty());
+                self.focus_trigger.set(facts.trigger);
+            }
+            if *self.focusable_at_open.peek() && !*self.hover_mode.peek() {
+                let _ = popover_native::focus_open(self.surface, generation, false).await;
+            }
         }
         if *self.surface.generation.peek() != generation || !*self.surface.open.peek() {
             return Err(NativeSurfaceError::Superseded);
@@ -1216,8 +1210,17 @@ impl PopoverHandle {
             return;
         }
         self.cancel_hover_hide();
-        self.suppress_focus_open
-            .set(restore_focus && *self.hover_mode.peek());
+        let trigger = self.focus_trigger.peek().clone();
+        let plan = crate::popover_focus::close_focus_plan(
+            *self.focusable_at_open.peek(),
+            trigger.is_some(),
+            *self.hover_mode.peek(),
+            restore_focus,
+        );
+        self.suppress_focus_open.set(
+            *self.hover_mode.peek()
+                && plan.post_close == crate::popover_focus::PostCloseFocus::Restore,
+        );
         self.surface.open.set(false);
         let generation = self.surface.generation.peek().wrapping_add(1);
         self.surface.generation.set(generation);
@@ -1235,7 +1238,7 @@ impl PopoverHandle {
             all(feature = "desktop", not(target_arch = "wasm32"))
         ))]
         spawn(async move {
-            if popover_native::close(self.surface, generation, restore_focus).await {
+            if popover_native::close(self.surface, generation, plan, trigger).await {
                 if let Some(callback) = *self.onshowchanged.peek() {
                     callback.call(false);
                 }
@@ -1264,6 +1267,7 @@ impl PopoverHandle {
             all(feature = "desktop", not(target_arch = "wasm32"))
         )))]
         {
+            let _ = (plan, trigger);
             drop(suppression);
             if let Some(callback) = *self.onshowchanged.peek() {
                 callback.call(false);
@@ -1465,6 +1469,8 @@ pub fn Popover(
             surface.generation.set(generation);
             let mut popover = popover;
             popover.opening.set(false);
+            popover.focusable_at_open.set(false);
+            popover.focus_trigger.set(None);
             popover.suppress_focus_open.set(false);
             popover.reported_open.set(false);
             popover.onshowchanged.set(None);
