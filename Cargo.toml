@@ -157,6 +157,16 @@ name = "menu_window_web_probe"
 path = "tools/menu_window_web_probe.rs"
 required-features = ["web"]
 
+[[example]]
+name = "source_popover_controller_probe"
+path = "tools/source_popover_controller_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "popover_controller_probe"
+path = "tools/popover_controller_probe.rs"
+required-features = ["launch"]
+
 [profile.dev]
 debug = "line-tables-only"   # backtraces keep line numbers
 

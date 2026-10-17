@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Siemens AG
 // SPDX-License-Identifier: MIT
 
-//! Pure overlay hierarchy graph for Header overflow and Dropdown instances.
+//! Pure overlay hierarchy graph for Header overflow, Dropdown and Popover instances.
 //!
-//! Tracks two distinct source-derived graphs per Dioxus root without DOM or callbacks:
+//! Tracks two distinct source-derived graphs without DOM or callbacks:
 //! 1. Cached submenu assignment and presented parent->children snapshots
 //!    (`dropdown.tsx:313-340`, `dropdown-controller.ts:68-149`, `nested-overlay-registry.ts:58-94`).
+//!    Popover discovery synchronizes its controller cache even while closed.
 //! 2. Live composed-trigger overlay ancestry and presentation order
 //!    (`overlay-coordinator.ts:96-119, 188-363`).
 
@@ -207,28 +208,7 @@ impl Registry {
             self.presentation_order.retain(|k| k != id);
             self.presentation_order.push(id.to_string());
 
-            let assigned = self.assigned_children(id);
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.assigned_children.clone_from(&assigned);
-            }
-            let mut snapshot = Vec::with_capacity(assigned.len());
-            for child_id in assigned {
-                if child_id != id
-                    && !snapshot.contains(&child_id)
-                    && !self.presented_reaches(&child_id, id)
-                {
-                    snapshot.push(child_id);
-                }
-            }
-            if let Some((_, existing)) = self
-                .presented_children
-                .iter_mut()
-                .find(|(parent, _)| parent == id)
-            {
-                *existing = snapshot;
-            } else {
-                self.presented_children.push((id.to_string(), snapshot));
-            }
+            self.snapshot_children(id);
         } else {
             if let Some(node) = self.nodes.get_mut(id) {
                 node.open = false;
@@ -236,6 +216,57 @@ impl Registry {
             self.presentation_order.retain(|k| k != id);
             self.presented_children.retain(|(parent, _)| parent != id);
         }
+    }
+
+    /// Synchronize controller assignments without presenting the surface.
+    /// Popover discovery does this while closed; Dropdown does it only when its
+    /// controller presents, so property visibility must never call this method.
+    pub(crate) fn snapshot_children(&mut self, id: &str) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+        let assigned = self.assigned_children(id);
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.assigned_children.clone_from(&assigned);
+        }
+        let mut snapshot = Vec::with_capacity(assigned.len());
+        for child_id in assigned {
+            if child_id != id
+                && !snapshot.contains(&child_id)
+                && !self.presented_reaches(&child_id, id)
+            {
+                snapshot.push(child_id);
+            }
+        }
+        if let Some((_, existing)) = self
+            .presented_children
+            .iter_mut()
+            .find(|(parent, _)| parent == id)
+        {
+            *existing = snapshot;
+        } else {
+            self.presented_children.push((id.to_string(), snapshot));
+        }
+    }
+
+    /// Source buildPathIncluding contains the target and cached ancestors, not
+    /// descendants or siblings. Opening a Popover may therefore dismiss those.
+    pub(crate) fn cached_path_including(&self, id: &str) -> Vec<String> {
+        if !self.nodes.contains_key(id) {
+            return Vec::new();
+        }
+        let mut path = vec![id.to_string()];
+        let mut cursor = 0;
+        while cursor < path.len() {
+            let current = path[cursor].clone();
+            for (parent, children) in &self.presented_children {
+                if children.contains(&current) && !path.contains(parent) {
+                    path.push(parent.clone());
+                }
+            }
+            cursor += 1;
+        }
+        path
     }
 
     /// Property-only visibility does not erase controller child assignments.
@@ -468,6 +499,12 @@ impl Registry {
             && !parent.assigned_children.iter().any(|c| c == child_id)
         {
             parent.assigned_children.push(child_id.to_string());
+            if parent.kind == OverlayKind::Popover {
+                // cacheNestedPopoverId immediately syncs, including while the
+                // parent is closed; Dropdown deliberately retains its separate
+                // controller-presentation snapshot boundary.
+                self.snapshot_children(&parent_id);
+            }
         }
     }
 
@@ -517,6 +554,49 @@ mod tests {
             trigger_ancestors: ancestors.iter().map(|s| (*s).to_string()).collect(),
             discovery_ready: ready,
         }
+    }
+
+    #[test]
+    fn popover_discovery_syncs_closed_cache_without_changing_presence() {
+        let mut reg = Registry::new();
+        for id in ["parent", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Popover, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            fact("parent", 1, &[], true),
+            fact("child", 1, &["parent"], true),
+        ]);
+        assert!(!reg.is_open("parent") && !reg.is_open("child"));
+        assert!(reg.topmost().is_none());
+        assert_eq!(reg.cached_children("parent"), ["child"]);
+        reg.observe(&[fact("child", 1, &[], true)]);
+        assert!(reg.live_ancestors("child").is_empty());
+        assert_eq!(reg.cached_parent("child").as_deref(), Some("parent"));
+        reg.forget_children("parent");
+        assert!(reg.cached_children("parent").is_empty());
+        reg.snapshot_children("parent");
+        assert_eq!(reg.cached_children("parent"), ["child"]);
+        assert!(!reg.is_open("parent"));
+    }
+
+    #[test]
+    fn cached_path_including_excludes_siblings_and_descendants() {
+        let mut reg = Registry::new();
+        for id in ["outer", "parent", "sibling", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Popover, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            fact("outer", 1, &[], true),
+            fact("parent", 1, &["outer"], true),
+            fact("sibling", 1, &["outer"], true),
+            fact("child", 1, &["parent", "outer"], true),
+        ]);
+        assert_eq!(reg.cached_path_including("parent"), ["parent", "outer"]);
+        assert_eq!(
+            reg.cached_path_including("child"),
+            ["child", "parent", "outer"]
+        );
+        assert!(reg.cached_path_including("missing").is_empty());
     }
 
     #[test]

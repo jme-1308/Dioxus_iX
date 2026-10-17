@@ -378,7 +378,8 @@ impl RuntimeHandle {
         let Some(previous) = self.read_current(id, &snapshot) else {
             return false;
         };
-        if previous == change.open {
+        let closed_popover = !previous && !change.open && snapshot.kind == OverlayKind::Popover;
+        if previous == change.open && !closed_popover {
             let mut runtime = self.0.borrow_mut();
             // Even an unchanged command supersedes an older request still
             // between its before callback and apply (e.g. a child reopens its
@@ -432,6 +433,11 @@ impl RuntimeHandle {
             ..snapshot.clone()
         };
         if !allowed || self.read_current(id, &current) != Some(previous) {
+            return false;
+        }
+        if closed_popover {
+            // Source Popover always emits willDismiss, even when closed, but
+            // performs no child cascade, native command or completion then.
             return false;
         }
         if !change.open {
@@ -1142,6 +1148,11 @@ impl NodeHandle {
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
+    /// Execute admitted work in the registered component's runtime/scope.
+    /// Native completion tasks must not inherit a transient invoker's scope.
+    pub(crate) fn with_owner<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
+        self.runtime()?.with_owner(&self.id, self.generation, f)
+    }
     /// Native default prevention is not copied into Dioxus web MouseEvent
     /// metadata. The component consults the same Rust capture decision before
     /// toggling, after running its own consumer callback.
@@ -1160,16 +1171,91 @@ impl NodeHandle {
     }
     pub(crate) fn request(&self, open: bool, reason: Reason, restore_focus: bool) -> bool {
         self.runtime().is_some_and(|runtime| {
-            runtime.request(
-                &self.id,
-                self.generation,
-                Change {
-                    open,
-                    reason,
-                    restore_focus,
-                },
-            )
+            // Public handles may be invoked from a short-lived trigger or a
+            // different VDOM. Apply can spawn admitted native work: that task
+            // belongs to the registered component, not the invoking scope.
+            runtime
+                .with_owner(&self.id, self.generation, || {
+                    runtime.request(
+                        &self.id,
+                        self.generation,
+                        Change {
+                            open,
+                            reason,
+                            restore_focus,
+                        },
+                    )
+                })
+                .unwrap_or(false)
         })
+    }
+    pub(crate) fn is_registered(&self) -> bool {
+        self.runtime().is_some_and(|runtime| {
+            runtime
+                .entry(&self.id)
+                .is_some_and(|entry| entry.generation == self.generation)
+        })
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub(crate) fn prepare_present(&self) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        if !runtime
+            .entry(&self.id)
+            .is_some_and(|entry| entry.generation == self.generation)
+        {
+            return false;
+        }
+        if let Some(domain) = runtime.domain() {
+            return domain.prepare_present(&self.id);
+        }
+        // Before native document attachment, retain controller behavior within
+        // this root. Cross-root bootstrap remains a separately tracked boundary.
+        let excluded = runtime.0.borrow().registry.cached_path_including(&self.id);
+        let candidates = runtime.0.borrow().order.clone();
+        for id in candidates {
+            if excluded.contains(&id) {
+                continue;
+            }
+            if runtime.entry(&id).is_some_and(|entry| {
+                entry.kind == OverlayKind::Popover && entry.behavior.allows_outside()
+            }) {
+                runtime.request_id(
+                    &id,
+                    Change {
+                        open: false,
+                        reason: Reason::Outside,
+                        restore_focus: true,
+                    },
+                );
+            }
+        }
+        let mut state = runtime.0.borrow_mut();
+        if !state
+            .nodes
+            .get(&self.id)
+            .is_some_and(|entry| entry.generation == self.generation)
+        {
+            return false;
+        }
+        state.registry.snapshot_children(&self.id);
+        true
+    }
+    pub(crate) fn did_present(&self) {
+        if let Some(runtime) = self.runtime() {
+            if runtime
+                .entry(&self.id)
+                .is_some_and(|entry| entry.generation == self.generation)
+            {
+                runtime.0.borrow_mut().registry.set_presence(&self.id, true);
+                if let Some(domain) = runtime.domain() {
+                    domain.presented(&self.id, self.generation);
+                }
+            }
+        }
     }
     pub(crate) fn sync_open(&self, open: bool) {
         if let Some(runtime) = self.runtime() {
@@ -1304,7 +1390,148 @@ struct Query {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dioxus::core::current_scope_id;
     use std::cell::Cell;
+
+    #[derive(Clone)]
+    struct RequestTaskFixture(Rc<RequestTaskState>);
+    impl PartialEq for RequestTaskFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    #[derive(Default)]
+    struct RequestTaskState {
+        node: RefCell<Option<NodeHandle>>,
+        caller: Cell<Option<ScopeId>>,
+        owner: Cell<Option<ScopeId>>,
+        show_caller: Cell<Option<Signal<bool>>>,
+        caller_dropped: Cell<bool>,
+        open: Cell<bool>,
+        complete: Cell<bool>,
+        release: Cell<bool>,
+        waker: RefCell<Option<std::task::Waker>>,
+    }
+    #[derive(Clone, Copy)]
+    struct RequestTaskContext(&'static str);
+
+    #[component]
+    fn RequestTaskOwner(fixture: RequestTaskFixture) -> Element {
+        use_context_provider(|| RequestTaskContext("owner"));
+        let runtime = use_hook(RuntimeHandle::new);
+        let registered = fixture.clone();
+        let node = use_hook(move || {
+            let scope = current_scope_id();
+            registered.0.owner.set(Some(scope));
+            registered.0.open.set(true);
+            let read = registered.clone();
+            let before = registered.clone();
+            let apply = registered.clone();
+            let node = runtime.register(
+                "caller-task-overlay".into(),
+                1,
+                OverlayKind::Popover,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(move || {
+                        assert_eq!(current_scope_id(), scope);
+                        assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
+                        Some(read.0.open.get())
+                    }),
+                    before: Rc::new(move |_| {
+                        assert_eq!(current_scope_id(), before.0.owner.get().unwrap());
+                        assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
+                        true
+                    }),
+                    apply: Rc::new(move |change| {
+                        assert_eq!(current_scope_id(), scope);
+                        apply.0.open.set(change.open);
+                        let pending = apply.clone();
+                        spawn(async move {
+                            std::future::poll_fn(|cx| {
+                                if pending.0.release.get() {
+                                    std::task::Poll::Ready(())
+                                } else {
+                                    *pending.0.waker.borrow_mut() = Some(cx.waker().clone());
+                                    std::task::Poll::Pending
+                                }
+                            })
+                            .await;
+                            assert_eq!(current_scope_id(), scope);
+                            assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
+                            pending.0.complete.set(true);
+                        });
+                    }),
+                    key: None,
+                },
+            );
+            *registered.0.node.borrow_mut() = Some(node.clone());
+            node
+        });
+        use_drop(move || node.unregister());
+        rsx! { div {} }
+    }
+
+    #[component]
+    fn RequestTaskCaller(fixture: RequestTaskFixture) -> Element {
+        use_context_provider(|| RequestTaskContext("caller"));
+        fixture.0.caller.set(Some(current_scope_id()));
+        use_drop(move || fixture.0.caller_dropped.set(true));
+        rsx! { div {} }
+    }
+
+    fn request_task_root(fixture: RequestTaskFixture) -> Element {
+        let show = use_signal(|| true);
+        fixture.0.show_caller.set(Some(show));
+        rsx! {
+            RequestTaskOwner { fixture: fixture.clone() }
+            if show() { RequestTaskCaller { fixture: fixture.clone() } }
+        }
+    }
+
+    #[test]
+    fn direct_request_native_work_survives_caller_scope_teardown() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let caller = fixture.0.caller.get().unwrap();
+        assert_ne!(fixture.0.owner.get(), Some(caller));
+        dom.in_scope(caller, || {
+            assert!(node.request(false, Reason::Trigger, true));
+            assert_eq!(current_scope_id(), caller, "dispatch restores its caller");
+            assert_eq!(consume_context::<RequestTaskContext>().0, "caller");
+        });
+        assert!(!fixture.0.open.get());
+        dom.render_immediate_to_vec();
+        assert!(
+            fixture.0.waker.borrow().is_some(),
+            "accepted work reached await"
+        );
+        dom.in_scope(ScopeId::APP, || {
+            let mut show = fixture.0.show_caller.get().unwrap();
+            show.set(false);
+        });
+        dom.render_immediate_to_vec();
+        assert!(fixture.0.caller_dropped.get());
+        assert!(!fixture.0.complete.get());
+        fixture.0.release.set(true);
+        fixture.0.waker.borrow_mut().take().unwrap().wake();
+        dom.render_immediate_to_vec();
+        assert!(
+            fixture.0.complete.get(),
+            "owner task survived caller teardown"
+        );
+        dom.in_scope(fixture.0.owner.get().unwrap(), || node.unregister());
+        assert!(
+            !node.request(false, Reason::Trigger, true),
+            "stale registration is rejected"
+        );
+        assert!(
+            node.with_owner(|| panic!("stale owner cannot run work"))
+                .is_none()
+        );
+    }
 
     struct Model {
         open: Rc<Cell<bool>>,

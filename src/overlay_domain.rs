@@ -32,6 +32,7 @@ struct Entry {
     owner: String,
     generation: u64,
     incarnation: u64,
+    registration: u64,
     kind: OverlayKind,
     callbacks: DomainCallbacks,
 }
@@ -134,12 +135,18 @@ impl Domain {
             .register(id.clone(), generation, kind, behavior);
         state.incarnation = state.incarnation.wrapping_add(1);
         let incarnation = state.incarnation;
+        let registration = state
+            .entries
+            .get(&id)
+            .filter(|_| !replacement)
+            .map_or(incarnation, |entry| entry.registration);
         state.entries.insert(
             id,
             Entry {
                 owner,
                 generation,
                 incarnation,
+                registration,
                 kind,
                 callbacks,
             },
@@ -288,6 +295,71 @@ impl Domain {
         }
     }
 
+    /// Source PopoverController.presentAndWait runs same-type dismissal and
+    /// child-cache synchronization after willPresent and before native opening.
+    /// Acceptance of another host's dismissal never gates this presentation.
+    pub(crate) fn prepare_present(&self, id: &str) -> bool {
+        let Some(target) = self.entry(id) else {
+            return false;
+        };
+        if self.read(id, &target).is_none() {
+            return false;
+        }
+        if target.kind == OverlayKind::Popover {
+            let path = self.0.borrow().registry.cached_path_including(id);
+            let mut visited = BTreeSet::new();
+            loop {
+                // NestedOverlayRegistry uses Map.forEach: callbacks can append
+                // a newly connected instance to the same registration-order
+                // pass. A callback update is not a fresh Map registration.
+                let next = {
+                    let state = self.0.borrow();
+                    state.order.iter().find_map(|candidate| {
+                        let entry = state.entries.get(candidate)?;
+                        (!visited.contains(&entry.registration))
+                            .then(|| (candidate.clone(), entry.clone()))
+                    })
+                };
+                let Some((candidate, entry)) = next else {
+                    break;
+                };
+                visited.insert(entry.registration);
+                let eligible = entry.kind == OverlayKind::Popover
+                    && !path.contains(&candidate)
+                    && self
+                        .0
+                        .borrow()
+                        .registry
+                        .close_behavior(&candidate)
+                        .is_some_and(CloseBehavior::allows_outside);
+                if eligible {
+                    // Closed Popovers still receive willDismiss in source.
+                    // The owner callback preserves that kind-specific boundary.
+                    self.request(
+                        &candidate,
+                        Change {
+                            open: false,
+                            reason: Reason::Outside,
+                            restore_focus: true,
+                        },
+                    );
+                }
+            }
+        }
+        if self.read(id, &target).is_none() {
+            return false;
+        }
+        self.sync_children(id, target.generation);
+        true
+    }
+
+    pub(crate) fn sync_children(&self, id: &str, generation: u64) {
+        let mut state = self.0.borrow_mut();
+        if state.registry.generation(id) == Some(generation) {
+            state.registry.snapshot_children(id);
+        }
+    }
+
     pub(crate) fn presented(&self, id: &str, generation: u64) {
         let mut state = self.0.borrow_mut();
         if state
@@ -295,7 +367,17 @@ impl Domain {
             .get(id)
             .is_some_and(|entry| entry.generation == generation)
         {
-            state.registry.set_open(id, true);
+            if state
+                .entries
+                .get(id)
+                .is_some_and(|entry| entry.kind == OverlayKind::Popover)
+            {
+                // Popover synchronized its cache before native presentation;
+                // didPresent only records actual presence/order after await.
+                state.registry.set_presence(id, true);
+            } else {
+                state.registry.set_open(id, true);
+            }
             state.presentation.retain(|candidate| candidate != id);
             state.presentation.push(id.to_owned());
         }
@@ -659,6 +741,157 @@ mod tests {
             reason: Reason::Outside,
             restore_focus: false,
         }
+    }
+
+    #[test]
+    fn popover_prepare_uses_cached_ancestors_policy_veto_and_registration_order() {
+        let domain = Domain::join("popover controller prepare");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let parent = model(&domain, "a", "parent", OverlayKind::Popover, log.clone());
+        let target = model(&domain, "a", "target", OverlayKind::Popover, log.clone());
+        let sibling = model(&domain, "b", "sibling", OverlayKind::Popover, log.clone());
+        let sticky = model(&domain, "b", "sticky", OverlayKind::Popover, log.clone());
+        let veto = model(&domain, "b", "veto", OverlayKind::Popover, log.clone());
+        let closed = model(&domain, "b", "closed", OverlayKind::Popover, log.clone());
+        let dropdown = model(&domain, "c", "dropdown", OverlayKind::Dropdown, log.clone());
+        domain.observe_all(&[
+            fact("parent", &[]),
+            fact("target", &["parent"]),
+            fact("sibling", &["parent"]),
+            fact("sticky", &[]),
+            fact("veto", &[]),
+            fact("closed", &[]),
+            fact("dropdown", &[]),
+        ]);
+        for open in [&parent, &sibling, &sticky, &veto, &dropdown] {
+            open.open.set(true);
+        }
+        domain.set_close_behavior("sticky", 1, CloseBehavior::Inside);
+        veto.allow.set(false);
+        // Moving the target's trigger does not erase the source controller path.
+        domain.observe_owner("a", &[fact("parent", &[]), fact("target", &[])]);
+        assert!(domain.prepare_present("target"));
+        assert!(parent.open.get() && sticky.open.get() && veto.open.get());
+        assert!(dropdown.open.get());
+        assert!(!target.open.get() && !sibling.open.get() && !closed.open.get());
+        assert_eq!(
+            *log.borrow(),
+            [
+                "sibling:false:Outside:true",
+                "veto:false:Outside:true",
+                "closed:false:Outside:true"
+            ]
+        );
+        assert_eq!(domain.cached_parent("target").as_deref(), Some("parent"));
+        assert_ne!(domain.topmost().as_deref(), Some("target"));
+    }
+
+    #[test]
+    fn popover_did_present_does_not_resnapshot_cache_after_native_wait() {
+        let domain = Domain::join("popover did present cache boundary");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let parent = model(&domain, "a", "parent", OverlayKind::Popover, log.clone());
+        model(&domain, "b", "child", OverlayKind::Popover, log);
+        domain.observe_all(&[fact("parent", &[]), fact("child", &["parent"])]);
+        assert!(domain.prepare_present("parent"));
+        assert_eq!(domain.cached_children("parent"), ["child"]);
+        domain.forget_children("parent", 1);
+        parent.open.set(true);
+        domain.presented("parent", 1);
+        assert!(domain.cached_children("parent").is_empty());
+        assert_eq!(domain.topmost().as_deref(), Some("parent"));
+        // A subsequent explicit presentation prepare is the next sync boundary.
+        parent.open.set(false);
+        domain.sync_open("parent", 1, false);
+        assert!(domain.prepare_present("parent"));
+        assert_eq!(domain.cached_children("parent"), ["child"]);
+    }
+
+    #[test]
+    fn presenting_popover_ancestor_dismisses_cached_descendant() {
+        let domain = Domain::join("popover descendant opening");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let parent = model(&domain, "a", "parent", OverlayKind::Popover, log.clone());
+        let child = model(&domain, "b", "child", OverlayKind::Popover, log.clone());
+        domain.observe_all(&[fact("parent", &[]), fact("child", &["parent"])]);
+        child.open.set(true);
+        domain.presented("child", 1);
+        assert!(domain.prepare_present("parent"));
+        assert!(!parent.open.get() && !child.open.get());
+        assert_eq!(*log.borrow(), ["child:false:Outside:true"]);
+        assert_eq!(domain.cached_children("parent"), ["child"]);
+    }
+
+    #[test]
+    fn prepare_present_visits_new_registration_without_holding_callback_borrow() {
+        let domain = Domain::join("popover live registration pass");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let target = model(&domain, "a", "target", OverlayKind::Popover, log.clone());
+        let append = domain.clone();
+        let append_log = log.clone();
+        let once = Rc::new(Cell::new(true));
+        domain.register(
+            "a".into(),
+            "first".into(),
+            1,
+            OverlayKind::Popover,
+            CloseBehavior::Both,
+            DomainCallbacks {
+                read: Rc::new(|| Some(false)),
+                request: Rc::new(move |_| {
+                    append_log.borrow_mut().push("first".into());
+                    if once.replace(false) {
+                        let late_log = append_log.clone();
+                        append.register(
+                            "b".into(),
+                            "late".into(),
+                            1,
+                            OverlayKind::Popover,
+                            CloseBehavior::Both,
+                            DomainCallbacks {
+                                read: Rc::new(|| Some(false)),
+                                request: Rc::new(move |_| {
+                                    late_log.borrow_mut().push("late".into());
+                                    true
+                                }),
+                            },
+                        );
+                    }
+                    false
+                }),
+            },
+        );
+        domain.observe_all(&[fact("target", &[]), fact("first", &[])]);
+        assert!(domain.prepare_present("target"));
+        assert!(!target.open.get());
+        assert_eq!(*log.borrow(), ["first", "late"]);
+    }
+
+    #[test]
+    fn prepare_present_rejects_removed_target_after_dismissal_callback() {
+        let domain = Domain::join("popover removed target");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let target = model(&domain, "target-owner", "target", OverlayKind::Popover, log);
+        let remove = domain.clone();
+        domain.register(
+            "other-owner".into(),
+            "other".into(),
+            1,
+            OverlayKind::Popover,
+            CloseBehavior::Both,
+            DomainCallbacks {
+                read: Rc::new(|| Some(true)),
+                request: Rc::new(move |_| {
+                    remove.remove_owner("target-owner");
+                    true
+                }),
+            },
+        );
+        domain.observe_all(&[fact("target", &[]), fact("other", &[])]);
+        assert!(!domain.prepare_present("target"));
+        assert!(!target.open.get());
+        assert!(domain.entry("target").is_none());
+        assert!(!domain.prepare_present("missing"));
     }
 
     #[test]
