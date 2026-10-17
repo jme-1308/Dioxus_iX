@@ -1,5 +1,6 @@
-//! Root-scoped Rust overlay coordination. Native code only reports current DOM
+//! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
+use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -9,6 +10,23 @@ use std::{
     rc::{Rc, Weak},
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+thread_local! {
+    // Native focus facts scoped to the synchronous Window dispatch. A nested
+    // event restores the outer capture rather than replacing its authorization.
+    static WINDOW_CAPTURE: RefCell<Option<Vec<usize>>> = const { RefCell::new(None) };
+}
+struct WindowCapture(Option<Vec<usize>>);
+impl WindowCapture {
+    fn enter(categories: &[usize]) -> Self {
+        Self(WINDOW_CAPTURE.with(|slot| slot.replace(Some(categories.to_vec()))))
+    }
+}
+impl Drop for WindowCapture {
+    fn drop(&mut self) {
+        WINDOW_CAPTURE.with(|slot| slot.replace(self.0.take()));
+    }
+}
 
 static NEXT_RUNTIME: AtomicUsize = AtomicUsize::new(1);
 
@@ -69,6 +87,7 @@ struct Entry {
     kind: OverlayKind,
     behavior: CloseBehavior,
     callbacks: Callbacks,
+    scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
 }
 #[derive(Default)]
 struct Ack {
@@ -87,9 +106,17 @@ struct Runtime {
     capture_block: Vec<(String, u64)>,
     ack: Ack,
     bridge: Option<dioxus::document::Eval>,
+    domain: Option<Domain>,
+    document: String,
+    categories: BTreeMap<usize, CategoryCallback>,
 }
+type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
+
 impl Drop for Runtime {
     fn drop(&mut self) {
+        if let Some(domain) = &self.domain {
+            domain.remove_owner(&self.owner);
+        }
         if let Some(bridge) = self.bridge.take() {
             let _ = bridge.send(serde_json::json!({"finish": true}));
         }
@@ -124,13 +151,17 @@ impl RuntimeHandle {
             capture_block: Vec::new(),
             ack: Ack::default(),
             bridge: None,
+            domain: None,
+            document: String::new(),
+            categories: BTreeMap::new(),
         })))
     }
     pub(crate) fn owner_id(&self) -> String {
         self.0.borrow().owner.clone()
     }
     pub(crate) fn keyboard_mode(&self) -> bool {
-        self.0.borrow().keyboard
+        self.document_keyboard_mode()
+            .unwrap_or_else(|| self.0.borrow().keyboard)
     }
     pub(crate) fn register(
         &self,
@@ -140,6 +171,11 @@ impl RuntimeHandle {
         behavior: CloseBehavior,
         callbacks: Callbacks,
     ) -> NodeHandle {
+        let scope = dioxus::core::Runtime::try_current().and_then(|runtime| {
+            runtime
+                .try_current_scope_id()
+                .map(|scope| (Rc::downgrade(&runtime), scope))
+        });
         let mut runtime = self.0.borrow_mut();
         if !runtime
             .nodes
@@ -165,13 +201,155 @@ impl RuntimeHandle {
                     kind,
                     behavior,
                     callbacks,
+                    scope,
                 },
             );
         }
+        drop(runtime);
+        self.join_node(&id);
         NodeHandle {
             runtime: Rc::downgrade(&self.0),
             id,
             generation,
+        }
+    }
+    fn domain(&self) -> Option<Domain> {
+        self.0.borrow().domain.clone()
+    }
+    fn with_owner<T>(&self, id: &str, generation: u64, f: impl FnOnce() -> T) -> Option<T> {
+        let entry = self
+            .entry(id)
+            .filter(|entry| entry.generation == generation)?;
+        match entry.scope {
+            Some((owner, scope)) => owner.upgrade().map(|owner| owner.in_scope(scope, f)),
+            None => Some(f()),
+        }
+    }
+    fn join_node(&self, id: &str) {
+        let Some(domain) = self.domain() else { return };
+        let Some(entry) = self.entry(id) else { return };
+        let generation = entry.generation;
+        let owner = self.owner_id();
+        let read_runtime = Rc::downgrade(&self.0);
+        let request_runtime = read_runtime.clone();
+        let read_id = id.to_string();
+        let request_id = read_id.clone();
+        domain.register(
+            owner,
+            id.to_string(),
+            generation,
+            entry.kind,
+            entry.behavior,
+            DomainCallbacks {
+                read: Rc::new(move || {
+                    let runtime = RuntimeHandle(read_runtime.upgrade()?);
+                    runtime
+                        .with_owner(&read_id, generation, || {
+                            let entry = runtime.entry(&read_id)?;
+                            runtime.read_current(&read_id, &entry)
+                        })
+                        .flatten()
+                }),
+                request: Rc::new(move |change| {
+                    let Some(runtime) = request_runtime.upgrade().map(RuntimeHandle) else {
+                        return false;
+                    };
+                    runtime
+                        .with_owner(&request_id, generation, || {
+                            runtime.request(&request_id, generation, change)
+                        })
+                        .unwrap_or(false)
+                }),
+            },
+        );
+        if let Some(open) = self.read_current(id, &entry) {
+            domain.sync_open(id, generation, open);
+        }
+    }
+    fn attach_document(&self, document: &str) {
+        if document.is_empty() || self.0.borrow().document == document {
+            return;
+        }
+        let old = self.domain();
+        if let Some(old) = old {
+            old.remove_owner(&self.owner_id());
+        }
+        let domain = Domain::join(document);
+        let (ids, categories) = {
+            let mut state = self.0.borrow_mut();
+            state.document = document.to_string();
+            state.domain = Some(domain);
+            (state.order.clone(), state.categories.clone())
+        };
+        for id in ids {
+            self.join_node(&id);
+        }
+        for (id, callback) in categories {
+            if let Some(domain) = self.domain() {
+                domain.register_category(self.owner_id(), id, callback);
+            }
+        }
+    }
+    pub(crate) fn category_close_capture(&self) -> (bool, Vec<usize>) {
+        WINDOW_CAPTURE.with(|slot| {
+            slot.borrow()
+                .clone()
+                .map_or_else(|| (false, Vec::new()), |active| (true, active))
+        })
+    }
+    pub(crate) fn register_category(&self, id: usize, callback: CategoryCallback) {
+        let owner = dioxus::core::Runtime::try_current().and_then(|runtime| {
+            runtime
+                .try_current_scope_id()
+                .map(|scope| (Rc::downgrade(&runtime), scope))
+        });
+        let state = Rc::downgrade(&self.0);
+        // Preserve the original category's runtime/scope across later native
+        // attachment, which can occur in another transport component's scope.
+        let guarded: CategoryCallback = Rc::new(move |source, active| {
+            let Some(state) = state.upgrade() else { return };
+            if !state.borrow().categories.contains_key(&id) {
+                return;
+            }
+            if let Some((runtime, scope)) = &owner {
+                if let Some(runtime) = runtime.upgrade() {
+                    runtime.in_scope(*scope, || callback(source, active));
+                }
+            } else {
+                callback(source, active);
+            }
+        });
+        self.0.borrow_mut().categories.insert(id, guarded.clone());
+        if let Some(domain) = self.domain() {
+            domain.register_category(self.owner_id(), id, guarded);
+        }
+    }
+    pub(crate) fn window_keyboard_mode(&self) -> Option<bool> {
+        WINDOW_CAPTURE
+            .with(|slot| slot.borrow().is_some())
+            .then(|| self.document_keyboard_mode())
+            .flatten()
+    }
+    pub(crate) fn document_keyboard_mode(&self) -> Option<bool> {
+        self.domain().and_then(|domain| domain.keyboard_mode())
+    }
+    pub(crate) fn unregister_category(&self, id: usize) {
+        self.0.borrow_mut().categories.remove(&id);
+        if let Some(domain) = self.domain() {
+            domain.unregister_category(&self.owner_id(), id);
+        }
+    }
+    pub(crate) fn broadcast_category(&self, source: usize, active: &[usize]) -> bool {
+        if let Some(domain) = self.domain() {
+            domain.broadcast_category(source, active);
+            true
+        } else {
+            false
+        }
+    }
+    fn sync_domain_open(&self, id: &str, generation: u64, open: bool) {
+        if let Some(domain) = self.domain() {
+            domain.sync_open(id, generation, open);
         }
     }
     fn entry(&self, id: &str) -> Option<Entry> {
@@ -211,7 +389,9 @@ impl RuntimeHandle {
                     entry.before_operation = None;
                 }
             }
-            runtime.registry.set_open(id, previous);
+            runtime.registry.set_presence(id, previous);
+            drop(runtime);
+            self.sync_domain_open(id, generation, previous);
             return true;
         }
         let operation = {
@@ -255,13 +435,14 @@ impl RuntimeHandle {
             return false;
         }
         if !change.open {
-            self.close_children(
+            self.close_children_with_focus(
                 id,
                 if change.reason == Reason::Drop {
                     Reason::Drop
                 } else {
                     Reason::Parent
                 },
+                change.restore_focus,
             );
         }
         if !self.current(id, generation, operation)
@@ -272,13 +453,25 @@ impl RuntimeHandle {
         // Commit graph state before apply so a nested command in an accepted
         // callback sees the current hierarchy, not the superseded transaction.
         self.0.borrow_mut().registry.set_open(id, change.open);
+        if change.open {
+            if let Some(domain) = self.domain() {
+                domain.presented(id, generation);
+            }
+        }
+        self.sync_domain_open(id, generation, change.open);
+        if !change.open {
+            if let Some(domain) = self.domain() {
+                domain.forget_children(id, generation);
+            }
+        }
         (snapshot.callbacks.apply)(change);
         if !self.current(id, generation, operation) {
             return false;
         }
         let actual = self.read_current(id, &current);
         if let Some(open) = actual {
-            self.0.borrow_mut().registry.set_open(id, open);
+            self.0.borrow_mut().registry.set_presence(id, open);
+            self.sync_domain_open(id, generation, open);
         }
         actual == Some(change.open)
     }
@@ -289,6 +482,13 @@ impl RuntimeHandle {
         self.request(id, entry.generation, change)
     }
     fn close_children(&self, id: &str, reason: Reason) {
+        self.close_children_with_focus(id, reason, false);
+    }
+    fn close_children_with_focus(&self, id: &str, reason: Reason, restore_focus: bool) {
+        if let Some(domain) = self.domain() {
+            domain.close_children(id, reason, restore_focus);
+            return;
+        }
         let children = self.0.borrow().registry.cached_children(id);
         for child in children {
             self.request_id(
@@ -302,6 +502,9 @@ impl RuntimeHandle {
         }
     }
     pub(crate) fn child_path(&self, id: &str, hosts: &[String], triggers: &[String]) -> bool {
+        if let Some(domain) = self.domain() {
+            return domain.child_path(id, hosts, triggers);
+        }
         self.0.borrow().registry.child_path(id, hosts, triggers)
     }
     /// Click discovery includes closed child triggers, but Escape/Tab belong
@@ -339,10 +542,13 @@ impl RuntimeHandle {
             } else {
                 Vec::new()
             };
-            self.0.borrow().registry.child_path(parent, &host, &trigger)
+            self.child_path(parent, &host, &trigger)
         })
     }
     fn owns_topmost(&self, id: &str) -> bool {
+        if let Some(domain) = self.domain() {
+            return domain.owns_topmost(id);
+        }
         let runtime = self.0.borrow();
         runtime.registry.topmost().is_some_and(|top| {
             top == id
@@ -354,6 +560,9 @@ impl RuntimeHandle {
         })
     }
     pub(crate) fn dismiss_root(&self, id: &str, reason: Reason, restore_focus: bool) -> bool {
+        if let Some(domain) = self.domain() {
+            return domain.dismiss_root(id, reason, restore_focus);
+        }
         let root = self.0.borrow().registry.cached_root(id);
         let Some(root) = root else {
             return false;
@@ -374,9 +583,15 @@ impl RuntimeHandle {
         )
     }
     pub(crate) fn close_submenu(&self, id: &str) {
-        let parent = self.0.borrow().registry.cached_parent(id);
+        let parent = self.domain().map_or_else(
+            || self.0.borrow().registry.cached_parent(id),
+            |domain| domain.cached_parent(id),
+        );
         if let Some(parent) = parent {
-            let children = self.0.borrow().registry.cached_children(&parent);
+            let children = self.domain().map_or_else(
+                || self.0.borrow().registry.cached_children(&parent),
+                |domain| domain.cached_children(&parent),
+            );
             for child in children {
                 self.request_id(
                     &child,
@@ -399,7 +614,9 @@ impl RuntimeHandle {
             return;
         };
         entry.revision = entry.revision.wrapping_add(1);
-        runtime.registry.set_open(id, open);
+        runtime.registry.set_presence(id, open);
+        drop(runtime);
+        self.sync_domain_open(id, generation, open);
     }
     fn unregister(&self, id: &str, generation: u64) {
         if !self
@@ -418,6 +635,9 @@ impl RuntimeHandle {
             runtime.nodes.remove(id);
             runtime.order.retain(|candidate| candidate != id);
             runtime.registry.unregister(id, generation);
+            if let Some(domain) = &runtime.domain {
+                domain.unregister(id, generation);
+            }
             if runtime
                 .ack
                 .activation
@@ -450,6 +670,7 @@ impl RuntimeHandle {
                 ..Ack::default()
             };
         }
+        self.attach_document(&report.document);
         // Native open attributes may lag the Rust callback during an original
         // click. Reconcile with read(), never overwrite current state from DOM.
         let snapshots = {
@@ -467,7 +688,7 @@ impl RuntimeHandle {
         };
         for (id, entry) in &snapshots {
             if let Some(open) = self.read_current(id, entry) {
-                self.0.borrow_mut().registry.set_open(id, open);
+                self.0.borrow_mut().registry.set_presence(id, open);
             }
         }
         let facts = snapshots
@@ -487,14 +708,59 @@ impl RuntimeHandle {
             })
             .collect::<Vec<_>>();
         self.0.borrow_mut().registry.observe(&facts);
-        let decision = match report.kind.as_str() {
-            "pointer" => {
-                self.0.borrow_mut().keyboard = false;
-                KeyDecision::default()
+        if let Some(domain) = self.domain() {
+            if report.phase == "window" {
+                let all = report
+                    .nodes
+                    .iter()
+                    .map(|node| NativeFact {
+                        id: node.id.clone(),
+                        generation: node.generation,
+                        connected: node.connected,
+                        discovery_ready: node.discovery_ready,
+                        trigger_ancestors: node.trigger_ancestors.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                domain.observe_all(&all);
+            } else {
+                domain.observe_owner(&report.owner, &facts);
             }
-            "key" => self.key(report),
-            "click" => self.click(report),
-            _ => KeyDecision::default(),
+        }
+        if report.kind == "modality" {
+            if let Some(domain) = self.domain() {
+                domain.observe_input(&report.input_kind, &report.key);
+            }
+        }
+        let decision = if report.phase == "window" {
+            if let Some(domain) = self
+                .domain()
+                .filter(|domain| domain.accept_event(report.window_sequence))
+            {
+                let _capture = WindowCapture::enter(&report.active_categories);
+                domain.refresh();
+                match report.kind.as_str() {
+                    "key" if report.key == "Escape" => {
+                        domain.escape();
+                    }
+                    "click" => {
+                        let mut hosts = report.hosts.clone();
+                        hosts.extend(report.anchors.iter().cloned());
+                        domain.outside(&hosts, &report.triggers);
+                    }
+                    _ => {}
+                }
+            }
+            KeyDecision::default()
+        } else {
+            match report.kind.as_str() {
+                "pointer" => {
+                    self.0.borrow_mut().keyboard = false;
+                    KeyDecision::default()
+                }
+                "key" => self.key(report),
+                "click" => self.click(report),
+                _ => KeyDecision::default(),
+            }
         };
         let activation = decision
             .activate
@@ -727,7 +993,10 @@ impl RuntimeHandle {
                         && !report.triggers.contains(id)
                         && !self.child_path(id, &report.hosts, &report.triggers)
                         && {
-                            let ancestors = self.0.borrow().registry.live_ancestors(id);
+                            let ancestors = self.domain().map_or_else(
+                                || self.0.borrow().registry.live_ancestors(id),
+                                |domain| domain.live_ancestors(id),
+                            );
                             report
                                 .triggers
                                 .iter()
@@ -777,11 +1046,14 @@ impl RuntimeHandle {
         }
         // Source outside coordination does not consult event.defaultPrevented.
         // In particular More can close children despite veto of its own close.
-        let outside = self
-            .0
-            .borrow()
-            .registry
-            .outside_candidates(&report.hosts, &report.triggers);
+        let outside = if self.domain().is_some() {
+            Vec::new()
+        } else {
+            self.0
+                .borrow()
+                .registry
+                .outside_candidates(&report.hosts, &report.triggers)
+        };
         for id in outside {
             self.request_id(
                 &id,
@@ -914,6 +1186,9 @@ impl NodeHandle {
             {
                 entry.behavior = behavior;
                 runtime.registry.set_close_behavior(&self.id, behavior);
+                if let Some(domain) = &runtime.domain {
+                    domain.set_close_behavior(&self.id, self.generation, behavior);
+                }
             }
         }
     }
@@ -955,6 +1230,16 @@ struct Report {
     owner: String,
     sequence: u64,
     kind: String,
+    #[serde(default)]
+    document: String,
+    #[serde(default)]
+    input_kind: String,
+    #[serde(default)]
+    window_sequence: u64,
+    #[serde(default)]
+    active_categories: Vec<usize>,
+    #[serde(default)]
+    anchors: Vec<String>,
     #[serde(default)]
     phase: String,
     #[serde(default)]
@@ -1585,3 +1870,7 @@ mod tests {
         assert!(weak.upgrade().is_none() && node.runtime().is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "overlay_domain_runtime_tests.rs"]
+mod document_tests;

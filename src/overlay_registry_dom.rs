@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Native DOM observations and execution for the per-root overlay runtime.
+//! Document identity and original-event identity are shared across roots. Local
+//! reports retain the root partition; Window reports expose every native overlay
+//! in that document so Rust can coordinate them without native policy.
 //! `__OWNER__` is replaced by a serialized runtime owner ID. Rust owns all
 //! hierarchy, discovery caches, menu/focus policy, and open/close decisions;
 //! `input` dispatches a raw fact report (`prevent` ACK) and `change` queries
@@ -10,6 +13,9 @@
 
 pub(super) const BRIDGE: &str = r#"
 const owner=__OWNER__,listeners=new AbortController(),signal=listeners.signal;
+const documentSlot=Symbol.for('dioxus-ix.document-native-domain.v1');
+const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:owner,eventSequence:0,eventIds:new WeakMap()});
+function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds.get(event);if(!id){id=++nativeDocument.eventSequence;nativeDocument.eventIds.set(event,id);}return id;}
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),handledBubbleKeys=new WeakSet();
@@ -52,6 +58,10 @@ function findHost(id){
 function findTrigger(id,root){
   for(const n of document.querySelectorAll('[data-ix-overlay-trigger]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-trigger')===id)return n;
   const tid=root?.getAttribute('data-ix-overlay-trigger-id'),el=tid?document.getElementById(tid):null;
+  return el instanceof HTMLElement&&el.isConnected?el:null;
+}
+function findAnchor(root){
+  const id=root?.getAttribute('data-ix-overlay-anchor-id'),el=id?document.getElementById(id):null;
   return el instanceof HTMLElement&&el.isConnected?el:null;
 }
 function triggerAncestors(trigger,selfId){
@@ -122,15 +132,18 @@ function collectFacts(kind,event,phase=''){
   if(target)addCand(target);
   if(active)addCand(active);
   for(const p of path)if(p instanceof HTMLElement)addCand(p);
-  const nodes=[];
+  const active_categories=[];
+  for(let c=active;c;c=stepParent(c))if(c instanceof Element&&c.hasAttribute('data-menu-category-root')){const id=Number(c.getAttribute('data-menu-category-root'));if(Number.isSafeInteger(id)&&id>0&&!active_categories.includes(id))active_categories.push(id);}
+  const nodes=[],anchors=[];
   for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
-    if(!id||ro!==owner)continue;
+    if(!id||(phase!=='window'&&ro!==owner))continue;
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
     const discovery_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
-    const open=root.getAttribute('data-ix-overlay-open')==='true'||root.getAttribute('data-open')==='true';
-    const host=findHost(id),itemsHost=findHost(root.getAttribute('data-ix-overlay-items-owner')||id),trigger=findTrigger(id,root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
+    const open=root.hasAttribute('data-ix-overlay-open')?root.getAttribute('data-ix-overlay-open')==='true':root.getAttribute('data-open')==='true';
+    const host=findHost(id),itemsHost=findHost(root.getAttribute('data-ix-overlay-items-owner')||id),trigger=findTrigger(id,root),anchor=findAnchor(root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
+    if(anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node)))anchors.push(id);
     if(trigger)addCand(trigger);
     for(const e of itemsWithEl)addCand(e.el);
     for(const el of focusables)addCand(el);
@@ -141,19 +154,19 @@ function collectFacts(kind,event,phase=''){
     const on_trigger=!!trigger&&(event?target===trigger:active===trigger);
     const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
     nodes.push({
-      id,generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),
-      trigger_ancestors:trigger?triggerAncestors(trigger,id):[],
+      id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
+      trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
       focusable_ids:focusables.map(nativeId).filter(Boolean),
       focus_count:focusables.length,focused_index,on_trigger,inside
     });
   }
   return {
-    owner,sequence:++sequence,kind,phase,
+    owner,document:nativeDocument.identity,window_sequence:phase==='window'?windowSequence(event):0,sequence:++sequence,kind,phase,input_kind:event?.type||'',
     key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,ctrl:!!event?.ctrlKey,meta:!!event?.metaKey,
     default_prevented:!!event?.defaultPrevented,
     target_id:nativeId(target),active_id:nativeId(active),
-    hosts,triggers,nodes,tab_order:documentTabOrder(),candidate_ids
+    hosts,triggers,anchors,nodes,active_categories,tab_order:documentTabOrder(),candidate_ids
   };
 }
 function send(report,event){
@@ -193,6 +206,7 @@ function syncExecution(){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
     if(!id||ro!==owner)continue;
+    if(root.hasAttribute('data-ix-overlay-native-surface'))continue;
     const host=findHost(id);
     if(host&&!isHeaderPopupHost(host)){
       const open=root.getAttribute('data-ix-overlay-open')==='true',top=root.getAttribute('data-ix-overlay-top-layer')==='true';
@@ -217,6 +231,7 @@ function syncExecution(){
         if(!(root instanceof HTMLElement)||!root.isConnected)continue;
         const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
         if(!id||ro!==owner)continue;
+        if(root.hasAttribute('data-ix-overlay-native-surface'))continue;
         const ver=root.getAttribute('data-ix-overlay-focus-version')||'0',gen=root.getAttribute('data-ix-overlay-generation')||'0';
         const token=gen+':'+ver,spec=root.getAttribute('data-ix-overlay-focus-target')||'none';
         if(lastFocus.get(id)===token)continue;
@@ -259,8 +274,11 @@ function reportObserve(){
 }
 document.addEventListener('keydown',e=>send(collectFacts('key',e,'capture'),e),{capture:true,signal});
 document.addEventListener('keydown',e=>{if(!handledBubbleKeys.has(e))send(collectFacts('key',e,'fallback'),e);},{signal});
+for(const kind of ['keydown','mousedown','touchstart'])document.addEventListener(kind,e=>send(collectFacts('modality',e,'document'),null),{passive:true,signal});
 document.addEventListener('click',e=>send(collectFacts('click',e,'capture'),e),{capture:true,signal});
 document.addEventListener('click',e=>send(collectFacts('click',e,'bubble'),e),{signal});
+window.addEventListener('keydown',e=>send(collectFacts('key',e,'window'),e),{signal});
+window.addEventListener('click',e=>send(collectFacts('click',e,'window'),e),{signal});
 document.addEventListener('pointerdown',e=>send(collectFacts('pointer',e),e),{capture:true,signal});
 document.addEventListener('focusin',event=>{
   const item=event.composedPath().find(n=>n instanceof HTMLElement&&n.hasAttribute('data-ix-dropdown-item'));
@@ -277,8 +295,8 @@ document.addEventListener('focusin',event=>{
 document.addEventListener('focusout',()=>queueMicrotask(()=>{if(alive)reportObserve();}),{passive:true,signal});
 const observer=new MutationObserver(reportObserve);
 observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
-  'data-ix-overlay-root','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-generation','data-ix-overlay-open',
-  'data-ix-overlay-mode','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
+  'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
+  'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
 ]});
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 try{reportObserve();await dioxus.recv();}finally{

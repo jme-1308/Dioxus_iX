@@ -960,10 +960,16 @@ impl PopoverHandle {
         self.hide_with_focus(true);
     }
 
-    fn hide_with_focus(mut self, restore_focus: bool) {
-        let was_open = self.is_open();
-        if !was_open || *self.dispatching_change.peek() {
-            return;
+    fn hide_with_focus(self, restore_focus: bool) {
+        if self.allow_hide() {
+            self.commit_hide_with_focus(restore_focus);
+        }
+    }
+
+    // Observe cancellation before shared coordinator child dismissal begins.
+    fn allow_hide(mut self) -> bool {
+        if !self.is_open() || *self.dispatching_change.peek() {
+            return false;
         }
         let callback = *self.onshowchange.peek();
         if let Some(callback) = callback {
@@ -972,8 +978,16 @@ impl PopoverHandle {
             callback.call(event.clone());
             self.dispatching_change.set(false);
             if !event.default_action_enabled() {
-                return;
+                return false;
             }
+        }
+        true
+    }
+
+    fn commit_hide_with_focus(mut self, restore_focus: bool) {
+        let was_open = self.is_open();
+        if !was_open {
+            return;
         }
         self.cancel_hover_hide();
         self.suppress_focus_open
@@ -986,6 +1000,29 @@ impl PopoverHandle {
                 callback.call(false);
             }
         }
+    }
+}
+
+fn popover_overlay_callbacks(
+    popover: PopoverHandle,
+    live: Rc<std::cell::Cell<bool>>,
+) -> crate::overlay_runtime::Callbacks {
+    let read = live.clone();
+    let before = live.clone();
+    crate::overlay_runtime::Callbacks {
+        read: Rc::new(move || {
+            if !read.get() {
+                return None;
+            }
+            popover.surface.open.try_peek().ok().map(|open| *open)
+        }),
+        before: Rc::new(move |change| before.get() && !change.open && popover.allow_hide()),
+        apply: Rc::new(move |change| {
+            if live.get() && !change.open {
+                popover.commit_hide_with_focus(change.restore_focus);
+            }
+        }),
+        key: None,
     }
 }
 
@@ -1028,6 +1065,7 @@ pub fn PopoverTrigger(
     rsx! {
         button { class: "ix-button ix-button-{variant.as_str()}", r#type: "button", disabled,
             "popovertarget": id.clone(), "popovertargetaction": "toggle", "aria-haspopup": "dialog",
+            "data-ix-overlay-trigger": id.clone(),
             style: "anchor-name:--{id}",
             "aria-controls": id.clone(), "aria-expanded": popover.is_open().to_string(), "aria-label": aria_label,
             onmounted: move |event| { trigger.set(Some(event.data())); },
@@ -1081,12 +1119,11 @@ impl PopoverPlacement {
     }
 }
 
-/// Native non-modal floating panel. Clicking its trigger toggles it; Escape closes
-/// while focus is inside. `close_on_click_outside` uses native auto-popover dismissal.
+/// Native non-modal floating panel. Clicking its trigger toggles it. Escape and
+/// `close_on_click_outside` dismissal use the shared Rust overlay coordinator.
 /// CSS Anchor Positioning is required for placement; older engines center the panel.
-/// Tab/Shift+Tab remain inside the visible panel. Canceling native outside closure
-/// restores the same popover through its native DOM API; the browser may briefly
-/// remove it from the top layer before restoration.
+/// Tab/Shift+Tab remain inside the visible panel. A canceled Rust dismissal keeps
+/// the panel present; native visibility changes retain their cancelable handling.
 #[component]
 pub fn Popover(
     popover: PopoverHandle,
@@ -1101,6 +1138,35 @@ pub fn Popover(
     use_context_provider(|| popover);
     let id = popover.id();
     let generation = (popover.surface.generation)();
+    let runtime = crate::overlay_runtime::use_overlay_runtime();
+    let close_behavior = if close_on_click_outside {
+        crate::overlay_registry::CloseBehavior::Outside
+    } else {
+        crate::overlay_registry::CloseBehavior::None
+    };
+    let live = use_hook(|| Rc::new(std::cell::Cell::new(true)));
+    let node = use_hook({
+        let runtime = runtime.clone();
+        let id = id.clone();
+        let live = live.clone();
+        move || {
+            runtime.register(
+                id,
+                1,
+                crate::overlay_registry::OverlayKind::Popover,
+                close_behavior,
+                popover_overlay_callbacks(popover, live),
+            )
+        }
+    });
+    node.set_close_behavior(close_behavior);
+    let sync = node.clone();
+    use_effect(move || sync.sync_open((popover.surface.open)()));
+    let cleanup = node.clone();
+    use_drop(move || {
+        live.set(false);
+        cleanup.unregister();
+    });
     let mut callback = popover.onshowchanged;
     let mut before_callback = popover.onshowchange;
     use_effect(use_reactive(
@@ -1111,10 +1177,14 @@ pub fn Popover(
         },
     ));
     rsx! {
+        crate::overlay_runtime::OverlayTransport {runtime:runtime.clone()}
         for instance in [generation] {
             div { key: "{instance}", id: id.clone(), class: "ix-popover", role: "dialog", "aria-label": label.clone(), tabindex: "-1",
                 "data-surface-generation": "{instance}",
-                "popover": if close_on_click_outside { "auto" } else { "manual" },
+                "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime.owner_id(),
+                "data-ix-overlay-generation":"1","data-ix-overlay-open":popover.is_open().to_string(),
+                "data-ix-overlay-host":id.clone(),"data-ix-overlay-native-surface":"popover",
+                "popover": "manual",
                 "data-placement": placement.as_str(), "data-spike": has_spike.to_string(),
                 style: "position-anchor:--{id};position-area:{placement.as_str()}",
                 onmounted: move |event| popover.surface.mounted(instance, event.data()),
@@ -1153,7 +1223,6 @@ pub fn Popover(
                     if previous != visible { if let Some(callback) = onshowchanged { callback.call(visible); } }
                 }); },
                 onkeydown: move |event| match event.key() {
-                    Key::Escape => { event.prevent_default(); event.stop_propagation(); popover.hide(); }
                     Key::Tab if cfg!(any(feature = "web", feature = "desktop")) => {
                         event.prevent_default(); event.stop_propagation();
                         spawn(async move { popover.surface.advance_focus(event.modifiers().shift()).await; });
@@ -1320,7 +1389,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(html.contains(&format!("id=\"{popover_target}\"")));
-        assert!(html.contains("popover=\"auto\""));
+        assert!(html.contains("popover=\"manual\""));
         assert!(html.contains("aria-label=\"Release highlights\""));
         assert_eq!(html.matches("data-surface-generation=\"0\"").count(), 2);
         assert!(!html.contains("<script"));
@@ -1383,6 +1452,72 @@ mod tests {
             );
             popover.hide();
             assert_eq!(completions.borrow().len(), 1);
+        });
+    }
+
+    type PopoverOverlayCapture =
+        Rc<RefCell<Option<(PopoverHandle, crate::overlay_runtime::NodeHandle)>>>;
+    fn popover_overlay_fixture() -> Element {
+        let popover = use_popover();
+        let runtime = crate::overlay_runtime::use_overlay_runtime();
+        let capture = consume_context::<PopoverOverlayCapture>();
+        let node = use_hook(move || {
+            runtime.register(
+                popover.id(),
+                1,
+                crate::overlay_registry::OverlayKind::Popover,
+                crate::overlay_registry::CloseBehavior::Outside,
+                popover_overlay_callbacks(popover, Rc::new(std::cell::Cell::new(true))),
+            )
+        });
+        *capture.borrow_mut() = Some((popover, node));
+        VNode::empty()
+    }
+
+    #[test]
+    fn popover_overlay_request_observes_one_veto_and_preserves_close_focus_policy() {
+        let capture: PopoverOverlayCapture = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new(popover_overlay_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        let (mut popover, node) = capture.borrow().clone().unwrap();
+        let requests = Rc::new(std::cell::Cell::new(0));
+        let canceled = Rc::new(std::cell::Cell::new(true));
+        dom.in_scope(ScopeId::ROOT, || {
+            popover.surface.open.set(true);
+            let seen = requests.clone();
+            let veto = canceled.clone();
+            popover
+                .onshowchange
+                .set(Some(EventHandler::new(move |event: ToggleEvent| {
+                    seen.set(seen.get() + 1);
+                    if veto.get() {
+                        event.prevent_default();
+                    }
+                })));
+            assert!(!node.request(false, crate::overlay_runtime::Reason::Escape, true));
+            assert!(popover.is_open());
+            assert_eq!(requests.get(), 1);
+            assert_eq!(*popover.surface.generation.peek(), 0);
+            canceled.set(false);
+            assert!(node.request(false, crate::overlay_runtime::Reason::Outside, false));
+            assert_eq!(
+                requests.get(),
+                2,
+                "accepted request emits before exactly once"
+            );
+            assert_eq!(
+                *popover.surface.restore_after_mount.peek(),
+                None,
+                "outside close releases invoker focus"
+            );
+            popover.surface.open.set(true);
+            assert!(node.request(false, crate::overlay_runtime::Reason::Escape, true));
+            assert_eq!(requests.get(), 3);
+            assert_eq!(
+                *popover.surface.restore_after_mount.peek(),
+                Some(2),
+                "Escape restores invoker after native replacement"
+            );
         });
     }
 

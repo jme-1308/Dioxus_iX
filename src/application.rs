@@ -878,6 +878,8 @@ struct CategoryCore {
     revision: Signal<u64>,
     hover_coordinator: CategoryHoverCoordinator,
     model: RefCell<CategoryModel>,
+    overlay: RefCell<Option<crate::overlay_runtime::NodeHandle>>,
+    close_capture: RefCell<Option<CategoryCloseCapture>>,
 }
 #[derive(Clone)]
 struct CategoryNavigation(Rc<CategoryCore>);
@@ -904,6 +906,8 @@ impl CategoryNavigation {
             flyout,
             revision,
             hover_coordinator,
+            overlay: RefCell::new(None),
+            close_capture: RefCell::new(None),
             model: RefCell::new(CategoryModel {
                 alive: true,
                 native: false,
@@ -1081,7 +1085,14 @@ impl CategoryNavigation {
             self.notify();
         }
     }
+    // Property writes update presence without invoking controller child dismissal.
     fn close_flyout(&self) {
+        self.close_flyout_state();
+        if let Some(node) = self.0.overlay.borrow().clone() {
+            node.sync_open(false);
+        }
+    }
+    fn close_flyout_state(&self) {
         let mut flyout = self.0.flyout;
         if *flyout.peek() == Some(self.0.id) {
             self.invalidate();
@@ -1092,7 +1103,7 @@ impl CategoryNavigation {
             self.notify();
         }
     }
-    fn dismiss_captured(&self, connected: bool, active_categories: &[usize]) {
+    fn authorize_dismiss_return(&self, connected: bool, active_categories: &[usize]) {
         if !self.0.model.borrow().alive
             || !self
                 .0
@@ -1103,7 +1114,14 @@ impl CategoryNavigation {
             return;
         }
         if connected
-            && self.0.hover_coordinator.keyboard()
+            && self
+                .0
+                .overlay
+                .borrow()
+                .as_ref()
+                .and_then(crate::overlay_runtime::NodeHandle::runtime)
+                .and_then(|runtime| runtime.window_keyboard_mode())
+                .unwrap_or_else(|| self.0.hover_coordinator.keyboard())
             && active_categories.contains(&self.0.id)
         {
             let mut model = self.0.model.borrow_mut();
@@ -1111,7 +1129,20 @@ impl CategoryNavigation {
             let job = model.return_serial.to_string();
             model.return_tasks.insert(job, None);
         }
-        self.close_flyout();
+    }
+    fn dismiss_captured(&self, connected: bool, active_categories: &[usize]) {
+        let node = self.0.overlay.borrow().clone();
+        if let Some(node) = node {
+            let previous = self.0.close_capture.replace(Some(CategoryCloseCapture {
+                connected,
+                active_categories: active_categories.to_vec(),
+            }));
+            node.request(false, crate::overlay_runtime::Reason::Outside, false);
+            self.0.close_capture.replace(previous);
+        } else {
+            self.authorize_dismiss_return(connected, active_categories);
+            self.close_flyout_state();
+        }
     }
     // A native roundtrip captures actual focus before the Rust dismissal write;
     // desktop IPC adds latency after the source 250ms deadline.
@@ -1360,9 +1391,26 @@ impl CategoryNavigation {
     }
     fn present(&self, active_categories: &[usize]) -> bool {
         self.clear_hover();
-        self.0
-            .hover_coordinator
-            .broadcast(self.0.id, active_categories);
+        let shared_broadcast = self
+            .0
+            .overlay
+            .borrow()
+            .as_ref()
+            .and_then(crate::overlay_runtime::NodeHandle::runtime)
+            .is_some_and(|runtime| runtime.broadcast_category(self.0.id, active_categories));
+        if !shared_broadcast {
+            self.0
+                .hover_coordinator
+                .broadcast(self.0.id, active_categories);
+        }
+        let opening = *self.0.flyout.peek() != Some(self.0.id);
+        if let Some(node) = self.0.overlay.borrow().clone() {
+            node.request(true, crate::overlay_runtime::Reason::Trigger, false);
+            return opening;
+        }
+        self.present_state()
+    }
+    fn present_state(&self) -> bool {
         let mut flyout = self.0.flyout;
         let opening = *flyout.peek() != Some(self.0.id);
         if opening {
@@ -1786,6 +1834,8 @@ impl CategoryNavigation {
                 }
             }
             "category-order" => {}
+            // Retain direct-handler fixtures for the category request boundary;
+            // the native bridge routes physical Window events through overlays.
             "category-window-key" => {
                 if message.key == "Escape" {
                     self.dismiss_captured(true, &message.active_categories);
@@ -1986,13 +2036,6 @@ bar.addEventListener('focusin',event=>{send('focus',event);},{signal:events.sign
 bar.addEventListener('focusout',event=>{
   const category=event.composedPath().find(node=>node instanceof HTMLElement&&node.hasAttribute('data-menu-category-root')&&node.closest('[data-menu-root]')===root);
   if(category)requestAnimationFrame(()=>{if(root.isConnected&&category.isConnected)send('category-outside',null,{category:Number(category.dataset.menuCategoryRoot),inside:category.contains(document.activeElement),outside_cause:'focusout',sequence:++sequence,category_items:categoryFacts(root,category)});});
-},{signal:events.signal});
-window.addEventListener('keydown',event=>{
-  const active=menuCategoryActiveFacts();
-  for(const category of root.querySelectorAll('[data-menu-category-root]'))if(category.closest('[data-menu-root]')===root)send('category-window-key',event,{category:Number(category.dataset.menuCategoryRoot),sequence:++sequence,active_categories:active,category_items:categoryFacts(root,category)});
-},{signal:events.signal});
-window.addEventListener('click',event=>{
-  for(const category of root.querySelectorAll('[data-menu-category-root]'))if(category.closest('[data-menu-root]')===root&&!event.composedPath().includes(category))send('category-outside',null,{category:Number(category.dataset.menuCategoryRoot),inside:false,outside_cause:'click',sequence:++sequence,category_items:categoryFacts(root,category)});
 },{signal:events.signal});
 const observer=new MutationObserver(sync);observer.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden','style','tabindex','data-menu-category-disabled','data-menu-category-mode','data-menu-category-popup-open','data-menu-category-body-surface','data-menu-category-popup','data-open','popover']});
 sync();send('ready');root.dataset.menuNative='true';
@@ -3252,8 +3295,9 @@ pub fn MenuItem(
 /// wins while a separately open popup keeps an empty heading/shell. The native
 /// popup host switches between the content host and empty shell, an explicit
 /// renderer adapter rather than literal Stencil shadow-host identity.
-/// Hover leave grace is a Rust-owned 250ms task. Sibling closure spans Menus in
-/// the same Dioxus root; separate roots sharing a Window remain an adapter gap.
+/// Hover leave grace is a Rust-owned 250ms task. Collapsed popups participate in
+/// the shared overlay coordinator, with source category broadcast kept distinct
+/// from global topmost Escape and outside-click arbitration.
 /// Native parent-arrow arbitration retains the outer Menu's traversal bookkeeping
 /// while omitting its transient sibling focus, so the category's final child focus
 /// cannot lose to an independently delivered renderer focus request.
@@ -3316,6 +3360,96 @@ pub fn MenuCategory(
             revision,
             hover_coordinator.clone(),
         )
+    });
+    let overlay_runtime = crate::overlay_runtime::use_overlay_runtime();
+    let overlay_id = format!("ix-menu-category-overlay-{id}");
+    let overlay_node = use_hook({
+        let category = category.clone();
+        let runtime = overlay_runtime.clone();
+        let overlay_id = overlay_id.clone();
+        move || {
+            let read = Rc::downgrade(&category.0);
+            let before = read.clone();
+            let apply = read.clone();
+            let broadcast = read.clone();
+            runtime.register_category(
+                id,
+                Rc::new(move |source, active_categories| {
+                    if let Some(core) = broadcast.upgrade() {
+                        CategoryNavigation(core).hide_for_other(source, active_categories);
+                    }
+                }),
+            );
+            let node = runtime.register(
+                overlay_id,
+                1,
+                crate::overlay_registry::OverlayKind::Dropdown,
+                crate::overlay_registry::CloseBehavior::Both,
+                crate::overlay_runtime::Callbacks {
+                    read: Rc::new(move || {
+                        let core = read.upgrade()?;
+                        if !core.model.borrow().alive {
+                            return None;
+                        }
+                        core.flyout
+                            .try_peek()
+                            .ok()
+                            .map(|value| *value == Some(core.id))
+                    }),
+                    before: Rc::new(move |change| {
+                        let Some(core) = before.upgrade() else {
+                            return false;
+                        };
+                        if !core.model.borrow().alive {
+                            return false;
+                        }
+                        if !change.open {
+                            let capture =
+                                core.close_capture.borrow().clone().unwrap_or_else(|| {
+                                    let capture = core
+                                        .overlay
+                                        .borrow()
+                                        .as_ref()
+                                        .and_then(crate::overlay_runtime::NodeHandle::runtime)
+                                        .map(|runtime| runtime.category_close_capture());
+                                    let (connected, active_categories) =
+                                        capture.unwrap_or_default();
+                                    CategoryCloseCapture {
+                                        connected,
+                                        active_categories,
+                                    }
+                                });
+                            CategoryNavigation(core).authorize_dismiss_return(
+                                capture.connected,
+                                &capture.active_categories,
+                            );
+                        }
+                        true
+                    }),
+                    apply: Rc::new(move |change| {
+                        if let Some(core) = apply.upgrade() {
+                            let category = CategoryNavigation(core);
+                            if change.open {
+                                category.present_state();
+                            } else {
+                                category.close_flyout_state();
+                            }
+                        }
+                    }),
+                    key: None,
+                },
+            );
+            *category.0.overlay.borrow_mut() = Some(node.clone());
+            node
+        }
+    });
+    let overlay_sync = overlay_node.clone();
+    use_effect(move || overlay_sync.sync_open(flyout() == Some(id)));
+    let overlay_cleanup = overlay_node.clone();
+    let category_cleanup = overlay_runtime.clone();
+    use_drop(move || {
+        category_cleanup.unregister_category(id);
+        overlay_cleanup.unregister();
     });
     hover_coordinator
         .0
@@ -3411,12 +3545,15 @@ pub fn MenuCategory(
     let popup_key = category.clone();
     let popup_roving = root_roving.clone();
     rsx! {
-        div { class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
+        div { id:overlay_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
+            "data-ix-overlay-root":overlay_id.clone(),"data-ix-overlay-owner":overlay_runtime.owner_id(),
+            "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":overlay_id.clone(),"data-ix-overlay-native-surface":"category",
             "data-menu-category-root":id.to_string(),"data-menu-category":id.to_string(),"data-menu-category-mode":if expanded{"expanded"}else{"collapsed"},
             "data-menu-category-return-jobs":pending_returns,"data-menu-category-keyboard-mode":keyboard_mode,
             "data-menu-category-generation":generation,"data-menu-category-return-target":parent_id.clone(),"data-menu-category-return-keys":"[\"Enter\",\" \"]",
             "data-menu-category-keys":"[\"Enter\",\" \",\"ArrowDown\",\"ArrowUp\",\"Home\",\"End\",\"Tab\",\"Escape\"]","data-open":is_open.to_string(),
             "data-menu-category-popup-open":popup_open.to_string(),"data-menu-category-panel-open":panel_open.to_string(),"data-menu-category-body-surface":if body_in_panel{"panel"}else{"popup"},
+            crate::overlay_runtime::OverlayTransport {runtime:overlay_runtime.clone()}
             button {id:parent_id.clone(),class:if active||nested_active{"ix-menu-item ix-menu-item-active"}else{"ix-menu-item"},r#type:"button",title:(!disable_tooltip).then(||label.clone()),
                 role:"menuitem",tabindex,"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-label":label.clone(),"aria-expanded":is_open.to_string(),"aria-controls":format!("{content_id} {popup_id}"),
@@ -3434,6 +3571,7 @@ pub fn MenuCategory(
                 span {class:"ix-menu-category-chevron",crate::Icon{name:(if panel_open{"chevron-up-small"}else{"chevron-down-small"}).to_string(),size:16}}
             }
             div {id:content_id,role:"menu","aria-labelledby":parent_id.clone(),class:if panel_open{"ix-menu-category-items"}else{"ix-menu-category-flyout"},hidden:!is_open,
+                "data-ix-overlay-host":(!panel_open).then(||overlay_id.clone()),
                 "data-menu-category-panel":id.to_string(),"data-menu-category-popup":(!panel_open).then(||id.to_string()),"popover":(!panel_open).then_some("manual"),style:(!panel_open).then(||flyout_style.clone()),
                 onkeydown:move |event|{if let Some(roving)=&child_roving {roving.origin(MenuOrigin::Excluded);}child_key.key(event,false);},
                 div {class:"ix-menu-category-heading",hidden:panel_open,"{label}"}
@@ -3442,6 +3580,7 @@ pub fn MenuCategory(
                 }
             }
             div {id:popup_id,role:"menu","aria-labelledby":parent_id,class:"ix-menu-category-flyout",hidden:!(panel_open&&popup_open),
+                "data-ix-overlay-host":panel_open.then(||overlay_id.clone()),
                 "data-menu-category-empty-popup":id.to_string(),"data-menu-category-popup":panel_open.then(||id.to_string()),"popover":"manual",style:flyout_style,
                 onkeydown:move |event|{if let Some(roving)=&popup_roving {roving.origin(MenuOrigin::Excluded);}popup_key.key(event,false);},
                 div {class:"ix-menu-category-heading","{label}"}
@@ -5388,6 +5527,64 @@ mod tests {
             "both authorized returns deliver, without coalescing"
         );
         assert!(category.0.model.borrow().return_tasks.is_empty());
+    }
+
+    #[test]
+    fn menu_category_overlay_controller_close_authorizes_return_but_property_hide_does_not() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = MenuHarness::new();
+        h.toggle_expanded();
+        let category = h.category("Category");
+        let test = h.focus_boundary("Category");
+        h.document_mode("keydown", "Enter", 1);
+        h.hover("Category", "host", "enter", 2, "mouse", &[]);
+        let node = category.0.overlay.borrow().clone().unwrap();
+        *category.0.close_capture.borrow_mut() = Some(CategoryCloseCapture {
+            connected: true,
+            active_categories: vec![category.0.id],
+        });
+        assert!(node.request(false, crate::overlay_runtime::Reason::Escape, false));
+        category.0.close_capture.borrow_mut().take();
+        h.settle();
+        assert!(!category.is_open());
+        assert_eq!(
+            test.frames.started.get(),
+            1,
+            "controller before phase authorizes one return"
+        );
+        h.release_focus_gate(&test.frames);
+        assert_eq!(h.focuses.borrow().last().copied(), Some(category.0.id));
+        h.hover("Category", "host", "enter", 3, "mouse", &[]);
+        category.close_flyout();
+        h.settle();
+        assert!(!category.is_open());
+        assert_eq!(
+            test.frames.started.get(),
+            1,
+            "property hide bypasses request observation"
+        );
+    }
+
+    #[test]
+    fn menu_category_overlay_anchor_does_not_install_a_generic_trigger() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = MenuHarness::new();
+        let category = h.category("Category");
+        let html = h.html();
+        let overlay_id = format!("ix-menu-category-overlay-{}", category.0.id);
+        assert!(html.contains(&format!("data-ix-overlay-root=\"{overlay_id}\"")));
+        assert!(html.contains(&format!(
+            "data-ix-overlay-anchor-id=\"ix-menu-category-overlay-{}\"",
+            category.0.id
+        )));
+        assert!(!html.contains(&format!("data-ix-overlay-trigger=\"{overlay_id}\"")));
+        h.toggle_expanded();
+        h.hover("Category", "host", "enter", 1, "mouse", &[]);
+        assert!(category.is_open());
+        assert!(
+            h.html()
+                .contains(&format!("data-ix-overlay-host=\"{overlay_id}\""))
+        );
     }
 
     #[test]

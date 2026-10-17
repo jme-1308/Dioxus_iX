@@ -113,6 +113,10 @@ mod web_probe {
                     input { id: "window-{name}-remove-input", r#type: "hidden", oninput: move |_| mounted.set(false) }
                     input { id: "window-{name}-restore-input", r#type: "hidden", oninput: move |_| { generation += 1; mounted.set(true); } }
                     button { id: "window-{name}-outside", r#type: "button", "Ordinary outside target {name}" }
+                    button { id: "window-{name}-prevented-outside", r#type: "button",
+                        onkeydown: move |event| event.prevent_default(),
+                        "Default-prevented outside target {name}"
+                    }
                     p { "Increment A and inspect B's unchanged count. Hover category A then B; compare both popup states. Focus a category child, open the other root's dropdown, and compare Escape/topmost and delayed return. Outcomes are observations, not asserted parity." }
                     p { "Visible owner buttons inject normal click/down input. For a modality gap, dispatch only input on the retained hidden remove/restore inputs. Root contexts survive owner removal." }
                     if mounted() {
@@ -161,6 +165,7 @@ mod web_probe {
                     div { style: "padding:8px;min-width:0",
                         p { "Owner {owner_token}; context {inherited.token}." }
                         DiagnosticDropdown { name, kind: "outside", events }
+                        DiagnosticPopover { name, events }
                     }
                 }
             }
@@ -204,6 +209,39 @@ mod web_probe {
                 }
                 input { id: "window-{name}-{kind}-open-input", r#type: "hidden", oninput: move |_| dropdown.open() }
                 input { id: "window-{name}-{kind}-close-input", r#type: "hidden", oninput: move |_| dropdown.close(false) }
+            }
+        }
+    }
+
+    #[component]
+    fn DiagnosticPopover(name: &'static str, events: Signal<Vec<Value>>) -> Element {
+        let popover = use_popover();
+        let mut veto_close = use_signal(|| false);
+        let mut requests = use_signal(|| 0_usize);
+        let mut accepted = use_signal(|| 0_usize);
+        let open = popover.is_open();
+        rsx! {
+            div {
+                id: "window-{name}-popover",
+                "data-open": open.to_string(),
+                "data-request-count": requests().to_string(),
+                "data-accepted-count": accepted().to_string(),
+                "data-veto-close": veto_close().to_string(),
+                label {
+                    input { id: "window-{name}-popover-veto", r#type: "checkbox", checked: veto_close(), oninput: move |event| veto_close.set(event.checked()) }
+                    "Veto this Popover's close"
+                }
+                PopoverTrigger { popover, "Root {name} native popover" }
+                Popover { popover, label: "Root {name} native popover", close_on_click_outside: true,
+                    onshowchange: move |event: ToggleEvent| {
+                        requests += 1;
+                        let previous = popover.is_open();
+                        if previous && veto_close() { event.prevent_default(); }
+                        record(events, "popover-request", json!({"root": name, "open": !previous, "previous": previous, "vetoed": !event.default_action_enabled()}));
+                    },
+                    onshowchanged: move |value| { accepted += 1; record(events, "popover-accepted", json!({"root": name, "open": value})); },
+                    input { id: "window-{name}-popover-focus", r#type: "text", "aria-label": "Root {name} popover focus target", placeholder: "Native popover focus" }
+                }
             }
         }
     }

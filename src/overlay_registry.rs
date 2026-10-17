@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 pub(crate) enum OverlayKind {
     Header,
     Dropdown,
+    Popover,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -237,6 +238,25 @@ impl Registry {
         }
     }
 
+    /// Property-only visibility does not erase controller child assignments.
+    pub(crate) fn set_presence(&mut self, id: &str, open: bool) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let previous = node.open;
+        node.open = open;
+        if previous != open {
+            self.presentation_order.retain(|candidate| candidate != id);
+            if open {
+                self.presentation_order.push(id.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn forget_children(&mut self, id: &str) {
+        self.presented_children.retain(|(parent, _)| parent != id);
+    }
+
     pub(crate) fn set_close_behavior(&mut self, id: &str, close_behavior: CloseBehavior) {
         if let Some(node) = self.nodes.get_mut(id) {
             node.close_behavior = close_behavior;
@@ -268,7 +288,7 @@ impl Registry {
 
     pub(crate) fn cached_parent(&self, id: &str) -> Option<String> {
         for (parent, children) in &self.presented_children {
-            if self.is_open(parent) && children.iter().any(|c| c == id) {
+            if children.iter().any(|c| c == id) {
                 return Some(parent.clone());
             }
         }
@@ -414,10 +434,21 @@ impl Registry {
         else {
             return;
         };
+        let kind = self.nodes.get(child_id).map(|node| node.kind);
+        let unknown_ancestor = ancestors.iter().any(|id| !self.nodes.contains_key(id));
         let nearest = ancestors.into_iter().find(|anc_id| {
-            anc_id != child_id && self.nodes.get(anc_id).is_some_and(|n| n.connected)
+            anc_id != child_id
+                && self.nodes.get(anc_id).is_some_and(|node| {
+                    Some(node.kind) == kind
+                        || (kind == Some(OverlayKind::Dropdown) && node.kind == OverlayKind::Header)
+                })
         });
         let Some(parent_id) = nearest else {
+            // A foreign renderer may have committed its native host before its
+            // Rust owner joins. Retry discovery instead of latching no parent.
+            if unknown_ancestor {
+                return;
+            }
             if let Some(child) = self.nodes.get_mut(child_id) {
                 child.discovered = true;
             }
@@ -426,7 +457,7 @@ impl Registry {
         if !self
             .nodes
             .get(&parent_id)
-            .is_some_and(|n| n.discovery_ready)
+            .is_some_and(|n| n.connected && n.discovery_ready)
         {
             return;
         }
@@ -486,6 +517,92 @@ mod tests {
             trigger_ancestors: ancestors.iter().map(|s| (*s).to_string()).collect(),
             discovery_ready: ready,
         }
+    }
+
+    #[test]
+    fn property_open_does_not_snapshot_controller_children() {
+        let mut reg = Registry::new();
+        for id in ["parent", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            fact("parent", 1, &[], true),
+            fact("child", 1, &["parent"], true),
+        ]);
+        reg.set_presence("parent", true);
+        assert!(reg.cached_children("parent").is_empty());
+        reg.set_presence("parent", false);
+        reg.set_open("parent", true);
+        assert_eq!(reg.cached_children("parent"), vec!["child"]);
+    }
+
+    #[test]
+    fn partial_owner_observation_defers_discovery_until_registered_parent_connects() {
+        let mut reg = Registry::new();
+        for id in ["parent", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.observe(&[fact("child", 1, &["parent"], true)]);
+        reg.observe(&[
+            fact("parent", 1, &[], true),
+            fact("child", 1, &["parent"], true),
+        ]);
+        reg.set_open("parent", true);
+        assert_eq!(reg.cached_children("parent"), vec!["child"]);
+    }
+
+    #[test]
+    fn property_hidden_parent_retains_cached_assignment_until_controller_cleanup() {
+        let mut reg = Registry::new();
+        for id in ["parent", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            fact("parent", 1, &[], true),
+            fact("child", 1, &["parent"], true),
+        ]);
+        reg.set_open("parent", true);
+        reg.set_open("child", true);
+        reg.set_presence("parent", false);
+        assert!(reg.is_open("child"));
+        assert_eq!(reg.cached_root("child").as_deref(), Some("parent"));
+        assert_eq!(reg.cached_children("parent"), vec!["child"]);
+        reg.forget_children("parent");
+        assert_eq!(reg.cached_root("child").as_deref(), Some("child"));
+    }
+
+    #[test]
+    fn cached_discovery_skips_foreign_type_while_live_parent_uses_it() {
+        let mut reg = Registry::new();
+        reg.register(
+            "outer".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+        );
+        reg.register(
+            "middle".into(),
+            1,
+            OverlayKind::Popover,
+            CloseBehavior::Both,
+        );
+        reg.register(
+            "inner".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+        );
+        reg.observe(&[
+            fact("outer", 1, &[], true),
+            fact("middle", 1, &["outer"], true),
+            fact("inner", 1, &["middle", "outer"], true),
+        ]);
+        for id in ["outer", "middle", "inner"] {
+            reg.set_open(id, true);
+        }
+        assert_eq!(reg.cached_root("inner").as_deref(), Some("outer"));
+        assert_eq!(reg.cached_root("middle").as_deref(), Some("middle"));
+        assert_eq!(reg.live_parent("inner").as_deref(), Some("middle"));
     }
 
     #[test]

@@ -49,7 +49,7 @@ try{
  const elapsed=async(start,delay)=>{const left=start+delay-performance.now();if(left>0)await sleep(left);return performance.now()-start;};
  const readyHost=host=>host?.dataset.categoryNative==='true'&&host?.dataset.categoryHoverNative==='true'&&host.hasAttribute('data-menu-category-return-jobs')&&['true','false'].includes(mode(host));
  const ready=()=>menu()?.dataset.menuNative==='true'&&readyHost(a())&&readyHost(b())&&readyHost(peer())&&[...document.querySelectorAll('nav.ix-menu input[data-menu-hover-observer]')].every(input=>input.dataset.menuDocumentReady==='true');
- document.addEventListener('input',event=>{if(!event.target.matches?.('input[data-menu-hover-observer],input[data-menu-observer]'))return;try{record('raw-private-transport',{transport:event.target.hasAttribute('data-menu-hover-observer')?'hover/modality/capture':'navigation/outside',detail:JSON.parse(event.target.value),focus:focusChain()});}catch{}},{capture:true,passive:true,signal:globalListeners.signal});
+ document.addEventListener('input',event=>{if(!event.target.matches?.('input[data-menu-hover-observer],input[data-menu-observer],input[data-ix-overlay-transport]'))return;try{record('raw-private-transport',{transport:event.target.hasAttribute('data-ix-overlay-transport')?'overlay-document/window':event.target.hasAttribute('data-menu-hover-observer')?'hover/modality/capture':'navigation/outside',detail:JSON.parse(event.target.value),focus:focusChain()});}catch{}},{capture:true,passive:true,signal:globalListeners.signal});
  document.addEventListener('keydown',event=>record('actual-document-keydown-bubble',{key:event.key,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented}),{passive:true,signal:globalListeners.signal});
  document.addEventListener('focusin',event=>record('native-focusin',{target:node(event.target),origin:node(event.composedPath()[0]),trusted:event.isTrusted,focus:focusChain()}),{capture:true,passive:true,signal:globalListeners.signal});
  const mutations=new MutationObserver(records=>{
@@ -73,6 +73,7 @@ try{
   const time=performance.now();record('driver-modality',{type,eventClass:event.constructor.name,trusted:event.isTrusted});get('after').dispatchEvent(event);return time;
  }
  const rawModality=(after,kind,keyName)=>journal.some(row=>row.scenario===scenario&&row.time>=after&&row.kind==='raw-private-transport'&&row.detail.entries?.at(-1)?.kind===kind&&(!keyName||row.detail.entries.at(-1).key===keyName));
+ const overlayWindowReports=(after,kind,host,keyName)=>journal.filter(row=>row.scenario===scenario&&row.time>=after&&row.kind==='raw-private-transport'&&row.transport==='overlay-document/window'&&row.detail.kind===kind&&row.detail.phase==='window'&&typeof row.detail.document==='string'&&row.detail.document.length>0&&row.detail.window_sequence>0&&(!keyName||row.detail.key===keyName)&&row.detail.nodes?.some(node=>node.id===host.getAttribute('data-ix-overlay-root')&&node.owner===host.getAttribute('data-ix-overlay-owner')&&node.connected));
  function control(id,value){const el=get(id),time=performance.now();if(el instanceof HTMLInputElement&&el.type==='checkbox')el.checked=value;else el.value=value;record('fixture-control-change',{id,value});el.dispatchEvent(new Event('change',{bubbles:true}));return time;}
  function clearWatch(){if(watch?.frame)cancelAnimationFrame(watch.frame);watch=null;}
  async function fresh(label){
@@ -136,11 +137,11 @@ try{
   window.addEventListener('click',actual=>{if(actual!==event)return;reachedWindow=true;record('actual-window-click-bubble',{consumer,trusted:actual.isTrusted,defaultPrevented:actual.defaultPrevented,focus:focusChain()});},{once:true,signal:listeners.signal});
   record('driver-click-only',{consumer,target:node(target),trusted:event.isTrusted,buttons:event.buttons,inputClass:event.constructor.name,classification:'synthetic click only; no mousedown/native focus default'});target.dispatchEvent(event);
   assert(mode(host)==='true','click-only consumer preserves Rust keyboard mode');
-  const clickReports=()=>journal.filter(row=>row.scenario===scenario&&row.time>=begin&&row.kind==='raw-private-transport'&&row.detail.kind==='category-outside'&&row.detail.outside_cause==='click'&&row.detail.category===Number(host.getAttribute('data-menu-category-root')));
+  const clickReports=()=>overlayWindowReports(begin,'click',host);
   if(consumer==='stop-propagation'){
    await frames(6);assert(!reachedWindow&&presented(host)&&deepActive()===child(host),'stopped target click never reaches Window and retains popup/inside focus');assert(clickReports().length===0&&exposedJobs(host,begin).length===0,'stopped click sends no outside report or return job');
   }else{
-   assert(reachedWindow,'outside click reaches actual Window bubble after target consumer');await wait(()=>clickReports().length>0,'actual Window click category-outside transport');
+   assert(reachedWindow,'outside click reaches actual Window bubble after target consumer');await wait(()=>clickReports().length>0,'actual shared overlay Window click transport with connected category owner');
    if(consumer==='focus-outside'){
     await wait(()=>closed(host),'target-focused outside closure');await frames(4);assert(deepActive()===target&&exposedJobs(host,begin).length===0&&jobs(host).length===0,'target consumer focus precedes capture; no return authorization or later steal');assert(clickReports().every(row=>!row.detail.active_categories?.includes(Number(host.getAttribute('data-menu-category-root')))),'Window click raw active membership reflects target focus before capture');
    }else{await settleParent(host);assert(exposedJobs(host,begin).length>0,'click-only controller closure authorizes category-parent return');}
@@ -162,7 +163,7 @@ try{
   const host=a(),begin=performance.now();assert(mode(host)===String(priorKeyboardMode),'Rust Escape prior mode observed');const result=key(child(host),'Escape');
   const documentEscapes=()=>journal.filter(row=>row.scenario===scenario&&row.time>=begin&&row.kind==='actual-document-keydown-bubble'&&row.key==='Escape');
   assert(!result.event.defaultPrevented&&documentEscapes().length>0,'Escape keeps original default enabled and reaches actual document bubble');
-  const windowKey=()=>journal.find(row=>row.scenario===scenario&&row.time>=begin&&row.kind==='raw-private-transport'&&row.detail.kind==='category-window-key'&&row.detail.key==='Escape'&&row.detail.category===Number(host.getAttribute('data-menu-category-root')));
+  const windowKey=()=>overlayWindowReports(begin,'key',host,'Escape')[0];
   await wait(()=>rawModality(begin,'keydown','Escape')&&windowKey(),'document modality then actual Window Escape transport');
   const modality=journal.find(row=>row.scenario===scenario&&row.time>=begin&&row.kind==='raw-private-transport'&&row.detail.entries?.at(-1)?.kind==='keydown'&&row.detail.entries.at(-1).key==='Escape'),windowCapture=windowKey();
   assert(modality.seq<windowCapture.seq,'document raw Escape modality precedes Window controller report');assert(windowCapture.detail.active_categories?.includes(Number(host.getAttribute('data-menu-category-root')))&&windowCapture.focus.at(-1)?.id===child(host).id,'Window Escape captures actual A-child focus and category ancestry');
