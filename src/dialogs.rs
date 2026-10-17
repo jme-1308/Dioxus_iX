@@ -391,30 +391,6 @@ impl Surface {
         self.bridge_invoker.set(None);
     }
 
-    async fn advance_focus(self, backwards: bool) {
-        #[cfg(any(feature = "web", feature = "desktop"))]
-        {
-            // This bridge only resolves native focusable descendants and focuses
-            // the adjacent element. It installs no listeners or application state.
-            let id = serde_json::to_string(&self.id()).expect("string serialization");
-            let script = format!(
-                r#"
-                const panel=document.getElementById({id});if(!panel)return;
-                const elements=Array.from(panel.querySelectorAll('button,a[href],input:not([type=hidden]),select,textarea,[tabindex],[contenteditable=true]'))
-                    .filter(element=>element instanceof HTMLElement&&element.tabIndex>=0&&!element.matches(':disabled')&&!element.closest('[inert]')&&element.getClientRects().length>0)
-                    .sort((a,b)=>(a.tabIndex>0?a.tabIndex:2147483647)-(b.tabIndex>0?b.tabIndex:2147483647));
-                if(elements.length===0){{panel.focus();return;}}
-                const index=elements.indexOf(document.activeElement);
-                const next=index<0?({backwards}?elements.length-1:0):(index+({backwards}?-1:1)+elements.length)%elements.length;
-                elements[next].focus();
-            "#
-            );
-            let _ = crate::dom_query::eval(&script).await;
-        }
-        #[cfg(not(any(feature = "web", feature = "desktop")))]
-        let _ = backwards;
-    }
-
     async fn contains_focus(self) -> bool {
         #[cfg(any(feature = "web", feature = "desktop"))]
         {
@@ -1499,6 +1475,7 @@ pub fn Popover(
         crate::overlay_runtime::OverlayTransport {runtime:runtime.clone()}
             div { id: id.clone(), class: "ix-popover", role: "dialog", "aria-label": label.clone(), tabindex: "-1",
                 "data-surface-generation": "{generation}",
+                "data-ix-popover-focus-trap": popover.focusable_at_open.read().to_string(),
                 "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime.owner_id(),
                 "data-ix-overlay-generation":registration.to_string(),"data-ix-overlay-open":popover.is_open().to_string(),
                 "data-ix-overlay-host":id.clone(),"data-ix-overlay-native-surface":"popover",
@@ -1524,13 +1501,6 @@ pub fn Popover(
                     if !(visible && *popover.opening.peek()) { reported.set(visible); }
                     if previous != visible && !(visible && *popover.opening.peek()) { if let Some(callback) = onshowchanged { callback.call(visible); } }
                 }); },
-                onkeydown: move |event| match event.key() {
-                    Key::Tab if cfg!(any(feature = "web", feature = "desktop")) => {
-                        event.prevent_default(); event.stop_propagation();
-                        spawn(async move { popover.surface.advance_focus(event.modifiers().shift()).await; });
-                    }
-                    _ => {}
-                },
                 onmouseenter: move |_| popover.cancel_hover_hide(),
                 onmouseleave: move |_| popover.schedule_hover_hide(false),
                 onfocusin: move |_| popover.cancel_hover_hide(),

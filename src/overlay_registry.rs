@@ -298,6 +298,10 @@ impl Registry {
         self.nodes.get(id).is_some_and(|n| n.open)
     }
 
+    pub(crate) fn is_connected(&self, id: &str) -> bool {
+        self.nodes.get(id).is_some_and(|node| node.connected)
+    }
+
     pub(crate) fn generation(&self, id: &str) -> Option<u64> {
         self.nodes.get(id).map(|n| n.generation)
     }
@@ -357,6 +361,16 @@ impl Registry {
     }
 
     pub(crate) fn live_parent(&self, id: &str) -> Option<String> {
+        self.parent_matching(id, false)
+    }
+
+    /// Header participates in this port's controller adapter, but it is not a
+    /// source OverlayCoordinator entry for Popover focus arbitration.
+    pub(crate) fn focus_parent(&self, id: &str) -> Option<String> {
+        self.parent_matching(id, true)
+    }
+
+    fn parent_matching(&self, id: &str, skip_header: bool) -> Option<String> {
         let node = self.nodes.get(id)?;
         if !node.connected {
             return None;
@@ -366,11 +380,25 @@ impl Registry {
                 && let Some(anc) = self.nodes.get(ancestor_id)
                 && anc.connected
                 && anc.open
+                && (!skip_header || anc.kind != OverlayKind::Header)
             {
                 return Some(ancestor_id.clone());
             }
         }
         None
+    }
+
+    pub(crate) fn focus_ancestors(&self, id: &str) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        let mut current = self.focus_parent(id);
+        while let Some(parent) = current {
+            if parent == id || ancestors.contains(&parent) {
+                break;
+            }
+            current = self.focus_parent(&parent);
+            ancestors.push(parent);
+        }
+        ancestors
     }
 
     pub(crate) fn live_ancestors(&self, id: &str) -> Vec<String> {

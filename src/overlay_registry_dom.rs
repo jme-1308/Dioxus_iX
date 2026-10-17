@@ -93,6 +93,31 @@ function sortByTabOrder(els){
 function hostFocusables(host){
   return host?sortByTabOrder(Array.from(host.querySelectorAll(focusableSelector)).filter(el=>el instanceof HTMLElement&&visibleFocusable(el)&&nearestHost(el)===host)):[];
 }
+function hostAncestors(element){
+  const result=[];
+  for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&isActiveHost(n)){
+    const id=n.getAttribute('data-ix-overlay-host');if(id&&!result.includes(id))result.push(id);
+  }
+  return result;
+}
+function nearestPopover(element){
+  for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.getAttribute('data-ix-overlay-native-surface')==='popover')return n;
+  return null;
+}
+function popoverTabFacts(panel,active){
+  if(!panel)return [];
+  const raw=Array.from(panel.querySelectorAll(focusableSelector)).filter(element=>{
+    if(!(element instanceof HTMLElement)||element.matches('[tabindex^="-"],[hidden],[disabled],:disabled')||nearestPopover(element)!==panel)return false;
+    for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.inert)return false;
+    const style=getComputedStyle(element);if(style.visibility==='hidden'||style.visibility==='collapse')return false;
+    if(typeof element.checkVisibility==='function')return element.checkVisibility();
+    for(let n=element;n;n=stepParent(n))if(n instanceof Element&&getComputedStyle(n).display==='none')return false;
+    return element.getClientRects().length>0;
+  });
+  let activeIndex=raw.indexOf(active);
+  if(activeIndex===-1)activeIndex=raw.findIndex(element=>active&&composedContains(element,active));
+  return raw.map((element,index)=>({target:nativeId(element),tab_index:element.tabIndex,hosts:hostAncestors(element),active:index===activeIndex}));
+}
 function hostItems(host){
   const out=[];if(!host)return out;
   for(const el of host.querySelectorAll('[data-ix-dropdown-item]')){
@@ -138,7 +163,7 @@ function collectFacts(kind,event,phase=''){
   for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
-    if(!id||(phase!=='window'&&ro!==owner))continue;
+    if(!id||(!['window','trap'].includes(phase)&&event?.key!=='Tab'&&ro!==owner))continue;
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
     const discovery_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
     const open=root.hasAttribute('data-ix-overlay-open')?root.getAttribute('data-ix-overlay-open')==='true':root.getAttribute('data-open')==='true';
@@ -153,12 +178,14 @@ function collectFacts(kind,event,phase=''){
     const focused_index=findFocusedIndex(active,focusables);
     const on_trigger=!!trigger&&(event?target===trigger:active===trigger);
     const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
+    const tab_candidates=event?.key==='Tab'&&root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
     nodes.push({
       id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
       trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
       focusable_ids:focusables.map(nativeId).filter(Boolean),
-      focus_count:focusables.length,focused_index,on_trigger,inside
+      focus_count:focusables.length,focused_index,on_trigger,inside,
+      trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
     });
   }
   return {
@@ -166,25 +193,41 @@ function collectFacts(kind,event,phase=''){
     key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,ctrl:!!event?.ctrlKey,meta:!!event?.metaKey,
     default_prevented:!!event?.defaultPrevented,
     target_id:nativeId(target),active_id:nativeId(active),
-    hosts,triggers,anchors,nodes,active_categories,tab_order:documentTabOrder(),candidate_ids
+    hosts,triggers,anchors,nodes,active_categories,tab_order:documentTabOrder(),candidate_ids,
+    active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||'',
+    focus_targets:nodes.flatMap(node=>node.tab_candidates.map(candidate=>candidate.target))
   };
 }
 function send(report,event){
   const input=transport();
   if(!alive||!input)return;
+  // Keep the actual observed objects through Rust callbacks. A replacement
+  // with the same public ID must not inherit this event's focus permission.
+  const focusExecution=new Map([...report.tab_order,...report.focus_targets].map(id=>{
+    const element=findElement(id),panel=element?nearestPopover(element):null;
+    return [id,{element,panel,generation:panel?.getAttribute('data-surface-generation')}];
+  }));
   const value=JSON.stringify(report);
   input.value=value;
   const prevent=!input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
   const ackInput=transport();if(!ackInput)return;
   ackInput.value=value;
   const stop=!ackInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-  if(event){if(prevent&&event.cancelable)event.preventDefault();if(stop)event.stopPropagation();}
+  let immediate=false;
+  if(report.phase==='trap'){
+    const immediateInput=transport();if(!immediateInput)return;
+    immediateInput.value=JSON.stringify({owner,sequence:report.sequence,immediate_stop:true});
+    immediate=!immediateInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+  }
+  if(event){if(prevent&&event.cancelable)event.preventDefault();if(immediate)event.stopImmediatePropagation();else if(stop)event.stopPropagation();}
   if(report.kind==='key'){
-    for(const id of report.tab_order){
-      const el=findElement(id);if(!el)continue;
+    for(const [id,facts]of focusExecution){
+      const el=facts.element;
+      const valid=()=>el?.isConnected&&(!facts.panel||(facts.panel.isConnected&&facts.panel.matches(':popover-open')&&facts.panel.getAttribute('data-surface-generation')===facts.generation));
+      if(!valid())continue;
       const focusInput=transport();if(!focusInput)return;
       focusInput.value=JSON.stringify({owner,sequence:report.sequence,focus_target:id});
-      if(!focusInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){el.focus();break;}
+      if(!focusInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){if(valid())el.focus();break;}
     }
   }
   if(report.kind==='key'&&report.candidate_ids.length){
@@ -274,6 +317,7 @@ function reportObserve(){
 }
 document.addEventListener('keydown',e=>send(collectFacts('key',e,'capture'),e),{capture:true,signal});
 document.addEventListener('keydown',e=>{if(!handledBubbleKeys.has(e))send(collectFacts('key',e,'fallback'),e);},{signal});
+document.addEventListener('keydown',e=>{if(e.key==='Tab')send(collectFacts('key',e,'trap'),e);},{signal});
 for(const kind of ['keydown','mousedown','touchstart'])document.addEventListener(kind,e=>send(collectFacts('modality',e,'document'),null),{passive:true,signal});
 document.addEventListener('click',e=>send(collectFacts('click',e,'capture'),e),{capture:true,signal});
 document.addEventListener('click',e=>send(collectFacts('click',e,'bubble'),e),{signal});

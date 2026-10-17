@@ -492,6 +492,49 @@ impl Domain {
         self.0.borrow().registry.topmost()
     }
 
+    /// Source document traps defer to focused topmost overlays and to any
+    /// other open Popover layer. Otherwise exclude the topmost-to-host branch.
+    pub(crate) fn focus_trap_exclusions(
+        &self,
+        host: &str,
+        active_hosts: &[String],
+        active_popover: &str,
+    ) -> Option<Vec<String>> {
+        self.refresh();
+        let state = self.0.borrow();
+        if active_popover != host
+            && state.entries.get(active_popover).is_some_and(|entry| {
+                entry.kind == OverlayKind::Popover && state.registry.is_open(active_popover)
+            })
+        {
+            return None;
+        }
+        let Some(top) = state.presented().into_iter().rev().find(|id| {
+            state.registry.is_open(id)
+                && state.registry.is_connected(id)
+                && state
+                    .entries
+                    .get(id)
+                    .is_some_and(|entry| entry.kind != OverlayKind::Header)
+        }) else {
+            return Some(Vec::new());
+        };
+        if top == host {
+            return Some(Vec::new());
+        }
+        if active_hosts.contains(&top) {
+            return None;
+        }
+        let mut excluded = vec![top.clone()];
+        for ancestor in state.registry.focus_ancestors(&top) {
+            if ancestor == host {
+                return Some(excluded);
+            }
+            excluded.push(ancestor);
+        }
+        Some(Vec::new())
+    }
+
     pub(crate) fn owns_topmost(&self, id: &str) -> bool {
         self.refresh();
         let state = self.0.borrow();
@@ -525,6 +568,26 @@ impl Domain {
 
     pub(crate) fn live_ancestors(&self, id: &str) -> Vec<String> {
         self.0.borrow().registry.live_ancestors(id)
+    }
+
+    pub(crate) fn has_popover_ancestor(&self, id: &str) -> bool {
+        let state = self.0.borrow();
+        state.registry.focus_ancestors(id).iter().any(|ancestor| {
+            state
+                .entries
+                .get(ancestor)
+                .is_some_and(|entry| entry.kind == OverlayKind::Popover)
+        })
+    }
+
+    pub(crate) fn popover_focus_parent(&self, id: &str) -> Option<String> {
+        let state = self.0.borrow();
+        let parent = state.registry.focus_parent(id)?;
+        state
+            .entries
+            .get(&parent)
+            .is_some_and(|entry| entry.kind == OverlayKind::Popover)
+            .then_some(parent)
     }
 
     pub(crate) fn child_path(&self, id: &str, hosts: &[String], triggers: &[String]) -> bool {

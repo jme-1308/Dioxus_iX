@@ -4,6 +4,8 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 use serde_json::{Value, json};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static CHILD_INSTANCES: AtomicUsize = AtomicUsize::new(1);
@@ -73,10 +75,15 @@ enum FocusMode {
     NoTrigger,
     CachedAdd,
     CachedRemove,
+    Tab,
+    TabPositive,
+    TabNested,
+    TabDropdownActive,
+    TabDropdownRoving,
 }
 
 impl FocusMode {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 15] = [
         Self::Default,
         Self::Priority,
         Self::HeaderOnly,
@@ -87,6 +94,11 @@ impl FocusMode {
         Self::NoTrigger,
         Self::CachedAdd,
         Self::CachedRemove,
+        Self::Tab,
+        Self::TabPositive,
+        Self::TabNested,
+        Self::TabDropdownActive,
+        Self::TabDropdownRoving,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -100,6 +112,11 @@ impl FocusMode {
             Self::NoTrigger => "no-trigger",
             Self::CachedAdd => "cached-add",
             Self::CachedRemove => "cached-remove",
+            Self::Tab => "tab",
+            Self::TabPositive => "tab-positive",
+            Self::TabNested => "tab-nested",
+            Self::TabDropdownActive => "tab-dropdown-active",
+            Self::TabDropdownRoving => "tab-dropdown-roving",
         }
     }
     fn from_key(value: &str) -> Self {
@@ -137,7 +154,8 @@ fn Probe() -> Element {
                         let _ = query.send(());
                         match query.join::<Value>().await {
                             Ok(result) if result["ok"] == true => { println!("Popover controller native observations: {result}"); window.close(); }
-                            result => { eprintln!("Popover controller native failure: {result:?}"); std::process::exit(1); }
+                            Ok(result) => { eprintln!("Popover controller native failure JSON: {result}"); std::process::exit(1); }
+                            Err(error) => { eprintln!("Popover controller native transport failure: {error:?}"); std::process::exit(1); }
                         }
                     });
                 }
@@ -157,6 +175,7 @@ fn Probe() -> Element {
             button { id: "popover-before", "Before opening focus target" }
             button { id: "popover-outside", "Outside focus and Escape target" }
             for current in [generation()] { Fixture { key: "{current}", generation: current, nested_child_host: nested_child_host(), hover_parent: hover_parent(), focus_mode: focus_mode() } }
+            TabNativeJournal {}
         }
     } }
 }
@@ -241,7 +260,7 @@ fn Fixture(
             }
             if focus_mode != FocusMode::NoTrigger { PopoverTrigger { popover: handles[0], trigger_mode: if hover_parent { PopoverTriggerMode::Hover } else { PopoverTriggerMode::Click }, "Parent native trigger" } }
             Panel { index: 0 }
-            if !nested_child_host || (focus_mode != FocusMode::Default && focus_mode != FocusMode::Excluded) { Panel { index: 1 } }
+            if !nested_child_host || (focus_mode != FocusMode::Default && focus_mode != FocusMode::Excluded && focus_mode != FocusMode::TabNested) { Panel { index: 1 } }
             if focus_mode != FocusMode::Default { Panel { index: 4 } }
             PopoverTrigger { popover: handles[2], "Unrelated native trigger" }
             Panel { index: 2 }
@@ -294,6 +313,7 @@ fn Panel(index: usize) -> Element {
 
 #[component]
 fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
+    let ProbeContext { handles, rows, .. } = use_context();
     let hide_close = matches!(
         mode,
         FocusMode::Static
@@ -317,6 +337,23 @@ fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
             Panel { index: 1 }
             button { id: "popover-focus-body", "Eligible body after exclusions" }
         },
+        FocusMode::Tab
+        | FocusMode::TabPositive
+        | FocusMode::TabNested
+        | FocusMode::TabDropdownActive
+        | FocusMode::TabDropdownRoving => rsx! {
+            button { id: "popover-tab-first", tabindex: if mode == FocusMode::TabPositive { "2" } else { "0" }, "Tab body first" }
+            if mode == FocusMode::TabNested {
+                PopoverTrigger { popover: handles[1], "Tab child trigger" }
+                Panel { index: 1 }
+            }
+            if mode == FocusMode::TabDropdownActive || mode == FocusMode::TabDropdownRoving { TabDropdown { roving: mode == FocusMode::TabDropdownRoving } }
+            button { id: "popover-tab-second", tabindex: if mode == FocusMode::TabPositive { "4" } else { "0" }, "Tab body second" }
+            if mode != FocusMode::TabPositive {
+                button { id: "popover-tab-prevent", onkeydown: move |event| if event.key() == Key::Tab { event.prevent_default(); record(rows, "tab-rust-consumer", "parent", json!({"action":"prevent-default","defaultEnabled":event.default_action_enabled()})); }, "Rust prevent-default consumer" }
+                button { id: "popover-tab-stop", onkeydown: move |event| if event.key() == Key::Tab { event.stop_propagation(); record(rows, "tab-rust-consumer", "parent", json!({"action":"virtual-stop-propagation","defaultEnabled":event.default_action_enabled()})); }, "Rust virtual-stop consumer" }
+            }
+        },
         FocusMode::NoTrigger => {
             rsx! { button { id: "popover-focus-body", "Unanchored body action" } }
         }
@@ -327,7 +364,7 @@ fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
     };
     rsx! {
         PopoverHeader { hide_close,
-            additional_items: if mode == FocusMode::Positive { Some(rsx! { button { id: "popover-focus-header-positive", tabindex: "1", "Header positive one" } }) } else { None },
+            additional_items: if mode == FocusMode::Positive || mode == FocusMode::TabPositive { Some(rsx! { button { id: "popover-focus-header-positive", tabindex: "1", "Header positive one" } }) } else { None },
             {format!("Focus contract {}", mode.key())}
         }
         PopoverContent {
@@ -336,7 +373,64 @@ fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
         PopoverFooter {
             if mode == FocusMode::Priority || mode == FocusMode::FooterOnly { button { id: "popover-focus-footer", "Footer action" } }
             else if mode == FocusMode::Positive { button { id: "popover-focus-footer-three", tabindex: "3", "Footer positive three" } }
+            else if matches!(mode, FocusMode::Tab | FocusMode::TabPositive | FocusMode::TabNested | FocusMode::TabDropdownActive | FocusMode::TabDropdownRoving) { button { id: "popover-tab-last", tabindex: if mode == FocusMode::TabPositive { "3" } else { "0" }, "Tab footer last" } }
             else { span { "Static footer copy" } }
+        }
+    }
+}
+
+#[component]
+fn TabDropdown(roving: bool) -> Element {
+    let ProbeContext { rows, .. } = use_context();
+    let dropdown = use_dropdown();
+    let mut veto_close = use_signal(|| false);
+    rsx! {
+        div { id: "popover-tab-dropdown", "data-open": dropdown.is_open().to_string(), "data-veto-close": veto_close().to_string(), "data-mode": if roving { "roving" } else { "active-descendant" },
+            DropdownTrigger { dropdown, "Nested Tab Dropdown" }
+            Dropdown { controller: dropdown, label: "Nested Tab Dropdown", enable_top_layer: true, navigation_mode: if roving { DropdownNavigationMode::RovingTabindex } else { DropdownNavigationMode::ActiveDescendant },
+                onbeforechange: move |event: DropdownChangeEvent| { if !event.open && veto_close() { event.prevent_default(); } record(rows, "tab-dropdown-request", "parent", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
+                onchange: move |open| record(rows, "tab-dropdown-completed", "parent", json!({"open":open})),
+                DropdownItem { label: "Tab Dropdown first" }
+                DropdownItem { label: "Tab Dropdown last" }
+            }
+            input { id: "popover-tab-dropdown-open", r#type: "hidden", oninput: move |_| dropdown.open() }
+            input { id: "popover-tab-dropdown-close", r#type: "hidden", oninput: move |_| dropdown.close(false) }
+            button { id: "popover-tab-dropdown-veto", tabindex: "-1", onclick: move |_| { let next = !veto_close(); veto_close.set(next); }, "Toggle nested Dropdown close veto" }
+            input { id: "popover-tab-dropdown-veto-input", r#type: "hidden", oninput: move |event| veto_close.set(event.value() == "true") }
+        }
+    }
+}
+
+const TAB_NATIVE_JOURNAL: &str = r#"
+const abort=new AbortController(),events=new WeakMap();let sequence=0;
+const node=element=>element?{id:element.id,tag:element.tagName,label:element.getAttribute?.('aria-label'),host:element.closest?.('[data-ix-overlay-host]')?.getAttribute('data-ix-overlay-host')}:null;
+const capture=(phase,event)=>{if(event.key!=='Tab')return;if(!events.has(event))events.set(event,++sequence);dioxus.send({phase,sequence:events.get(event),key:event.key,shift:event.shiftKey,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,cancelBubble:event.cancelBubble,target:node(event.target),active:node(document.activeElement)});};
+document.addEventListener('keydown',event=>capture('document-capture',event),{capture:true,passive:true,signal:abort.signal});
+document.addEventListener('keydown',event=>capture('document-bubble-observer',event),{passive:true,signal:abort.signal});
+window.addEventListener('keydown',event=>capture('window-bubble-observer',event),{passive:true,signal:abort.signal});
+dioxus.send({phase:'ready',readOnly:true});try{await dioxus.recv();}finally{abort.abort();}
+"#;
+
+#[component]
+fn TabNativeJournal() -> Element {
+    let mut rows = use_signal(Vec::<Value>::new);
+    let channel = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
+    let cleanup = channel.clone();
+    use_drop(move || {
+        if let Some(eval) = cleanup.borrow_mut().take() {
+            let _ = eval.send("finish");
+        }
+    });
+    let text = serde_json::to_string(&*rows.read()).unwrap();
+    rsx! {
+        details {
+            onmounted: move |_| {
+                let mut eval = dioxus::document::eval(TAB_NATIVE_JOURNAL);
+                *channel.borrow_mut() = Some(eval);
+                spawn(async move { while let Ok(value) = eval.recv::<Value>().await { let mut current = rows.write(); current.push(value); if current.len() > 400 { current.remove(0); } } });
+            },
+            summary { "Read-only native Tab phase journal (trusted/browser vs synthetic)" }
+            pre { id: "popover-tab-native-log", style: "white-space:pre-wrap;overflow-wrap:anywhere", "{text}" }
         }
     }
 }
@@ -356,7 +450,7 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[];
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[];
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -444,6 +538,67 @@ try {
  await freshFocus('cached-remove','opening-interactive focus eligibility remains cached after Rust body control removal');await focusOutside('popover-before','before-interactive-remove-show');await command('show','parent');expect(['parent']);activeId('popover-focus-body');save({phase:'first-open-interactive'});
  await command('focus-body','parent',false);assert(!get('popover-focus-body')&&fixture().dataset.dynamicBody==='false','actual Rust body control removed while open');await focusOutside('popover-outside','after-body-removed');await command('hide','parent');expect([]);expectTrigger('parent');save({phase:'first-close-keeps-interactive-opening-eligibility'});
  await focusOutside('popover-before','before-second-static-show');await command('show','parent');expect(['parent']);activeId('popover-before');save({phase:'second-open-refreshes-static-eligibility'});await focusOutside('popover-outside','before-second-static-hide');await command('hide','parent');expect([]);activeId('popover-outside');save({phase:'second-close-retains-outside-focus'});
- return {ok:true,observations,assertions,driverJournal,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal}; }
+ const nativeTabRows=()=>JSON.parse(get('popover-tab-native-log')?.textContent??'[]');
+ const checkTab=(row,expected)=>{
+  const matched=row.afterActiveObject===objectId(expected.target)&&row.immediateDefaultPrevented===expected.prevented&&row.reachedWindow===expected.window;
+  tabChecks.push({label:row.label,matched,expected:{active:describe(expected.target),defaultPrevented:expected.prevented,reachedWindow:expected.window},actual:{active:row.afterActive,defaultPrevented:row.immediateDefaultPrevented,reachedWindow:row.reachedWindow}});
+ };
+ const tab=async(label,target,shift=false)=>{
+  if(!target)throw Error('Missing native Tab target '+label);target.focus();await settle();assert(document.activeElement===target,'actual native seeded Tab focus '+label);
+  const before={state:read(),active:describe(document.activeElement),dropdownOpen:get('popover-tab-dropdown')?.dataset.open??null},nativeStart=nativeTabRows().length,rustStart=logs().length,event=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',shiftKey:shift,bubbles:true,cancelable:true,composed:true});
+  let reachedDocument=false,reachedWindow=false;const listeners=new AbortController();
+  document.addEventListener('keydown',actual=>{if(actual===event)reachedDocument=true;},{passive:true,signal:listeners.signal});
+  window.addEventListener('keydown',actual=>{if(actual===event)reachedWindow=true;},{passive:true,signal:listeners.signal});
+  driverJournal.push({scenario,kind:'synthetic-native-Tab',label,shift,trusted:event.isTrusted,target:describe(target),beforeActive:describe(document.activeElement),nativeDefaultNavigation:false});
+  target.dispatchEvent(event);const immediateDefaultPrevented=event.defaultPrevented,immediateActive=describe(document.activeElement);await settle();
+  const row={label,shift,trusted:event.isTrusted,target:describe(target),immediateDefaultPrevented,settledDefaultPrevented:event.defaultPrevented,reachedDocument,reachedWindow,immediateActive,afterActive:describe(document.activeElement),afterActiveObject:objectId(document.activeElement),before,nativePhases:nativeTabRows().slice(nativeStart),rustCallbacks:logs().slice(rustStart),afterState:read(),dropdownOpen:get('popover-tab-dropdown')?.dataset.open??null};
+  tabCases.push(row);save({phase:'synthetic-Tab',tab:row});listeners.abort();return row;
+ };
+ await wait(()=>nativeTabRows().some(row=>row.phase==='ready'),'read-only document/window Tab recorder ready');
+ await freshFocus('tab','document Tab boundary policy and native propagation');await command('show','parent');
+ const tabClose=()=>native('parent').querySelector('.ix-dialog-close');
+ let row=await tab('body interior forward',get('popover-tab-first'));checkTab(row,{target:get('popover-tab-first'),prevented:false,window:true});
+ row=await tab('body interior backward',get('popover-tab-second'),true);checkTab(row,{target:get('popover-tab-second'),prevented:false,window:true});
+ row=await tab('footer forward wraps header',get('popover-tab-last'));checkTab(row,{target:tabClose(),prevented:true,window:false});
+ row=await tab('header reverse wraps footer',tabClose(),true);checkTab(row,{target:get('popover-tab-last'),prevented:true,window:false});
+ await tab('Rust target prevent-default consumer (native cancellation observed)',get('popover-tab-prevent'));
+ await tab('Rust target virtual-stop consumer (native propagation observed)',get('popover-tab-stop'));
+ row=await tab('unknown panel active target is untouched',native('parent'));checkTab(row,{target:native('parent'),prevented:false,window:true});
+ row=await tab('outside active target is untouched',get('popover-outside'));checkTab(row,{target:get('popover-outside'),prevented:false,window:true});
+ await freshFocus('static','static document Tab does not invent panel focus');await command('show','parent');row=await tab('static panel has no trap',native('parent'));checkTab(row,{target:native('parent'),prevented:false,window:true});
+ await freshFocus('cached-add','static opening does not acquire a document trap after body control addition');await command('show','parent');await command('focus-body','parent',true);
+ row=await tab('cached-static added body control has no trap',get('popover-focus-body'));checkTab(row,{target:get('popover-focus-body'),prevented:false,window:true});
+ await freshFocus('cached-remove','interactive opening with a now-empty live candidate list');await command('show','parent');await command('focus-body','parent',false);
+ row=await tab('live empty candidate list returns without focus command',native('parent'));checkTab(row,{target:native('parent'),prevented:false,window:true});
+ await freshFocus('tab-positive','positive tabindex full Tab order differs from opening role priority');await command('show','parent');
+ row=await tab('positive body interior remains native default',get('popover-tab-first'));checkTab(row,{target:get('popover-tab-first'),prevented:false,window:true});
+ row=await tab('positive header first reverse wraps zero close',get('popover-focus-header-positive'),true);checkTab(row,{target:tabClose(),prevented:true,window:false});
+ row=await tab('zero header close last forward wraps positive header',tabClose());checkTab(row,{target:get('popover-focus-header-positive'),prevented:true,window:false});
+ await freshFocus('tab-nested','parent defers to actual active nested Popover owner');await command('show','parent');await command('show','child');
+ const childClose=native('child').querySelector('.ix-dialog-close');
+ row=await tab('nested child interior defers parent',childClose);checkTab(row,{target:childClose,prevented:false,window:true});
+ row=await tab('nested child forward boundary owns wrap',get('popover-child-increment'));checkTab(row,{target:childClose,prevented:true,window:false});
+ row=await tab('parent focus wraps while child remains topmost',get('popover-tab-last'));checkTab(row,{target:tabClose(),prevented:true,window:false});
+ await freshFocus('tab','parent defers to unrelated actual topmost Popover');await command('show','parent');await command('veto','parent',true);await command('show','unrelated');expect(['parent','unrelated']);
+ const unrelatedClose=native('unrelated').querySelector('.ix-dialog-close');row=await tab('unrelated topmost interior leaves parent untouched',unrelatedClose);checkTab(row,{target:unrelatedClose,prevented:false,window:true});
+ const openTabDropdown=async()=>{input('popover-tab-dropdown-open','');await wait(()=>get('popover-tab-dropdown')?.dataset.open==='true','actual nested Dropdown opens');await settle();};
+ const checkDropdown=(result,target,retained)=>{
+  const matched=result.afterActiveObject===objectId(target)&&result.immediateDefaultPrevented===true&&result.dropdownOpen===String(retained)&&result.afterState.parent===true;
+  tabChecks.push({label:result.label,matched,expected:{active:describe(target),defaultPrevented:true,dropdownOpen:String(retained),parentOpen:true},actual:{active:result.afterActive,defaultPrevented:result.immediateDefaultPrevented,dropdownOpen:result.dropdownOpen,parentOpen:result.afterState.parent}});
+ };
+ for(const mode of ['tab-dropdown-active','tab-dropdown-roving']){
+  await freshFocus(mode,'actual nested Dropdown Tab ownership '+mode);await command('show','parent');
+  for(const backwards of [false,true]){
+   await openTabDropdown();
+   const dropdown=get('popover-tab-dropdown'),trigger=dropdown.querySelector('[data-ix-overlay-trigger]'),item=dropdown.querySelector('[data-ix-dropdown-item]');
+   const target=backwards?(mode==='tab-dropdown-roving'?trigger:get('popover-tab-first')):get('popover-tab-second');
+   const result=await tab(mode+' '+(backwards?'reverse':'forward')+' parent release',mode==='tab-dropdown-active'?trigger:item,backwards);checkDropdown(result,target,false);
+  }
+ }
+ await freshFocus('tab-dropdown-active','vetoed Dropdown Tab still queues parent-adjacent focus');await command('show','parent');await openTabDropdown();input('popover-tab-dropdown-veto-input','true');await wait(()=>get('popover-tab-dropdown')?.dataset.vetoClose==='true','actual Rust Dropdown close veto');
+ const vetoTrigger=get('popover-tab-dropdown').querySelector('[data-ix-overlay-trigger]');row=await tab('vetoed active-descendant forward release retains child but focuses parent',vetoTrigger);checkDropdown(row,get('popover-tab-second'),true);
+ assert(row.rustCallbacks.some(value=>value.kind==='tab-dropdown-request'&&value.details.open===false&&value.details.vetoed===true),'actual Dropdown false request was vetoed before retained parent-adjacent focus');
+ assert(tabChecks.every(check=>check.matched),'all named document Tab policy comparisons match pinned source contract');
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks}; }
 "#;

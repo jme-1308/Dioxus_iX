@@ -62,11 +62,14 @@ pub(crate) struct KeyFacts {
     pub(crate) focused_index: Option<usize>,
     pub(crate) on_trigger: bool,
     pub(crate) inside: bool,
+    pub(crate) popover_ancestor: bool,
 }
 #[derive(Clone, Debug, Default)]
 pub(crate) struct KeyDecision {
     pub(crate) prevent: bool,
     pub(crate) stop: bool,
+    pub(crate) immediate_stop: bool,
+    pub(crate) release_focus: bool,
     pub(crate) activate: Option<String>,
     pub(crate) focus: Option<String>,
 }
@@ -93,8 +96,9 @@ struct Entry {
 struct Ack {
     sequence: u64,
     stop: bool,
+    immediate_stop: bool,
     activation: Option<(String, String, u64, u64)>,
-    focus: Option<(String, String, u64, u64)>,
+    focus: Option<(String, String, u64, u64, bool)>,
 }
 struct Runtime {
     owner: String,
@@ -715,7 +719,7 @@ impl RuntimeHandle {
             .collect::<Vec<_>>();
         self.0.borrow_mut().registry.observe(&facts);
         if let Some(domain) = self.domain() {
-            if report.phase == "window" {
+            if matches!(report.phase.as_str(), "window" | "trap") || report.key == "Tab" {
                 let all = report
                     .nodes
                     .iter()
@@ -763,6 +767,7 @@ impl RuntimeHandle {
                     self.0.borrow_mut().keyboard = false;
                     KeyDecision::default()
                 }
+                "key" if report.phase == "trap" => self.popover_tab(report),
                 "key" => self.key(report),
                 "click" => self.click(report),
                 _ => KeyDecision::default(),
@@ -799,18 +804,70 @@ impl RuntimeHandle {
             .take()
             .filter(|authorization| {
                 decision.focus.as_ref() == Some(&authorization.0)
-                    && report.tab_order.contains(&authorization.0)
+                    && (report.tab_order.contains(&authorization.0)
+                        || report.focus_targets.contains(&authorization.0))
             });
         let mut runtime = self.0.borrow_mut();
         if runtime.sequence == report.sequence {
             runtime.ack = Ack {
                 sequence: report.sequence,
                 stop: decision.stop,
+                immediate_stop: decision.immediate_stop,
                 activation,
                 focus,
             };
         }
         decision
+    }
+    fn popover_tab(&self, report: &Report) -> KeyDecision {
+        if report.key != "Tab" || report.default_prevented {
+            return KeyDecision::default();
+        }
+        let Some(domain) = self.domain() else {
+            return KeyDecision::default();
+        };
+        for node in &report.nodes {
+            let Some(entry) = self.entry(&node.id).filter(|entry| {
+                entry.kind == OverlayKind::Popover
+                    && entry.generation == node.generation
+                    && node.connected
+                    && node.trap_enabled
+            }) else {
+                continue;
+            };
+            if self.read_current(&node.id, &entry) != Some(true) {
+                continue;
+            }
+            let Some(excluded) = domain.focus_trap_exclusions(
+                &node.id,
+                &report.active_hosts,
+                &report.active_popover,
+            ) else {
+                continue;
+            };
+            let Some(target) = crate::popover_focus::tab_boundary_target(
+                &node.tab_candidates,
+                &excluded,
+                report.shift,
+            ) else {
+                continue;
+            };
+            self.0.borrow_mut().ack.focus = Some((
+                target.clone(),
+                node.id.clone(),
+                entry.generation,
+                entry.revision,
+                true,
+            ));
+            return KeyDecision {
+                prevent: true,
+                stop: true,
+                immediate_stop: true,
+                focus: Some(target),
+                ..KeyDecision::default()
+            };
+        }
+        KeyDecision::default()
     }
     fn key_owner<'a>(&self, report: &'a Report) -> Option<&'a NodeFacts> {
         report
@@ -850,6 +907,9 @@ impl RuntimeHandle {
             focused_index: owner.focused_index,
             on_trigger: owner.on_trigger,
             inside: owner.inside,
+            popover_ancestor: self
+                .domain()
+                .is_some_and(|domain| domain.has_popover_ancestor(&owner.id)),
         };
         let capture = owner.mode == "roving-tabindex";
         if report.phase == "capture" && !capture {
@@ -893,8 +953,11 @@ impl RuntimeHandle {
                 ..KeyDecision::default()
             };
         }
-        let tab_release = if report.key == "Tab" && capture {
-            let root = self.0.borrow().registry.cached_root(&owner.id);
+        let tab_release = if report.key == "Tab" && (capture || facts.popover_ancestor) {
+            let root = self.domain().map_or_else(
+                || self.0.borrow().registry.cached_root(&owner.id),
+                |domain| domain.cached_root(&owner.id),
+            );
             root.and_then(|root| {
                 let node = report.nodes.iter().find(|node| node.id == root)?;
                 let entry = self.entry(&root)?;
@@ -902,22 +965,44 @@ impl RuntimeHandle {
                     return None;
                 }
                 let target = if report.shift
-                    && !owner.on_trigger
-                    && (owner.focused_item.is_some() || owner.focused_index.is_some())
-                {
+                    && report.hosts.iter().any(|host| {
+                        self.entry(host)
+                            .is_some_and(|entry| entry.kind == OverlayKind::Dropdown)
+                    }) {
                     (!node.trigger_id.is_empty()).then(|| node.trigger_id.clone())
                 } else {
-                    report
-                        .tab_order
-                        .iter()
-                        .position(|id| id == &node.trigger_id)
-                        .and_then(|index| {
-                            let next = if report.shift {
-                                index.checked_sub(1)
+                    self.domain()
+                        .and_then(|domain| {
+                            let parent = domain.popover_focus_parent(&root)?;
+                            let parent_node = report.nodes.iter().find(|node| node.id == parent)?;
+                            let excluded = domain
+                                .focus_trap_exclusions(&parent, &[], "")
+                                .unwrap_or_default();
+                            let excluded = if excluded.is_empty() {
+                                vec![root.clone()]
                             } else {
-                                index.checked_add(1)
-                            }?;
-                            report.tab_order.get(next).cloned()
+                                excluded
+                            };
+                            crate::popover_focus::tab_adjacent_target(
+                                &parent_node.tab_candidates,
+                                &excluded,
+                                &node.trigger_id,
+                                report.shift,
+                            )
+                        })
+                        .or_else(|| {
+                            report
+                                .tab_order
+                                .iter()
+                                .position(|id| id == &node.trigger_id)
+                                .and_then(|index| {
+                                    let next = if report.shift {
+                                        index.checked_sub(1)
+                                    } else {
+                                        index.checked_add(1)
+                                    }?;
+                                    report.tab_order.get(next).cloned()
+                                })
                         })
                 }?;
                 Some((root, entry.generation, target))
@@ -926,19 +1011,17 @@ impl RuntimeHandle {
             None
         };
         let mut decision = callback(&facts);
-        if let Some((root, generation, target)) = tab_release {
-            if self
+        if let Some((root, generation, target)) = tab_release.filter(|_| decision.release_focus) {
+            if let Some(expected_open) = self
                 .entry(&root)
                 .filter(|entry| entry.generation == generation)
                 .and_then(|entry| self.read_current(&root, &entry))
-                == Some(false)
             {
                 let revision = self.entry(&root).map(|entry| entry.revision);
                 if let Some(revision) = revision {
                     self.0.borrow_mut().ack.focus =
-                        Some((target.clone(), root, generation, revision));
+                        Some((target.clone(), root, generation, revision, expected_open));
                     decision.prevent = true;
-                    decision.stop = true;
                     decision.focus = Some(target);
                 }
             }
@@ -1114,14 +1197,19 @@ impl RuntimeHandle {
                     .as_ref()
                     .is_some_and(|focus| focus.0 == target)
                 {
-                    runtime
-                        .ack
-                        .focus
-                        .take()
-                        .map(|authorization| (authorization, false))
+                    runtime.ack.focus.take().map(
+                        |(target, id, generation, revision, expected_open)| {
+                            ((target, id, generation, revision), expected_open)
+                        },
+                    )
                 } else {
                     None
                 }
+            } else if query.immediate_stop {
+                if runtime.ack.immediate_stop {
+                    event.prevent_default();
+                }
+                None
             } else {
                 if runtime.ack.stop {
                     event.prevent_default();
@@ -1350,6 +1438,12 @@ struct Report {
     candidate_ids: Vec<String>,
     #[serde(default)]
     tab_order: Vec<String>,
+    #[serde(default)]
+    focus_targets: Vec<String>,
+    #[serde(default)]
+    active_hosts: Vec<String>,
+    #[serde(default)]
+    active_popover: String,
 }
 #[derive(Deserialize)]
 struct NodeFacts {
@@ -1376,6 +1470,10 @@ struct NodeFacts {
     on_trigger: bool,
     #[serde(default)]
     inside: bool,
+    #[serde(default)]
+    trap_enabled: bool,
+    #[serde(default)]
+    tab_candidates: Vec<crate::popover_focus::TabCandidate>,
 }
 #[derive(Deserialize)]
 struct Query {
@@ -1385,6 +1483,8 @@ struct Query {
     activate_target: Option<String>,
     #[serde(default)]
     focus_target: Option<String>,
+    #[serde(default)]
+    immediate_stop: bool,
 }
 
 #[cfg(test)]
@@ -2069,7 +2169,10 @@ mod tests {
                     node.runtime()
                         .unwrap()
                         .dismiss_root(node.id(), Reason::Keyboard, false);
-                    KeyDecision::default()
+                    KeyDecision {
+                        release_focus: true,
+                        ..KeyDecision::default()
+                    }
                 })),
             },
         );

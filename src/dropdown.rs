@@ -418,7 +418,8 @@ impl DropdownContext {
             return result;
         }
         if facts.key == "Tab" {
-            if mode == DropdownNavigationMode::RovingTabindex {
+            if mode == DropdownNavigationMode::RovingTabindex || facts.popover_ancestor {
+                result.release_focus = true;
                 let node = self.node.borrow().clone();
                 if let Some(node) = node {
                     if let Some(runtime) = node.runtime() {
@@ -1007,6 +1008,7 @@ fn fallback_key(context: &DropdownContext, event: KeyboardEvent, on_trigger: boo
         focused_index: None,
         on_trigger,
         inside: !on_trigger,
+        popover_ancestor: false,
     };
     if event.key() == Key::Escape {
         let node = context.node.borrow().clone();
