@@ -41,6 +41,7 @@ Bring the Siemens iX interface system to the explicitly selected Dioxus release,
 ## Capabilities and Constraints
 
 - Support Dioxus web and desktop consumers.
+- Keep authored implementation in Rust source files. The user approved small DOM bridges embedded in Rust for native surface activation, focus, pointer capture, and chart export; component state and interaction logic remain Rust. Do not introduce standalone JavaScript or TypeScript files.
 - Broad intended scope includes UI components, UI patterns, and design tools; the initial component inventory, implementation order, and exact tooling deliverables remain undecided.
 - Preserve upstream terminology and expected component behavior when adapting the interface to Dioxus.
 - Web and desktop parity must be verified separately; neither is currently implemented.
@@ -71,6 +72,8 @@ The upstream checkout was inspected during initialization:
 This project currently contains Impeccable setup files and this product record, with no implemented UI library or runnable preview. The upstream checkout is reference material; initialization does not modify it.
 
 ## Product Principles
+
+For future landing pages and showcases, the user selected a hybrid workflow: use visual exploration when it helps establish the composition, then implement and refine in code. Library components, application screens, and documentation use code-first work within the established iX identity.
 
 1. Preserve Siemens iX Brand identity and guidelines across components and patterns.
 2. Make fidelity measurable against upstream behavior, states, and visual references.

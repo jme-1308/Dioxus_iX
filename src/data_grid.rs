@@ -1,0 +1,2398 @@
+//! A controlled Rust data grid for the iX AG Grid example's community features.
+//!
+//! This implements sorting, text filtering, filtered multi-selection, column
+//! resizing, content autosizing and stable-ID row/column movement. It is an independent Dioxus component;
+//! it does not embed the AG Grid JavaScript engine or implement its plugin API.
+use crate::Icon;
+use dioxus::prelude::*;
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
+
+static GRID_ID: AtomicUsize = AtomicUsize::new(1);
+
+/// A text column. IDs must be unique and remain stable when rows change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataGridColumn {
+    pub id: String,
+    pub title: String,
+    pub sortable: bool,
+    pub filterable: bool,
+    pub resizable: bool,
+    /// Allow header dragging and Alt+Left / Alt+Right column movement.
+    pub reorderable: bool,
+    pub row_drag: bool,
+    /// Opt in to the built-in text editor.
+    pub editable: bool,
+    pub editor: DataGridTextEditor,
+    /// Minimum width in CSS pixels, excluding the separate selection column.
+    pub min_width: u32,
+    pub max_width: u32,
+}
+impl DataGridColumn {
+    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            sortable: false,
+            filterable: false,
+            resizable: true,
+            reorderable: true,
+            row_drag: false,
+            editable: false,
+            editor: DataGridTextEditor::default(),
+            min_width: 80,
+            max_width: 2000,
+        }
+    }
+    fn clamp_width(&self, width: f64) -> u32 {
+        let min = self.min_width.max(24);
+        if !width.is_finite() {
+            return min;
+        }
+        width
+            .round()
+            .clamp(min as f64, self.max_width.max(min) as f64) as u32
+    }
+}
+
+/// One stable-keyed record. Missing column values render as empty strings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataGridRow {
+    pub id: String,
+    pub cells: BTreeMap<String, String>,
+    /// Per-column tooltip overrides. Without an override the cell's text is used.
+    pub tooltips: BTreeMap<String, String>,
+    /// Stable column IDs that remain read-only even in editable columns.
+    pub read_only_cells: BTreeSet<String>,
+}
+impl DataGridRow {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            cells: BTreeMap::new(),
+            tooltips: BTreeMap::new(),
+            read_only_cells: BTreeSet::new(),
+        }
+    }
+    pub fn cell(mut self, column: impl Into<String>, value: impl Into<String>) -> Self {
+        self.cells.insert(column.into(), value.into());
+        self
+    }
+    pub fn tooltip(mut self, column: impl Into<String>, text: impl Into<String>) -> Self {
+        self.tooltips.insert(column.into(), text.into());
+        self
+    }
+    pub fn value(&self, column: &str) -> &str {
+        self.cells
+            .get(column)
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+}
+
+/// Constraints for the independent Rust text editor. Length counts Unicode
+/// scalar values. Invalid edits remain open with an accessible error message.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DataGridTextEditor {
+    pub required: bool,
+    pub max_length: Option<usize>,
+}
+impl DataGridTextEditor {
+    pub fn validate(&self, value: &str) -> Result<(), String> {
+        if self.required && value.trim().is_empty() {
+            return Err("Enter a value before saving.".into());
+        }
+        if let Some(max) = self.max_length {
+            if value.chars().count() > max {
+                return Err(format!("Use {max} characters or fewer before saving."));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An accepted edit request. Consumers own the rows and apply accepted changes.
+/// Cancellation, invalid input and unchanged input do not emit this event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataGridCellValueChanged {
+    pub row_id: String,
+    pub column_id: String,
+    pub old_value: String,
+    pub new_value: String,
+}
+impl DataGridCellValueChanged {
+    /// Apply by stable IDs without overwriting a concurrent update. Returns
+    /// false for a removed record, read-only cell or conflicting old value.
+    pub fn apply_to(&self, rows: &mut [DataGridRow]) -> bool {
+        let Some(row) = rows.iter_mut().find(|row| row.id == self.row_id) else {
+            return false;
+        };
+        if row.read_only_cells.contains(&self.column_id)
+            || row.value(&self.column_id) != self.old_value
+        {
+            return false;
+        }
+        row.cells
+            .insert(self.column_id.clone(), self.new_value.clone());
+        true
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GridEditSession {
+    row: String,
+    column: String,
+    original: String,
+    draft: String,
+    error: Option<String>,
+    select_all: bool,
+}
+#[derive(Clone)]
+enum GridEditAction {
+    Start {
+        row: String,
+        column: String,
+        initial: Option<String>,
+    },
+    Cancel,
+    Commit {
+        tab: Option<bool>,
+        restore_focus: bool,
+    },
+}
+fn editable_cell(row: &DataGridRow, column: &DataGridColumn, read_only: bool) -> bool {
+    !read_only && column.editable && !row.read_only_cells.contains(&column.id)
+}
+fn next_editable_cell(
+    rows: &[DataGridRow],
+    columns: &[DataGridColumn],
+    state: &DataGridState,
+    row: &str,
+    column: &str,
+    backwards: bool,
+) -> Option<(String, String)> {
+    let displayed = state.visible_rows(rows);
+    let columns = state.ordered_columns(columns);
+    let current_row = displayed.iter().position(|item| item.id == row)?;
+    let current_column = columns.iter().position(|item| item.id == column)?;
+    let current = current_row * columns.len() + current_column;
+    let cells = displayed.len().checked_mul(columns.len())?;
+    let indices: Box<dyn Iterator<Item = usize>> = if backwards {
+        Box::new((0..current).rev())
+    } else {
+        Box::new(current.saturating_add(1)..cells)
+    };
+    for index in indices {
+        let row = displayed[index / columns.len()];
+        let column = columns[index % columns.len()];
+        if editable_cell(row, column, false) {
+            return Some((row.id.clone(), column.id.clone()));
+        }
+    }
+    None
+}
+fn finish_edit(
+    session: &GridEditSession,
+    rows: &[DataGridRow],
+    columns: &[DataGridColumn],
+    read_only: bool,
+) -> Result<Option<DataGridCellValueChanged>, String> {
+    let row = rows
+        .iter()
+        .find(|row| row.id == session.row)
+        .ok_or("This row was removed. Cancel this edit.")?;
+    let column = columns
+        .iter()
+        .find(|column| column.id == session.column)
+        .ok_or("This column was removed. Cancel this edit.")?;
+    if !editable_cell(row, column, read_only) {
+        return Err("This cell is read-only. Cancel this edit.".into());
+    }
+    if row.value(&session.column) != session.original {
+        return Err("This value changed while editing. Cancel and edit the latest value.".into());
+    }
+    column.editor.validate(&session.draft)?;
+    Ok(
+        (session.draft != session.original).then(|| DataGridCellValueChanged {
+            row_id: session.row.clone(),
+            column_id: session.column.clone(),
+            old_value: session.original.clone(),
+            new_value: session.draft.clone(),
+        }),
+    )
+}
+
+/// Case-insensitive text filter conditions, matching the source grid's text filter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DataGridFilterOperator {
+    #[default]
+    Contains,
+    NotContains,
+    Equals,
+    NotEqual,
+    StartsWith,
+    EndsWith,
+    Blank,
+    NotBlank,
+}
+impl DataGridFilterOperator {
+    const ALL: [Self; 8] = [
+        Self::Contains,
+        Self::NotContains,
+        Self::Equals,
+        Self::NotEqual,
+        Self::StartsWith,
+        Self::EndsWith,
+        Self::Blank,
+        Self::NotBlank,
+    ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Contains => "Contains",
+            Self::NotContains => "Does not contain",
+            Self::Equals => "Equals",
+            Self::NotEqual => "Does not equal",
+            Self::StartsWith => "Begins with",
+            Self::EndsWith => "Ends with",
+            Self::Blank => "Blank",
+            Self::NotBlank => "Not blank",
+        }
+    }
+    fn token(self) -> &'static str {
+        match self {
+            Self::Contains => "contains",
+            Self::NotContains => "notContains",
+            Self::Equals => "equals",
+            Self::NotEqual => "notEqual",
+            Self::StartsWith => "startsWith",
+            Self::EndsWith => "endsWith",
+            Self::Blank => "blank",
+            Self::NotBlank => "notBlank",
+        }
+    }
+    fn from_token(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|operator| operator.token() == value)
+            .unwrap_or_default()
+    }
+    fn needs_value(self) -> bool {
+        !matches!(self, Self::Blank | Self::NotBlank)
+    }
+}
+
+/// An empty value has no effect except with `Blank` or `NotBlank`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DataGridFilterCondition {
+    pub operator: DataGridFilterOperator,
+    pub value: String,
+}
+impl DataGridFilterCondition {
+    pub fn is_active(&self) -> bool {
+        !self.operator.needs_value() || !self.value.is_empty()
+    }
+    pub fn matches(&self, value: &str) -> bool {
+        if !self.is_active() {
+            return true;
+        }
+        let text = value.to_lowercase();
+        let query = self.value.to_lowercase();
+        match self.operator {
+            DataGridFilterOperator::Contains => text.contains(&query),
+            DataGridFilterOperator::NotContains => !text.contains(&query),
+            DataGridFilterOperator::Equals => text == query,
+            DataGridFilterOperator::NotEqual => text != query,
+            DataGridFilterOperator::StartsWith => text.starts_with(&query),
+            DataGridFilterOperator::EndsWith => text.ends_with(&query),
+            DataGridFilterOperator::Blank => text.trim().is_empty(),
+            DataGridFilterOperator::NotBlank => !text.trim().is_empty(),
+        }
+    }
+}
+
+/// Two filter conditions combine with AND by default, or OR when `match_any` is true.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DataGridTextFilter {
+    pub first: DataGridFilterCondition,
+    pub second: DataGridFilterCondition,
+    pub match_any: bool,
+}
+impl DataGridTextFilter {
+    pub fn is_active(&self) -> bool {
+        self.first.is_active() || self.second.is_active()
+    }
+    pub fn matches(&self, value: &str) -> bool {
+        match (self.first.is_active(), self.second.is_active()) {
+            (false, false) => true,
+            (true, false) => self.first.matches(value),
+            (false, true) => self.second.matches(value),
+            (true, true) if self.match_any => {
+                self.first.matches(value) || self.second.matches(value)
+            }
+            (true, true) => self.first.matches(value) && self.second.matches(value),
+        }
+    }
+}
+
+/// Ascending / descending / unsorted is the default header activation cycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataGridSortDirection {
+    Ascending,
+    Descending,
+}
+
+/// All persistent state is owned by the consumer. Selection uses row IDs rather
+/// than displayed indices, so filtering, sorting and reordering preserve identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DataGridState {
+    pub selected: BTreeSet<String>,
+    /// Most recently selected row, used by Shift+checkbox range selection.
+    pub selection_anchor: Option<String>,
+    pub sort: Option<(String, DataGridSortDirection)>,
+    pub filters: BTreeMap<String, DataGridTextFilter>,
+    /// IDs absent here follow the rows' input order. Stale IDs are ignored.
+    pub row_order: Vec<String>,
+    /// Stable column IDs in display order. Unknown and repeated IDs are ignored;
+    /// newly supplied columns follow in their input order.
+    pub column_order: Vec<String>,
+    /// User-resized widths. Other columns share the available grid width equally.
+    pub column_widths: BTreeMap<String, u32>,
+}
+impl DataGridState {
+    pub fn ordered_columns<'a>(&self, columns: &'a [DataGridColumn]) -> Vec<&'a DataGridColumn> {
+        let mut seen = BTreeSet::new();
+        self.column_order
+            .iter()
+            .filter_map(|id| columns.iter().find(|column| column.id == *id))
+            .chain(columns.iter())
+            .filter(|column| seen.insert(column.id.as_str()))
+            .collect()
+    }
+    /// Move a column relative to another without changing sort, widths or row state.
+    pub fn move_column(
+        &mut self,
+        columns: &[DataGridColumn],
+        moving: &str,
+        target: &str,
+        after: bool,
+    ) -> bool {
+        if moving == target
+            || !columns
+                .iter()
+                .any(|column| column.id == moving && column.reorderable)
+        {
+            return false;
+        }
+        let mut ids: Vec<_> = self
+            .ordered_columns(columns)
+            .into_iter()
+            .map(|column| column.id.clone())
+            .collect();
+        let before = ids.clone();
+        let Some(index) = ids.iter().position(|id| id == moving) else {
+            return false;
+        };
+        if !ids.iter().any(|id| id == target) {
+            return false;
+        }
+        let moving = ids.remove(index);
+        let target = ids
+            .iter()
+            .position(|id| id == target)
+            .expect("distinct target remains");
+        ids.insert(target + usize::from(after), moving);
+        if ids == before {
+            return false;
+        }
+        self.column_order = ids;
+        true
+    }
+    pub fn visible_rows<'a>(&self, rows: &'a [DataGridRow]) -> Vec<&'a DataGridRow> {
+        let mut visible: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                self.filters
+                    .iter()
+                    .all(|(column, filter)| filter.matches(row.value(column)))
+            })
+            .collect();
+        let ranks: BTreeMap<_, _> = self
+            .row_order
+            .iter()
+            .enumerate()
+            .map(|(rank, id)| (id.as_str(), rank))
+            .collect();
+        visible.sort_by_key(|row| ranks.get(row.id.as_str()).copied().unwrap_or(usize::MAX));
+        if let Some((column, direction)) = &self.sort {
+            visible.sort_by(|a, b| {
+                let order = a
+                    .value(column)
+                    .to_lowercase()
+                    .cmp(&b.value(column).to_lowercase());
+                if *direction == DataGridSortDirection::Descending {
+                    order.reverse()
+                } else {
+                    order
+                }
+            });
+        }
+        visible
+    }
+    pub fn cycle_sort(&mut self, column: &str) {
+        self.sort = match &self.sort {
+            Some((current, DataGridSortDirection::Ascending)) if current == column => {
+                Some((column.into(), DataGridSortDirection::Descending))
+            }
+            Some((current, DataGridSortDirection::Descending)) if current == column => None,
+            _ => Some((column.into(), DataGridSortDirection::Ascending)),
+        };
+    }
+    /// Select or deselect visible rows. Hidden selections remain unchanged.
+    pub fn select_filtered(&mut self, rows: &[DataGridRow], checked: bool) {
+        let ids: Vec<_> = self
+            .visible_rows(rows)
+            .into_iter()
+            .map(|row| row.id.clone())
+            .collect();
+        for id in ids {
+            if checked {
+                self.selected.insert(id);
+            } else {
+                self.selected.remove(&id);
+            }
+        }
+    }
+    /// Select a visible row, or the displayed range from the previous anchor.
+    /// A missing or filtered-out anchor starts a new range at this row.
+    pub fn select_row(
+        &mut self,
+        rows: &[DataGridRow],
+        id: &str,
+        checked: bool,
+        extend_range: bool,
+    ) {
+        let visible = self.visible_rows(rows);
+        let Some(index) = visible.iter().position(|row| row.id == id) else {
+            return;
+        };
+        let anchor = self
+            .selection_anchor
+            .as_deref()
+            .and_then(|anchor| visible.iter().position(|row| row.id == anchor));
+        let from = if extend_range {
+            anchor.unwrap_or(index)
+        } else {
+            index
+        };
+        let ids: Vec<_> = visible[from.min(index)..=from.max(index)]
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        for id in ids {
+            if checked {
+                self.selected.insert(id);
+            } else {
+                self.selected.remove(&id);
+            }
+        }
+        if !extend_range || anchor.is_none() {
+            self.selection_anchor = Some(id.into());
+        }
+    }
+    /// `(all, mixed)` describes only the currently visible rows. An empty result
+    /// is unchecked and cannot be selected by the header control.
+    pub fn filtered_selection(&self, rows: &[DataGridRow]) -> (bool, bool) {
+        let visible = self.visible_rows(rows);
+        let checked = visible
+            .iter()
+            .filter(|row| self.selected.contains(&row.id))
+            .count();
+        (
+            !visible.is_empty() && checked == visible.len(),
+            checked > 0 && checked < visible.len(),
+        )
+    }
+    /// Managed row movement is disabled during sorting or active filtering,
+    /// matching the source configuration's `rowDragManaged` restriction.
+    pub fn can_reorder(&self) -> bool {
+        self.sort.is_none() && !self.filters.values().any(DataGridTextFilter::is_active)
+    }
+    /// Move one row before/after another by stable ID. Returns whether order changed.
+    pub fn move_row(
+        &mut self,
+        rows: &[DataGridRow],
+        moving: &str,
+        target: &str,
+        after: bool,
+    ) -> bool {
+        if !self.can_reorder() || moving == target {
+            return false;
+        }
+        let mut ids: Vec<_> = self
+            .visible_rows(rows)
+            .into_iter()
+            .map(|row| row.id.clone())
+            .collect();
+        let before = ids.clone();
+        let Some(index) = ids.iter().position(|id| id == moving) else {
+            return false;
+        };
+        if !ids.iter().any(|id| id == target) {
+            return false;
+        }
+        let moving = ids.remove(index);
+        let target = ids
+            .iter()
+            .position(|id| id == target)
+            .expect("target remains after removing distinct ID");
+        ids.insert(target + usize::from(after), moving);
+        if ids == before {
+            return false;
+        }
+        self.row_order = ids;
+        true
+    }
+    pub fn resize_column(&mut self, column: &DataGridColumn, width: f64) {
+        if column.resizable {
+            self.column_widths
+                .insert(column.id.clone(), column.clamp_width(width));
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ResizeSession {
+    id: usize,
+    column: DataGridColumn,
+    start_x: f64,
+    current_x: f64,
+    width: u32,
+    start_width: f64,
+    measured: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+struct GridViewport {
+    top: f64,
+    height: f64,
+}
+
+fn grid_window(
+    total: usize,
+    viewport: GridViewport,
+    row_height: u32,
+    buffer: usize,
+) -> std::ops::Range<usize> {
+    let row_height = f64::from(row_height.max(24));
+    let height = (viewport.height - 48.0).max(row_height);
+    let top = if viewport.top.is_finite() {
+        viewport
+            .top
+            .clamp(0.0, (total as f64 * row_height - height).max(0.0))
+    } else {
+        0.0
+    };
+    let first = (top / row_height).floor() as usize;
+    let last = ((top + height) / row_height).ceil() as usize;
+    first.saturating_sub(buffer)..last.saturating_add(buffer).min(total)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GridLane {
+    Selection,
+    Cell(String),
+    Drag(String),
+    Editor(String),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GridFocus {
+    row: String,
+    lane: GridLane,
+}
+
+#[derive(Clone)]
+struct GridModel(Rc<RefCell<Rc<Vec<DataGridRow>>>>);
+
+/// One stable validation target per grid, outside the horizontally scrolling
+/// cell plane. Editors can reference it without passing IDs through every row.
+#[derive(Clone)]
+struct GridValidationContext {
+    id: String,
+}
+
+const GRID_OBSERVE: &str = r#"
+const id = await dioxus.recv(), root = document.getElementById(id);
+if (!root) return;
+let frame = 0, previous = '', done = () => {};
+const cleanup = () => { root.removeEventListener('scroll', schedule); resize.disconnect(); removal.disconnect(); cancelAnimationFrame(frame); done(); };
+const measure = () => {
+  frame = 0; if (!root.isConnected) { cleanup(); return; }
+  const value = {top:root.scrollTop,height:root.clientHeight}, json = JSON.stringify(value);
+  if (previous !== json) { previous = json; dioxus.send(value); }
+};
+const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+const resize = new ResizeObserver(schedule), removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
+root.addEventListener('scroll', schedule, {passive:true}); resize.observe(root);
+removal.observe(document.documentElement, {childList:true,subtree:true});
+await new Promise(resolve => { done = resolve; schedule(); });
+"#;
+
+fn reveal_grid_row(
+    root: String,
+    focus: GridFocus,
+    index: usize,
+    total: usize,
+    row_height: u32,
+    mut viewport: Signal<GridViewport>,
+    mut focused: Signal<Option<GridFocus>>,
+) {
+    let mut next = *viewport.peek();
+    let height = (next.height - 48.0).max(f64::from(row_height));
+    let top = index as f64 * f64::from(row_height);
+    next.top = if top < next.top {
+        top
+    } else if top + f64::from(row_height) > next.top + height {
+        top + f64::from(row_height) - height
+    } else {
+        next.top
+    };
+    next.top = next.top.clamp(
+        0.0,
+        (total as f64 * f64::from(row_height) - height).max(0.0),
+    );
+    viewport.set(next);
+    focused.set(Some(focus.clone()));
+    let (lane, column) = match focus.lane {
+        GridLane::Selection => ("selection", String::new()),
+        GridLane::Cell(id) => ("cell", id),
+        GridLane::Drag(id) => ("drag", id),
+        GridLane::Editor(id) => ("editor", id),
+    };
+    // A render frame does not acknowledge desktop renderer IPC mutations.
+    // Sequence requests in Rust; wait for the actual mounted target in the DOM.
+    let sequence = GRID_ID.fetch_add(1, Ordering::Relaxed);
+    spawn(async move {
+        let task = crate::dom_query::eval(
+            r#"
+const [id, rowId, lane, column, top, sequence] = await dioxus.recv(), root = document.getElementById(id);
+if (!root) return;
+const previous = root.__ixGridFocus;
+if (previous && previous.sequence >= sequence) return;
+previous?.cancel?.();
+const token = {sequence, cancel:null}; root.__ixGridFocus = token; root.scrollTop = top;
+const target = await new Promise(resolve => {
+  let finished = false;
+  const cleanup = result => {
+    if (finished) return; finished = true;
+    mounted.disconnect(); removal.disconnect(); clearTimeout(deadline);
+    document.removeEventListener('pointerdown', cancel, true);
+    document.removeEventListener('keydown', cancelKey, true);
+    document.removeEventListener('focusin', cancelOutsideFocus, true);
+    token.cancel = null; resolve(result);
+  };
+  const find = () => {
+    if (!root.isConnected || root.__ixGridFocus !== token) { cleanup(null); return; }
+    const row = Array.from(root.querySelectorAll('[data-row-id]')).find(node => node.dataset.rowId === rowId);
+    const cell = Array.from(row?.querySelectorAll('[data-column-id]') ?? []).find(node => node.dataset.columnId === column);
+    const node = lane === 'selection' ? row?.querySelector('.ix-data-grid-check') : lane === 'drag' ? cell?.querySelector('.ix-data-grid-drag') : lane === 'editor' ? cell?.querySelector('.ix-data-grid-editor') : cell;
+    // Attributes may follow insertion in a renderer's mutation transaction.
+    if (node && (lane !== 'cell' || node.hasAttribute('tabindex'))) cleanup(node);
+  };
+  const mounted = new MutationObserver(find), removal = new MutationObserver(() => { if (!root.isConnected) cleanup(null); });
+  const deadline = setTimeout(() => cleanup(null), 2000);
+  const cancel = () => cleanup(null); token.cancel = cancel;
+  const cancelKey = event => { if (event.key === 'Tab' || event.key === 'Escape') cancel(); };
+  const cancelOutsideFocus = event => { if (!root.contains(event.target)) cancel(); };
+  document.addEventListener('pointerdown', cancel, true);
+  document.addEventListener('keydown', cancelKey, true);
+  document.addEventListener('focusin', cancelOutsideFocus, true);
+  mounted.observe(root, {childList:true,subtree:true,attributes:true,attributeFilter:['tabindex']});
+  removal.observe(document.documentElement, {childList:true,subtree:true});
+  find();
+});
+if (!target || !root.isConnected || root.__ixGridFocus !== token || !target.isConnected) return;
+target.focus({preventScroll:true});
+if (lane === 'editor' && target instanceof HTMLInputElement) {
+  if (target.dataset.selectAll === 'true') target.select();
+  else target.setSelectionRange(target.value.length, target.value.length);
+}
+if (target) {
+  const rect = target.getBoundingClientRect(), bounds = root.getBoundingClientRect();
+  // clientWidth excludes the stable scrollbar gutter; the border box does not.
+  const left = bounds.left + root.clientLeft, right = left + root.clientWidth;
+  if (rect.left < left) root.scrollLeft -= left - rect.left;
+  else if (rect.right > right) root.scrollLeft += rect.right - right;
+}
+"#,
+        );
+        let _ = task.send((root, focus.row, lane, column, next.top, sequence));
+        let _ = task.await;
+    });
+}
+
+// Only DOM measurement lives in this bridge. Column order, filtering and width
+// bounds stay in Rust. Rust supplies all filtered values, including unmounted
+// rows, to one reusable cell clone. Autosizing never mounts the entire dataset.
+const MEASURE_CONTENT: &str = r#"
+const request = await dioxus.recv();
+let header;
+if (request.header_id) header = document.getElementById(request.header_id);
+else {
+  const grid = document.getElementById(request.grid_id);
+  const separator = Array.from(grid?.querySelectorAll('.ix-data-grid-resizer') ?? []).find(node => {
+    const rect = node.getBoundingClientRect();
+    return request.x >= rect.left && request.x <= rect.right && request.y >= rect.top && request.y <= rect.bottom;
+  });
+  header = separator?.closest('.ix-data-grid-heading');
+}
+if (!header) return null;
+const grid = header.closest('.ix-data-grid');
+if (!grid) return null;
+const column = header.dataset.columnId;
+const sample = Array.from(grid.querySelectorAll('.ix-data-grid-cell')).find(node => node.dataset.columnId === column);
+const nodes = [header];
+const host = document.createElement('div');
+host.setAttribute('aria-hidden', 'true'); host.inert = true;
+host.style.cssText = 'position:fixed;left:-100000px;top:0;width:max-content;visibility:hidden;pointer-events:none;';
+grid.append(host);
+let width = 0;
+try {
+  for (const node of nodes) {
+    const clone = node.cloneNode(true);
+    const style = getComputedStyle(node);
+    // A cloned header lives outside its header row, so preserve inherited type.
+    for (const property of ['font-family','font-size','font-weight','font-style','line-height','letter-spacing']) {
+      clone.style.setProperty(property, style.getPropertyValue(property));
+    }
+    clone.removeAttribute('id');
+    for (const child of clone.querySelectorAll('[id]')) child.removeAttribute('id');
+    for (const child of clone.querySelectorAll('[popover],.ix-data-grid-resizer,.ix-data-grid-tooltip')) child.remove();
+    clone.style.cssText += ';position:static;width:max-content;min-width:0;max-width:none;overflow:visible;';
+    for (const child of clone.querySelectorAll('.ix-data-grid-cell-text,.ix-data-grid-title,.ix-data-grid-sort,.ix-data-grid-header-label')) {
+      child.style.cssText += ';width:max-content;min-width:max-content;max-width:none;overflow:visible;flex:none;';
+    }
+    host.append(clone);
+    width = Math.max(width, clone.getBoundingClientRect().width);
+    clone.remove();
+  }
+  if (sample) {
+    const clone = sample.cloneNode(true), style = getComputedStyle(sample);
+    clone.removeAttribute('id'); clone.removeAttribute('aria-describedby');
+    for (const child of clone.querySelectorAll('.ix-data-grid-tooltip')) child.remove();
+    for (const property of ['font-family','font-size','font-weight','font-style','line-height','letter-spacing']) clone.style.setProperty(property, style.getPropertyValue(property));
+    clone.style.cssText += ';position:static;width:max-content;min-width:0;max-width:none;overflow:visible;';
+    const text = clone.querySelector('.ix-data-grid-cell-text');
+    if (text) {
+      text.style.cssText += ';width:max-content;min-width:max-content;max-width:none;overflow:visible;flex:none;';
+      host.append(clone);
+      for (const value of request.values[column] ?? []) { text.textContent = value; width = Math.max(width, clone.getBoundingClientRect().width); }
+    }
+  }
+  return Number.isFinite(width) && width > 0 ? {column_id: column, width: Math.ceil(width)} : null;
+} finally { host.remove(); }
+"#;
+
+fn autosize_values(rows: &[DataGridRow]) -> BTreeMap<String, Vec<String>> {
+    let mut values = BTreeMap::<String, Vec<String>>::new();
+    for row in rows {
+        for (column, text) in &row.cells {
+            values.entry(column.clone()).or_default().push(text.clone());
+        }
+    }
+    values
+}
+
+async fn content_width(header_id: String, rows: Rc<Vec<DataGridRow>>) -> Option<f64> {
+    let task = crate::dom_query::eval(MEASURE_CONTENT);
+    task.send(serde_json::json!({"header_id":header_id,"values":autosize_values(&rows)}))
+        .ok()?;
+    task.join::<Option<ContentMeasure>>()
+        .await
+        .ok()
+        .flatten()
+        .map(|measurement| measurement.width)
+}
+
+#[derive(serde::Deserialize)]
+struct ContentMeasure {
+    column_id: String,
+    width: f64,
+}
+
+async fn content_width_at(
+    grid_id: String,
+    x: f64,
+    y: f64,
+    rows: Rc<Vec<DataGridRow>>,
+) -> Option<ContentMeasure> {
+    let task = crate::dom_query::eval(MEASURE_CONTENT);
+    task.send(
+        serde_json::json!({ "grid_id": grid_id, "x": x, "y": y, "values":autosize_values(&rows) }),
+    )
+    .ok()?;
+    task.join::<Option<ContentMeasure>>().await.ok().flatten()
+}
+
+fn grid_template(
+    columns: &[DataGridColumn],
+    state: &DataGridState,
+    resizing: Option<&ResizeSession>,
+) -> String {
+    let mut tracks = vec!["48px".to_string()];
+    tracks.extend(columns.iter().map(|column| {
+        resizing
+            .filter(|session| session.measured && session.column.id == column.id)
+            .map(|session| session.width)
+            .or_else(|| state.column_widths.get(&column.id).copied())
+            .map(|width| format!("{}px", column.clamp_width(width as f64)))
+            .unwrap_or_else(|| format!("minmax({}px,1fr)", column.min_width.max(24)))
+    }));
+    tracks.join(" ")
+}
+
+fn grid_min_width(
+    columns: &[DataGridColumn],
+    state: &DataGridState,
+    resizing: Option<&ResizeSession>,
+) -> u64 {
+    48 + columns
+        .iter()
+        .map(|column| {
+            resizing
+                .filter(|session| session.measured && session.column.id == column.id)
+                .map(|session| session.width)
+                .or_else(|| state.column_widths.get(&column.id).copied())
+                .map(|width| column.clamp_width(width as f64))
+                .unwrap_or_else(|| column.min_width.max(24)) as u64
+        })
+        .sum::<u64>()
+}
+
+/// A scrollable, controlled data grid. With `suppress_cell_focus: true`, as in
+/// the pinned iX examples, cells do not receive focus. Row checkboxes support
+/// Up/Down, Home/End and Page Up/Down across unmounted rows. The default
+/// `suppress_cell_focus: false` gives cells the same navigation and Left/Right.
+/// Resize with a pointer or Left/Right on a separator (Shift uses 25px steps).
+/// Move a row with its drag handle, or Alt+Up / Alt+Down on that handle.
+/// Drag column titles or use Alt+Left / Alt+Right on a title to reorder columns.
+/// Double-click a separator (or press Enter on it) to fit its header and all
+/// currently filtered rows, including rows outside the scroll viewport.
+#[component]
+pub fn DataGrid(
+    columns: Vec<DataGridColumn>,
+    rows: Vec<DataGridRow>,
+    state: DataGridState,
+    onstatechange: EventHandler<DataGridState>,
+    /// Accepted edits are requests; apply them to the controlled `rows`.
+    /// Updated rows are sorted/filtered again. Enter/F2, double-click and
+    /// printable characters start editing. Escape discards, Enter saves,
+    /// Tab/Shift+Tab saves and edits the next/previous editable cell.
+    /// At the first/last editable cell, Tab finishes editing in that cell.
+    #[props(default)]
+    oncellvaluechanged: EventHandler<DataGridCellValueChanged>,
+    /// Disable editing while preserving selection and navigation.
+    #[props(default)]
+    read_only: bool,
+    #[props(default)] striped: bool,
+    #[props(default = 192)] height: u32,
+    /// Fixed row height in CSS pixels (minimum 24).
+    #[props(default = 42)]
+    row_height: u32,
+    /// Rows retained on each side of the viewport, matching AG Grid's default 10.
+    #[props(default = 10)]
+    row_buffer: usize,
+    /// Mount the whole filtered dataset instead of windowing it.
+    #[props(default)]
+    suppress_row_virtualisation: bool,
+    #[props(default)] suppress_cell_focus: bool,
+    #[props(default = 500)] tooltip_delay_ms: u32,
+    #[props(default = "Data grid".into())] label: String,
+    #[props(default)] class: String,
+) -> Element {
+    let mut editing = use_signal(|| None::<GridEditSession>);
+    let dragging = use_signal(|| None::<String>);
+    let drop_target = use_signal(|| None::<String>);
+    let column_dragging = use_signal(|| None::<String>);
+    let column_drop_target = use_signal(|| None::<String>);
+    let mut resizing = use_signal(|| None::<ResizeSession>);
+    let grid_id = use_hook(|| format!("ix-grid-{}", GRID_ID.fetch_add(1, Ordering::Relaxed)));
+    let validation = use_context_provider(|| GridValidationContext {
+        id: format!("{grid_id}-edit-error"),
+    });
+    let autosize_grid_id = grid_id.clone();
+    let scroll_id = format!("{grid_id}-scroll");
+    let observe_id = scroll_id.clone();
+    let row_height = row_height.max(24);
+    let mut viewport = use_signal(|| GridViewport {
+        top: 0.0,
+        height: f64::from(height),
+    });
+    let mut focused = use_signal(|| None::<GridFocus>);
+    let latest_state = use_hook(|| Rc::new(RefCell::new(state.clone())));
+    *latest_state.borrow_mut() = state.clone();
+    let row_label_column = columns.first().map(|column| column.id.clone());
+    let columns: Vec<_> = state
+        .ordered_columns(&columns)
+        .into_iter()
+        .cloned()
+        .collect();
+    let visible = Rc::new(
+        state
+            .visible_rows(&rows)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let visible_count = visible.len();
+    let model = use_context_provider(|| GridModel(Rc::new(RefCell::new(visible.clone()))));
+    *model.0.borrow_mut() = visible.clone();
+    let autosize_model = model;
+    let window = if suppress_row_virtualisation {
+        0..visible_count
+    } else {
+        grid_window(visible_count, viewport(), row_height, row_buffer)
+    };
+    let mut rendered: Vec<_> = window.clone().collect();
+    // Keep the currently focused row alive when wheel scrolling moves the
+    // viewport away. This adds at most one row and avoids dropping native focus.
+    if let Some(index) =
+        focused().and_then(|focus| visible.iter().position(|row| row.id == focus.row))
+    {
+        if !window.contains(&index) {
+            rendered.push(index);
+            rendered.sort_unstable();
+        }
+    }
+    if let Some(index) =
+        editing().and_then(|edit| visible.iter().position(|row| row.id == edit.row))
+    {
+        if !rendered.contains(&index) {
+            rendered.push(index);
+            rendered.sort_unstable();
+        }
+    }
+    let callback_rows = Rc::new(rows.clone());
+    let record_state = Rc::new(state.clone());
+    let keyboard_rows = visible.clone();
+    let keyboard_root = scroll_id.clone();
+    let keyboard_columns = columns.clone();
+    let navigate = move |(index, key, command, backwards): (usize, Key, bool, bool)| {
+        let Some(mut focus) = focused.peek().clone() else {
+            return;
+        };
+        let page = ((viewport.peek().height - 48.0) / f64::from(row_height))
+            .floor()
+            .max(1.0) as usize;
+        let target = match key {
+            Key::ArrowUp => index.saturating_sub(1),
+            Key::ArrowDown => (index + 1).min(visible_count.saturating_sub(1)),
+            Key::Home | Key::End => {
+                let end = key == Key::End;
+                if matches!(focus.lane, GridLane::Cell(_)) {
+                    if let Some(column) = if end {
+                        keyboard_columns.last()
+                    } else {
+                        keyboard_columns.first()
+                    } {
+                        focus.lane = GridLane::Cell(column.id.clone());
+                    }
+                }
+                if end {
+                    visible_count.saturating_sub(1)
+                } else {
+                    0
+                }
+            }
+            Key::PageUp => index.saturating_sub(page),
+            Key::PageDown => index
+                .saturating_add(page)
+                .min(visible_count.saturating_sub(1)),
+            Key::ArrowLeft | Key::ArrowRight => {
+                let GridLane::Cell(ref id) = focus.lane else {
+                    return;
+                };
+                let Some(current) = keyboard_columns.iter().position(|column| column.id == *id)
+                else {
+                    return;
+                };
+                let next = if key == Key::ArrowLeft {
+                    if command {
+                        0
+                    } else {
+                        current.saturating_sub(1)
+                    }
+                } else if command {
+                    keyboard_columns.len().saturating_sub(1)
+                } else {
+                    (current + 1).min(keyboard_columns.len().saturating_sub(1))
+                };
+                focus.lane = GridLane::Cell(keyboard_columns[next].id.clone());
+                index
+            }
+            Key::Tab => {
+                let GridLane::Cell(ref id) = focus.lane else {
+                    return;
+                };
+                let Some(current) = keyboard_columns.iter().position(|column| column.id == *id)
+                else {
+                    return;
+                };
+                let (row, column) = if backwards {
+                    if current > 0 {
+                        (index, current - 1)
+                    } else {
+                        (
+                            index.saturating_sub(1),
+                            keyboard_columns.len().saturating_sub(1),
+                        )
+                    }
+                } else if current + 1 < keyboard_columns.len() {
+                    (index, current + 1)
+                } else {
+                    ((index + 1).min(visible_count.saturating_sub(1)), 0)
+                };
+                focus.lane = GridLane::Cell(keyboard_columns[column].id.clone());
+                row
+            }
+            _ => return,
+        };
+        if let Some(row) = keyboard_rows.get(target) {
+            focus.row = row.id.clone();
+            reveal_grid_row(
+                keyboard_root.clone(),
+                focus,
+                target,
+                visible_count,
+                row_height,
+                viewport,
+                focused,
+            );
+        }
+    };
+    {
+        let ids: Vec<_> = visible.iter().map(|row| row.id.clone()).collect();
+        let root = scroll_id.clone();
+        use_effect(use_reactive!(|ids| {
+            // Filtering/removal may remove a focused record. Restore only if
+            // native focus was lost, never steal it from a filter editor.
+            if focused
+                .peek()
+                .as_ref()
+                .is_some_and(|focus| !ids.contains(&focus.row))
+            {
+                focused.set(None);
+                let root = root.clone();
+                spawn(async move {
+                    let task = crate::dom_query::eval(
+                        r#"const id=await dioxus.recv(); await new Promise(requestAnimationFrame); const root=document.getElementById(id); if(document.activeElement===document.body) root?.querySelector('.ix-data-grid-header .ix-data-grid-check')?.focus({preventScroll:true});"#,
+                    );
+                    let _ = task.send(root);
+                    let _ = task.await;
+                });
+            }
+        }));
+    }
+    let current_edit = editing.peek().clone();
+    if let Some(session) = current_edit {
+        if suppress_cell_focus
+            || !visible.iter().any(|row| row.id == session.row)
+            || !rows
+                .iter()
+                .find(|row| row.id == session.row)
+                .zip(columns.iter().find(|column| column.id == session.column))
+                .is_some_and(|(row, column)| editable_cell(row, column, read_only))
+        {
+            editing.set(None);
+            let current_focus = focused.peek().clone();
+            if current_focus.as_ref().is_some_and(|focus| {
+                focus.row == session.row && matches!(focus.lane, GridLane::Editor(_))
+            }) {
+                focused.set((!suppress_cell_focus).then_some(GridFocus {
+                    row: session.row,
+                    lane: GridLane::Cell(session.column),
+                }));
+            }
+        }
+    }
+    let edit_rows = rows.clone();
+    let edit_columns = columns.clone();
+    let edit_state = state.clone();
+    let edit_root = scroll_id.clone();
+    let edit_action = EventHandler::new(move |action: GridEditAction| {
+        let reveal = |session: &GridEditSession, records: &[DataGridRow], editor: bool| {
+            let displayed = edit_state.visible_rows(records);
+            if let Some(index) = displayed.iter().position(|row| row.id == session.row) {
+                reveal_grid_row(
+                    edit_root.clone(),
+                    GridFocus {
+                        row: session.row.clone(),
+                        lane: if editor {
+                            GridLane::Editor(session.column.clone())
+                        } else {
+                            GridLane::Cell(session.column.clone())
+                        },
+                    },
+                    index,
+                    displayed.len(),
+                    row_height,
+                    viewport,
+                    focused,
+                );
+            }
+        };
+        match action {
+            GridEditAction::Start {
+                row,
+                column,
+                initial,
+            } => {
+                let Some(record) = edit_rows.iter().find(|record| record.id == row) else {
+                    return;
+                };
+                let Some(config) = edit_columns.iter().find(|config| config.id == column) else {
+                    return;
+                };
+                if suppress_cell_focus || !editable_cell(record, config, read_only) {
+                    return;
+                }
+                let previous = editing.peek().clone();
+                if let Some(mut session) = previous {
+                    if session.row == row && session.column == column {
+                        return;
+                    }
+                    match finish_edit(&session, &edit_rows, &edit_columns, read_only) {
+                        Ok(Some(change)) => oncellvaluechanged.call(change),
+                        Ok(None) => {}
+                        Err(error) => {
+                            session.error = Some(error);
+                            reveal(&session, &edit_rows, true);
+                            editing.set(Some(session));
+                            return;
+                        }
+                    }
+                }
+                let original = record.value(&column).to_string();
+                let session = GridEditSession {
+                    row,
+                    column,
+                    select_all: initial.is_none(),
+                    draft: initial.unwrap_or_else(|| original.clone()),
+                    original,
+                    error: None,
+                };
+                reveal(&session, &edit_rows, true);
+                editing.set(Some(session));
+            }
+            GridEditAction::Cancel => {
+                let current = editing.peek().clone();
+                if let Some(session) = current {
+                    editing.set(None);
+                    reveal(&session, &edit_rows, false);
+                }
+            }
+            GridEditAction::Commit { tab, restore_focus } => {
+                let Some(mut session) = editing.peek().clone() else {
+                    return;
+                };
+                match finish_edit(&session, &edit_rows, &edit_columns, read_only) {
+                    Err(error) => {
+                        session.error = Some(error);
+                        reveal(&session, &edit_rows, true);
+                        editing.set(Some(session));
+                    }
+                    Ok(change) => {
+                        let next = tab.and_then(|backwards| {
+                            next_editable_cell(
+                                &edit_rows,
+                                &edit_columns,
+                                &edit_state,
+                                &session.row,
+                                &session.column,
+                                backwards,
+                            )
+                        });
+                        let mut projected = edit_rows.clone();
+                        if let Some(change) = change {
+                            change.apply_to(&mut projected);
+                            oncellvaluechanged.call(change);
+                        }
+                        editing.set(None);
+                        if let Some((row, column)) = next {
+                            if let Some(record) = projected.iter().find(|record| record.id == row) {
+                                if edit_state
+                                    .visible_rows(&projected)
+                                    .iter()
+                                    .any(|record| record.id == row)
+                                {
+                                    let original = record.value(&column).to_string();
+                                    let next = GridEditSession {
+                                        row,
+                                        column,
+                                        original: original.clone(),
+                                        draft: original,
+                                        error: None,
+                                        select_all: true,
+                                    };
+                                    reveal(&next, &projected, true);
+                                    editing.set(Some(next));
+                                }
+                            }
+                        } else if restore_focus {
+                            reveal(&session, &projected, false);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let (checked, mixed) = state.filtered_selection(&rows);
+    let template = grid_template(&columns, &state, resizing.read().as_ref());
+    let min_width = grid_min_width(&columns, &state, resizing.read().as_ref());
+    let header_state = state.clone();
+    let header_rows = rows.clone();
+    let resize_state = state.clone();
+    let autosize_columns = columns.clone();
+    let validation_error = editing().and_then(|session| session.error);
+    rsx! {
+        div { id: grid_id, class: "ix-data-grid {class}", "data-striped": striped.to_string(), "data-virtualized": (!suppress_row_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
+            onkeydown: move |event: KeyboardEvent| if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); },
+            // The fixed resize overlay can become the native click target. Delegate
+            // its double-click by hit-testing separators at the actual click point.
+            ondoubleclick: move |event: MouseEvent| {
+                let point = event.client_coordinates(); let id = autosize_grid_id.clone(); let columns = autosize_columns.clone(); let latest = latest_state.clone();
+                let model = autosize_model.0.borrow().clone();
+                spawn(async move { if let Some(measurement) = content_width_at(id, point.x, point.y, model).await {
+                    if let Some(column) = columns.iter().find(|column| column.id == measurement.column_id) {
+                        let mut next = latest.borrow().clone(); next.resize_column(column, measurement.width); onstatechange.call(next);
+                    }
+                } });
+            },
+            div { id: scroll_id, class: "ix-data-grid-scroll", role: "grid", "aria-label": label, "aria-rowcount": visible_count + 1, "aria-colcount": columns.len() + 1, "aria-multiselectable": "true",
+                onmounted: move |_| { let id = observe_id.clone(); spawn(async move { let mut task=dioxus::document::eval(GRID_OBSERVE); if task.send(id).is_err() {return;} while let Ok(measured)=task.recv::<GridViewport>().await { if measured.top.is_finite() && measured.height.is_finite() && measured.height > 0.0 && *viewport.peek()!=measured { viewport.set(measured); } } }); },
+                div { class: "ix-data-grid-header", role: "row", "aria-rowindex": "1",
+                    div { class: "ix-data-grid-selection", role: "columnheader",
+                        GridCheckbox { label: "Select all filtered rows", checked, mixed, disabled: visible_count == 0,
+                            onchange: move |_| { let mut next = header_state.clone(); next.select_filtered(&header_rows, !checked); onstatechange.call(next); },
+                        }
+                    }
+                    for column in columns.iter().cloned() {
+                        GridHeader { key: "{column.id}", column, columns: columns.clone(), state: state.clone(), onstatechange, resizing, column_dragging, column_drop_target }
+                    }
+                }
+                div { class: "ix-data-grid-body", role: "rowgroup", style: "height:{visible_count as u64 * u64::from(row_height)}px",
+                    for index in rendered {
+                        GridRecord { key: "{visible[index].id}", row: visible[index].clone(), row_label_column: row_label_column.clone(), columns: columns.clone(), rows: callback_rows.clone(), state: record_state.clone(),
+                            onstatechange, dragging, drop_target, tooltip_delay_ms, index, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: index == window.start, total: visible_count, editing, edit_action, read_only,
+                        }
+                    }
+                }
+                if state.visible_rows(&rows).is_empty() { div { class: "ix-data-grid-empty", role: "status", "No Rows To Show" } }
+            }
+            if let Some(error) = validation_error {
+                div { id: validation.id.clone(), class: "ix-data-grid-edit-error", role: "alert", "{error}" }
+            }
+            if resizing.read().is_some() {
+                div { class: "ix-data-grid-resize-overlay", "aria-hidden": "true",
+                    onpointermove: move |event: PointerEvent| {
+                        event.prevent_default();
+                        let mut next = resizing.peek().clone();
+                        if let Some(session) = &mut next { session.current_x = event.client_coordinates().x; if session.measured { session.width = session.column.clamp_width(session.start_width + session.current_x - session.start_x); } }
+                        resizing.set(next);
+                    },
+                    onpointerup: move |_| {
+                        let current = resizing.peek().clone();
+                        if let Some(session) = current.filter(|session| session.measured && (session.current_x - session.start_x).abs() > 0.5) { let mut next = resize_state.clone(); next.resize_column(&session.column, session.width as f64); onstatechange.call(next); }
+                        resizing.set(None);
+                    },
+                    onpointercancel: move |_| resizing.set(None),
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn GridCheckbox(
+    label: String,
+    checked: bool,
+    #[props(default)] mixed: bool,
+    #[props(default)] disabled: bool,
+    onchange: EventHandler<MouseEvent>,
+    #[props(default)] onfocus: EventHandler<()>,
+) -> Element {
+    rsx! { button { class: "ix-data-grid-check", r#type: "button", role: "checkbox", disabled,
+        "aria-label": label, "aria-checked": if mixed { "mixed" } else if checked { "true" } else { "false" },
+        "data-checked": (checked || mixed).to_string(), onclick: move |event| onchange.call(event), onfocus: move |_| onfocus.call(()),
+        svg { view_box: "0 0 18 18", width: "18", height: "18", "aria-hidden": "true",
+            if mixed { path { d: "M4 9h10", stroke: "currentColor", stroke_width: "2", fill: "none" } }
+            else if checked { path { d: "m3.5 9 3.5 3.5 7.5-8", stroke: "currentColor", stroke_width: "2", fill: "none" } }
+        }
+    } }
+}
+
+#[component]
+fn GridHeader(
+    column: DataGridColumn,
+    columns: Vec<DataGridColumn>,
+    state: DataGridState,
+    onstatechange: EventHandler<DataGridState>,
+    mut resizing: Signal<Option<ResizeSession>>,
+    mut column_dragging: Signal<Option<String>>,
+    mut column_drop_target: Signal<Option<String>>,
+) -> Element {
+    let model = use_context::<GridModel>();
+    let pointer_model = model.clone();
+    let enter_model = model;
+    let mut mounted = use_signal(|| None::<Rc<MountedData>>);
+    let mut title_mounted = use_signal(|| None::<Rc<MountedData>>);
+    let mut restore_keyboard_focus = use_signal(|| false);
+    use_effect(move || {
+        if restore_keyboard_focus() {
+            restore_keyboard_focus.set(false);
+            let node = title_mounted.peek().clone();
+            spawn(async move {
+                if let Some(node) = node {
+                    let _ = node.set_focus(true).await;
+                }
+            });
+        }
+    });
+    let mut measured_width = use_signal(|| None::<u32>);
+    let latest_state = use_hook(|| Rc::new(RefCell::new(state.clone())));
+    *latest_state.borrow_mut() = state.clone();
+    let filter_id =
+        use_hook(|| format!("ix-grid-filter-{}", GRID_ID.fetch_add(1, Ordering::Relaxed)));
+    let header_id = use_hook(|| {
+        format!(
+            "ix-grid-heading-{}",
+            GRID_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let autosize_id = header_id.clone();
+    let enter_autosize_id = header_id.clone();
+    let autosize_column = column.clone();
+    let autosize_state = latest_state.clone();
+    let enter_autosize_state = latest_state.clone();
+    let title_drag_id = column.id.clone();
+    let drop_id = column.id.clone();
+    let drag_over_id = column.id.clone();
+    let drop_columns = columns.clone();
+    let drop_state = latest_state;
+    let order_id = column.id.clone();
+    let order_state = state.clone();
+    let reorderable = column.reorderable;
+    let sort = state
+        .sort
+        .as_ref()
+        .filter(|(id, _)| *id == column.id)
+        .map(|(_, direction)| *direction);
+    let sort_state = state.clone();
+    let sort_column = column.id.clone();
+    let pointer_column = column.clone();
+    let key_column = column.clone();
+    let key_state = state.clone();
+    let reset_state = state.clone();
+    let reset_column = column.id.clone();
+    let active = state
+        .filters
+        .get(&column.id)
+        .is_some_and(DataGridTextFilter::is_active);
+    let displayed_width = resizing
+        .read()
+        .as_ref()
+        .filter(|session| session.measured && session.column.id == column.id)
+        .map(|session| session.width)
+        .or_else(|| state.column_widths.get(&column.id).copied())
+        .or_else(&*measured_width)
+        .unwrap_or(column.min_width.max(24));
+    rsx! { div { id: header_id, class: "ix-data-grid-heading", role: "columnheader", "data-column-id": column.id.clone(),
+        "data-column-drop-target": (column_drop_target.read().as_deref() == Some(column.id.as_str())).to_string(),
+        ondragover: move |event: DragEvent| { if column_dragging.peek().is_some() { event.prevent_default(); event.data_transfer().set_drop_effect("move"); column_drop_target.set(Some(drag_over_id.clone())); } },
+        ondrop: move |event: DragEvent| {
+            if let Some(moving) = column_dragging.peek().clone() {
+                event.prevent_default(); event.stop_propagation();
+                let node = mounted.peek().clone(); let x = event.client_coordinates().x;
+                let target = drop_id.clone(); let columns = drop_columns.clone(); let latest = drop_state.clone();
+                spawn(async move {
+                    if let Some(node) = node { if let Ok(rect) = node.get_client_rect().await {
+                        let mut next = latest.borrow().clone();
+                        if next.move_column(&columns, &moving, &target, x > rect.origin.x + rect.size.width / 2.0) { onstatechange.call(next); }
+                    } }
+                    column_dragging.set(None); column_drop_target.set(None);
+                });
+            }
+        },
+        onkeydown: move |event: KeyboardEvent| {
+            if reorderable && event.modifiers().alt() && matches!(event.key(), Key::ArrowLeft | Key::ArrowRight) {
+                event.prevent_default(); event.stop_propagation();
+                let ids: Vec<_> = order_state.ordered_columns(&columns).into_iter().map(|column| column.id.clone()).collect();
+                if let Some(index) = ids.iter().position(|id| *id == order_id) {
+                    let right = event.key() == Key::ArrowRight;
+                    let adjacent = if right { index.checked_add(1).and_then(|next| ids.get(next)) } else { index.checked_sub(1).and_then(|next| ids.get(next)) };
+                    if let Some(target) = adjacent { let mut next = order_state.clone(); if next.move_column(&columns, &order_id, target, right) { restore_keyboard_focus.set(true); onstatechange.call(next); } }
+                }
+            }
+        },
+        "aria-sort": if sort == Some(DataGridSortDirection::Ascending) { "ascending" } else if sort == Some(DataGridSortDirection::Descending) { "descending" } else { "none" },
+        onmounted: move |event| { let node = event.data(); mounted.set(Some(node.clone())); spawn(async move { if let Ok(rect) = node.get_client_rect().await { measured_width.set(Some(rect.size.width.round() as u32)); } }); },
+        div { class: "ix-data-grid-title", draggable: reorderable.to_string(), title: if reorderable { "Drag to move column. Keyboard: Alt+Left or Alt+Right." } else { "" },
+            ondragstart: move |event: DragEvent| { if reorderable { let transfer = event.data_transfer(); let _ = transfer.set_data("text/plain", &title_drag_id); transfer.set_effect_allowed("move"); column_dragging.set(Some(title_drag_id.clone())); } },
+            ondragend: move |_| { column_dragging.set(None); column_drop_target.set(None); },
+        if column.sortable { button { class: "ix-data-grid-sort", r#type: "button", "aria-label": "Sort {column.title}", "aria-description": if reorderable { "Move column with Alt+Left or Alt+Right." } else { "" },
+            onmounted: move |event| title_mounted.set(Some(event.data())),
+            onclick: move |_| { let mut next = sort_state.clone(); next.cycle_sort(&sort_column); onstatechange.call(next); },
+            "{column.title}"
+            if let Some(direction) = sort { Icon { name: if direction == DataGridSortDirection::Ascending { "sort-ascending" } else { "sort-descending" }, size: 16 } }
+        } } else if reorderable { button { class: "ix-data-grid-header-label ix-data-grid-title-button", r#type: "button", "aria-label": "Move column {column.title}", "aria-description": "Move column with Alt+Left or Alt+Right.", onmounted: move |event| title_mounted.set(Some(event.data())), "{column.title}" } }
+        else { span { class: "ix-data-grid-header-label", "{column.title}" } }
+        }
+        if column.filterable {
+            button { class: "ix-data-grid-filter-trigger", r#type: "button", "aria-label": "Filter {column.title}", "aria-haspopup": "dialog",
+                "popovertarget": filter_id.clone(), "data-active": active.to_string(), style: "anchor-name:--{filter_id}",
+                Icon { name: if active { "filter-filled" } else { "filter" }, size: 16 }
+            }
+            div { id: filter_id.clone(), class: "ix-data-grid-filter", role: "dialog", "aria-label": "Filter {column.title}", "popover": "auto", style: "position-anchor:--{filter_id}",
+                GridFilterEditor { column: column.clone(), state: state.clone(), onstatechange }
+                button { r#type: "button", class: "ix-data-grid-filter-clear", onclick: move |_| { let mut next = reset_state.clone(); next.filters.remove(&reset_column); onstatechange.call(next); }, "Reset" }
+            }
+        }
+        if column.resizable {
+            div { class: "ix-data-grid-resizer", role: "separator", tabindex: "0", "aria-orientation": "vertical", "aria-label": "Resize {column.title}",
+                title: "Drag or Left/Right to resize. Double-click or Enter to fit content.",
+                "aria-description": "Left and Right resize the column. Enter fits its header and filtered row content.",
+                "aria-valuemin": column.min_width.max(24), "aria-valuemax": column.max_width.max(column.min_width.max(24)),
+                "aria-valuenow": displayed_width,
+                ondoubleclick: move |event: MouseEvent| {
+                    event.prevent_default(); event.stop_propagation(); resizing.set(None);
+                    let id = autosize_id.clone(); let column = autosize_column.clone(); let latest = autosize_state.clone();
+                    let rows = pointer_model.0.borrow().clone();
+                    spawn(async move { if let Some(width) = content_width(id, rows).await { let mut next = latest.borrow().clone(); next.resize_column(&column, width); measured_width.set(Some(column.clamp_width(width))); onstatechange.call(next); } });
+                },
+                onfocus: move |_| { let node = mounted.peek().clone(); spawn(async move { if let Some(node) = node { if let Ok(rect) = node.get_client_rect().await { measured_width.set(Some(rect.size.width.round() as u32)); } } }); },
+                onpointerdown: move |event: PointerEvent| {
+                    event.prevent_default(); event.stop_propagation();
+                    let start_x = event.client_coordinates().x; let column = pointer_column.clone(); let node = mounted.peek().clone();
+                    let id = GRID_ID.fetch_add(1, Ordering::Relaxed);
+                    // Capture releases immediately, even when the desktop renderer
+                    // needs an IPC roundtrip to measure this column.
+                    resizing.set(Some(ResizeSession { id, width: displayed_width, column, start_x, current_x: start_x, start_width: 0.0, measured: false }));
+                    spawn(async move {
+                        let rect = if let Some(node) = node { node.get_client_rect().await.ok() } else { None };
+                        let current = resizing.peek().clone();
+                        if let Some(mut session) = current.filter(|session| session.id == id) {
+                            if let Some(rect) = rect { session.start_width = rect.size.width; session.measured = true; session.width = session.column.clamp_width(session.start_width + session.current_x - session.start_x); resizing.set(Some(session)); }
+                            else { resizing.set(None); }
+                        }
+                    });
+                },
+                onkeydown: move |event: KeyboardEvent| {
+                    let key = event.key();
+                    if event.modifiers().alt() { return; }
+                    if matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::Home | Key::End | Key::Enter) {
+                        event.prevent_default(); event.stop_propagation();
+                        let step = if event.modifiers().shift() { 25.0 } else { 10.0 };
+                        let node = mounted.peek().clone(); let mut next = key_state.clone(); let column = key_column.clone();
+                        let id = enter_autosize_id.clone();
+                        if key == Key::Enter {
+                            let latest = enter_autosize_state.clone();
+                            let rows = enter_model.0.borrow().clone();
+                            spawn(async move { if let Some(width) = content_width(id, rows).await { let mut next = latest.borrow().clone(); next.resize_column(&column, width); measured_width.set(Some(column.clamp_width(width))); onstatechange.call(next); } });
+                            return;
+                        }
+                        spawn(async move { if let Some(node) = node { if let Ok(rect) = node.get_client_rect().await {
+                            let width = match key { Key::Home => column.min_width as f64, Key::End => column.max_width as f64,
+                                Key::ArrowLeft => rect.size.width - step, _ => rect.size.width + step };
+                            next.resize_column(&column, width); measured_width.set(Some(column.clamp_width(width))); onstatechange.call(next);
+                        } } });
+                    }
+                },
+            }
+        }
+    } }
+}
+
+#[component]
+fn GridFilterEditor(
+    column: DataGridColumn,
+    state: DataGridState,
+    onstatechange: EventHandler<DataGridState>,
+) -> Element {
+    let filter = state.filters.get(&column.id).cloned().unwrap_or_default();
+    let join_state = state.clone();
+    let join_column = column.id.clone();
+    let join_filter = filter.clone();
+    rsx! { div { class: "ix-data-grid-filter-fields",
+        GridFilterInput { column: column.clone(), state: state.clone(), second: false, onstatechange }
+        if filter.first.is_active() || filter.second.is_active() {
+            label { class: "ix-data-grid-filter-join", span { class: "ix-sr-only", "Combine filter conditions" }
+                select { value: if filter.match_any { "or" } else { "and" }, "aria-label": "Combine filter conditions",
+                    onchange: move |event: FormEvent| { let mut next = join_state.clone(); let mut filter = join_filter.clone(); filter.match_any = event.value() == "or"; next.filters.insert(join_column.clone(), filter); onstatechange.call(next); },
+                    option { value: "and", selected: !filter.match_any, "AND" } option { value: "or", selected: filter.match_any, "OR" }
+                }
+            }
+            GridFilterInput { column, state, second: true, onstatechange }
+        }
+    } }
+}
+
+#[component]
+fn GridFilterInput(
+    column: DataGridColumn,
+    state: DataGridState,
+    second: bool,
+    onstatechange: EventHandler<DataGridState>,
+) -> Element {
+    let filter = state.filters.get(&column.id).cloned().unwrap_or_default();
+    let condition = if second {
+        filter.second.clone()
+    } else {
+        filter.first.clone()
+    };
+    let operator_state = state.clone();
+    let operator_column = column.id.clone();
+    let operator_filter = filter.clone();
+    let text_state = state.clone();
+    let text_column = column.id.clone();
+    let text_filter = filter.clone();
+    let number = if second { 2 } else { 1 };
+    rsx! { div { class: "ix-data-grid-filter-condition",
+        select { "aria-label": "{column.title} filter condition {number}", value: condition.operator.token(),
+            onchange: move |event: FormEvent| {
+                let mut filter = operator_filter.clone(); let condition = if second { &mut filter.second } else { &mut filter.first };
+                condition.operator = DataGridFilterOperator::from_token(&event.value());
+                let mut next = operator_state.clone(); next.filters.insert(operator_column.clone(), filter); onstatechange.call(next);
+            },
+            for operator in DataGridFilterOperator::ALL { option { value: operator.token(), selected: operator == condition.operator, "{operator.label()}" } }
+        }
+        if condition.operator.needs_value() { input { r#type: "text", value: condition.value, placeholder: "Filter...", autofocus: !second, "aria-label": "{column.title} filter value {number}",
+            oninput: move |event: FormEvent| {
+                let mut filter = text_filter.clone(); let condition = if second { &mut filter.second } else { &mut filter.first }; condition.value = event.value();
+                let mut next = text_state.clone(); next.filters.insert(text_column.clone(), filter); onstatechange.call(next);
+            },
+        } }
+    } }
+}
+
+#[component]
+fn GridRecord(
+    row: DataGridRow,
+    row_label_column: Option<String>,
+    columns: Vec<DataGridColumn>,
+    rows: Rc<Vec<DataGridRow>>,
+    state: Rc<DataGridState>,
+    onstatechange: EventHandler<DataGridState>,
+    mut dragging: Signal<Option<String>>,
+    mut drop_target: Signal<Option<String>>,
+    tooltip_delay_ms: u32,
+    index: usize,
+    row_height: u32,
+    mut focused: Signal<Option<GridFocus>>,
+    onnavigate: EventHandler<(usize, Key, bool, bool)>,
+    suppress_cell_focus: bool,
+    entry_row: bool,
+    total: usize,
+    editing: Signal<Option<GridEditSession>>,
+    edit_action: EventHandler<GridEditAction>,
+    read_only: bool,
+) -> Element {
+    let mut mounted = use_signal(|| None::<Rc<MountedData>>);
+    let selected = state.selected.contains(&row.id);
+    let row_label = row_label_column
+        .as_deref()
+        .map(|column| row.value(column))
+        .unwrap_or(&row.id)
+        .to_string();
+    let select_state = state.clone();
+    let select_rows = rows.clone();
+    let select_id = row.id.clone();
+    let drop_state = state.clone();
+    let drop_rows = rows.clone();
+    let drop_id = row.id.clone();
+    let over_id = row.id.clone();
+    let can_reorder = state.can_reorder();
+    let is_target = drop_target.read().as_deref() == Some(row.id.as_str());
+    let focus_id = row.id.clone();
+    let first_column = columns.first().map(|column| column.id.clone());
+    let last_column = columns.last().map(|column| column.id.clone());
+    rsx! { div { class: "ix-data-grid-row", role: "row", "data-row-id": row.id.clone(), "data-odd": (index % 2 == 1).to_string(),
+        style: "top:{index as u64 * u64::from(row_height)}px",
+        "data-selected": selected.to_string(), "data-drop-target": is_target.to_string(), "aria-rowindex": index + 2, "aria-selected": selected.to_string(),
+        onmounted: move |event| mounted.set(Some(event.data())),
+        onkeydown: move |event: KeyboardEvent| {
+            if event.modifiers().alt() { return; }
+            let key = event.key();
+            let command = event.modifiers().ctrl() || event.modifiers().meta();
+            let horizontal = matches!(key, Key::ArrowLeft | Key::ArrowRight) && focused.peek().as_ref().is_some_and(|focus| matches!(focus.lane, GridLane::Cell(_)));
+            let tab = key == Key::Tab && focused.peek().as_ref().is_some_and(|focus| if let GridLane::Cell(id)=&focus.lane {
+                if event.modifiers().shift() {index>0 || first_column.as_ref()!=Some(id)} else {index+1<total || last_column.as_ref()!=Some(id)}
+            } else {false});
+            if horizontal || tab || matches!(key, Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End | Key::PageUp | Key::PageDown) {
+                event.prevent_default(); event.stop_propagation(); onnavigate.call((index,key,command,event.modifiers().shift()));
+            }
+        },
+        ondragover: move |event: DragEvent| { if can_reorder && dragging.peek().is_some() { event.prevent_default(); event.data_transfer().set_drop_effect("move"); drop_target.set(Some(over_id.clone())); } },
+        ondrop: move |event: DragEvent| {
+            if can_reorder { event.prevent_default(); let moving = dragging.peek().clone(); let node = mounted.peek().clone(); let y = event.client_coordinates().y;
+                let mut next = drop_state.as_ref().clone(); let rows = drop_rows.clone(); let target = drop_id.clone();
+                spawn(async move { if let (Some(moving), Some(node)) = (moving, node) { if let Ok(rect) = node.get_client_rect().await {
+                    if next.move_row(&rows, &moving, &target, y > rect.origin.y + rect.size.height / 2.0) { onstatechange.call(next); }
+                } } dragging.set(None); drop_target.set(None); });
+            }
+        },
+        div { class: "ix-data-grid-selection", role: "gridcell", GridCheckbox { label: format!("Select {row_label}"), checked: selected,
+            onfocus: move |_| { if editing.peek().is_some() { edit_action.call(GridEditAction::Commit { tab:None, restore_focus:false }); } focused.set(Some(GridFocus {row:focus_id.clone(),lane:GridLane::Selection})); },
+            onchange: move |event: MouseEvent| { let mut next = select_state.as_ref().clone(); next.select_row(&select_rows, &select_id, !selected, event.modifiers().shift()); onstatechange.call(next); },
+        } }
+        for (column_index, column) in columns.into_iter().enumerate() {
+            GridCell { key: "{column.id}", text: row.value(&column.id).to_string(), tooltip: row.tooltips.get(&column.id).cloned().unwrap_or_else(|| row.value(&column.id).to_string()),
+                column: column.clone(), row_id: row.id.clone(), row_label: row_label.clone(), rows: rows.clone(), state: state.clone(),
+                onstatechange, dragging, drop_target, tooltip_delay_ms, focused, suppress_cell_focus, entry_cell: entry_row && column_index == 0, editing, edit_action, editable: editable_cell(&row,&column,read_only),
+            }
+        }
+    } }
+}
+
+#[component]
+fn GridCell(
+    text: String,
+    tooltip: String,
+    column: DataGridColumn,
+    row_id: String,
+    row_label: String,
+    rows: Rc<Vec<DataGridRow>>,
+    state: Rc<DataGridState>,
+    onstatechange: EventHandler<DataGridState>,
+    mut dragging: Signal<Option<String>>,
+    mut drop_target: Signal<Option<String>>,
+    tooltip_delay_ms: u32,
+    mut focused: Signal<Option<GridFocus>>,
+    suppress_cell_focus: bool,
+    entry_cell: bool,
+    editing: Signal<Option<GridEditSession>>,
+    edit_action: EventHandler<GridEditAction>,
+    editable: bool,
+) -> Element {
+    let mut generation = use_signal(|| 0_u64);
+    let mut show_tooltip = use_signal(|| false);
+    let mut point = use_signal(|| (0.0_f64, 0.0_f64));
+    let tooltip_id = use_hook(|| {
+        format!(
+            "ix-grid-tooltip-{}",
+            GRID_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let drag_id = row_id.clone();
+    let key_id = row_id.clone();
+    let can_reorder = state.can_reorder();
+    let focus_row = row_id.clone();
+    let focus_column = column.id.clone();
+    let drag_focus_row = row_id.clone();
+    let drag_focus_column = column.id.clone();
+    let is_active = focused.read().as_ref().is_some_and(|focus| {
+        focus.row == row_id
+            && matches!(&focus.lane,GridLane::Cell(id)|GridLane::Editor(id) if *id==column.id)
+    });
+    let edit_row = row_id.clone();
+    let edit_column = column.id.clone();
+    let double_row = row_id.clone();
+    let double_column = column.id.clone();
+    let session = editing
+        .read()
+        .as_ref()
+        .filter(|session| session.row == row_id && session.column == column.id)
+        .cloned();
+    let select_state = state.clone();
+    let select_rows = rows.clone();
+    let select_id = row_id.clone();
+    rsx! { div { class: "ix-data-grid-cell", role: "gridcell", "data-column-id": column.id.clone(), "aria-readonly": (!editable).to_string(), "data-editing": session.is_some().to_string(), "aria-describedby": if show_tooltip() { Some(tooltip_id.clone()) } else { None },
+        tabindex: if suppress_cell_focus { None } else { Some(if session.is_none() && (is_active || (entry_cell && !focused.read().as_ref().is_some_and(|focus| matches!(focus.lane, GridLane::Cell(_) | GridLane::Editor(_))))) { "0" } else { "-1" }) },
+        onfocus: move |_| if !suppress_cell_focus {
+            let current=editing.peek().clone();
+            let own=current.as_ref().is_some_and(|session|session.row==focus_row && session.column==focus_column);
+            if current.is_some() && !own { edit_action.call(GridEditAction::Commit {tab:None,restore_focus:false}); }
+            focused.set(Some(GridFocus {row:focus_row.clone(),lane:if own {GridLane::Editor(focus_column.clone())} else {GridLane::Cell(focus_column.clone())}}));
+        },
+        onmouseenter: move |event: MouseEvent| {
+            let current = generation.peek().wrapping_add(1); generation.set(current);
+            let coordinates = event.client_coordinates(); point.set((coordinates.x + 12.0, coordinates.y + 18.0));
+            spawn(async move { futures_timer::Delay::new(Duration::from_millis(tooltip_delay_ms as u64)).await; if *generation.peek() == current { show_tooltip.set(true); } });
+        },
+        onmouseleave: move |_| { let next = generation.peek().wrapping_add(1); generation.set(next); show_tooltip.set(false); },
+        ondoubleclick: move |event: MouseEvent| if editable && !suppress_cell_focus { event.stop_propagation(); edit_action.call(GridEditAction::Start {row:double_row.clone(),column:double_column.clone(),initial:None}); },
+        onkeydown: move |event: KeyboardEvent| {
+            if editable && !suppress_cell_focus && !event.is_composing() && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && focused.peek().as_ref().is_some_and(|focus|matches!(focus.lane,GridLane::Cell(_))) {
+                let initial=match event.key() {Key::Enter|Key::F2=>Some(None),Key::Backspace=>Some(Some(String::new())),Key::Character(ref value) if value.chars().count()==1=>Some(Some(value.clone())),_=>None};
+                if let Some(initial)=initial {event.prevent_default();event.stop_propagation();edit_action.call(GridEditAction::Start {row:edit_row.clone(),column:edit_column.clone(),initial});return;}
+            }
+            if event.key() == Key::Escape { let next = generation.peek().wrapping_add(1); generation.set(next); show_tooltip.set(false); }
+            if !suppress_cell_focus && event.key() == Key::Character(" ".into()) && focused.peek().as_ref().is_some_and(|focus| matches!(focus.lane,GridLane::Cell(_))) {
+                event.prevent_default(); event.stop_propagation(); let mut next=select_state.as_ref().clone(); let checked=!next.selected.contains(&select_id); next.select_row(&select_rows,&select_id,checked,event.modifiers().shift()); onstatechange.call(next);
+            }
+        },
+        if column.row_drag { button { class: "ix-data-grid-drag", r#type: "button", draggable: can_reorder.to_string(), disabled: !can_reorder,
+            onfocus: move |event: FocusEvent| { event.stop_propagation(); focused.set(Some(GridFocus {row:drag_focus_row.clone(),lane:GridLane::Drag(drag_focus_column.clone())})); },
+            "aria-label": "Move {row_label}", title: if can_reorder { "Drag to move. Keyboard: Alt+Up or Alt+Down." } else { "Row movement is unavailable while sorting or filtering." },
+            ondragstart: move |event: DragEvent| { if can_reorder { let transfer = event.data_transfer(); let _ = transfer.set_data("text/plain", &drag_id); transfer.set_effect_allowed("move"); dragging.set(Some(drag_id.clone())); } },
+            ondragend: move |_| { dragging.set(None); drop_target.set(None); },
+            onkeydown: move |event: KeyboardEvent| {
+                if can_reorder && event.modifiers().alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
+                    event.prevent_default(); event.stop_propagation();
+                    let ids: Vec<_> = state.visible_rows(&rows).into_iter().map(|row| row.id.clone()).collect();
+                    if let Some(index) = ids.iter().position(|id| *id == key_id) {
+                        let down = event.key() == Key::ArrowDown;
+                        let adjacent = if down { index.checked_add(1).and_then(|next| ids.get(next)) } else { index.checked_sub(1).and_then(|next| ids.get(next)) };
+                        if let Some(target) = adjacent { let mut next = state.as_ref().clone(); if next.move_row(&rows, &key_id, target, down) { onstatechange.call(next); } }
+                    }
+                }
+            },
+            Icon { name: "drag-gripper", size: 16 }
+        } }
+        if let Some(session)=session.clone() { GridTextEditor {session,title:column.title.clone(),editing,edit_action} }
+        else { span { class: "ix-data-grid-cell-text", "{text}" } }
+        if editing.read().is_none() && show_tooltip() && !tooltip.is_empty() { span { id: tooltip_id.clone(), class: "ix-data-grid-tooltip", role: "tooltip", style: "--ix-grid-tip-x:{point().0}px;--ix-grid-tip-y:{point().1}px", "{tooltip}" } }
+    } }
+}
+
+#[component]
+fn GridTextEditor(
+    session: GridEditSession,
+    title: String,
+    mut editing: Signal<Option<GridEditSession>>,
+    edit_action: EventHandler<GridEditAction>,
+) -> Element {
+    let error_id = use_context::<GridValidationContext>().id;
+    let row = session.row.clone();
+    let column = session.column.clone();
+    rsx! {div {class:"ix-data-grid-editor-wrap",
+        input {class:"ix-data-grid-editor",r#type:"text",value:session.draft,"data-select-all":session.select_all.to_string(),"aria-label":"Edit {title} for {session.row}","aria-invalid":session.error.is_some().to_string(),"aria-errormessage":if session.error.is_some(){Some(error_id.clone())}else{None},
+            oninput:move|event:FormEvent|{let current=editing.peek().clone();if let Some(mut session)=current.filter(|session|session.row==row&&session.column==column){session.draft=event.value();session.error=None;session.select_all=false;editing.set(Some(session));}},
+            onkeydown:move|event:KeyboardEvent|{event.stop_propagation();if event.is_composing(){return;}match event.key(){
+                Key::Escape=>{event.prevent_default();edit_action.call(GridEditAction::Cancel);},
+                Key::Enter=>{event.prevent_default();edit_action.call(GridEditAction::Commit{tab:None,restore_focus:true});},
+                Key::Tab=>{event.prevent_default();edit_action.call(GridEditAction::Commit{tab:Some(event.modifiers().shift()),restore_focus:true});},_=>{}}},
+        }
+    }}
+}
+
+pub(crate) const STYLES: &str = r#"
+.ix-data-grid{position:relative;width:100%;min-width:0;background:var(--ix-color-surface-1);color:var(--ix-color-text);font:14px/1.4 var(--ix-font);font-variant-numeric:tabular-nums;border-radius:2px}
+.ix-data-grid-scroll{height:100%;overflow:auto;scrollbar-gutter:stable;scrollbar-color:var(--ix-color-border) var(--ix-color-surface-1)}
+.ix-data-grid-header,.ix-data-grid-row{display:grid;grid-template-columns:var(--ix-grid-columns);min-width:var(--ix-grid-min-width);width:100%}
+.ix-data-grid-header{position:sticky;top:0;z-index:2;height:48px;background:var(--ix-color-surface-1);border-bottom:1px solid var(--ix-color-border);font-weight:700}
+.ix-data-grid-body{position:relative;min-width:var(--ix-grid-min-width);width:100%}
+.ix-data-grid-row{position:absolute;left:0;height:var(--ix-grid-row-height,42px);box-sizing:border-box;border-bottom:1px solid color-mix(in srgb,var(--ix-color-border) 45%,transparent);background:var(--ix-color-surface-1)}
+.ix-data-grid-row[data-odd=true]{background:var(--ix-color-surface-2)}
+.ix-data-grid[data-striped=true] .ix-data-grid-row[data-odd=true]{background:var(--ix-color-surface)}
+.ix-data-grid-row:hover{background:color-mix(in srgb,var(--ix-color-surface-1) 85%,var(--ix-color-primary))}
+.ix-data-grid-row[data-selected=true]{background:color-mix(in srgb,var(--ix-color-surface-1) 80%,var(--ix-color-primary))}
+.ix-data-grid-row[data-drop-target=true]{box-shadow:inset 0 2px var(--ix-color-primary)}
+.ix-data-grid-selection{display:flex;align-items:center;justify-content:center}
+.ix-data-grid-check{display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1px solid var(--ix-color-border);border-radius:2px;background:transparent;color:var(--ix-color-on-primary)}
+.ix-data-grid-check[data-checked=true]{border-color:var(--ix-color-primary);background:var(--ix-color-primary)}
+.ix-data-grid-check:hover{border-color:var(--ix-color-primary)}.ix-data-grid-check:disabled{opacity:.45}
+.ix-data-grid-heading{display:flex;align-items:center;position:relative;min-width:0;padding:0 16px}
+.ix-data-grid-heading:hover{background:color-mix(in srgb,var(--ix-color-surface-1) 90%,var(--ix-color-primary))}
+.ix-data-grid-heading[data-column-drop-target=true]{box-shadow:inset 2px 0 var(--ix-color-primary)}
+.ix-data-grid-title{display:flex;align-items:center;align-self:stretch;flex:1;min-width:0;overflow:hidden}
+.ix-data-grid-title[draggable=true]{cursor:grab}.ix-data-grid-title[draggable=true]:active{cursor:grabbing}
+.ix-data-grid-title-button{align-self:stretch;text-align:left;border:0;padding:0;background:none;color:inherit;font:inherit;font-weight:inherit;cursor:inherit;min-width:0}
+.ix-data-grid-header-label{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ix-data-grid-sort{display:flex;align-items:center;justify-content:flex-start;gap:8px;flex:1;min-width:0;align-self:stretch;border:0;padding:0;background:none;color:inherit;font:inherit;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ix-data-grid-filter-trigger{display:flex;align-items:center;justify-content:center;flex:none;width:24px;height:28px;border:0;background:transparent;color:inherit;padding:0;margin-left:4px;opacity:0}
+.ix-data-grid-heading:hover .ix-data-grid-filter-trigger,.ix-data-grid-heading:focus-within .ix-data-grid-filter-trigger,.ix-data-grid-filter-trigger[data-active=true]{opacity:1}
+.ix-data-grid-filter-trigger:hover,.ix-data-grid-filter-trigger[data-active=true]{color:var(--ix-color-primary)}
+.ix-data-grid-resizer{position:absolute;inset:0 -4px 0 auto;z-index:1;width:8px;cursor:col-resize;touch-action:none}
+.ix-data-grid-resizer::after{content:"";display:block;position:absolute;left:3px;top:0;bottom:0;width:1px;background:transparent}
+.ix-data-grid-heading:last-child .ix-data-grid-resizer{right:0}
+.ix-data-grid-heading:last-child .ix-data-grid-resizer::after{left:auto;right:0}
+.ix-data-grid-heading:hover .ix-data-grid-resizer::after{background:var(--ix-color-border)}.ix-data-grid-resizer:hover::after,.ix-data-grid-resizer:focus-visible::after{background:var(--ix-color-primary)}
+.ix-data-grid-resizer:focus-visible{outline-offset:-2px}
+.ix-data-grid-cell{display:flex;align-items:center;min-width:0;gap:8px;padding:0 16px}
+.ix-data-grid-cell[data-editing=true]{position:relative;padding:0 6px;z-index:3}
+.ix-data-grid-editor-wrap{position:relative;min-width:0;width:100%}
+.ix-data-grid-editor{box-sizing:border-box;width:100%;min-width:0;height:32px;border:1px solid var(--ix-color-primary);border-radius:2px;background:var(--ix-color-surface-1);color:var(--ix-color-text);font:inherit;caret-color:var(--ix-color-primary);padding:4px 8px}
+.ix-data-grid-editor:focus-visible{outline:2px solid var(--ix-color-primary);outline-offset:1px}
+.ix-data-grid-editor[aria-invalid=true]{border-color:var(--ix-color-danger)}
+.ix-data-grid-edit-error{position:absolute;inset:auto 0 0;box-sizing:border-box;min-width:0;max-height:50%;overflow:auto;padding:8px 12px;background:var(--ix-color-surface-2);color:var(--ix-color-text);white-space:normal;overflow-wrap:anywhere;z-index:4;border:1px solid var(--ix-color-danger);border-radius:2px}
+.ix-data-grid-cell-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ix-data-grid-drag{flex:none;display:flex;align-items:center;justify-content:center;padding:0;background:none;border:0;width:16px;height:24px;color:inherit;cursor:grab}.ix-data-grid-drag:active{cursor:grabbing}.ix-data-grid-drag:disabled{opacity:.3}
+.ix-data-grid-empty{padding:18px;text-align:center;color:var(--ix-color-text-secondary)}
+.ix-data-grid-resize-overlay{position:fixed;inset:0;z-index:1100;cursor:col-resize;touch-action:none;user-select:none}
+.ix-theme .ix-data-grid-filter{position:fixed;inset:12px;margin:auto;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);width:260px;height:max-content;padding:12px;border:0;background:var(--ix-color-surface-1);color:var(--ix-color-text);box-shadow:0 6px 18px #0005;font:14px/1.4 var(--ix-font);overflow:auto;overscroll-behavior:contain;border-radius:2px}
+@supports(position-anchor:--example) and (position-area:bottom){.ix-theme .ix-data-grid-filter{inset:auto;margin:4px 12px;position-area:bottom span-left;position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline,--ix-grid-filter-viewport}}
+@position-try --ix-grid-filter-viewport{position-area:none;inset:12px;margin:auto;width:min(260px,calc(100% - 24px));height:max-content;max-width:calc(100% - 24px);max-height:calc(100dvh - 24px)}
+.ix-data-grid-filter-fields,.ix-data-grid-filter-condition{display:flex;flex-direction:column;gap:8px}.ix-data-grid-filter-condition{margin-bottom:8px}.ix-data-grid-filter select,.ix-data-grid-filter input{width:100%;min-height:32px;min-width:0;padding:4px 8px;border:1px solid var(--ix-color-border);background:var(--ix-color-surface-1);color:inherit;font:inherit;border-radius:2px;caret-color:var(--ix-color-primary)}
+.ix-data-grid-filter input::placeholder{color:var(--ix-color-text-secondary);opacity:1}.ix-data-grid-filter-join{margin:0 0 8px}.ix-data-grid-filter-clear{padding:4px 12px;min-height:32px;border:1px solid var(--ix-color-border);color:inherit;background:transparent;font:inherit}.ix-data-grid-filter-clear:hover{background:var(--ix-color-surface-2)}
+.ix-data-grid-tooltip{position:fixed;z-index:1000;left:clamp(8px,var(--ix-grid-tip-x),max(8px,calc(100vw - 320px)));top:min(var(--ix-grid-tip-y),calc(100dvh - 64px));max-width:min(304px,calc(100vw - 16px));padding:6px 10px;color:var(--ix-color-text);background:var(--ix-color-surface-1);box-shadow:0 6px 18px #0005;white-space:normal;overflow-wrap:anywhere;pointer-events:none;font-weight:400;line-height:1.4}
+@media(hover:none){.ix-data-grid-filter-trigger{opacity:1}}
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn rows() -> Vec<DataGridRow> {
+        vec![
+            DataGridRow::new("a").cell("status", "Normal"),
+            DataGridRow::new("b").cell("status", "Warning"),
+            DataGridRow::new("c").cell("status", "Normal"),
+        ]
+    }
+    fn edit_column(id: &str) -> DataGridColumn {
+        let mut column = DataGridColumn::new(id, id);
+        column.editable = true;
+        column.editor.required = true;
+        column.editor.max_length = Some(12);
+        column
+    }
+    fn edit_session(row: &str, column: &str, original: &str, draft: &str) -> GridEditSession {
+        GridEditSession {
+            row: row.into(),
+            column: column.into(),
+            original: original.into(),
+            draft: draft.into(),
+            error: None,
+            select_all: true,
+        }
+    }
+    #[test]
+    fn controlled_edit_survives_reordering_and_preserves_selection_identity() {
+        let mut records = rows();
+        let columns = vec![edit_column("status")];
+        let event = finish_edit(
+            &edit_session("b", "status", "Warning", "Maintenance"),
+            &records,
+            &columns,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(records[1].value("status"), "Warning");
+        records.reverse();
+        assert!(event.apply_to(&mut records));
+        assert_eq!(
+            records
+                .iter()
+                .find(|row| row.id == "b")
+                .unwrap()
+                .value("status"),
+            "Maintenance"
+        );
+        let mut state = DataGridState::default();
+        state.selected.insert("b".into());
+        state.cycle_sort("status");
+        assert_eq!(state.visible_rows(&records)[0].id, "b");
+        assert!(state.selected.contains("b"));
+        assert!(
+            !event.apply_to(&mut records),
+            "a repeated request cannot overwrite a later value"
+        );
+    }
+    #[test]
+    fn invalid_unchanged_and_conflicting_edits_do_not_emit_changes() {
+        let mut records = rows();
+        let columns = vec![edit_column("status")];
+        let blank = edit_session("a", "status", "Normal", "   ");
+        assert!(
+            finish_edit(&blank, &records, &columns, false)
+                .unwrap_err()
+                .contains("Enter a value")
+        );
+        assert_eq!(blank.draft, "   ");
+        assert!(
+            finish_edit(
+                &edit_session("a", "status", "Normal", "Thirteen chars!"),
+                &records,
+                &columns,
+                false
+            )
+            .unwrap_err()
+            .contains("12 characters")
+        );
+        assert!(
+            finish_edit(
+                &edit_session("a", "status", "Normal", "Normal"),
+                &records,
+                &columns,
+                false
+            )
+            .unwrap()
+            .is_none()
+        );
+        let pending = edit_session("a", "status", "Normal", "Warning");
+        records[0].cells.insert("status".into(), "Offline".into());
+        assert!(
+            finish_edit(&pending, &records, &columns, false)
+                .unwrap_err()
+                .contains("changed while editing")
+        );
+        records.remove(0);
+        assert!(
+            finish_edit(&pending, &records, &columns, false)
+                .unwrap_err()
+                .contains("removed")
+        );
+    }
+    #[test]
+    fn readonly_grid_and_cells_prevent_edits_and_stale_application() {
+        let mut records = rows();
+        let columns = vec![edit_column("status")];
+        let pending = edit_session("a", "status", "Normal", "Warning");
+        assert!(finish_edit(&pending, &records, &columns, true).is_err());
+        let event = finish_edit(&pending, &records, &columns, false)
+            .unwrap()
+            .unwrap();
+        records[0].read_only_cells.insert("status".into());
+        assert!(finish_edit(&pending, &records, &columns, false).is_err());
+        assert!(!event.apply_to(&mut records));
+        assert_eq!(records[0].value("status"), "Normal");
+    }
+    #[test]
+    fn tab_editing_skips_readonly_cells_in_sorted_filtered_and_unmounted_rows() {
+        let mut records: Vec<_> = (0..1000)
+            .map(|index| {
+                DataGridRow::new(format!("row-{index:04}"))
+                    .cell("name", format!("Item {index:04}"))
+                    .cell("location", "Plant")
+            })
+            .collect();
+        let columns = vec![
+            edit_column("name"),
+            DataGridColumn::new("serial", "Serial"),
+            edit_column("location"),
+        ];
+        records[1].read_only_cells.insert("name".into());
+        let state = DataGridState::default();
+        assert_eq!(
+            next_editable_cell(&records, &columns, &state, "row-0000", "location", false),
+            Some(("row-0001".into(), "location".into()))
+        );
+        assert_eq!(
+            next_editable_cell(&records, &columns, &state, "row-0001", "location", true),
+            Some(("row-0000".into(), "location".into()))
+        );
+        assert_eq!(
+            next_editable_cell(&records, &columns, &state, "row-0998", "location", false),
+            Some(("row-0999".into(), "name".into()))
+        );
+        assert!(
+            next_editable_cell(&records, &columns, &state, "row-0999", "location", false).is_none()
+        );
+        assert!(next_editable_cell(&records, &columns, &state, "row-0000", "name", true).is_none());
+        let mut state = state;
+        state.column_order = vec!["location".into(), "name".into()];
+        state.sort = Some(("name".into(), DataGridSortDirection::Descending));
+        state.filters.insert(
+            "name".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    operator: DataGridFilterOperator::EndsWith,
+                    value: "99".into(),
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            next_editable_cell(&records, &columns, &state, "row-0999", "name", false),
+            Some(("row-0899".into(), "location".into()))
+        );
+        assert!(
+            !grid_window(
+                records.len(),
+                GridViewport {
+                    top: 0.0,
+                    height: 280.0
+                },
+                42,
+                10
+            )
+            .contains(&999)
+        );
+    }
+    #[test]
+    fn unicode_validation_counts_characters_and_discarded_drafts_leave_rows_untouched() {
+        let records = rows();
+        let draft = edit_session("a", "status", "Normal", "Warning");
+        drop(draft);
+        assert_eq!(records[0].value("status"), "Normal");
+        let editor = DataGridTextEditor {
+            required: true,
+            max_length: Some(2),
+        };
+        assert!(editor.validate("\u{00f8}\u{96ea}").is_ok());
+        assert!(editor.validate("\u{00f8}\u{96ea}A").is_err());
+        assert!(editor.validate("\n\t").is_err());
+    }
+    #[test]
+    fn window_is_bounded_and_clamps_when_filtering_shrinks_the_dataset() {
+        let viewport = GridViewport {
+            top: 0.0,
+            height: 360.0,
+        };
+        assert_eq!(grid_window(10_000, viewport, 42, 10), 0..18);
+        assert_eq!(
+            grid_window(
+                10_000,
+                GridViewport {
+                    top: 42.0 * 500.0,
+                    ..viewport
+                },
+                42,
+                10
+            ),
+            490..518
+        );
+        assert_eq!(
+            grid_window(
+                3,
+                GridViewport {
+                    top: 420_000.0,
+                    ..viewport
+                },
+                42,
+                10
+            ),
+            0..3
+        );
+        assert_eq!(grid_window(0, viewport, 42, 10), 0..0);
+        assert_eq!(grid_window(10_000, viewport, 42, 0), 0..8);
+        assert_eq!(
+            grid_window(
+                10_000,
+                GridViewport {
+                    top: f64::NAN,
+                    ..viewport
+                },
+                42,
+                10
+            ),
+            0..18
+        );
+    }
+    #[test]
+    fn autosizing_receives_unmounted_filtered_values_and_keeps_selection_ids() {
+        let rows: Vec<_> = (0..10_000)
+            .map(|index| {
+                DataGridRow::new(format!("row-{index}"))
+                    .cell(
+                        "type",
+                        if index == 9_999 {
+                            "Very long final offscreen record".into()
+                        } else {
+                            format!("Record {index}")
+                        },
+                    )
+                    .cell("status", if index % 2 == 0 { "Normal" } else { "Warning" })
+            })
+            .collect();
+        let window = grid_window(
+            rows.len(),
+            GridViewport {
+                top: 0.0,
+                height: 360.0,
+            },
+            42,
+            10,
+        );
+        assert!(!window.contains(&9_999));
+        let values = autosize_values(&rows);
+        assert_eq!(
+            values["type"].last().unwrap(),
+            "Very long final offscreen record"
+        );
+        let mut state = DataGridState::default();
+        state.select_row(&rows, "row-9999", true, false);
+        state.filters.insert(
+            "status".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    value: "Normal".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let visible: Vec<_> = state.visible_rows(&rows).into_iter().cloned().collect();
+        assert_eq!(visible.len(), 5_000);
+        assert!(
+            !autosize_values(&visible)["type"]
+                .iter()
+                .any(|value| value == "Very long final offscreen record")
+        );
+        state.select_filtered(&rows, true);
+        assert_eq!(state.selected.len(), 5_001);
+        state.cycle_sort("type");
+        state.select_filtered(&rows, false);
+        assert_eq!(state.selected, BTreeSet::from(["row-9999".to_string()]));
+    }
+    #[test]
+    fn large_ssr_grid_mounts_a_window_and_opt_out_mounts_all_rows() {
+        #[component]
+        fn Probe(suppress: bool) -> Element {
+            rsx! { DataGrid {columns:vec![DataGridColumn::new("type","Type")], rows:(0..1_000).map(|index|DataGridRow::new(format!("row-{index}")).cell("type",format!("Item {index}"))).collect::<Vec<_>>(), state:DataGridState::default(),onstatechange:move |_| {},height:360,suppress_row_virtualisation:suppress} }
+        }
+        for (suppress, expected) in [(false, 18), (true, 1_000)] {
+            let mut dom = VirtualDom::new_with_props(Probe, ProbeProps { suppress });
+            dom.rebuild_in_place();
+            let html = dioxus_ssr::render(&dom);
+            assert_eq!(html.matches("data-row-id=").count(), expected);
+            assert!(html.contains("aria-rowcount=1001"));
+            assert!(html.contains("aria-rowindex=19"));
+            assert!(html.contains("height:42000px"));
+            assert!(html.contains("data-row-id=\"row-999\"") == suppress);
+        }
+    }
+    #[test]
+    fn filtered_header_selection_preserves_hidden_ids_and_mixed_state() {
+        let rows = rows();
+        let mut state = DataGridState::default();
+        state.selected.insert("b".into());
+        state.filters.insert(
+            "status".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    value: "normal".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.filtered_selection(&rows), (false, false));
+        state.selected.insert("a".into());
+        assert_eq!(state.filtered_selection(&rows), (false, true));
+        state.select_filtered(&rows, true);
+        assert_eq!(state.filtered_selection(&rows), (true, false));
+        state.select_filtered(&rows, false);
+        assert_eq!(state.selected, BTreeSet::from(["b".to_string()]));
+    }
+    #[test]
+    fn shift_selection_uses_displayed_order_and_recovers_when_anchor_is_hidden() {
+        let rows = rows();
+        let mut state = DataGridState::default();
+        state.select_row(&rows, "b", true, false);
+        state.cycle_sort("status"); // a, c, b
+        state.select_row(&rows, "a", true, true);
+        assert_eq!(
+            state.selected,
+            BTreeSet::from(["a".to_string(), "b".to_string(), "c".to_string()])
+        );
+        state.filters.insert(
+            "status".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    value: "Normal".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        state.select_row(&rows, "c", false, true);
+        assert_eq!(
+            state.selected,
+            BTreeSet::from(["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(state.selection_anchor.as_deref(), Some("c"));
+        state.select_filtered(&rows, false);
+        assert_eq!(state.selected, BTreeSet::from(["b".to_string()]));
+    }
+    #[test]
+    fn sort_cycles_stably_without_moving_selection_identity() {
+        let rows = rows();
+        let mut state = DataGridState::default();
+        state.selected.insert("b".into());
+        state.cycle_sort("status");
+        assert_eq!(
+            state
+                .visible_rows(&rows)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "c", "b"]
+        );
+        state.cycle_sort("status");
+        assert_eq!(
+            state
+                .visible_rows(&rows)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "a", "c"]
+        );
+        state.cycle_sort("status");
+        assert!(state.sort.is_none());
+        assert_eq!(state.selected, BTreeSet::from(["b".to_string()]));
+    }
+    #[test]
+    fn movement_uses_ids_and_rejects_sorted_or_filtered_rows() {
+        let rows = rows();
+        let mut state = DataGridState::default();
+        assert!(state.move_row(&rows, "c", "a", false));
+        assert_eq!(state.row_order, ["c", "a", "b"]);
+        assert!(state.move_row(&rows, "c", "b", true));
+        assert_eq!(state.row_order, ["a", "b", "c"]);
+        assert!(!state.move_row(&rows, "a", "absent", true));
+        state.cycle_sort("status");
+        assert!(!state.move_row(&rows, "a", "b", true));
+        state.sort = None;
+        state.filters.insert(
+            "status".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    value: "Normal".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(!state.move_row(&rows, "a", "c", true));
+    }
+    #[test]
+    fn text_filter_supports_all_operators_and_and_or_composition() {
+        let condition = |operator, value: &str| DataGridFilterCondition {
+            operator,
+            value: value.into(),
+        };
+        for (operator, value, text, result) in [
+            (DataGridFilterOperator::Contains, "NORM", "Normal", true),
+            (DataGridFilterOperator::NotContains, "NORM", "Normal", false),
+            (DataGridFilterOperator::Equals, "normal", "Normal", true),
+            (DataGridFilterOperator::NotEqual, "normal", "Normal", false),
+            (DataGridFilterOperator::StartsWith, "n", "Normal", true),
+            (DataGridFilterOperator::EndsWith, "AL", "Normal", true),
+            (DataGridFilterOperator::Blank, "", " ", true),
+            (DataGridFilterOperator::NotBlank, "", " ", false),
+        ] {
+            assert_eq!(condition(operator, value).matches(text), result);
+        }
+        let mut filter = DataGridTextFilter {
+            first: condition(DataGridFilterOperator::Equals, "Normal"),
+            second: condition(DataGridFilterOperator::Equals, "Warning"),
+            match_any: false,
+        };
+        assert!(!filter.matches("Normal"));
+        filter.match_any = true;
+        assert!(filter.matches("Normal"));
+        assert!(filter.matches("Warning"));
+        assert!(!filter.matches("Unknown"));
+    }
+    #[test]
+    fn widths_respect_limits_and_default_tracks_fit_available_space() {
+        let mut column = DataGridColumn::new("type", "Type");
+        column.max_width = 500;
+        let mut state = DataGridState::default();
+        assert_eq!(
+            grid_template(std::slice::from_ref(&column), &state, None),
+            "48px minmax(80px,1fr)"
+        );
+        state.resize_column(&column, -1.0);
+        assert_eq!(state.column_widths["type"], 80);
+        state.resize_column(&column, 9000.0);
+        assert_eq!(state.column_widths["type"], 500);
+        state.resize_column(&column, f64::NAN);
+        assert_eq!(state.column_widths["type"], 80);
+    }
+    #[test]
+    fn column_order_normalizes_removed_repeated_and_new_ids() {
+        let columns = vec![
+            DataGridColumn::new("a", "A"),
+            DataGridColumn::new("b", "B"),
+            DataGridColumn::new("c", "C"),
+        ];
+        let state = DataGridState {
+            column_order: vec!["gone".into(), "b".into(), "b".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            state
+                .ordered_columns(&columns)
+                .iter()
+                .map(|column| column.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "a", "c"]
+        );
+    }
+    #[test]
+    fn column_movement_preserves_selection_filters_sort_and_id_bound_widths() {
+        let columns = vec![
+            DataGridColumn::new("type", "Type"),
+            DataGridColumn::new("status", "Status"),
+            DataGridColumn::new("hw", "HW"),
+        ];
+        let mut state = DataGridState::default();
+        state.select_row(&rows(), "a", true, false);
+        state.cycle_sort("status");
+        state.filters.insert(
+            "status".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    value: "Normal".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        state.resize_column(&columns[0], 180.0);
+        let before = state.clone();
+        assert!(state.move_column(&columns, "type", "hw", true));
+        assert_eq!(state.column_order, ["status", "hw", "type"]);
+        let ordered: Vec<_> = state
+            .ordered_columns(&columns)
+            .into_iter()
+            .cloned()
+            .collect();
+        assert_eq!(
+            grid_template(&ordered, &state, None),
+            "48px minmax(80px,1fr) minmax(80px,1fr) 180px"
+        );
+        assert_eq!(state.selected, before.selected);
+        assert_eq!(state.selection_anchor, before.selection_anchor);
+        assert_eq!(state.filters, before.filters);
+        assert_eq!(state.sort, before.sort);
+        assert_eq!(state.column_widths, before.column_widths);
+        assert!(state.move_column(&columns, "type", "status", false));
+        assert_eq!(state.column_order, ["type", "status", "hw"]);
+    }
+    #[test]
+    fn column_movement_rejects_disabled_missing_and_unchanged_targets() {
+        let mut fixed = DataGridColumn::new("fixed", "Fixed");
+        fixed.reorderable = false;
+        let columns = vec![fixed, DataGridColumn::new("movable", "Movable")];
+        let mut state = DataGridState::default();
+        assert!(!state.move_column(&columns, "fixed", "movable", true));
+        assert!(!state.move_column(&columns, "movable", "movable", false));
+        assert!(!state.move_column(&columns, "movable", "absent", false));
+        assert!(!state.move_column(&columns, "absent", "fixed", false));
+        assert!(!state.move_column(&columns, "movable", "fixed", true));
+        assert!(state.column_order.is_empty());
+        assert!(state.move_column(&columns, "movable", "fixed", false));
+        assert_eq!(state.column_order, ["movable", "fixed"]);
+    }
+    #[test]
+    fn rendered_column_order_keeps_equipment_selection_labels_stable() {
+        #[component]
+        fn Probe() -> Element {
+            let mut kind = DataGridColumn::new("type", "Type");
+            kind.row_drag = true;
+            rsx! { DataGrid {
+                columns: vec![kind, DataGridColumn::new("status", "Status"), DataGridColumn::new("hw", "HW")],
+                rows: vec![DataGridRow::new("equipment").cell("type", "Equipment").cell("status", "Normal").cell("hw", "2.0")],
+                state: DataGridState { column_order: vec!["hw".into(), "status".into(), "type".into()], ..Default::default() },
+                onstatechange: move |_| {},
+            } }
+        }
+        let mut dom = VirtualDom::new(Probe);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        let hw = html.find("data-column-id=\"hw\"").unwrap();
+        let status = html.find("data-column-id=\"status\"").unwrap();
+        let kind = html.find("data-column-id=\"type\"").unwrap();
+        assert!(hw < status && status < kind);
+        assert!(html.contains("Select Equipment"));
+        assert!(html.contains("Move Equipment"));
+        assert!(!html.contains("Select 2.0"));
+    }
+}

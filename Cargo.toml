@@ -1,0 +1,55 @@
+[package]
+name = "dioxus-ix"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Rust UI components for Dioxus, porting the Industrial Experience design system"
+repository = "https://github.com/jme-1308/Dioxus_iX"
+license = "MIT"
+readme = "README.md"
+keywords = ["dioxus", "components", "ui", "industrial", "design-system"]
+categories = ["gui", "web-programming"]
+include = ["src/**/*.rs", "examples/**/*.rs", "tests/**/*.rs", "Cargo.toml", "README.md", "Cargo.lock", "LICENSE", "THIRD_PARTY_NOTICES.md"]
+
+[features]
+default = []
+web = ["dioxus/web", "launch", "dep:web-sys", "dep:wasm-bindgen"]
+desktop = ["dioxus/desktop", "launch", "dep:futures-channel"]
+launch = ["dioxus/launch"]
+ssr = ["dioxus/ssr"]
+
+[dependencies]
+futures-timer = { version = "3.0.4", features = ["wasm-bindgen"] }
+web-time = "1.1"
+futures-channel = { version = "0.3", optional = true }
+regex = "1"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = { version = "0.2", optional = true }
+dioxus = { version = "=0.8.0-alpha.2", default-features = false, features = ["macro", "html", "signals", "hooks", "mounted", "document"] }
+# Dioxus alpha.2's history module uses Location without enabling this web-sys
+# feature. Feature unification supplies it without changing upstream sources.
+web-sys = { version = "0.3", optional = true, features = ["Window", "Location", "console", "HtmlElement", "HtmlDialogElement", "NodeList", "ShowPopoverOptions", "CssStyleDeclaration"] }
+
+[dev-dependencies]
+chrono = { version = "0.4", features = ["clock", "wasmbind"] }
+dioxus-ssr = "=0.8.0-alpha.2"
+
+[[example]]
+name = "gallery"
+path = "examples/gallery/main.rs"
+required-features = ["launch"]
+
+[[example]]
+name = "desktop_probe"
+path = "examples/desktop_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "native_bridge_probe"
+path = "examples/native_bridge_probe.rs"
+required-features = ["desktop"]
+
+[package.metadata.docs.rs]
+features = ["ssr"]

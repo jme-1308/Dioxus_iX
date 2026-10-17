@@ -1,0 +1,74 @@
+//! Rust implementations of Industrial Experience components for Dioxus.
+//!
+//! Components and interactions are authored in Rust without the upstream
+//! JavaScript or Web Component package. Dioxus generates its platform runtime.
+//! Render [`IxTheme`] once around your application to install the embedded styles.
+//! This project is independent of Siemens and does not ship Siemens logos.
+//!
+//! ```rust,no_run
+//! use dioxus::prelude::*;
+//! use dioxus_ix::*;
+//!
+//! fn app() -> Element {
+//!     rsx! {
+//!         IxTheme {
+//!             Button { "Start" }
+//!         }
+//!     }
+//! }
+//! ```
+
+#![forbid(unsafe_code)]
+
+pub mod actions;
+pub mod application;
+pub mod catalog;
+pub mod chart_advanced;
+pub mod chart_export;
+pub mod chart_toolbox;
+pub mod charts;
+pub mod chat;
+pub mod composition;
+pub mod data_grid;
+pub mod datetime;
+pub mod dialogs;
+mod dom_query;
+pub mod form_control;
+pub mod forms;
+pub mod icons;
+pub mod layout;
+pub mod notifications;
+pub mod overlays;
+pub mod patterns;
+pub mod theme;
+pub mod tooltip;
+pub mod tree;
+
+pub use actions::*;
+pub use application::*;
+pub use catalog::{PORT_CATALOG, PortEntry, PortMappingKind, UPSTREAM_EXAMPLE_NAMES};
+pub use chart_advanced::*;
+pub use chart_export::*;
+pub use chart_toolbox::*;
+pub use charts::*;
+pub use chat::*;
+pub use composition::*;
+pub use data_grid::*;
+pub use datetime::*;
+pub use dialogs::*;
+pub use form_control::*;
+pub use forms::*;
+pub use icons::{
+    Icon, IconDefinition, IconProps, IconRegistry, IconRegistryProvider, IconRegistryProviderProps,
+    icon_names, use_icon_registry,
+};
+pub use layout::*;
+pub use notifications::*;
+pub use overlays::*;
+pub use patterns::*;
+pub use theme::{ColorScheme, Density, IxTheme, IxThemeProps};
+pub use tooltip::*;
+pub use tree::*;
+
+/// Upstream source snapshot used when the port was started.
+pub const UPSTREAM_REVISION: &str = "8bf599bc68365d7752e12832e71b625883b93d7a";
