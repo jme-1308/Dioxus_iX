@@ -2,6 +2,17 @@
 
 Build a good approximation of Siemens iX Brand in Dioxus **=0.8.0-alpha.2** for web and desktop WebView. The read-only upstream is `../ix` at `8bf599bc68365d7752e12832e71b625883b93d7a` (core 5.2.1).
 
+## First priority: simplify custom JavaScript; use Dioxus first
+
+This applies to **every task, agent and delegation**. Simplifying the existing handwritten JavaScript layer is the highest priority, before new components, gallery improvements, visual polish, other backlog tasks or further parity audits. See **R02** in IMPLEMENTATION.md. Keep unfinished unrelated work preserved; do not continue it ahead of simplification.
+
+- Dioxus must own rendering, element lifecycle and normal event/DOM handling. Do not build a parallel handwritten DOM-management runtime. Custom JavaScript is a **small exception only when Dioxus has no usable alternative**.
+- Use the pinned Dioxus APIs, mounted element handles, events, focus/measurement methods, native input/file facilities and Rust component ownership first. Do not duplicate capabilities that Dioxus already provides with handwritten JavaScript.
+- Before introducing or retaining a custom bridge, identify the **specific missing or demonstrably broken Dioxus capability** on the relevant target. Check the installed/pinned source or reproduce the gap. Generic statements that browser operations need the DOM, or that web and desktop differ, are not sufficient justification.
+- Remove redundant bridges and simplify the existing menu/overlay/focus/measurement infrastructure. Prefer Rust-owned state, explicit component relationships and Dioxus event handling over custom DOM registries, event transports, discovery observers and queued focus runtimes where the agreed core behavior permits it.
+- Keep unavoidable JavaScript minimal and limited to the demonstrated native capability gap. Document that gap beside the bridge and in the current handoff. Moving JavaScript into a `.rs` string does not make it Rust or reduce its maintenance cost.
+- Preserve normal clicks, selection, keyboard navigation, dismissal, focus, file handling and cleanup. Historical exact timing, DOM identity, source quirks and unusual-composition equivalence do not justify retaining complexity by themselves. Verify representative workflows; do not replace simplification with another exhaustive audit.
+
 ## Acceptance target
 
 - The user replaced the former 1:1 clone requirement with **a good visual approximation and reliable core interactions** on 2026-10-18.

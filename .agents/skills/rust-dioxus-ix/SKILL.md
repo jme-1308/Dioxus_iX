@@ -5,6 +5,10 @@ description: Implement, review, and debug Rust/Dioxus components ported from Sie
 
 Follow [AGENTS.md](../../../AGENTS.md) and consult only the relevant [parity ledger](../../../IMPLEMENTATION.md#parity-ledger) rows.
 
+## Priority and implementation choice
+
+The repository's Dioxus-first JavaScript simplification policy takes precedence over other backlog work and historical parity requirements, including for delegated agents. Check the pinned Dioxus source and use its built-in mounted-element, focus, measurement, event and input/file APIs before writing or retaining custom JavaScript. Require a specific demonstrated API gap for each unavoidable bridge; generic DOM or cross-platform arguments are insufficient. Prefer removing redundant infrastructure while preserving ordinary workflows. See AGENTS.md and R02 in IMPLEMENTATION.md.
+
 ## Contract
 
 Read the pinned upstream component and tests before editing. State observable behavior, controlled state, event order/cancellation, and acceptance criteria; keep unknown or unreviewed members explicit.
