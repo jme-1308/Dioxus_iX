@@ -15,6 +15,7 @@ pub(super) const BRIDGE: &str = r#"
 const owner=__OWNER__,listeners=new AbortController(),signal=listeners.signal;
 const documentSlot=Symbol.for('dioxus-ix.document-native-domain.v1');
 const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:owner,eventSequence:0,eventIds:new WeakMap()});
+nativeDocument.inventoryReaders||=new Map();
 function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds.get(event);if(!id){id=++nativeDocument.eventSequence;nativeDocument.eventIds.set(event,id);}return id;}
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
@@ -22,6 +23,7 @@ const keyTargets=new Map(),clickTargets=new Map(),handledBubbleKeys=new WeakSet(
 const tabFocusCaptures=new Map(),nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
 const anchorObservers=new Map();
 const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map(),itemScrollFrames=new Set();let itemObjectSequence=0;
+const itemInventoryLeases=new Map();
 function captureItem(element){
   if(!(element instanceof HTMLElement))return null;
   const target=nativeId(element);if(!target)return null;
@@ -31,7 +33,7 @@ function captureItem(element){
 }
 function pruneItemCaptures(){
   for(const [capture,binding]of itemCaptureNodes){
-    if(binding.current)continue;
+    if(binding.current||Array.from(itemInventoryLeases.values()).some(lease=>lease.tokens.has(capture)))continue;
     const input=transport();if(!input)continue;
     input.value=JSON.stringify({owner,sequence:0,item_focus_phase:'retain',item_focus_capture:capture});
     if(input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))itemCaptureNodes.delete(capture);
@@ -72,6 +74,10 @@ function isActiveHost(n){
 function findHost(id){
   for(const n of document.querySelectorAll('[data-ix-overlay-host]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-host')===id&&isActiveHost(n))return n;
   return null;
+}
+function findItemsHost(root,id){
+  const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?document.getElementById(configured):null;
+  return element instanceof HTMLElement&&element.isConnected?element:findHost(root.getAttribute('data-ix-overlay-items-owner')||id);
 }
 function findTrigger(id,root){
   for(const n of document.querySelectorAll('[data-ix-overlay-trigger]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-trigger')===id)return n;
@@ -152,6 +158,41 @@ function hostItems(host){
   }
   return out;
 }
+const itemSelector='[data-ix-item-kind],[data-ix-roving-item]';
+function itemHostFacts(element){
+  const binding=captureItem(element);if(!binding)return null;
+  const rawKind=element.getAttribute('data-ix-item-kind');
+  const kind=['dropdown','select','menu','category'].includes(rawKind)?rawKind:'native-opt-in';
+  return {item:binding.capture,kind,target:binding.target,capture:binding.capture,
+    registration_key:element.getAttribute('data-ix-item-key')||'',
+    source_focusable:element.hasAttribute('data-ix-item-focusable')?element.getAttribute('data-ix-item-focusable')==='true':element.classList.contains('ix-focusable'),
+    disabled_attribute:element.hasAttribute('disabled'),hidden_attribute:element.hasAttribute('hidden'),
+    tabindex_attribute:element.getAttribute('tabindex'),checked_attribute:element.hasAttribute('checked'),
+    visible_focus:element.getAttribute('data-active')==='true'||element.classList.contains('ix-focused'),
+    roving_opt_in:element.hasAttribute('data-ix-roving-item'),linked_trigger:element.hasAttribute('data-ix-overlay-trigger')?element.getAttribute('data-ix-overlay-trigger'):null};
+}
+function inventoryFacts(host){
+  if(!(host instanceof HTMLElement))return null;
+  const identity=captureItem(host),direct=Array.from(host.querySelectorAll(itemSelector)).filter(element=>element instanceof HTMLElement);
+  const elements=new Set(direct),rawSlots=[];
+  for(const slot of host.querySelectorAll('slot')){
+    const assignments=[];
+    for(const assigned of slot.assignedElements({flatten:true})){
+      const root=assigned.matches(itemSelector)?assigned:null;
+      const descendants=Array.from(assigned.querySelectorAll(itemSelector)).filter(element=>element instanceof HTMLElement);
+      if(root)elements.add(root);for(const element of descendants)elements.add(element);
+      assignments.push({root,descendants});
+    }
+    rawSlots.push({slot,assignments});
+  }
+  const facts=new Map(Array.from(elements).map(element=>[element,itemHostFacts(element)]));
+  const token=element=>facts.get(element)?.item||null,order=direct.map(token).filter(Boolean);
+  return {items_host:identity.capture,hosts:Array.from(facts.values()).filter(Boolean),navigation_order:order,query_order:order,
+    slots:rawSlots.map(({slot,assignments})=>({
+      assignments:assignments.map(assignment=>({root:token(assignment.root),descendants:assignment.descendants.map(token).filter(Boolean)})),
+      following:Array.from(elements).filter(element=>slot.compareDocumentPosition(element)&Node.DOCUMENT_POSITION_FOLLOWING).map(token).filter(Boolean)
+    }))};
+}
 function findFocusedIndex(active,list){
   if(!active)return null;
   const idx=list.indexOf(active);if(idx!==-1)return idx;
@@ -212,7 +253,7 @@ function collectFacts(kind,event,phase=''){
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
     const discovery_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
     const open=root.hasAttribute('data-ix-overlay-open')?root.getAttribute('data-ix-overlay-open')==='true':root.getAttribute('data-open')==='true';
-    const host=findHost(id),itemsHost=findHost(root.getAttribute('data-ix-overlay-items-owner')||id),trigger=findTrigger(id,root),anchor=findAnchor(root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
+    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id,root),anchor=findAnchor(root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
     if(anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node)))anchors.push(id);
     if(trigger)addCand(trigger);
     for(const e of itemsWithEl)addCand(e.el);
@@ -225,6 +266,8 @@ function collectFacts(kind,event,phase=''){
     const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
     const tab_candidates=event?.key==='Tab'&&root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
     const item_focus_captures=ro===owner?[...new Set([...itemsWithEl.map(item=>item.el),...focusables])].map(captureItem).filter(Boolean):[];
+    const inventory=inventoryFacts(itemsHost);
+    for(const item of inventory?.hosts||[])if(item.target)addCand(findElement(item.target));
     nodes.push({
       id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
@@ -232,6 +275,7 @@ function collectFacts(kind,event,phase=''){
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
       item_focus_captures,
+      inventory,
       focusable_ids:focusables.map(nativeId).filter(Boolean),
       focus_count:focusables.length,focused_index,on_trigger,inside,
       trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
@@ -245,8 +289,36 @@ function collectFacts(kind,event,phase=''){
     target_id:nativeId(target),active_id:nativeId(active),
     hosts,triggers,enclosing_triggers,anchors,nodes,click_sites,active_categories,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||'',
-    focus_targets:nodes.flatMap(node=>node.tab_candidates.map(candidate=>candidate.target))
+    focus_targets:nodes.flatMap(node=>node.tab_candidates.map(candidate=>candidate.target)),
+    item_focus_host:kind==='item-focusin'?(()=>{
+      const hosts=path.filter(element=>element instanceof HTMLElement&&element.matches(itemSelector));
+      const element=hosts.find(element=>element.getAttribute('data-ix-item-focusable')==='true'||element.classList.contains('ix-focusable'))||hosts[0];
+      return element?itemHostFacts(element):null;
+    })():null
   };
+}
+function applyRovingWrite(element,value){
+  if(!(element instanceof HTMLElement))return;
+  if(value===null)element.removeAttribute('tabindex');else element.setAttribute('tabindex',value);
+}
+function drainRovingWrites(report){
+  const pending=transport();if(!pending)return;
+  pending.value=JSON.stringify({owner,sequence:report.sequence,roving_pending:report.sequence});
+  if(pending.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))return;
+  const tokens=[...new Set(report.nodes.flatMap(node=>node.inventory?.query_order||[]))];
+  for(const token of itemCaptureNodes.keys())if(!tokens.includes(token))tokens.push(token);
+  let progress;
+  do{
+    progress=false;
+    for(const value of ['-1','0'])for(const item of tokens){
+      const input=transport();if(!input)return;
+      input.value=JSON.stringify({owner,sequence:report.sequence,roving_write:true,
+        roving_event_sequence:report.sequence,roving_item:item,roving_tabindex:value});
+      if(!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
+        applyRovingWrite(itemCaptureNodes.get(item)?.element,value);progress=true;
+      }
+    }
+  }while(progress);
 }
 function send(report,event){
   const input=transport();
@@ -257,9 +329,11 @@ function send(report,event){
     const element=findElement(id),panel=element?nearestPopover(element):null;
     return [id,{element,panel,generation:panel?.getAttribute('data-surface-generation')}];
   }));
+  const activationExecution=new Map(report.candidate_ids.map(id=>[id,findElement(id)]));
   const value=JSON.stringify(report);
   input.value=value;
   const prevent=!input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+  if(report.kind==='key')drainRovingWrites(report);
   const ackInput=transport();if(!ackInput)return;
   ackInput.value=value;
   const stop=!ackInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
@@ -301,7 +375,7 @@ function send(report,event){
   }
   if(report.kind==='key'&&report.candidate_ids.length){
     for(const id of report.candidate_ids){
-      const el=document.getElementById(id);
+      const el=activationExecution.get(id);
       if(!(el instanceof HTMLElement)||!el.isConnected)continue;
       const clickInput=transport();if(!clickInput)return;
       clickInput.value=JSON.stringify({owner,sequence:report.sequence,activate_target:id});
@@ -378,6 +452,10 @@ function syncKeyTargets(){
     }
   }
   for(const id of lastFocus.keys())if(!currentIds.has(id))lastFocus.delete(id);
+  for(const [id,lease]of itemInventoryLeases){
+    const current=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(root=>root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id);
+    if(!current||Number(current.getAttribute('data-ix-overlay-generation'))!==lease.generation)itemInventoryLeases.delete(id);
+  }
   for(const [target,listener]of keyTargets)if(!wanted.has(target)){target.removeEventListener('keydown',listener);keyTargets.delete(target);}
   for(const [target,listener]of clickTargets)if(!wantedClicks.has(target)){target.removeEventListener('click',listener);clickTargets.delete(target);}
 }
@@ -435,11 +513,12 @@ document.addEventListener('focusin',event=>{
   if(item){
     const id=item.getAttribute('data-ix-dropdown-owner');
     const root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(n=>n.getAttribute('data-ix-overlay-root')===id&&n.getAttribute('data-ix-overlay-owner')===owner);
-    if(root?.getAttribute('data-ix-overlay-focus-proxy')==='true'){
+    if(!item.hasAttribute('data-ix-item-kind')&&root?.getAttribute('data-ix-overlay-focus-proxy')==='true'){
       const trigger=findTrigger(id,root);
       if(trigger&&trigger!==deepActive()&&visibleFocusable(trigger))trigger.focus();
     }
   }
+  send(collectFacts('item-focusin',event,'focus'),null);
   reportObserve();
 },{signal});
 document.addEventListener('focusout',()=>queueMicrotask(()=>{if(alive)reportObserve();}),{passive:true,signal});
@@ -447,6 +526,8 @@ const observer=new MutationObserver(reportObserve);
 observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
   'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
+  ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
+  ,'data-ix-overlay-items-host-id'
 ]});
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 function queueTriggerRestore(command){
@@ -493,7 +574,9 @@ function executeItemFocus(job){
   const {command,capture}=job;
   // Source captures a Category host at admission, then resolves its current
   // shadow parent in frame one. Frame two retains that resolved object.
-  const element=job.element?.matches('ix-menu-category')?job.element.shadowRoot?.querySelector('.category-parent'):job.element;
+  const markedKind=job.element?.getAttribute('data-ix-item-kind');
+  const control=['menu','category'].includes(markedKind)?Array.from(job.element.querySelectorAll('[data-ix-item-control]')).find(control=>control.closest('[data-ix-item-kind]')===job.element):null;
+  const element=control||(job.element?.matches('ix-menu-category')?job.element.shadowRoot?.querySelector('.category-parent'):job.element);
   if(!itemFocusQuery(command,capture,'focus'))return;
   if(element instanceof HTMLElement&&command.focus_native)try{element.focus();}catch{}
   const frame=requestAnimationFrame(()=>{
@@ -504,6 +587,23 @@ function executeItemFocus(job){
   });
   itemScrollFrames.add(frame);
 }
+function executeRovingAttributes(command){
+  for(const write of command.writes||[]){
+    const input=transport();if(!input)return;
+    input.value=JSON.stringify({owner,sequence:0,roving_write:true,roving_sequence:command.sequence,
+      roving_root:command.root,roving_generation:command.generation,roving_item:write.item,roving_tabindex:write.tabindex});
+    if(!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))applyRovingWrite(itemCaptureNodes.get(write.item)?.element,write.tabindex);
+  }
+  pruneItemCaptures();
+}
+const inventoryReader=(id,generation)=>{
+  const root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id&&Number(root.getAttribute('data-ix-overlay-generation'))===generation);
+  if(!alive||!root)return null;
+  const facts=inventoryFacts(findItemsHost(root,id));
+  if(facts)itemInventoryLeases.set(id,{generation,tokens:new Set([facts.items_host,...facts.hosts.map(host=>host.capture)])});
+  return facts;
+};
+nativeDocument.inventoryReaders.set(owner,inventoryReader);
 function scheduleNativeFocus(){
   if(nativeFocusFrame||!nativeFocusCommands.length)return;
   nativeFocusFrame=requestAnimationFrame(()=>{
@@ -545,12 +645,14 @@ try{
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
     if(command?.completion_frame){nativeFocusCommands.push({kind:'completion',command:command.completion_frame});scheduleNativeFocus();}
     if(command?.item_focus)queueItemFocus(command.item_focus);
+    if(command?.roving_attributes)executeRovingAttributes(command.roving_attributes);
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;tabFocusCaptures.clear();
   for(const frame of itemScrollFrames)cancelAnimationFrame(frame);itemScrollFrames.clear();itemCaptureNodes.clear();
+  itemInventoryLeases.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');

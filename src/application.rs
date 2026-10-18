@@ -477,6 +477,7 @@ struct CategoryDomItem {
 }
 struct CategoryChild {
     node: Option<Rc<MountedData>>,
+    host_id: Option<String>,
     disabled: bool,
     hidden: bool,
     active: bool,
@@ -518,6 +519,7 @@ struct CategoryModel {
     initialized: bool,
     active_changed: bool,
     focus_task: Option<dioxus::core::Task>,
+    entry_focus: Option<usize>,
     hover_epoch: u64,
     hover_sequence: u64,
     hide_task: Option<dioxus::core::Task>,
@@ -925,6 +927,7 @@ impl CategoryNavigation {
                 initialized: false,
                 active_changed: false,
                 focus_task: None,
+                entry_focus: None,
                 hover_epoch: 0,
                 hover_sequence: 0,
                 hide_task: None,
@@ -958,6 +961,7 @@ impl CategoryNavigation {
         }
         let child = model.children.entry(id).or_insert(CategoryChild {
             node: None,
+            host_id: None,
             disabled,
             hidden,
             active,
@@ -966,6 +970,7 @@ impl CategoryNavigation {
         child.hidden = hidden;
         child.active = active;
         let pending = if changed {
+            model.entry_focus = None;
             model.generation = model.generation.wrapping_add(1);
             model.root_claim = None;
             model.focus_task.take()
@@ -987,6 +992,7 @@ impl CategoryNavigation {
         let pending = {
             let mut model = self.0.model.borrow_mut();
             model.children.remove(&id);
+            model.entry_focus = None;
             model.generation = model.generation.wrapping_add(1);
             model.root_claim = None;
             model.focus_task.take()
@@ -1014,6 +1020,7 @@ impl CategoryNavigation {
             let lost_flyout = model.previous_flyout == Some(self.0.id) && flyout != Some(self.0.id);
             model.previous_flyout = flyout;
             let pending = if changed || lost_flyout {
+                model.entry_focus = None;
                 model.generation = model.generation.wrapping_add(1);
                 model.root_claim = None;
                 model.return_ack = None;
@@ -1069,6 +1076,7 @@ impl CategoryNavigation {
     fn invalidate(&self) {
         let pending = {
             let mut model = self.0.model.borrow_mut();
+            model.entry_focus = None;
             model.generation = model.generation.wrapping_add(1);
             model.root_claim = None;
             model.focus_task.take()
@@ -1440,7 +1448,21 @@ impl CategoryNavigation {
         };
         if keyboard && opening {
             if let Some(first) = self.items(false).first().copied() {
-                self.focus(Some(first), 1);
+                let wait_for_children = {
+                    let mut model = self.0.model.borrow_mut();
+                    let wait = !self.is_expanded()
+                        && model.native
+                        && model.observed.iter().any(|item| item.hidden);
+                    if wait {
+                        // Source collapsed entry waits for showChanged, after
+                        // its MenuItem hosts publish their shown state.
+                        model.entry_focus = Some(first);
+                    }
+                    wait
+                };
+                if !wait_for_children {
+                    self.focus(Some(first), 1);
+                }
             }
         }
     }
@@ -1472,16 +1494,34 @@ impl CategoryNavigation {
         }
     }
     fn observe(&self, items: Vec<CategoryDomItem>) {
-        let (changed, pending) = {
+        let (changed, pending, entry) = {
             let mut model = self.0.model.borrow_mut();
             model.native = true;
             if model.observed == items {
-                (false, None)
+                (false, None, None)
             } else {
+                // Only the expected own-hidden release may carry a waiting
+                // entry across publication. Reorder, replacement, eligibility
+                // changes and a new hide invalidate that old intent.
+                let showing = model.observed.len() == items.len()
+                    && model.observed.iter().zip(&items).all(|(before, after)| {
+                        before.id == after.id
+                            && before.disabled == after.disabled
+                            && before.tabindex == after.tabindex
+                            && (!after.hidden || before.hidden)
+                    });
+                if !showing {
+                    model.entry_focus = None;
+                }
+                let entry = if items.iter().all(|item| !item.hidden) {
+                    model.entry_focus.take()
+                } else {
+                    None
+                };
                 model.observed = items;
                 model.generation = model.generation.wrapping_add(1);
                 model.root_claim = None;
-                (true, model.focus_task.take())
+                (true, model.focus_task.take(), entry)
             }
         };
         if let Some(pending) = pending {
@@ -1489,6 +1529,14 @@ impl CategoryNavigation {
         }
         if changed {
             self.notify();
+        }
+        if let Some(entry) = entry {
+            if !self.is_expanded()
+                && self.is_open()
+                && self.0.model.borrow().children.contains_key(&entry)
+            {
+                self.focus(Some(entry), 1);
+            }
         }
     }
     fn navigate(
@@ -1504,6 +1552,7 @@ impl CategoryNavigation {
             return (false, false, None);
         }
         self.ensure_initialized();
+        self.0.model.borrow_mut().entry_focus = None;
         if !self.is_open() && !parent {
             return (false, false, None);
         }
@@ -1600,11 +1649,15 @@ impl CategoryNavigation {
         if let Some(node) = node {
             // Only collapsed Dropdown navigation uses source focusItem. Entry,
             // expanded panel arrows and focus return keep their own helpers.
-            node.queue_item_focus(
-                format!("ix-menu-category-child-{}-{target}", self.0.id),
-                true,
-                Rc::new(|| {}),
-            );
+            let host_id = self
+                .0
+                .model
+                .borrow()
+                .children
+                .get(&target)
+                .and_then(|child| child.host_id.clone())
+                .unwrap_or_else(|| format!("ix-menu-category-child-{}-{target}", self.0.id));
+            node.queue_item_focus(host_id, true, Rc::new(|| {}));
         } else {
             // Isolated renderer/test adapters without a registered popup.
             self.focus(Some(target), 1);
@@ -1950,7 +2003,7 @@ impl CategoryNavigation {
 
 const MENU_CATEGORY_FACTS: &str = r#"
 const categoryNodes=(root,category)=>Array.from(category.querySelectorAll('[data-menu-category-child]')).filter(node=>node.dataset.menuCategoryOwner===root.id&&node.dataset.menuCategory===category.dataset.menuCategory);
-const categoryFacts=(root,category)=>categoryNodes(root,category).map(node=>({id:Number(node.dataset.menuCategoryChild),disabled:node.dataset.menuCategoryDisabled==='true',hidden:node.hasAttribute('hidden'),tabindex:node.getAttribute('tabindex')}));
+const categoryFacts=(root,category)=>categoryNodes(root,category).map(node=>{const host=node.closest('[data-ix-item-kind="menu"]'),source=host&&category.contains(host)?host:node;return{id:Number(node.dataset.menuCategoryChild),disabled:source===node?node.dataset.menuCategoryDisabled==='true':source.hasAttribute('disabled'),hidden:source.hasAttribute('hidden'),tabindex:source.getAttribute('tabindex')};});
 const categoryTuples=(root,category)=>categoryFacts(root,category).map(item=>[item.id,item.disabled,item.hidden,item.tabindex]);
 "#;
 #[cfg(any(feature = "web", feature = "desktop"))]
@@ -3171,6 +3224,10 @@ fn menu_focus_bridge(menu_id: &str) -> String {
 }
 
 /// Navigation action or link with active, disabled and notification states.
+/// A navigation item. Within a generic Dropdown, consumer attributes and
+/// keyboard activation belong to a separate source host; its generated native
+/// control retains Menu/Category behavior. Category visibility overwrites a
+/// supplied child's host hidden state while that category opens or closes.
 #[component]
 pub fn MenuItem(
     label: String,
@@ -3186,7 +3243,10 @@ pub fn MenuItem(
     #[props(default)] tooltip_text: Option<String>,
     #[props(default = true)] close_on_select: bool,
     #[props(default)] onclick: EventHandler<MouseEvent>,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
+    let item_host = crate::dropdown::use_item_host("menu");
+    let generic = item_host.generic;
     let (id, context) = navigation_item();
     let nested = context.as_ref().and_then(|context| context.nested.clone());
     if let Some(nested) = &nested {
@@ -3203,7 +3263,18 @@ pub fn MenuItem(
     let nested_id = nested.as_ref().map(|_| id.to_string());
     let nested_owner = nested.as_ref().map(|nested| nested.0.owner.clone());
     let nested_category = nested.as_ref().map(|nested| nested.0.id.to_string());
-    let native_disabled = disabled && nested.is_none();
+    let native_disabled = disabled && nested.is_none() && !generic;
+    // Category writes the supplied source host's own hidden state. This is
+    // independent of its popup ancestor and overrides a child hidden prop
+    // while that category is open, as source onShowItemsChange does.
+    let source_hidden = if let Some(category) = &nested {
+        let expanded = (category.0.expanded)();
+        let panel = (category.0.panel)();
+        let flyout = (category.0.flyout)();
+        !(expanded && panel || flyout == Some(category.0.id))
+    } else {
+        hidden
+    };
     let root_roving = context
         .as_ref()
         .filter(|context| context.prefix.is_empty())
@@ -3298,24 +3369,81 @@ pub fn MenuItem(
                 overlay.active.set(None);
             }
         }
-        onclick.call(event);
+        if !generic {
+            onclick.call(event);
+        }
     };
-    rsx! {
+    let default_id = nested
+        .as_ref()
+        .map(|category| format!("ix-menu-category-child-{}-{id}", category.0.id));
+    let host_id = crate::dropdown::item_host_id(
+        &attributes,
+        default_id.as_deref().unwrap_or(&item_host.host_id),
+    );
+    if let Some(category) = &nested {
+        if let Some(child) = category.0.model.borrow_mut().children.get_mut(&id) {
+            child.host_id = Some(host_id.clone());
+        }
+    }
+    let control_id = if generic {
+        Some(format!("{host_id}-control"))
+    } else {
+        default_id
+    };
+    let control_attributes = if generic {
+        Vec::new()
+    } else {
+        attributes.clone()
+    };
+    let control_style = if generic {
+        String::new()
+    } else {
+        style.clone()
+    };
+    let control_hidden = !generic && hidden;
+    let element = rsx! {
         if let Some(href) = href {
-            a { id:nested.as_ref().map(|category| format!("ix-menu-category-child-{}-{id}", category.0.id)), class, hidden,style,role:menu_role,href: if disabled { None } else { Some(href) }, target: target.clone(),"disabled":disabled,
+            a { id:control_id, class, hidden:control_hidden,style:control_style,role:menu_role,href: if disabled { None } else { Some(href) }, target: target.clone(),"disabled":!generic&&disabled,
                 rel: if target == "_blank" { Some("noopener noreferrer") } else { None },
                 title, "aria-label": label, "aria-current": if active { Some("page") } else { None },
                 "aria-disabled": disabled.to_string(), tabindex: if disabled{-1}else{tabindex}, "data-home": home.to_string(),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
-                onmounted: onmount, onfocus,onkeydown:onkey, onclick: onactivate, {content}
+                "data-ix-item-control":generic.then_some(""),
+                onmounted: onmount, onfocus:onfocus,onkeydown:onkey, onclick: onactivate,
+                ..control_attributes,
+                {content}
             }
         } else {
-            button { id:nested.as_ref().map(|category| format!("ix-menu-category-child-{}-{id}", category.0.id)), class, hidden,style,role:menu_role,r#type: "button", disabled:native_disabled, title, "aria-label": label,"aria-disabled":disabled.to_string(),tabindex:if native_disabled{-1}else{tabindex},"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
+            button { id:control_id, class, hidden:control_hidden,style:control_style,role:menu_role,r#type: "button", disabled:native_disabled, title, "aria-label": label,"aria-disabled":disabled.to_string(),tabindex:if native_disabled{-1}else{tabindex},"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-current": if active { Some("page") } else { None }, "data-home": home.to_string(),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
-                onmounted: onmount, onfocus,onkeydown:onkey, onclick: onactivate, {content}
+                "data-ix-item-control":generic.then_some(""),
+                onmounted: onmount, onfocus:onfocus,onkeydown:onkey, onclick: onactivate,
+                ..control_attributes,
+                {content}
             }
         }
+    };
+    if generic {
+        let source_active = item_host.active();
+        let attributes = if nested.is_some() {
+            attributes
+                .into_iter()
+                .filter(|attribute| attribute.name != "hidden")
+                .collect::<Vec<_>>()
+        } else {
+            attributes
+        };
+        rsx! {div {id:host_id,class:if source_active{"ix-source-menu-item ix-focused"}else{"ix-source-menu-item"},style,hidden:source_hidden,
+            "data-ix-item-kind":"menu","data-ix-item-key":item_host.key,"data-ix-item-focusable":(!disabled).to_string(),"data-active":source_active.to_string(),
+            // Host click is the source activation target. It does not invoke
+            // the generated link/button's activation or application adapters.
+            onclick:move |event:MouseEvent|onclick.call(event),
+            ..attributes,
+            {element}
+        }}
+    } else {
+        element
     }
 }
 
@@ -3350,7 +3478,9 @@ pub fn MenuCategory(
     #[props(default)] disable_tooltip: bool,
     #[props(default)] hidden: bool,
     #[props(default)] style: String,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
+    let item_host = crate::dropdown::use_item_host("category");
     let (id, context) = navigation_item();
     let root_roving = context
         .as_ref()
@@ -3400,6 +3530,7 @@ pub fn MenuCategory(
     });
     let overlay_runtime = crate::overlay_runtime::use_overlay_runtime();
     let overlay_id = format!("ix-menu-category-overlay-{id}");
+    let host_id = crate::dropdown::item_host_id(&attributes, &overlay_id);
     let overlay_node = use_hook({
         let category = category.clone();
         let runtime = overlay_runtime.clone();
@@ -3507,6 +3638,7 @@ pub fn MenuCategory(
         let pending = {
             let mut model = cleanup.0.model.borrow_mut();
             model.alive = false;
+            model.entry_focus = None;
             model.generation = model.generation.wrapping_add(1);
             model.return_ack = None;
             model.root_claim = None;
@@ -3567,7 +3699,23 @@ pub fn MenuCategory(
         .any(|child| child.active);
     let parent_id = format!("ix-menu-category-parent-{id}");
     let content_id = format!("ix-category-{id}");
-    let host_style = format!("{style};anchor-name:--ix-menu-category-anchor-{id}");
+    let consumer_style = attributes
+        .iter()
+        .filter_map(|attribute| {
+            if attribute.name == "style" {
+                if let dioxus::core::AttributeValue::Text(value) = &attribute.value {
+                    return Some(value.as_str());
+                }
+            }
+            None
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+    let attributes = attributes
+        .into_iter()
+        .filter(|attribute| attribute.name != "style")
+        .collect::<Vec<_>>();
+    let host_style = format!("{style};{consumer_style};anchor-name:--ix-menu-category-anchor-{id}");
     let flyout_style = format!("position-anchor:--ix-menu-category-anchor-{id}");
     let popup_id = format!("ix-category-popup-{id}");
     let mount_context = context.clone();
@@ -3582,16 +3730,19 @@ pub fn MenuCategory(
     let popup_key = category.clone();
     let popup_roving = root_roving.clone();
     rsx! {
-        div { id:overlay_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
+        div { id:host_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
+            "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-focusable":"true",
             "data-ix-overlay-root":overlay_id.clone(),"data-ix-overlay-owner":overlay_runtime.owner_id(),
-            "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":overlay_id.clone(),"data-ix-overlay-native-surface":"category",
+            "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-items-host-id":host_id,"data-ix-overlay-native-surface":"category",
             "data-menu-category-root":id.to_string(),"data-menu-category":id.to_string(),"data-menu-category-mode":if expanded{"expanded"}else{"collapsed"},
             "data-menu-category-return-jobs":pending_returns,"data-menu-category-keyboard-mode":keyboard_mode,
             "data-menu-category-generation":generation,"data-menu-category-return-target":parent_id.clone(),"data-menu-category-return-keys":"[\"Enter\",\" \"]",
             "data-menu-category-keys":"[\"Enter\",\" \",\"ArrowDown\",\"ArrowUp\",\"Home\",\"End\",\"Tab\",\"Escape\"]","data-open":is_open.to_string(),
             "data-menu-category-popup-open":popup_open.to_string(),"data-menu-category-panel-open":panel_open.to_string(),"data-menu-category-body-surface":if body_in_panel{"panel"}else{"popup"},
+            ..attributes,
             crate::overlay_runtime::OverlayTransport {runtime:overlay_runtime.clone()}
             button {id:parent_id.clone(),class:if active||nested_active{"ix-menu-item ix-menu-item-active"}else{"ix-menu-item"},r#type:"button",title:(!disable_tooltip).then(||label.clone()),
+                "data-ix-item-control":"",
                 role:"menuitem",tabindex,"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-label":label.clone(),"aria-expanded":is_open.to_string(),"aria-controls":format!("{content_id} {popup_id}"),
                 onmounted:move |event|{
@@ -4555,6 +4706,172 @@ mod tests {
         dom.runtime().handle_event(name, event.clone(), id);
         (!event.default_action_enabled(), event.propagates())
     }
+    #[derive(Clone, Default)]
+    struct GenericMenuItemCapture {
+        calls: Rc<Cell<usize>>,
+        navigation: Rc<RefCell<Option<NavigationContext>>>,
+        category: Rc<RefCell<Option<CategoryNavigation>>>,
+    }
+    #[component]
+    fn GenericMenuItemConsumer() -> Element {
+        let capture = use_context::<GenericMenuItemCapture>();
+        *capture.navigation.borrow_mut() = try_consume_context::<NavigationContext>();
+        rsx! {MenuItem {id:"mixed-menu-consumer",label:"Mixed consumer",close_on_select:false,
+            onclick:move |_|capture.calls.set(capture.calls.get()+1)
+        }}
+    }
+    #[component]
+    fn GenericMenuCategoryChild() -> Element {
+        let capture = use_context::<GenericMenuItemCapture>();
+        *capture.category.borrow_mut() =
+            try_consume_context::<NavigationContext>().and_then(|context| context.nested);
+        rsx! {
+            MenuItem {label:"Mixed child",close_on_select:false}
+            MenuItem {id:"custom-category-child",label:"Custom child",close_on_select:false}
+        }
+    }
+    fn generic_menu_item_fixture(capture: GenericMenuItemCapture) -> Element {
+        use_context_provider(|| capture);
+        rsx! {Menu {start_expanded:false,
+            MenuItem {id:"ordinary-menu-item",label:"Ordinary item",close_on_select:false}
+            crate::Dropdown {label:"Mixed source hosts",
+                GenericMenuItemConsumer {}
+                MenuItem {id:"property-menu-item",label:"Disabled property",disabled:true,tabindex:"-1",style:"color: red",close_on_select:false}
+                MenuCategory {id:"consumer-category",label:"Mixed category",style:"color: blue",GenericMenuCategoryChild {}}
+            }
+        }}
+    }
+    fn item_opening_tag<'a>(html: &'a str, id: &str) -> &'a str {
+        let at = html
+            .find(&format!("id=\"{id}\""))
+            .unwrap_or_else(|| panic!("missing id {id}"));
+        let from = html[..at].rfind('<').unwrap();
+        let to = at + html[at..].find('>').unwrap() + 1;
+        &html[from..to]
+    }
+    fn source_item_dom(
+        capture: GenericMenuItemCapture,
+    ) -> (VirtualDom, BTreeMap<String, dioxus::core::ElementId>) {
+        let mut dom = VirtualDom::new_with_props(generic_menu_item_fixture, capture);
+        let mut current = dioxus::core::ElementId::ROOT;
+        let mut ids = BTreeMap::new();
+        for mutation in dom.rebuild_to_vec().edits {
+            match mutation {
+                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
+                    current = id
+                }
+                dioxus::core::Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(value),
+                    ..
+                } if name == "id" => {
+                    ids.insert(value, current);
+                }
+                _ => {}
+            }
+        }
+        (dom, ids)
+    }
+    #[test]
+    fn generic_menu_source_hosts_preserve_raw_attributes_and_category_anchor() {
+        let (dom, _) = source_item_dom(GenericMenuItemCapture::default());
+        let html = dioxus_ssr::render(&dom);
+        let host = item_opening_tag(&html, "property-menu-item");
+        assert!(host.starts_with("<div "));
+        assert!(host.contains("data-ix-item-kind=\"menu\""));
+        assert!(host.contains("data-ix-item-focusable=\"false\""));
+        assert!(host.contains("tabindex=\"-1\""));
+        assert!(host.contains("color: red"));
+        assert!(
+            !host.contains(" disabled"),
+            "property-only disabled is not a source host attribute"
+        );
+        let control = item_opening_tag(&html, "property-menu-item-control");
+        assert!(control.starts_with("<button ") && control.contains("data-ix-item-control"));
+        assert!(control.contains("aria-disabled=\"true\""));
+        assert!(
+            !control.contains(" disabled"),
+            "source generated button remains natively focusable"
+        );
+        let category = item_opening_tag(&html, "consumer-category");
+        assert!(category.contains("data-ix-item-kind=\"category\""));
+        assert!(category.contains("data-ix-overlay-anchor-id=\"consumer-category\""));
+        assert!(category.contains("anchor-name:--ix-menu-category-anchor-"));
+        assert!(category.contains("color: blue"));
+        assert!(
+            !category.contains("data-active"),
+            "Category parent projection does not invent an outer marker"
+        );
+        let ordinary = item_opening_tag(&html, "ordinary-menu-item");
+        assert!(ordinary.starts_with("<button ") && !ordinary.contains("data-ix-item-kind"));
+    }
+    #[test]
+    fn generic_menu_host_click_delivers_real_consumer_once_without_inner_side_effects() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(MenuTestConverter));
+        let capture = GenericMenuItemCapture::default();
+        let (dom, ids) = source_item_dom(capture.clone());
+        let mut navigation = capture.navigation.borrow().clone().unwrap();
+        navigation.category.set(Some(usize::MAX));
+        menu_dispatch(&dom, "click", ids["mixed-menu-consumer"], ());
+        assert_eq!(capture.calls.get(), 1);
+        assert_eq!(
+            *navigation.category.peek(),
+            Some(usize::MAX),
+            "host click must not descend to the generated native control"
+        );
+        menu_dispatch(&dom, "click", ids["mixed-menu-consumer-control"], ());
+        assert_eq!(
+            capture.calls.get(),
+            2,
+            "native inner click bubbles one original consumer event"
+        );
+        assert_eq!(
+            *navigation.category.peek(),
+            None,
+            "actual inner control preserves its existing adapter"
+        );
+    }
+    #[test]
+    fn generic_category_children_publish_own_hidden_state_and_keep_native_child_lookup() {
+        let capture = GenericMenuItemCapture::default();
+        let (mut dom, _) = source_item_dom(capture.clone());
+        let category = capture.category.borrow().clone().unwrap();
+        let child_id = *category.0.model.borrow().children.keys().next().unwrap();
+        let host_id = format!("ix-menu-category-child-{}-{child_id}", category.0.id);
+        let html = dioxus_ssr::render(&dom);
+        assert!(item_opening_tag(&html, &host_id).contains(" hidden"));
+        assert!(
+            item_opening_tag(&html, &format!("{host_id}-control"))
+                .contains("data-menu-category-child")
+        );
+        assert!(
+            category
+                .0
+                .model
+                .borrow()
+                .children
+                .values()
+                .any(|child| child.host_id.as_deref() == Some("custom-category-child"))
+        );
+        assert!(item_opening_tag(&html, "custom-category-child").contains(" hidden"));
+        category.present_state();
+        for _ in 0..5 {
+            let _ = dom.render_immediate_to_vec();
+        }
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            !item_opening_tag(&html, &host_id).contains(" hidden"),
+            "source supplied child is independently queryable while its category is open"
+        );
+        assert!(!item_opening_tag(&html, "custom-category-child").contains(" hidden"));
+        category.close_flyout();
+        for _ in 0..5 {
+            let _ = dom.render_immediate_to_vec();
+        }
+        assert!(item_opening_tag(&dioxus_ssr::render(&dom), &host_id).contains(" hidden"));
+    }
+
     struct MenuHarness {
         dom: VirtualDom,
         config: Rc<RefCell<MenuFixtureConfig>>,
@@ -6610,6 +6927,140 @@ mod tests {
                 .categories
                 .contains_key(&harness.id("Category"))
         );
+    }
+
+    #[test]
+    fn menu_category_keyboard_entry_waits_for_shown_hosts_before_mounted_focus() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut harness = MenuHarness::new();
+        harness.toggle_expanded();
+        let category = harness.category("Category");
+        let child = harness.id("Child");
+        let delayed = MenuTestMount {
+            id: child,
+            focuses: harness.focuses.clone(),
+            ..Default::default()
+        };
+        menu_dispatch(
+            &harness.dom,
+            "mounted",
+            harness.target("Child"),
+            delayed.clone(),
+        );
+        harness.settle();
+        let mut facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
+        for item in &mut facts {
+            item.hidden = true;
+        }
+        harness.category_event("category-key", "Enter", "Category", None, 1, facts.clone());
+        assert!(category.is_open());
+        assert_eq!(category.0.model.borrow().entry_focus, Some(child));
+        assert!(
+            !delayed.started.get(),
+            "closed host tuples cannot authorize entry focus"
+        );
+
+        facts[0].hidden = false;
+        harness.category_event("category-order", "", "Category", None, 0, facts.clone());
+        assert_eq!(category.0.model.borrow().entry_focus, Some(child));
+        assert!(
+            !delayed.started.get(),
+            "partial publication is not the shown boundary"
+        );
+        for item in &mut facts {
+            item.hidden = false;
+        }
+        harness.category_event("category-order", "", "Category", None, 0, facts.clone());
+        assert_eq!(category.0.model.borrow().entry_focus, None);
+        assert_eq!(category.0.model.borrow().requested, Some(Some(child)));
+        assert!(
+            delayed.started.get(),
+            "shown hosts admit the real mounted focus future"
+        );
+        assert!(!delayed.read_dropped.get());
+        harness.category_event("category-order", "", "Category", None, 0, facts);
+        assert!(
+            !delayed.read_dropped.get(),
+            "identical observations do not cancel admitted focus"
+        );
+        harness.config.borrow_mut().child_present = false;
+        harness.update();
+        assert!(
+            delayed.read_dropped.get(),
+            "removal still cancels the retained target"
+        );
+        harness.release(&delayed);
+        assert!(!harness.focuses.borrow().contains(&child));
+    }
+
+    #[test]
+    fn menu_category_waiting_entry_rejects_changed_members_and_later_input() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        for invalidate in ["reorder", "eligibility", "key", "close", "mode", "unmount"] {
+            let mut harness = MenuHarness::new();
+            harness.toggle_expanded();
+            let category = harness.category("Category");
+            let mut facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
+            for item in &mut facts {
+                item.hidden = true;
+            }
+            harness.category_event("category-key", "Enter", "Category", None, 1, facts.clone());
+            assert!(
+                category.0.model.borrow().entry_focus.is_some(),
+                "{invalidate}"
+            );
+            match invalidate {
+                "reorder" => {
+                    facts.swap(0, 2);
+                }
+                "eligibility" => {
+                    facts[0].disabled = true;
+                }
+                "key" => {
+                    harness.category_event(
+                        "category-key",
+                        "Unidentified",
+                        "Category",
+                        None,
+                        2,
+                        facts.clone(),
+                    );
+                }
+                "close" => {
+                    harness.category_event(
+                        "category-window-key",
+                        "Escape",
+                        "Category",
+                        None,
+                        2,
+                        facts.clone(),
+                    );
+                    assert!(!category.is_open());
+                }
+                "mode" => {
+                    harness.toggle_expanded();
+                }
+                "unmount" => {
+                    harness.config.borrow_mut().category_present = false;
+                    harness.update();
+                }
+                _ => unreachable!(),
+            }
+            if matches!(invalidate, "reorder" | "eligibility") {
+                harness.category_event("category-order", "", "Category", None, 0, facts.clone());
+            }
+            assert_eq!(category.0.model.borrow().entry_focus, None, "{invalidate}");
+            let before = category.0.model.borrow().requested;
+            for item in &mut facts {
+                item.hidden = false;
+            }
+            harness.category_event("category-order", "", "Category", None, 0, facts);
+            assert_eq!(
+                category.0.model.borrow().requested,
+                before,
+                "stale reveal: {invalidate}"
+            );
+        }
     }
 
     #[test]

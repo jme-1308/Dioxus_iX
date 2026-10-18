@@ -553,8 +553,8 @@ pub const PORT_CATALOG: &[PortEntry] = &[
     },
     PortEntry {
         upstream: "select-item",
-        rust_api: Some("SelectOption (item model)"),
-        module: Some("forms"),
+        rust_api: Some("SelectItem"),
+        module: Some("select_item"),
     },
     PortEntry {
         upstream: "slider",

@@ -51,6 +51,16 @@ path = "tools/source_dropdown_scroll_probe.rs"
 required-features = ["desktop"]
 
 [[example]]
+name = "source_dropdown_items_probe"
+path = "tools/source_dropdown_items_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "dropdown_items_probe"
+path = "tools/dropdown_items_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "dropdown_scroll_probe"
 path = "tools/dropdown_scroll_probe.rs"
 required-features = ["launch"]

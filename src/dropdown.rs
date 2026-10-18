@@ -2,6 +2,9 @@
 //!
 //! Copyright (c) 2023-2026 Siemens AG. SPDX-License-Identifier: MIT.
 use crate::Icon;
+use crate::dropdown_inventory::{
+    Activation, Inventory, InventoryFacts, InventoryMode, ItemKind, ItemRef,
+};
 use crate::overlay_registry::{CloseBehavior, OverlayKind};
 use crate::overlay_runtime::{self, Callbacks, Change, KeyDecision, KeyFacts, NodeHandle, Reason};
 use dioxus::prelude::*;
@@ -14,7 +17,53 @@ use std::{
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
-/// Native focus policy. The default retains trigger focus and a Rust active item.
+static NEXT_SOURCE_ITEM: AtomicUsize = AtomicUsize::new(1);
+
+/// Descriptive host identity is separate from inventory membership. A source
+/// light-DOM descendant can be queried by more than one Dropdown.
+#[derive(Clone)]
+pub(crate) struct ItemHostBinding {
+    pub(crate) key: String,
+    pub(crate) host_id: String,
+    pub(crate) generic: bool,
+    pub(crate) runtime: overlay_runtime::RuntimeHandle,
+}
+impl ItemHostBinding {
+    pub(crate) fn active(&self) -> bool {
+        self.runtime.item_visual_key().as_deref() == Some(self.key.as_str())
+    }
+}
+pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
+    let key = use_hook(move || {
+        format!(
+            "ix-source-{kind}-{}",
+            NEXT_SOURCE_ITEM.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    ItemHostBinding {
+        host_id: key.clone(),
+        key,
+        generic: try_use_context::<DropdownContext>().is_some(),
+        runtime: overlay_runtime::use_overlay_runtime(),
+    }
+}
+pub(crate) fn item_host_id(attributes: &[Attribute], default: &str) -> String {
+    attributes
+        .iter()
+        .rev()
+        .find_map(|attribute| {
+            if attribute.name == "id" {
+                if let dioxus::core::AttributeValue::Text(value) = &attribute.value {
+                    return Some(value.clone());
+                }
+            }
+            None
+        })
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// Native focus policy. Default mode retains consumer tabindex values and uses
+/// the source visible marker; MenuItem/Category projection can move DOM focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DropdownNavigationMode {
     #[default]
@@ -22,6 +71,12 @@ pub enum DropdownNavigationMode {
     RovingTabindex,
 }
 impl DropdownNavigationMode {
+    fn inventory_mode(self) -> InventoryMode {
+        match self {
+            Self::ActiveDescendant => InventoryMode::ActiveDescendant,
+            Self::RovingTabindex => InventoryMode::RovingTabindex,
+        }
+    }
     fn as_str(self) -> &'static str {
         match self {
             Self::ActiveDescendant => "active-descendant",
@@ -77,6 +132,7 @@ impl DropdownChangeEvent {
 
 #[derive(Clone)]
 struct MenuEntry {
+    host_id: String,
     label: String,
     disabled: bool,
     checked: bool,
@@ -171,7 +227,24 @@ impl DropdownContext {
         owner
     }
     fn active_dom_id(&self) -> Option<String> {
-        self.navigation_owner(true)
+        let owner = self.navigation_owner(true);
+        let node = owner.node.borrow().clone();
+        if let Some(node) = node
+            && let Some(facts) = node.inventory()
+        {
+            let target = node.runtime()?.item_visual_target()?;
+            let inventory = Inventory::new(InventoryMode::ActiveDescendant, facts);
+            return inventory
+                .query_hosts()
+                .into_iter()
+                .find(|host| {
+                    host.target == target
+                        && host.kind != ItemKind::Category
+                        && host.source_focusable
+                })
+                .map(|host| host.target);
+        }
+        owner
             .state
             .borrow()
             .active
@@ -245,6 +318,14 @@ impl DropdownContext {
         accepted
     }
     fn apply(&self, change: Change) {
+        if !change.open && *self.open.peek() {
+            if let Some(node) = self.node.borrow().clone() {
+                node.clear_roving();
+                if let Some(runtime) = node.runtime() {
+                    runtime.clear_item_visual();
+                }
+            }
+        }
         let task = self.focus_task.borrow_mut().take();
         if let Some(task) = task {
             task.cancel();
@@ -361,6 +442,90 @@ impl DropdownContext {
             }
         }
     }
+    fn publish_host(&self, facts: &InventoryFacts, target: &ItemRef) {
+        let mode = self.state.borrow().settings.mode;
+        let inventory = Inventory::new(mode.inventory_mode(), facts.clone());
+        let Some(host) = inventory.host(target).cloned() else {
+            return;
+        };
+        if !host.eligible(mode.inventory_mode()) || !self.state.borrow().alive || !*self.open.peek()
+        {
+            return;
+        }
+        let Some(node) = self.node.borrow().clone() else {
+            return;
+        };
+        if mode == DropdownNavigationMode::RovingTabindex && !node.select_roving(facts, target) {
+            return;
+        }
+        self.queue_host_focus(&host);
+    }
+    fn queue_host_focus(&self, host: &crate::dropdown_inventory::HostFacts) {
+        let Some(node) = self.node.borrow().clone() else {
+            return;
+        };
+        {
+            let mut state = self.state.borrow_mut();
+            state.active = None;
+            state.focus_pending = None;
+            state.focus_epoch = state.focus_epoch.wrapping_add(1);
+            state.focus_target = "none".into();
+        }
+        let context = self.clone();
+        node.queue_item_host_focus(host, Rc::new(move || context.notify()));
+        self.notify();
+    }
+    fn initialize_roving(&self, facts: &InventoryFacts, last: bool, checked: bool) {
+        let Some(node) = self.node.borrow().clone() else {
+            return;
+        };
+        if let Some(host) = node.init_roving(facts, last, checked) {
+            self.queue_host_focus(&host);
+        }
+    }
+    fn inventory_key(&self, facts: &KeyFacts, raw: &InventoryFacts) -> KeyDecision {
+        let mode = self.state.borrow().settings.mode;
+        let inventory = Inventory::new(mode.inventory_mode(), raw.clone());
+        let current = inventory.active();
+        let mut result = KeyDecision::default();
+        if matches!(facts.key.as_str(), "Home" | "End" | "ArrowDown" | "ArrowUp") {
+            result.prevent = true;
+            if let Some(target) = inventory.navigate(&facts.key, current.as_ref()) {
+                self.publish_host(raw, &target);
+            }
+            return result;
+        }
+        match inventory.activation(&facts.key, &["Enter".into(), " ".into()], current.as_ref()) {
+            Activation::NativeDefault | Activation::None => {}
+            Activation::SyntheticHost { item } => {
+                result.prevent = true;
+                result.stop = mode == DropdownNavigationMode::RovingTabindex;
+                result.activate =
+                    item.and_then(|item| inventory.host(&item).map(|host| host.target.clone()));
+            }
+            Activation::Submenu { item, trigger: _ } => {
+                result.stop = mode == DropdownNavigationMode::RovingTabindex;
+                let handle = inventory.host(&item).and_then(|host| {
+                    self.entries
+                        .borrow()
+                        .values()
+                        .find(|entry| entry.host_id == host.target)
+                        .and_then(|entry| entry.submenu)
+                });
+                if let Some(handle) = handle
+                    && let Some(child) = handle.try_context().filter(|child| child.id != self.id)
+                {
+                    child.request(true, Reason::Keyboard, false);
+                    self.state.borrow_mut().forward = Some(handle);
+                    self.notify();
+                    let checked = child.state.borrow().settings.mode
+                        == DropdownNavigationMode::RovingTabindex;
+                    child.focus_edge_with_checked(false, checked);
+                }
+            }
+        }
+        result
+    }
     fn item_target(&self, order: &[usize], current: Option<usize>, key: &str) -> Option<usize> {
         menu_target(&self.entries.borrow(), order, current, key)
     }
@@ -399,27 +564,37 @@ impl DropdownContext {
             state.focus_epoch
         };
         let context = self.clone();
-        let task = spawn(async move {
-            let query = crate::dom_query::eval(
-                r#"const id=await dioxus.recv();const host=document.getElementById(id);if(!host?.isConnected)return null;return [...host.querySelectorAll('[data-ix-dropdown-item]')].filter(n=>n.closest('[data-ix-overlay-host]')===host&&!n.disabled&&!n.hasAttribute('hidden')).map(n=>Number(n.getAttribute('data-ix-dropdown-item')));"#,
-            );
-            if query.send(context.host_id()).is_err() {
+        let node = context.node.borrow().clone();
+        let mode = context.state.borrow().settings.mode;
+        if mode == DropdownNavigationMode::ActiveDescendant {
+            if !context.current(epoch) {
                 return;
             }
-            let Ok(Some(order)) = query.join::<Option<Vec<usize>>>().await else {
+            // Source opening uses focusFirst/LastDescendant, not focusItem's
+            // four-tag/opt-in inventory. Keep the existing guarded native
+            // descendant helper; its broader selectors/checked priority remain
+            // a separately recorded renderer adapter.
+            let mut state = context.state.borrow_mut();
+            state.focus_target = if last {
+                "last-native".into()
+            } else {
+                "first-native".into()
+            };
+            drop(state);
+            context.notify();
+            return;
+        }
+        let task = spawn(async move {
+            let Some(node) = node else { return };
+            let Some(facts) = node.query_inventory().await else {
                 return;
             };
             if !context.current(epoch) {
                 return;
             }
-            let mode = context.state.borrow().settings.mode;
-            if let Some(target) = context.edge_target(&order, last, allow_checked) {
-                context.publish_item(
-                    target,
-                    mode == DropdownNavigationMode::RovingTabindex,
-                    mode == DropdownNavigationMode::RovingTabindex,
-                );
-            }
+            let checked =
+                !last && allow_checked && context.state.borrow().settings.focus_checked_item;
+            context.initialize_roving(&facts, last, checked);
         });
         *self.focus_task.borrow_mut() = Some(task);
     }
@@ -462,7 +637,9 @@ impl DropdownContext {
                 result.stop = no_focus;
                 if *self.open.peek() && !facts.alt && !no_focus {
                     let last = matches!(facts.key.as_str(), "End" | "ArrowUp");
-                    if let Some(target) = self.edge_target(&facts.items, last, true) {
+                    if facts.inventory.is_some() {
+                        self.focus_edge(last);
+                    } else if let Some(target) = self.edge_target(&facts.items, last, true) {
                         self.publish_item(
                             target,
                             mode == DropdownNavigationMode::RovingTabindex,
@@ -475,7 +652,11 @@ impl DropdownContext {
             } else if mode == DropdownNavigationMode::RovingTabindex && !facts.alt && !no_focus {
                 result.prevent = true;
                 let owner = self.navigation_owner(false);
-                if let Some(target) = owner.edge_target(
+                if let Some(raw) = &facts.inventory {
+                    let last = matches!(facts.key.as_str(), "End" | "ArrowUp");
+                    let checked = !last && owner.state.borrow().settings.focus_checked_item;
+                    owner.initialize_roving(raw, last, checked);
+                } else if let Some(target) = owner.edge_target(
                     &facts.items,
                     matches!(facts.key.as_str(), "End" | "ArrowUp"),
                     true,
@@ -544,6 +725,11 @@ impl DropdownContext {
                 forwarded.on_trigger = false;
                 forwarded.inside = true;
                 return child.key_inner(&forwarded, visited);
+            }
+        }
+        if facts.key != "ArrowLeft" {
+            if let Some(raw) = &facts.inventory {
+                return self.inventory_key(facts, raw);
             }
         }
         self.state.borrow_mut().order = facts
@@ -742,6 +928,10 @@ pub fn use_dropdown() -> DropdownHandle {
         }
         let node = dropped.node.borrow_mut().take();
         if let Some(node) = node {
+            node.clear_roving();
+            if let Some(runtime) = node.runtime() {
+                runtime.clear_item_visual();
+            }
             node.unregister();
         }
     });
@@ -1055,6 +1245,10 @@ fn DropdownSurface(
             task.cancel();
         }
         drop_context.node.borrow_mut().take();
+        drop_node.clear_roving();
+        if let Some(runtime) = drop_node.runtime() {
+            runtime.clear_item_visual();
+        }
         drop_node.unregister();
     });
     let configure = context.clone();
@@ -1069,6 +1263,10 @@ fn DropdownSurface(
                 configure_node.request(false, Reason::Configuration, false);
             }
             if mode_sync.replace(mode) != mode {
+                configure_node.clear_roving();
+                if let Some(runtime) = configure_node.runtime() {
+                    runtime.clear_item_visual();
+                }
                 configure_node.close_children(Reason::Configuration);
                 configure.invalidate_focus();
                 {
@@ -1168,6 +1366,7 @@ fn fallback_key(context: &DropdownContext, event: KeyboardEvent, on_trigger: boo
         on_trigger,
         inside: !on_trigger,
         popover_ancestor: false,
+        inventory: None,
     };
     if event.key() == Key::Escape {
         let node = context.node.borrow().clone();
@@ -1249,8 +1448,11 @@ pub fn DropdownItem(
     #[props(default)] onclick: Option<EventHandler<MouseEvent>>,
     #[props(default)] onitemclick: EventHandler<DropdownItemClickEvent>,
     #[props(default)] children: Option<Element>,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
     let id = use_hook(|| NEXT_ID.fetch_add(1, Ordering::Relaxed));
+    let host_binding = use_item_host("dropdown");
+    let host_id = item_host_id(&attributes, &format!("ix-dropdown-item-{id}"));
     let context = try_use_context::<DropdownContext>();
     let linked = dropdown.and_then(DropdownHandle::try_context);
     let linked_blocked = linked.as_ref().is_some_and(|linked| (linked.blocked)());
@@ -1261,12 +1463,14 @@ pub fn DropdownItem(
             .borrow_mut()
             .entry(id)
             .and_modify(|entry| {
+                entry.host_id = host_id.clone();
                 entry.label = label.clone();
                 entry.disabled = blocked;
                 entry.checked = checked;
                 entry.submenu = dropdown;
             })
             .or_insert(MenuEntry {
+                host_id: host_id.clone(),
                 label: label.clone(),
                 disabled: blocked,
                 checked,
@@ -1285,18 +1489,18 @@ pub fn DropdownItem(
             }
         }
     });
-    let (active, mode, owner) = context
+    let owner = context.as_ref().map(|context| context.node_id());
+    let active = if context
         .as_ref()
-        .map(|context| {
+        .is_some_and(|context| context.state.borrow().native)
+    {
+        host_binding.active()
+    } else {
+        context.as_ref().is_some_and(|context| {
             let _ = (context.revision)();
-            let state = context.state.borrow();
-            (
-                state.active == Some(id),
-                state.settings.mode,
-                Some(context.node_id()),
-            )
+            context.state.borrow().active == Some(id)
         })
-        .unwrap_or((false, DropdownNavigationMode::ActiveDescendant, None));
+    };
     let trigger_marker = linked.as_ref().map(DropdownContext::node_id);
     let linked_open = linked
         .as_ref()
@@ -1307,23 +1511,36 @@ pub fn DropdownItem(
     let key_context = context.clone();
     let click_label = label.clone();
     let key_label = label.clone();
-    let tabindex = if blocked {
-        -1
-    } else if mode == DropdownNavigationMode::RovingTabindex {
-        if active { 0 } else { -1 }
-    } else {
-        0
+    let mut attributes = attributes;
+    let consumer_style = attributes.iter().rev().find_map(|attribute| {
+        if attribute.name == "style" {
+            if let dioxus::core::AttributeValue::Text(value) = &attribute.value {
+                return Some(value.clone());
+            }
+        }
+        None
+    });
+    attributes.retain(|attribute| attribute.name != "style");
+    let host_style = match (consumer_style, linked.as_ref()) {
+        (Some(style), Some(child)) => Some(format!(
+            "{style};anchor-name:--ix-dropdown-anchor-{}",
+            child.id
+        )),
+        (None, Some(child)) => Some(format!("anchor-name:--ix-dropdown-anchor-{}", child.id)),
+        (style, None) => style,
     };
     rsx! {div {
-        id:"ix-dropdown-item-{id}",class:if compact{"ix-dropdown-item ix-dropdown-quick-action"}else{"ix-dropdown-item"},
+        id:host_id,class:if compact{"ix-dropdown-item ix-dropdown-quick-action"}else{"ix-dropdown-item"},
         role:if checked||checkable{"menuitemcheckbox"}else{"menuitem"},"data-ix-dropdown-item":id.to_string(),
         "data-ix-dropdown-owner":owner,"data-ix-dropdown-label":label.clone(),
-        style:linked.as_ref().map(|child|format!("anchor-name:--ix-dropdown-anchor-{}",child.id)),"data-ix-overlay-trigger":trigger_marker,
+        "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key,
+        "data-ix-item-focusable":(!blocked).to_string(),"checked":checked,
+        style:host_style,"data-ix-overlay-trigger":trigger_marker,
         "data-active":active.to_string(),"aria-disabled":blocked.to_string(),"disabled":blocked,
         "aria-label":compact.then_some(label.clone()),title:compact.then_some(label.clone()),
         "aria-haspopup":dropdown.map(|_|"menu"),"aria-expanded":dropdown.map(|_|linked_open.to_string()),
         "aria-controls":linked.as_ref().map(DropdownContext::host_id),
-        "aria-checked":(checked||checkable).then_some(checked.to_string()),tabindex,
+        "aria-checked":(checked||checkable).then_some(checked.to_string()),
         onmounted:move |event|{if let Some(context)=&mount_context{if let Some(entry)=context.entries.borrow_mut().get_mut(&id){entry.mounted=Some(event.data());}}
             if let Some(linked)=&linked_mount{*linked.trigger.borrow_mut()=Some(event.data());}},
         onclick:move |event:MouseEvent| {
@@ -1343,6 +1560,7 @@ pub fn DropdownItem(
             if event.key()==Key::Enter||event.key()==Key::Character(" ".into()){onitemclick.call(DropdownItemClickEvent{label:key_label.clone(),prevented:Rc::new(Cell::new(false))});}
             if let Some(context)=&key_context{if !context.state.borrow().native{fallback_key(context,event.clone(),false);event.stop_propagation();}}
         }},
+        ..attributes,
         if let Some(name)=icon{Icon {name,size:20}}
         if !compact{span {"{label}"}}
         {children}
@@ -1436,6 +1654,10 @@ finally {
 "#;
 
 pub(crate) const STYLES: &str = r#"
+.ix-theme .ix-select-item{display:block;position:relative}
+.ix-theme .ix-select-item>.ix-select-item-option{width:100%;color:var(--ix-select-item--color,var(--ix-color-text))}
+.ix-theme .ix-select-item .select-item-checked{background-color:var(--ix-select-item--background--selected,var(--ix-color-surface-2))}
+.ix-theme .ix-select-item[disabled]{pointer-events:none;cursor:default}
 .ix-dropdown { display:inline-block;position:relative; }
 
 .ix-dropdown-trigger { position:relative;z-index:19; }
@@ -2291,6 +2513,114 @@ mod tests {
             "keyboard notification never fabricates MouseEvent"
         );
     }
+    fn mixed_inventory_facts() -> InventoryFacts {
+        serde_json::from_value(serde_json::json!({
+            "items_host":"mixed-items-host",
+            "hosts":[
+                {"item":"actual-category","kind":"category","target":"mixed-category","capture":"actual-category","registration_key":"category-key","source_focusable":false},
+                {"item":"actual-menu","kind":"menu","target":"mixed-menu","capture":"actual-menu","registration_key":"menu-key"},
+                {"item":"actual-native","kind":"native-opt-in","target":"mixed-native","capture":"actual-native","source_focusable":false,"roving_opt_in":true}
+            ],
+            "navigation_order":["actual-category","actual-menu","actual-native"],
+            "query_order":["actual-category","actual-menu","actual-native"]
+        })).unwrap()
+    }
+    fn registered_inventory_key(
+        h: &Harness,
+        sequence: u64,
+        key: &str,
+        facts: &InventoryFacts,
+    ) -> bool {
+        let context = h.context();
+        let node = context.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let mode = context.state.borrow().settings.mode;
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        let legacy = context.entries.borrow().keys().copied().collect::<Vec<_>>();
+        let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"key",
+            "phase":if mode==DropdownNavigationMode::RovingTabindex {"capture"} else {"bubble"},"key":key,
+            "hosts":[node.id()],"triggers":if mode==DropdownNavigationMode::ActiveDescendant {vec![node.id()]}else{vec![]},
+            "candidate_ids":["mixed-category","mixed-menu","mixed-native"],
+            "nodes":[{"id":node.id(),"owner":runtime.owner_id(),"generation":node.generation(),"connected":true,"open":true,
+                "mode":mode.as_str(),"items":legacy,"focused_item":legacy.first(),"inside":true,
+                "on_trigger":mode==DropdownNavigationMode::ActiveDescendant,"inventory":facts}]});
+        dispatch(&h.dom, "input", transport, report.to_string()).0
+    }
+    #[test]
+    fn registered_category_inventory_ignores_legacy_focus_and_retains_projection_seam() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.click("Menu");
+        let context = h.context();
+        let legacy = context.entries.borrow().keys().next().copied().unwrap();
+        context.state.borrow_mut().active = Some(legacy);
+        let facts = mixed_inventory_facts();
+        assert!(registered_inventory_key(&h, 1, "Home", &facts));
+        let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
+        let jobs = runtime.pending_item_focus_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].target, "mixed-category");
+        assert_eq!(jobs[0].capture.as_deref(), Some("actual-category"));
+        assert!(
+            jobs[0].focus_native,
+            "all actual source host kinds invoke captured native focus"
+        );
+        h.item_frames();
+        assert_eq!(
+            context.active_dom_id(),
+            None,
+            "projected parent is not an outer AD marker/ARIA alias"
+        );
+        assert!(registered_inventory_key(&h, 2, "ArrowDown", &facts));
+        assert_eq!(
+            runtime.pending_item_focus_jobs()[0].target,
+            "mixed-category",
+            "no current host marker means Down selects the first Category again"
+        );
+        h.item_frames();
+        assert!(
+            registered_inventory_key(&h, 3, "Enter", &facts),
+            "source activation callback prevents Enter even without any active host"
+        );
+        assert!(runtime.pending_item_focus_jobs().is_empty());
+    }
+    #[test]
+    fn registered_roving_inventory_projects_pending_writes_without_coalescing_hosts() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            mode: DropdownNavigationMode::RovingTabindex,
+            ..Fixture::default()
+        });
+        h.click("Menu");
+        let context = h.context();
+        let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
+        let facts = mixed_inventory_facts();
+        for (index, key) in ["Home", "ArrowDown", "ArrowDown"].into_iter().enumerate() {
+            assert!(registered_inventory_key(&h, index as u64 + 1, key, &facts));
+        }
+        let jobs = runtime.pending_item_focus_jobs();
+        assert_eq!(
+            jobs.iter()
+                .map(|job| job.target.as_str())
+                .collect::<Vec<_>>(),
+            ["mixed-category", "mixed-menu", "mixed-native"]
+        );
+        assert!(
+            jobs.iter()
+                .all(|job| job.focus_native && job.capture.is_some())
+        );
+        assert!(
+            !registered_inventory_key(&h, 4, "Enter", &facts),
+            "the pending logical tabindex selects native opt-in before its DOM write; native Enter passes through"
+        );
+        h.item_frames();
+        assert!(runtime.pending_item_focus_jobs().is_empty());
+    }
     #[test]
     fn registered_rapid_navigation_keeps_each_job_and_source_active_timing() {
         let _guard = crate::test_event_converter_guard();
@@ -2856,6 +3186,7 @@ mod tests {
             (
                 id,
                 MenuEntry {
+                    host_id: format!("ix-dropdown-item-{id}"),
                     label: label.into(),
                     disabled,
                     checked: false,

@@ -1,5 +1,8 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
+use crate::dropdown_inventory::{
+    AttributeWrite, HostFacts, InventoryFacts, ItemKind, ItemRef, RovingState,
+};
 use crate::overlay_completion::CompletionQueue;
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue, TriggerRestoreQueue};
@@ -11,7 +14,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     rc::{Rc, Weak},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -71,6 +74,7 @@ pub(crate) struct KeyFacts {
     pub(crate) on_trigger: bool,
     pub(crate) inside: bool,
     pub(crate) popover_ancestor: bool,
+    pub(crate) inventory: Option<InventoryFacts>,
 }
 #[derive(Clone, Debug, Default)]
 pub(crate) struct KeyDecision {
@@ -159,6 +163,15 @@ struct Runtime {
     item_focus: ItemFocusQueue,
     item_focus_callbacks: BTreeMap<u64, ItemFocusCallback>,
     item_captures: BTreeMap<String, (u64, BTreeMap<String, String>)>,
+    inventories: BTreeMap<String, (u64, InventoryFacts)>,
+    roving: RovingState,
+    roving_hosts: BTreeMap<(String, u64), Vec<ItemRef>>,
+    roving_sequence: u64,
+    roving_writes: VecDeque<RovingBatch>,
+    item_visual: Option<String>,
+    item_visual_target: Option<String>,
+    item_visual_known: bool,
+    item_visual_signal: Option<Signal<Option<String>>>,
     bridge: Option<dioxus::document::Eval>,
     domain: Option<Domain>,
     document: String,
@@ -168,6 +181,14 @@ struct ItemFocusCallback {
     root: String,
     generation: u64,
     callback: Rc<dyn Fn()>,
+}
+struct RovingBatch {
+    sequence: u64,
+    event_sequence: u64,
+    root: String,
+    generation: u64,
+    writes: VecDeque<AttributeWrite>,
+    sent: bool,
 }
 type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 
@@ -179,6 +200,10 @@ impl Drop for Runtime {
         self.item_focus.clear();
         self.item_focus_callbacks.clear();
         self.item_captures.clear();
+        self.inventories.clear();
+        self.roving.clear_all();
+        self.roving_hosts.clear();
+        self.roving_writes.clear();
         if let Some(domain) = &self.domain {
             domain.remove_owner(&self.owner);
         }
@@ -221,6 +246,16 @@ impl RuntimeHandle {
             item_focus: ItemFocusQueue::default(),
             item_focus_callbacks: BTreeMap::new(),
             item_captures: BTreeMap::new(),
+            inventories: BTreeMap::new(),
+            roving: RovingState::default(),
+            roving_hosts: BTreeMap::new(),
+            roving_sequence: 0,
+            roving_writes: VecDeque::new(),
+            item_visual: None,
+            item_visual_target: None,
+            item_visual_known: false,
+            item_visual_signal: dioxus::core::Runtime::try_current()
+                .map(|_| Signal::new_in_scope(None, ScopeId::ROOT)),
             bridge: None,
             domain: None,
             document: String::new(),
@@ -229,6 +264,139 @@ impl RuntimeHandle {
     }
     pub(crate) fn owner_id(&self) -> String {
         self.0.borrow().owner.clone()
+    }
+    pub(crate) fn item_visual_key(&self) -> Option<String> {
+        let (signal, value) = {
+            let state = self.0.borrow();
+            (state.item_visual_signal, state.item_visual.clone())
+        };
+        signal
+            .and_then(|signal| signal.try_read().ok().map(|value| value.clone()))
+            .unwrap_or(value)
+    }
+    pub(crate) fn item_visual_target(&self) -> Option<String> {
+        let _ = self.item_visual_key();
+        self.0.borrow().item_visual_target.clone()
+    }
+    fn set_item_visual(&self, key: Option<String>, target: Option<String>) {
+        let signal = {
+            let mut state = self.0.borrow_mut();
+            state.item_visual_known = true;
+            if state.item_visual == key && state.item_visual_target == target {
+                return;
+            }
+            state.item_visual = key.clone();
+            state.item_visual_target = target;
+            state.item_visual_signal
+        };
+        if let Some(mut signal) = signal
+            && let Ok(mut value) = signal.try_write()
+        {
+            *value = key;
+        }
+    }
+    pub(crate) fn clear_item_visual(&self) {
+        self.set_item_visual(None, None);
+    }
+    pub(crate) fn mark_item_visual(&self, host: &HostFacts) {
+        if !self.keyboard_mode() {
+            return;
+        }
+        // Source focusItem projects Category into its private parent; that
+        // parent's marker never makes the outer Category an AD active host.
+        let key = (host.source_focusable && host.kind != ItemKind::Category).then(|| {
+            if host.registration_key.is_empty() {
+                host.capture.clone()
+            } else {
+                host.registration_key.clone()
+            }
+        });
+        let target = key.as_ref().map(|_| host.target.clone());
+        self.set_item_visual(key, target);
+    }
+    fn projected_inventory(&self, mut facts: InventoryFacts) -> InventoryFacts {
+        let state = self.0.borrow();
+        for host in &mut facts.hosts {
+            if let Some(write) = state
+                .roving_writes
+                .iter()
+                .rev()
+                .flat_map(|batch| batch.writes.iter().rev())
+                .find(|write| write.item == host.item)
+            {
+                host.tabindex_attribute = write.tabindex.clone();
+            }
+            if state.item_visual_known {
+                let key = if host.registration_key.is_empty() {
+                    &host.capture
+                } else {
+                    &host.registration_key
+                };
+                host.visible_focus = host.source_focusable
+                    && host.kind != ItemKind::Category
+                    && state.item_visual.as_ref() == Some(key);
+            }
+        }
+        facts
+    }
+    fn queue_roving_writes(&self, root: &str, generation: u64, writes: Vec<AttributeWrite>) {
+        if writes.is_empty() {
+            return;
+        }
+        {
+            let mut state = self.0.borrow_mut();
+            loop {
+                state.roving_sequence = state.roving_sequence.wrapping_add(1).max(1);
+                if !state
+                    .roving_writes
+                    .iter()
+                    .any(|batch| batch.sequence == state.roving_sequence)
+                {
+                    break;
+                }
+            }
+            let sequence = state.roving_sequence;
+            let event_sequence = state.sequence;
+            state.roving_writes.push_back(RovingBatch {
+                sequence,
+                event_sequence,
+                root: root.into(),
+                generation,
+                writes: writes.into(),
+                sent: false,
+            });
+        }
+        self.flush_roving_writes();
+    }
+    fn flush_roving_writes(&self) {
+        let commands = {
+            let state = self.0.borrow();
+            state.roving_writes.iter().filter(|batch| !batch.sent).map(|batch| {
+                (batch.sequence, serde_json::json!({"roving_attributes":{
+                    "sequence":batch.sequence,"root":batch.root,"generation":batch.generation,"writes":batch.writes
+                }}))
+            }).collect::<Vec<_>>()
+        };
+        for (sequence, command) in commands {
+            if !self
+                .0
+                .borrow()
+                .bridge
+                .as_ref()
+                .is_some_and(|bridge| bridge.send(command).is_ok())
+            {
+                break;
+            }
+            if let Some(batch) = self
+                .0
+                .borrow_mut()
+                .roving_writes
+                .iter_mut()
+                .find(|batch| batch.sequence == sequence)
+            {
+                batch.sent = true;
+            }
+        }
     }
     pub(crate) fn keyboard_mode(&self) -> bool {
         self.document_keyboard_mode()
@@ -264,6 +432,15 @@ impl RuntimeHandle {
                     callback.root != id || callback.generation != old_generation
                 });
                 runtime.item_captures.remove(&id);
+                runtime.inventories.remove(&id);
+                if let Some(hosts) = runtime.roving_hosts.remove(&(id.clone(), old_generation)) {
+                    for host in hosts {
+                        runtime.roving.clear(&host);
+                    }
+                }
+                runtime
+                    .roving_writes
+                    .retain(|batch| batch.root != id || batch.generation != old_generation);
             }
             let revision = runtime
                 .nodes
@@ -387,6 +564,10 @@ impl RuntimeHandle {
                 state.item_focus.clear();
                 state.item_focus_callbacks.clear();
                 state.item_captures.clear();
+                state.inventories.clear();
+                state.roving.clear_all();
+                state.roving_hosts.clear();
+                state.roving_writes.clear();
             }
             state.document = document.to_string();
             state.domain = Some(domain);
@@ -945,6 +1126,15 @@ impl RuntimeHandle {
                 .item_focus_callbacks
                 .retain(|_, callback| callback.root != id || callback.generation != generation);
             runtime.item_captures.remove(id);
+            runtime.inventories.remove(id);
+            if let Some(hosts) = runtime.roving_hosts.remove(&(id.into(), generation)) {
+                for host in hosts {
+                    runtime.roving.clear(&host);
+                }
+            }
+            runtime
+                .roving_writes
+                .retain(|batch| batch.root != id || batch.generation != generation);
             runtime.nodes.remove(id);
             runtime.order.retain(|candidate| candidate != id);
             runtime.registry.unregister(id, generation);
@@ -971,6 +1161,7 @@ impl RuntimeHandle {
         );
         self.0.borrow_mut().bridge = Some(bridge);
         self.flush_completion_frames();
+        self.flush_roving_writes();
         self.flush_item_focus();
     }
     fn flush_item_focus(&self) {
@@ -1043,19 +1234,26 @@ impl RuntimeHandle {
                     .get(&node.id)
                     .is_some_and(|entry| node.connected && entry.generation == node.generation)
                 {
-                    runtime.item_captures.insert(
-                        node.id.clone(),
-                        (
-                            node.generation,
-                            node.item_focus_captures
+                    let mut captures = node
+                        .item_focus_captures
+                        .iter()
+                        .filter(|capture| !capture.target.is_empty() && !capture.capture.is_empty())
+                        .map(|capture| (capture.target.clone(), capture.capture.clone()))
+                        .collect::<BTreeMap<_, _>>();
+                    if let Some(inventory) = &node.inventory {
+                        captures.extend(
+                            inventory
+                                .hosts
                                 .iter()
-                                .filter(|capture| {
-                                    !capture.target.is_empty() && !capture.capture.is_empty()
-                                })
-                                .map(|capture| (capture.target.clone(), capture.capture.clone()))
-                                .collect(),
-                        ),
-                    );
+                                .map(|host| (host.target.clone(), host.capture.clone())),
+                        );
+                        runtime
+                            .inventories
+                            .insert(node.id.clone(), (node.generation, inventory.clone()));
+                    }
+                    runtime
+                        .item_captures
+                        .insert(node.id.clone(), (node.generation, captures));
                 }
             }
         }
@@ -1118,6 +1316,16 @@ impl RuntimeHandle {
             if let Some(domain) = self.domain() {
                 domain.observe_input(&report.input_kind, &report.key);
             }
+            if matches!(report.input_kind.as_str(), "mousedown" | "touchstart") {
+                self.clear_item_visual();
+            }
+        }
+        if report.kind == "item-focusin" {
+            if let Some(host) = &report.item_focus_host {
+                self.mark_item_visual(host);
+            } else if self.keyboard_mode() {
+                self.clear_item_visual();
+            }
         }
         // Submenu anchor ancestry is a current DOM fact, independent of the
         // optional visibility observer. Suppressing visibility must not disable
@@ -1139,6 +1347,45 @@ impl RuntimeHandle {
                 });
             }
         }
+        // Bind activation to this report's captured hosts and registration
+        // before a key callback can open, replace or remove an owner. Native
+        // execution retains the corresponding actual elements independently.
+        let activation_sources = report
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let targets = report
+                    .candidate_ids
+                    .iter()
+                    .filter(|target| {
+                        node.inventory.as_ref().map_or_else(
+                            || {
+                                node.items
+                                    .iter()
+                                    .any(|id| target.as_str() == format!("ix-dropdown-item-{id}"))
+                            },
+                            |inventory| {
+                                inventory.hosts.iter().any(|host| {
+                                    host.target == target.as_str() && !host.capture.is_empty()
+                                })
+                            },
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if targets.is_empty() {
+                    return None;
+                }
+                let entry = self.entry(&node.id)?;
+                if !node.connected
+                    || node.generation != entry.generation
+                    || self.read_current(&node.id, &entry) != Some(true)
+                {
+                    return None;
+                }
+                Some((node.id.clone(), entry.generation, entry.revision, targets))
+            })
+            .collect::<Vec<_>>();
         let decision = if report.phase == "window" {
             if let Some(domain) = self
                 .domain()
@@ -1172,29 +1419,13 @@ impl RuntimeHandle {
                 _ => KeyDecision::default(),
             }
         };
-        let activation = decision
-            .activate
-            .as_ref()
-            .filter(|id| report.candidate_ids.contains(id))
-            .and_then(|target| {
-                let source = report.nodes.iter().find(|node| {
-                    node.items
-                        .iter()
-                        .any(|id| target == &format!("ix-dropdown-item-{id}"))
-                })?;
-                let entry = self.entry(&source.id)?;
-                (source.connected
-                    && source.generation == entry.generation
-                    && self.read_current(&source.id, &entry) == Some(true))
-                .then(|| {
-                    (
-                        target.clone(),
-                        source.id.clone(),
-                        entry.generation,
-                        entry.revision,
-                    )
-                })
-            });
+        let activation = decision.activate.as_ref().and_then(|target| {
+            let (id, generation, revision, _) = activation_sources
+                .iter()
+                .find(|(_, _, _, targets)| targets.contains(target))?;
+            self.current(id, *generation, *revision)
+                .then(|| (target.clone(), id.clone(), *generation, *revision))
+        });
         let focus = self
             .0
             .borrow_mut()
@@ -1386,6 +1617,10 @@ impl RuntimeHandle {
             popover_ancestor: self
                 .domain()
                 .is_some_and(|domain| domain.has_popover_ancestor(&owner.id)),
+            inventory: owner
+                .inventory
+                .clone()
+                .map(|facts| self.projected_inventory(facts)),
         };
         let capture = owner.mode == "roving-tabindex";
         if report.phase == "capture" && !capture {
@@ -1781,13 +2016,99 @@ impl RuntimeHandle {
         if query.owner != self.owner_id() {
             return;
         }
+        if let Some(sequence) = query.roving_pending {
+            if self
+                .0
+                .borrow()
+                .roving_writes
+                .iter()
+                .any(|batch| batch.event_sequence == sequence)
+            {
+                event.prevent_default();
+            }
+            return;
+        }
+        if query.roving_write {
+            let Some(item) = query.roving_item else {
+                return;
+            };
+            let candidate = {
+                let state = self.0.borrow();
+                state
+                    .roving_writes
+                    .front()
+                    .filter(|batch| {
+                        if let Some(sequence) = query.roving_sequence {
+                            batch.sequence == sequence
+                                && query.roving_root.as_deref() == Some(batch.root.as_str())
+                                && query.roving_generation == Some(batch.generation)
+                        } else {
+                            query.roving_event_sequence == Some(batch.event_sequence)
+                        }
+                    })
+                    .and_then(|batch| {
+                        batch
+                            .writes
+                            .front()
+                            .filter(|write| {
+                                write.item.0 == item && write.tabindex == query.roving_tabindex
+                            })
+                            .map(|_| (batch.sequence, batch.root.clone(), batch.generation))
+                    })
+            };
+            let Some((sequence, root, generation)) = candidate else {
+                return;
+            };
+            let live = self
+                .with_owner(&root, generation, || {
+                    let entry = self.entry(&root)?;
+                    let value = self.read_current(&root, &entry)?;
+                    self.entry(&root)
+                        .filter(|entry| entry.generation == generation)
+                        .map(|_| value)
+                })
+                .flatten()
+                .is_some();
+            let consumed = {
+                let mut state = self.0.borrow_mut();
+                let Some(index) = state
+                    .roving_writes
+                    .iter()
+                    .position(|batch| batch.sequence == sequence)
+                else {
+                    return;
+                };
+                if index != 0 {
+                    return;
+                }
+                let batch = &mut state.roving_writes[index];
+                if !batch.writes.front().is_some_and(|write| {
+                    write.item.0 == item && write.tabindex == query.roving_tabindex
+                }) {
+                    return;
+                }
+                batch.writes.pop_front();
+                if batch.writes.is_empty() {
+                    state.roving_writes.remove(index);
+                }
+                true
+            };
+            if live && consumed {
+                event.prevent_default();
+            }
+            return;
+        }
         if let Some(phase) = query.item_focus_phase {
             if phase == "retain" {
-                if query
-                    .item_focus_capture
-                    .as_deref()
-                    .is_some_and(|capture| self.0.borrow().item_focus.retains_token(capture))
-                {
+                if query.item_focus_capture.as_deref().is_some_and(|capture| {
+                    let state = self.0.borrow();
+                    state.item_focus.retains_token(capture)
+                        || state.roving.retains_token(capture)
+                        || state
+                            .roving_writes
+                            .iter()
+                            .any(|batch| batch.writes.iter().any(|write| write.item.0 == capture))
+                }) {
                     event.prevent_default();
                 }
                 return;
@@ -2101,12 +2422,200 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    pub(crate) async fn query_inventory(&self) -> Option<InventoryFacts> {
+        let runtime = self.runtime()?;
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let entry = runtime.entry(&self.id)?;
+                runtime.read_current(&self.id, &entry)
+            })
+            .flatten()?;
+        let query = crate::dom_query::eval(
+            r#"const [owner,root,generation]=await dioxus.recv();return document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.inventoryReaders?.get(owner)?.(root,generation)??null;"#,
+        );
+        query
+            .send((runtime.owner_id(), self.id.clone(), self.generation))
+            .ok()?;
+        let facts = query.join::<Option<InventoryFacts>>().await.ok()??;
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let entry = runtime.entry(&self.id)?;
+                runtime.read_current(&self.id, &entry)?;
+                if !runtime
+                    .entry(&self.id)
+                    .is_some_and(|entry| entry.generation == self.generation)
+                {
+                    return None;
+                }
+                {
+                    let mut state = runtime.0.borrow_mut();
+                    state.item_captures.insert(
+                        self.id.clone(),
+                        (
+                            self.generation,
+                            facts
+                                .hosts
+                                .iter()
+                                .map(|host| (host.target.clone(), host.capture.clone()))
+                                .collect(),
+                        ),
+                    );
+                    state
+                        .inventories
+                        .insert(self.id.clone(), (self.generation, facts.clone()));
+                }
+                Some(runtime.projected_inventory(facts))
+            })
+            .flatten()
+    }
+    pub(crate) fn inventory(&self) -> Option<InventoryFacts> {
+        let runtime = self.runtime()?;
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let entry = runtime.entry(&self.id)?;
+                runtime.read_current(&self.id, &entry)?;
+                let facts = runtime
+                    .0
+                    .borrow()
+                    .inventories
+                    .get(&self.id)
+                    .filter(|(generation, _)| *generation == self.generation)
+                    .map(|(_, facts)| facts.clone())?;
+                Some(runtime.projected_inventory(facts))
+            })
+            .flatten()
+    }
+    pub(crate) fn select_roving(&self, facts: &InventoryFacts, target: &ItemRef) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let Some(entry) = runtime.entry(&self.id) else {
+                    return false;
+                };
+                if runtime.read_current(&self.id, &entry).is_none() {
+                    return false;
+                }
+                let facts = runtime.projected_inventory(facts.clone());
+                let inventory = crate::dropdown_inventory::Inventory::new(
+                    crate::dropdown_inventory::InventoryMode::RovingTabindex,
+                    facts.clone(),
+                );
+                let writes = {
+                    let mut state = runtime.0.borrow_mut();
+                    let hosts = state
+                        .roving_hosts
+                        .entry((self.id.clone(), self.generation))
+                        .or_default();
+                    if !hosts.contains(&inventory.items_host) {
+                        hosts.push(inventory.items_host.clone());
+                    }
+                    state
+                        .roving
+                        .select(&inventory.items_host, &inventory.query_hosts(), target)
+                };
+                runtime.queue_roving_writes(&self.id, self.generation, writes);
+                true
+            })
+            .unwrap_or(false)
+    }
+    pub(crate) fn init_roving(
+        &self,
+        facts: &InventoryFacts,
+        last: bool,
+        focus_checked: bool,
+    ) -> Option<HostFacts> {
+        let runtime = self.runtime()?;
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let entry = runtime.entry(&self.id)?;
+                runtime.read_current(&self.id, &entry)?;
+                let facts = runtime.projected_inventory(facts.clone());
+                let inventory = crate::dropdown_inventory::Inventory::new(
+                    crate::dropdown_inventory::InventoryMode::RovingTabindex,
+                    facts,
+                );
+                let (target, writes) = {
+                    let mut state = runtime.0.borrow_mut();
+                    let hosts = state
+                        .roving_hosts
+                        .entry((self.id.clone(), self.generation))
+                        .or_default();
+                    if !hosts.contains(&inventory.items_host) {
+                        hosts.push(inventory.items_host.clone());
+                    }
+                    state.roving.init(
+                        &inventory.items_host,
+                        &inventory.query_hosts(),
+                        last,
+                        focus_checked,
+                    )?
+                };
+                runtime.queue_roving_writes(&self.id, self.generation, writes);
+                inventory.host(&target).cloned()
+            })
+            .flatten()
+    }
+    pub(crate) fn clear_roving(&self) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        if !runtime
+            .entry(&self.id)
+            .is_some_and(|entry| entry.generation == self.generation)
+        {
+            return;
+        }
+        let writes = {
+            let mut state = runtime.0.borrow_mut();
+            let hosts = state
+                .roving_hosts
+                .remove(&(self.id.clone(), self.generation))
+                .unwrap_or_default();
+            hosts
+                .iter()
+                .flat_map(|host| state.roving.clear(host))
+                .collect()
+        };
+        runtime.queue_roving_writes(&self.id, self.generation, writes);
+    }
+    pub(crate) fn queue_item_host_focus(&self, host: &HostFacts, callback: Rc<dyn Fn()>) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        let facts = host.clone();
+        let weak = Rc::downgrade(&runtime.0);
+        if host.capture.is_empty() {
+            return false;
+        }
+        self.queue_item_focus_captured(
+            host.target.clone(),
+            true,
+            Some(host.capture.clone()),
+            Rc::new(move || {
+                if let Some(runtime) = weak.upgrade().map(RuntimeHandle) {
+                    runtime.mark_item_visual(&facts);
+                }
+                callback();
+            }),
+        )
+    }
     /// Admit one captured item operation. Newer keys, mode changes and accepted
     /// hides do not revoke its two native frames while this owner remains live.
     pub(crate) fn queue_item_focus(
         &self,
         target: String,
         focus_native: bool,
+        callback: Rc<dyn Fn()>,
+    ) -> bool {
+        self.queue_item_focus_captured(target, focus_native, None, callback)
+    }
+    fn queue_item_focus_captured(
+        &self,
+        target: String,
+        focus_native: bool,
+        captured: Option<String>,
         callback: Rc<dyn Fn()>,
     ) -> bool {
         if target.is_empty() {
@@ -2129,12 +2638,14 @@ impl NodeHandle {
                 }
                 {
                     let mut state = runtime.0.borrow_mut();
-                    let capture = state
-                        .item_captures
-                        .get(&self.id)
-                        .filter(|(generation, _)| *generation == self.generation)
-                        .and_then(|(_, captures)| captures.get(&target))
-                        .cloned();
+                    let capture = captured.or_else(|| {
+                        state
+                            .item_captures
+                            .get(&self.id)
+                            .filter(|(generation, _)| *generation == self.generation)
+                            .and_then(|(_, captures)| captures.get(&target))
+                            .cloned()
+                    });
                     let job = state.item_focus.admit(
                         self.id.clone(),
                         self.generation,
@@ -2447,6 +2958,8 @@ struct Report {
     sequence: u64,
     kind: String,
     #[serde(default)]
+    item_focus_host: Option<HostFacts>,
+    #[serde(default)]
     document: String,
     #[serde(default)]
     input_kind: String,
@@ -2530,6 +3043,8 @@ struct NodeFacts {
     #[serde(default)]
     item_focus_captures: Vec<ItemFocusCapture>,
     #[serde(default)]
+    inventory: Option<InventoryFacts>,
+    #[serde(default)]
     focused_item: Option<usize>,
     #[serde(default)]
     focus_count: usize,
@@ -2562,6 +3077,22 @@ struct AnchorVisibility {
 struct Query {
     owner: String,
     sequence: u64,
+    #[serde(default)]
+    roving_pending: Option<u64>,
+    #[serde(default)]
+    roving_write: bool,
+    #[serde(default)]
+    roving_sequence: Option<u64>,
+    #[serde(default)]
+    roving_event_sequence: Option<u64>,
+    #[serde(default)]
+    roving_root: Option<String>,
+    #[serde(default)]
+    roving_generation: Option<u64>,
+    #[serde(default)]
+    roving_item: Option<String>,
+    #[serde(default)]
+    roving_tabindex: Option<String>,
     #[serde(default)]
     item_focus_sequence: Option<u64>,
     #[serde(default)]
@@ -3315,6 +3846,193 @@ mod tests {
             "item_focus_capture":capture,"item_focus_phase":phase}))
     }
 
+    fn mixed_inventory_facts() -> InventoryFacts {
+        serde_json::from_value(serde_json::json!({"items_host":"actual-items-host",
+            "hosts":[
+                {"item":"actual-a","kind":"dropdown","target":"a","capture":"actual-a","registration_key":"key-a"},
+                {"item":"actual-b","kind":"menu","target":"b","capture":"actual-b","registration_key":"key-b","tabindex_attribute":"4"}
+            ],"navigation_order":["actual-a","actual-b"],"query_order":["actual-a","actual-b"]})).unwrap()
+    }
+    fn roving_event(
+        runtime: &RuntimeHandle,
+        sequence: u64,
+        item: &str,
+        value: Option<&str>,
+    ) -> FormEvent {
+        event(
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,
+            "roving_write":true,"roving_event_sequence":sequence,"roving_item":item,"roving_tabindex":value}),
+        )
+    }
+
+    #[test]
+    fn registered_mixed_inventory_keeps_logical_roving_writes_until_exact_fifo_ack_and_restores_raw_attrs()
+     {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "mixed-root",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        assert!(root.node.request(true, Reason::Trigger, false));
+        let selected = root.node.clone();
+        runtime
+            .0
+            .borrow_mut()
+            .nodes
+            .get_mut("mixed-root")
+            .unwrap()
+            .callbacks
+            .key = Some(Rc::new(move |facts| {
+            let raw = facts.inventory.clone().unwrap();
+            let inventory = crate::dropdown_inventory::Inventory::new(
+                crate::dropdown_inventory::InventoryMode::RovingTabindex,
+                raw.clone(),
+            );
+            let target = inventory
+                .navigate(&facts.key, inventory.active().as_ref())
+                .unwrap();
+            assert!(selected.select_roving(&raw, &target));
+            KeyDecision {
+                prevent: true,
+                ..KeyDecision::default()
+            }
+        }));
+        let raw = mixed_inventory_facts();
+        for (sequence, key) in [(1, "End"), (2, "ArrowUp")] {
+            let input = event(
+                serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"key","phase":"capture","key":key,
+                "hosts":["mixed-root"],"nodes":[{"id":"mixed-root","generation":1,"connected":true,"discovery_ready":true,
+                    "mode":"roving-tabindex","inside":true,"inventory":raw}]}),
+            );
+            runtime.input(input.clone());
+            assert!(!input.default_action_enabled());
+        }
+        let logical = root.node.inventory().unwrap();
+        assert_eq!(logical.hosts[0].tabindex_attribute.as_deref(), Some("0"));
+        assert_eq!(logical.hosts[1].tabindex_attribute.as_deref(), Some("-1"));
+        assert_eq!(
+            raw.hosts[0].tabindex_attribute, None,
+            "raw diagnostics are not rewritten"
+        );
+        let overtaking = roving_event(&runtime, 2, "actual-b", Some("-1"));
+        runtime.query(overtaking.clone());
+        assert!(
+            overtaking.default_action_enabled(),
+            "later event cannot overtake an earlier batch"
+        );
+        for (sequence, item, value) in [
+            (1, "actual-a", "-1"),
+            (1, "actual-b", "0"),
+            (2, "actual-b", "-1"),
+            (2, "actual-a", "0"),
+        ] {
+            let wrong = roving_event(&runtime, sequence, item, Some("wrong"));
+            runtime.query(wrong.clone());
+            assert!(wrong.default_action_enabled());
+            let ack = roving_event(&runtime, sequence, item, Some(value));
+            runtime.query(ack.clone());
+            assert!(!ack.default_action_enabled());
+        }
+        assert!(runtime.0.borrow().roving_writes.is_empty());
+        root.node.clear_roving();
+        let (sequence, writes) = {
+            let state = runtime.0.borrow();
+            let batch = state.roving_writes.front().unwrap();
+            (
+                batch.sequence,
+                batch.writes.iter().cloned().collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            writes,
+            [
+                AttributeWrite {
+                    item: ItemRef("actual-a".into()),
+                    tabindex: None
+                },
+                AttributeWrite {
+                    item: ItemRef("actual-b".into()),
+                    tabindex: Some("4".into())
+                }
+            ]
+        );
+        assert!(root.node.request(false, Reason::Trigger, false));
+        for write in writes {
+            let value = serde_json::json!({"owner":runtime.owner_id(),"sequence":0,"roving_write":true,
+                "roving_sequence":sequence,"roving_root":"mixed-root","roving_generation":1,
+                "roving_item":write.item,"roving_tabindex":write.tabindex});
+            let ack = event(value.clone());
+            runtime.query(ack.clone());
+            assert!(
+                !ack.default_action_enabled(),
+                "accepted hide does not erase admitted restore writes"
+            );
+            let replay = event(value);
+            runtime.query(replay.clone());
+            assert!(replay.default_action_enabled());
+        }
+        assert!(runtime.0.borrow().roving_writes.is_empty());
+    }
+
+    #[test]
+    fn item_visual_marks_only_on_keyboard_focus_delivery_and_never_infers_category_outer_marker() {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "visual-root",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        let mut raw = mixed_inventory_facts();
+        raw.hosts[1].visible_focus = true;
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"document":"mixed-visual-runtime-test","kind":"observe",
+            "nodes":[{"id":"visual-root","generation":1,"connected":true,"inventory":raw}]})));
+        assert_eq!(
+            runtime.item_visual_key(),
+            None,
+            "ordinary observation cannot invent a focus notification"
+        );
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"document":"mixed-visual-runtime-test","kind":"modality","input_kind":"keydown","key":"Tab"})));
+        assert!(runtime.keyboard_mode());
+        let host = raw.hosts[0].clone();
+        let observed = runtime.clone();
+        assert!(root.node.queue_item_host_focus(
+            &host,
+            Rc::new(move || {
+                assert_eq!(observed.item_visual_key().as_deref(), Some("key-a"));
+                assert_eq!(observed.item_visual_target().as_deref(), Some("a"));
+            })
+        ));
+        let job = runtime.pending_item_focus_jobs().pop().unwrap();
+        assert_eq!(job.capture.as_deref(), Some("actual-a"));
+        assert!(job.focus_native);
+        for phase in ["arm", "focus", "scroll"] {
+            let ack = item_event(&runtime, &job, phase, "actual-a");
+            runtime.query(ack.clone());
+            assert!(!ack.default_action_enabled());
+        }
+        let mut category = host.clone();
+        category.kind = ItemKind::Category;
+        category.registration_key = "outer-category".into();
+        runtime.mark_item_visual(&category);
+        assert_eq!(runtime.item_visual_key(), None);
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":3,"document":"mixed-visual-runtime-test","kind":"item-focusin","item_focus_host":raw.hosts[1]})));
+        assert_eq!(runtime.item_visual_key().as_deref(), Some("key-b"));
+        let mut disabled_property = raw.hosts[1].clone();
+        disabled_property.source_focusable = false;
+        runtime.mark_item_visual(&disabled_property);
+        assert_eq!(runtime.item_visual_key(), None);
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":4,"document":"mixed-visual-runtime-test","kind":"modality","input_kind":"mousedown"})));
+        runtime.mark_item_visual(&host);
+        assert_eq!(
+            runtime.item_visual_key(),
+            None,
+            "pointer mode may not create a visible-focus marker"
+        );
+    }
+
     #[test]
     fn item_frames_restore_owner_keep_each_capture_and_allow_next_focus_before_scroll() {
         let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
@@ -3724,6 +4442,157 @@ mod tests {
         serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"key","phase":phase,"key":"Enter",
             "hosts":["child"],"triggers":["child"],"candidate_ids":["ix-dropdown-item-7"],
             "nodes":[{"id":"child","generation":1,"connected":true,"discovery_ready":true,"items":[7],"inside":true,"mode":"active-descendant"}]})
+    }
+    #[test]
+    fn registered_mixed_host_activation_uses_captured_inventory_and_exact_live_owner() {
+        use crate::dropdown_inventory::{Activation, Inventory, InventoryMode};
+
+        for (kind, guard) in [
+            ("dropdown", "valid"),
+            ("select", "valid"),
+            ("menu", "valid"),
+            ("category", "valid"),
+            ("native-opt-in", "native-default"),
+            ("select", "no-active"),
+            ("menu", "missing-capture"),
+            ("category", "missing-candidate"),
+            ("select", "outside-inventory"),
+            ("select", "disconnected"),
+            ("menu", "stale-generation"),
+            ("category", "closed"),
+            ("select", "opened-by-callback"),
+            ("menu", "removed-by-callback"),
+            ("category", "replaced-by-callback"),
+            ("select", "dropped-before-ack"),
+            ("menu", "closed-before-ack"),
+        ] {
+            let runtime = RuntimeHandle::new();
+            let target = format!("consumer-{kind}-custom-id");
+            let open = Rc::new(Cell::new(!matches!(guard, "closed" | "opened-by-callback")));
+            let reads = open.clone();
+            let callback_open = open.clone();
+            let callback_runtime = runtime.clone();
+            let callback_target = target.clone();
+            let node = runtime.register(
+                "mixed-activation".into(),
+                1,
+                OverlayKind::Dropdown,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(move || Some(reads.get())),
+                    before: Rc::new(|_| true),
+                    apply: Rc::new(|_| {}),
+                    key: Some(Rc::new(move |facts| {
+                        if facts.default_prevented {
+                            return KeyDecision::default();
+                        }
+                        let inventory = Inventory::new(
+                            InventoryMode::RovingTabindex,
+                            facts.inventory.clone().unwrap(),
+                        );
+                        let activation = inventory.activation(
+                            &facts.key,
+                            &["Enter".into()],
+                            inventory.active().as_ref(),
+                        );
+                        let (prevent, mut activate) = match activation {
+                            Activation::SyntheticHost { item } => (
+                                true,
+                                item.and_then(|item| inventory.host(&item))
+                                    .map(|host| host.target.clone()),
+                            ),
+                            Activation::NativeDefault | Activation::None => (false, None),
+                            Activation::Submenu { .. } => unreachable!(),
+                        };
+                        match guard {
+                            "outside-inventory" => activate = Some(callback_target.clone()),
+                            "opened-by-callback" => callback_open.set(true),
+                            "removed-by-callback" => {
+                                callback_runtime.unregister("mixed-activation", 1);
+                            }
+                            "replaced-by-callback" => {
+                                callback_runtime.register(
+                                    "mixed-activation".into(),
+                                    2,
+                                    OverlayKind::Dropdown,
+                                    CloseBehavior::Both,
+                                    Callbacks {
+                                        read: Rc::new(|| Some(true)),
+                                        before: Rc::new(|_| true),
+                                        apply: Rc::new(|_| {}),
+                                        key: None,
+                                    },
+                                );
+                            }
+                            _ => {}
+                        }
+                        KeyDecision {
+                            prevent,
+                            activate,
+                            ..KeyDecision::default()
+                        }
+                    })),
+                },
+            );
+            let reported_target = if guard == "outside-inventory" {
+                "different-actual-host"
+            } else {
+                &target
+            };
+            let original = event(serde_json::json!({
+                "owner":runtime.owner_id(),"sequence":1,"kind":"key","phase":"capture","key":"Enter",
+                "hosts":["mixed-activation"],
+                "candidate_ids":if guard == "missing-candidate" { vec![] } else { vec![target.clone()] },
+                "nodes":[{"id":"mixed-activation","generation":if guard == "stale-generation" {2} else {1},
+                    "connected":guard != "disconnected","discovery_ready":true,
+                    "inside":true,"mode":"roving-tabindex","inventory":{
+                        "items_host":"actual-items-object",
+                        "hosts":[{"item":"actual-host-object","kind":kind,"target":reported_target,
+                            "capture":if guard == "missing-capture" {""} else {"actual-host-object"},
+                            "tabindex_attribute":if guard == "no-active" {"-1"} else {"0"},
+                            "roving_opt_in":kind == "native-opt-in"}],
+                        "navigation_order":["actual-host-object"],"query_order":["actual-host-object"]
+                    }}]
+            }));
+            runtime.input(original.clone());
+            if guard == "native-default" {
+                assert!(original.default_action_enabled(), "{kind}/{guard}");
+            } else if matches!(guard, "valid" | "no-active") {
+                assert!(!original.default_action_enabled(), "{kind}/{guard}");
+            }
+            if guard == "dropped-before-ack" {
+                node.unregister();
+            }
+            if guard == "closed-before-ack" {
+                open.set(false);
+            }
+            // Wrong tuples never consume the pending authorization.
+            for (owner, sequence, query_target) in [
+                ("foreign-owner".to_string(), 1, target.clone()),
+                (runtime.owner_id(), 2, target.clone()),
+                (runtime.owner_id(), 1, "another-target".into()),
+            ] {
+                let wrong = event(
+                    serde_json::json!({"owner":owner,"sequence":sequence,"activate_target":query_target}),
+                );
+                runtime.query(wrong.clone());
+                assert!(wrong.default_action_enabled(), "{kind}/{guard}");
+            }
+            let query = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"activate_target":target});
+            let first = event(query.clone());
+            runtime.query(first.clone());
+            assert_eq!(
+                !first.default_action_enabled(),
+                guard == "valid",
+                "{kind}/{guard}"
+            );
+            let replay = event(query);
+            runtime.query(replay.clone());
+            assert!(replay.default_action_enabled(), "{kind}/{guard} replay");
+            if let Some(entry) = runtime.entry("mixed-activation") {
+                runtime.unregister("mixed-activation", entry.generation);
+            }
+        }
     }
     #[test]
     fn actual_transport_phases_default_stop_and_activation_are_once_only() {
