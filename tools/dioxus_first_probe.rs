@@ -1,6 +1,8 @@
 //! Excluded preview of R02 framework focus, resize and post-render notifications.
 use dioxus::prelude::*;
 use dioxus_ix::*;
+#[path = "dioxus_first_probe/chart_review.rs"]
+mod chart_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
@@ -36,6 +38,21 @@ fn CustomDropdownAction() -> Element {
 
 #[component]
 fn Preview() -> Element {
+    let charts = use_hook(|| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::window()
+                .and_then(|window| window.location().search().ok())
+                .is_some_and(|query| query == "?charts")
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::var("DIOXUS_IX_PROBE_SCOPE").as_deref() == Ok("charts")
+        }
+    });
+    if charts {
+        return rsx! { chart_review::ChartsPreview {} };
+    }
     let mut selected = use_signal(String::new);
     let mut multi = use_signal(Vec::<String>::new);
     let mut reversed = use_signal(|| false);

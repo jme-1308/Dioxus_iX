@@ -18,7 +18,7 @@ static NEXT_ADVANCED_CHART: AtomicU64 = AtomicU64::new(0);
 
 /// Coordinates always refer to the SVG viewport, including when an event was
 /// dispatched by a child polygon, path, or overview handle.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct SvgBounds {
     left: f64,
     top: f64,
@@ -28,6 +28,33 @@ struct SvgBounds {
     view_height: f64,
 }
 impl SvgBounds {
+    fn from_rect(
+        rect: dioxus::html::geometry::PixelsRect,
+        (view_width, view_height): (f64, f64),
+    ) -> Option<Self> {
+        ([
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height,
+            view_width,
+            view_height,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+            && rect.size.width > 0.0
+            && rect.size.height > 0.0
+            && view_width > 0.0
+            && view_height > 0.0)
+            .then_some(Self {
+                left: rect.origin.x,
+                top: rect.origin.y,
+                width: rect.size.width,
+                height: rect.size.height,
+                view_width,
+                view_height,
+            })
+    }
     fn point(self, client: (f64, f64)) -> (f64, f64) {
         (
             (client.0 - self.left) * self.view_width / self.width,
@@ -36,36 +63,13 @@ impl SvgBounds {
     }
 }
 
-// Dioxus desktop 0.8 alpha's mounted rectangle query only accepts HTMLElement;
-// SVGElement fails that guard. Preserve the renderer's normal API first, then
-// use the authorized DOM bridge strictly for this known chart SVG's geometry.
-async fn svg_client_rect(
-    node: &MountedData,
-    id: &str,
-) -> Result<dioxus::html::geometry::PixelsRect, String> {
-    if let Ok(rect) = node.get_client_rect().await {
-        return Ok(rect);
-    }
-    let task = crate::dom_query::eval(
-        r#"
-        const id = await dioxus.recv();
-        const node = document.getElementById(id);
-        if (!(node instanceof SVGElement)) return null;
-        const rect = node.getBoundingClientRect();
-        return [rect.left, rect.top, rect.width, rect.height];
-    "#,
-    );
-    task.send(id).map_err(|error| error.to_string())?;
-    let rect = task
-        .join::<Option<[f64; 4]>>()
-        .await
-        .map_err(|error| error.to_string())?
-        .filter(|values| values.iter().all(|value| value.is_finite()))
-        .ok_or_else(|| "The chart SVG rectangle is unavailable.".to_string())?;
-    Ok(dioxus::html::geometry::PixelsRect::new(
-        dioxus::html::geometry::euclid::Point2D::new(rect[0], rect[1]),
-        dioxus::html::geometry::PixelsSize::new(rect[2], rect[3]),
-    ))
+// Pinned Dioxus 0.8.0-alpha.2 desktop MountedData::get_client_rect only accepts
+// HTMLElement. Each chart mounts a dedicated borderless, paddingless HTML div
+// immediately enclosing its block SVG so Dioxus measures the rendered SVG
+// viewport directly without a JavaScript geometry fallback.
+async fn mounted_svg_bounds(node: &MountedData, view_size: (f64, f64)) -> Option<SvgBounds> {
+    let rect = node.get_client_rect().await.ok()?;
+    SvgBounds::from_rect(rect, view_size)
 }
 
 #[derive(Clone, Copy)]
@@ -92,6 +96,9 @@ impl<K: Copy> ChartDrag<K> {
 
 // Bounds queries and pointer capture are asynchronous on desktop. An epoch and
 // pointer owner prevent an old reply from resurrecting a canceled/replaced drag.
+// Pinned Dioxus 0.8.0-alpha.2 MountedData/RenderedElementBacking and PointerData
+// lack setPointerCapture/hasPointerCapture/releasePointerCapture, so the tiny
+// capture/release bridges target the physical SVG by ID after Dioxus measurement.
 fn begin_drag<K: Copy + 'static>(
     mut drag: Signal<Option<ChartDrag<K>>>,
     epoch: Rc<Cell<u64>>,
@@ -101,7 +108,6 @@ fn begin_drag<K: Copy + 'static>(
     kind: K,
     view_size: (f64, f64),
 ) {
-    let (view_width, view_height) = view_size;
     if drag.peek().is_some() {
         return;
     }
@@ -117,7 +123,7 @@ fn begin_drag<K: Copy + 'static>(
     let sequence = epoch.get().wrapping_add(1);
     epoch.set(sequence);
     spawn(async move {
-        let Ok(rect) = svg_client_rect(&node, &id).await else {
+        let Some(bounds) = mounted_svg_bounds(&node, view_size).await else {
             if epoch.get() == sequence {
                 if let Ok(mut value) = drag.try_write() {
                     *value = None;
@@ -128,12 +134,6 @@ fn begin_drag<K: Copy + 'static>(
         if epoch.get() != sequence {
             return;
         }
-        if rect.size.width <= 0.0 || rect.size.height <= 0.0 {
-            if let Ok(mut value) = drag.try_write() {
-                *value = None;
-            }
-            return;
-        }
         if !drag
             .try_peek()
             .ok()
@@ -141,14 +141,6 @@ fn begin_drag<K: Copy + 'static>(
         {
             return;
         }
-        let bounds = SvgBounds {
-            left: rect.origin.x,
-            top: rect.origin.y,
-            width: rect.size.width,
-            height: rect.size.height,
-            view_width,
-            view_height,
-        };
         if let Ok(mut value) = drag.try_write() {
             if let Some(value) = value.as_mut() {
                 value.bounds = Some(bounds);
@@ -170,9 +162,10 @@ fn begin_drag<K: Copy + 'static>(
     });
 }
 
-// Escape and keyboard operations can end a drag before pointerup. Release its
-// native capture as well as its Rust state; otherwise sibling controls remain
-// unable to receive this pointer until the physical button is released.
+// Pinned Dioxus 0.8.0-alpha.2 MountedData/PointerData has no pointer-capture API.
+// Escape and keyboard operations can end a drag before pointerup; release its
+// native capture as well as its Rust state so sibling controls remain able to
+// receive this pointer before the physical button is released.
 async fn release_drag_pointer(id: &str, pointer: i32) {
     let task = crate::dom_query::eval(
         r#"
@@ -1272,134 +1265,134 @@ pub fn SurfaceChart(
         ),
     ];
     rsx! { div { class: "ix-surface-chart", role: "group", aria_label: label.clone(),
-        onmounted: move |event| crate::charts::observe_chart_width(width, event),
-        svg { id: "ix-surface-svg-{id}", width: "100%", height, view_box: "0 0 {width} {height}", role: "img", "aria-label": label,
-            "aria-description":"Drag to rotate; middle-drag or Shift-drag to pan; scroll or pinch to zoom. Arrow keys rotate, +/− zoom, Home resets. Page Up and Page Down inspect visible data points. Escape clears inspection and ends the current gesture.",
-            "aria-describedby":"ix-surface-inspection-{id}",
-            "data-yaw":camera().yaw,"data-pitch":camera().pitch,"data-zoom":camera().zoom,
-            "data-pan-x":camera().pan_x,"data-pan-y":camera().pan_y,
-            tabindex: 0, style: "touch-action:none",
+        onresize: move |event| crate::charts::resize_chart_width(width, event),
+        div { class: "ix-chart-viewport",
             onmounted: move |event: MountedEvent| mounted.set(Some(event.data())),
-            oncontextmenu: move |event| event.prevent_default(),
-            onpointerdown: move |event: PointerEvent| {
-                let touch = event.pointer_type() == "touch";
-                if !touch && !matches!(event.trigger_button(), Some(MouseButton::Primary | MouseButton::Auxiliary | MouseButton::Secondary)) { return; }
-                let Some(node) = mounted.peek().clone() else { return; };
-                let pointer = event.pointer_id();
-                let point = event.client_coordinates();
-                let first = !orbit.peek().engaged();
-                if first { cancel_drag.call(None); }
-                let accepted = orbit.write().begin(SurfaceContact { id:pointer, point:(point.x,point.y), touch,
-                    pan: !touch && (event.modifiers().shift() || matches!(event.trigger_button(),Some(MouseButton::Auxiliary | MouseButton::Secondary))) });
-                if !accepted { return; }
-                event.prevent_default(); clear_inspection.call(());
-                let epoch = epoch.clone(); let sequence = epoch.get();
-                spawn(async move {
-                    let chart_id = format!("ix-surface-svg-{id}");
-                    if first {
-                        let Ok(rect) = svg_client_rect(&node,&chart_id).await else {cancel_drag.call(Some(pointer));return;};
-                        if epoch.get()!=sequence || !orbit.peek().engaged() {return;}
-                        if rect.size.width<=0.0 || rect.size.height<=0.0 {cancel_drag.call(Some(pointer));return;}
-                        orbit.write().bounds=Some(SvgBounds{left:rect.origin.x,top:rect.origin.y,width:rect.size.width,height:rect.size.height,view_width:width(),view_height:height});
-                    }
-                    if epoch.get()!=sequence || !orbit.peek().owns(pointer) { return; }
-                    if crate::capture_chart_pointer(&chart_id,pointer).await.is_err() && epoch.get()==sequence {cancel_drag.call(Some(pointer));}
-                    if epoch.get()!=sequence || !orbit.peek().owns(pointer) {release_drag_pointer(&chart_id,pointer).await;}
-                });
-            },
-            onpointerup: move |event: PointerEvent| {
-                let pointer=event.pointer_id();
-                // pointerup itself has no movement delta; retain the last real
-                // move's velocity rather than replacing it with zero.
-                if orbit.write().end(pointer) {
-                    spawn(async move {release_drag_pointer(&format!("ix-surface-svg-{id}"),pointer).await;});
-                }
-            },
-            onpointercancel: move |event: PointerEvent| {cancel_drag.call(Some(event.pointer_id()));clear_inspection.call(());},
-            onlostpointercapture: move |event: PointerEvent| {cancel_drag.call(Some(event.pointer_id()));clear_inspection.call(());},
-            onpointerleave: move |_| clear_inspection.call(()),
-            onblur: move |_| {cancel_drag.call(None);clear_inspection.call(());},
-            onpointermove: move |event: PointerEvent| {
-                let point = event.client_coordinates();
-                if orbit.peek().engaged() {
-                    if !orbit.write().move_contact(event.pointer_id(),(point.x,point.y),camera()) {return;}
-                    event.prevent_default();clear_inspection.call(());
-                    surface_motion(orbit,camera,move_epoch.clone(),move_running.clone());
-                } else if !orbit.peek().moving() && event.pointer_type() != "touch" {
-                    let Some(node)=mounted.peek().clone() else{return;};
-                    let hover_epoch=move_hover.clone();let sequence=hover_epoch.get().wrapping_add(1);hover_epoch.set(sequence);
-                    let faces=hover_faces.clone();let view_width=width();
+            svg { id: "ix-surface-svg-{id}", width: "100%", height, view_box: "0 0 {width} {height}", role: "img", "aria-label": label,
+                "aria-description":"Drag to rotate; middle-drag or Shift-drag to pan; scroll or pinch to zoom. Arrow keys rotate, +/− zoom, Home resets. Page Up and Page Down inspect visible data points. Escape clears inspection and ends the current gesture.",
+                "aria-describedby":"ix-surface-inspection-{id}",
+                "data-yaw":camera().yaw,"data-pitch":camera().pitch,"data-zoom":camera().zoom,
+                "data-pan-x":camera().pan_x,"data-pan-y":camera().pan_y,
+                tabindex: 0, style: "touch-action:none",
+                oncontextmenu: move |event| event.prevent_default(),
+                onpointerdown: move |event: PointerEvent| {
+                    let touch = event.pointer_type() == "touch";
+                    if !touch && !matches!(event.trigger_button(), Some(MouseButton::Primary | MouseButton::Auxiliary | MouseButton::Secondary)) { return; }
+                    let Some(node) = mounted.peek().clone() else { return; };
+                    let pointer = event.pointer_id();
+                    let point = event.client_coordinates();
+                    let first = !orbit.peek().engaged();
+                    if first { cancel_drag.call(None); }
+                    let accepted = orbit.write().begin(SurfaceContact { id:pointer, point:(point.x,point.y), touch,
+                        pan: !touch && (event.modifiers().shift() || matches!(event.trigger_button(),Some(MouseButton::Auxiliary | MouseButton::Secondary))) });
+                    if !accepted { return; }
+                    event.prevent_default(); clear_inspection.call(());
+                    let epoch = epoch.clone(); let sequence = epoch.get();
                     spawn(async move {
-                        let Ok(rect)=svg_client_rect(&node,&format!("ix-surface-svg-{id}")).await else{return;};
-                        if hover_epoch.get()!=sequence||rect.size.width<=0.0||rect.size.height<=0.0{return;}
-                        let bounds=SvgBounds{left:rect.origin.x,top:rect.origin.y,width:rect.size.width,height:rect.size.height,view_width,view_height:height};
-                        let cursor=bounds.point((point.x,point.y));
-                        let next=if (0.0..=view_width).contains(&cursor.0)&&(0.0..=height).contains(&cursor.1) {
-                            surface_pick(&faces,cursor).or_else(||surface_wall_pick(hover_camera,view_width,height,cursor))
-                        } else {None};
-                        if let Ok(mut value)=active.try_write(){if *value!=next{*value=next;}}
-                    });
-                }
-            },
-            onwheel: move |event: WheelEvent| {
-                event.prevent_default();clear_inspection.call(());
-                // Browser wheel delta is opposite the source wheelDelta sign.
-                orbit.write().zoom_impulse(camera(),-event.delta().strip_units().y);
-                surface_motion(orbit,camera,wheel_epoch.clone(),wheel_running.clone());
-            },
-            onkeydown: move |event: KeyboardEvent| {
-                if event.key()==Key::Escape {event.prevent_default();cancel_drag.call(None);clear_inspection.call(());return;}
-                if matches!(event.key(),Key::PageUp|Key::PageDown) {
-                    event.prevent_default();cancel_drag.call(None);let current=active().and_then(|value|value.index);clear_inspection.call(());
-                    active.set(surface_inspect_step(&keyboard_faces,width(),height,current,event.key()==Key::PageDown));return;
-                }
-                let mut next=camera();match event.key(){Key::ArrowLeft=>next.yaw-=5.0,Key::ArrowRight=>next.yaw+=5.0,Key::ArrowUp=>next.pitch+=5.0,Key::ArrowDown=>next.pitch-=5.0,Key::Home=>next=SurfaceCamera::default(),Key::Character(ref key) if key=="+"||key=="="=>next.zoom*=1.2,Key::Character(ref key) if key=="-"=>next.zoom/=1.2,_=>return}event.prevent_default();cancel_drag.call(None);clear_inspection.call(());camera.set(next.normalized());
-            },
-            g { class:"ix-surface-grid", stroke:"var(--si-sys-color-background-3,var(--ix-color-surface-2))", stroke_width:1,
-                for (start,end) in grid { {let a=project(start);let b=project(end);rsx!{line{x1:a.0,y1:a.1,x2:b.0,y2:b.1}}} }
-            }
-            for (start,end,name) in axes { {
-                let a=project(start);let b=project(end);
-                let center=project(SurfacePoint::default());
-                let midpoint=((a.0+b.0)*0.5,(a.1+b.1)*0.5);
-                let length=(midpoint.0-center.0).hypot(midpoint.1-center.1).max(1.0);
-                let offset=((midpoint.0-center.0)/length,(midpoint.1-center.1)/length);
-                let anchor=if offset.0 < -0.3 {"end"} else if offset.0 > 0.3 {"start"} else {"middle"};
-                rsx!{g {class:"ix-surface-axis",font_size:12,fill:"var(--si-sys-color-text-primary,var(--ix-color-text))",
-                    line{x1:a.0,y1:a.1,x2:b.0,y2:b.1,stroke:"var(--si-sys-color-border-3,var(--ix-color-border))",stroke_width:2}
-                    text{x:midpoint.0+offset.0*35.0,y:midpoint.1+offset.1*35.0+4.0,text_anchor:anchor,"{name}"}
-                    for tick in ticks { {
-                        let fraction=(tick+1.0)*0.5;
-                        let p=(a.0+(b.0-a.0)*fraction,a.1+(b.1-a.1)*fraction);
-                        rsx!{
-                            line{x1:p.0,y1:p.1,x2:p.0+offset.0*3.0,y2:p.1+offset.1*3.0,stroke:"var(--si-sys-color-border-3,var(--ix-color-border))"}
-                            text{x:p.0+offset.0*11.0,y:p.1+offset.1*11.0+4.0,text_anchor:anchor,"{tick}"}
+                        let chart_id = format!("ix-surface-svg-{id}");
+                        if first {
+                            let Some(bounds) = mounted_svg_bounds(&node, (width(), height)).await else {cancel_drag.call(Some(pointer));return;};
+                            if epoch.get()!=sequence || !orbit.peek().engaged() {return;}
+                            orbit.write().bounds=Some(bounds);
                         }
-                    } }
-                }}
-            } }
-            if let Some(inspection)=active() {
-                g {class:"ix-surface-axis-pointer",pointer_events:"none","data-source-index":inspection.index.map(|v|v.to_string()),"data-x":inspection.point.x,"data-y":inspection.point.y,"data-z":inspection.point.z,
-                    for (start,end) in surface_pointer_lines(inspection.point,camera()) { {
-                        let a=project(start);let b=project(end);
-                        rsx!{line{x1:a.0,y1:a.1,x2:b.0,y2:b.1,stroke:"rgba(0,0,0,.8)",stroke_width:1}}
-                    } }
-                    for (start,end,name) in axes { {
-                        let a=project(start);let b=project(end);let center=project(SurfacePoint::default());
-                        let midpoint=((a.0+b.0)*0.5,(a.1+b.1)*0.5);let length=(midpoint.0-center.0).hypot(midpoint.1-center.1).max(1.0);
-                        let offset=((midpoint.0-center.0)/length,(midpoint.1-center.1)/length);
-                        let value=match name {"x"=>inspection.point.x,"y"=>inspection.point.y,_=>inspection.point.z};
-                        let fraction=(value+1.0)*0.5;
-                        let position=(a.0+(b.0-a.0)*fraction+offset.0*22.0,a.1+(b.1-a.1)*fraction+offset.1*22.0);
-                        let text=format!("{value:.2}");let label_width=text.len() as f64*8.0+6.0;
-                        rsx!{g{class:"ix-surface-pointer-label","data-axis":name,
-                            rect{x:position.0-label_width*0.5,y:position.1-11.0,width:label_width,height:22,rx:3,fill:"rgba(0,0,0,.5)"}
-                            text{x:position.0,y:position.1+5.0,text_anchor:"middle",font_size:14,fill:"#fff","{text}"}
-                        }}
-                    } }
+                        if epoch.get()!=sequence || !orbit.peek().owns(pointer) { return; }
+                        if crate::capture_chart_pointer(&chart_id,pointer).await.is_err() && epoch.get()==sequence {cancel_drag.call(Some(pointer));}
+                        if epoch.get()!=sequence || !orbit.peek().owns(pointer) {release_drag_pointer(&chart_id,pointer).await;}
+                    });
+                },
+                onpointerup: move |event: PointerEvent| {
+                    let pointer=event.pointer_id();
+                    // pointerup itself has no movement delta; retain the last real
+                    // move's velocity rather than replacing it with zero.
+                    if orbit.write().end(pointer) {
+                        spawn(async move {release_drag_pointer(&format!("ix-surface-svg-{id}"),pointer).await;});
+                    }
+                },
+                onpointercancel: move |event: PointerEvent| {cancel_drag.call(Some(event.pointer_id()));clear_inspection.call(());},
+                onlostpointercapture: move |event: PointerEvent| {cancel_drag.call(Some(event.pointer_id()));clear_inspection.call(());},
+                onpointerleave: move |_| clear_inspection.call(()),
+                onblur: move |_| {cancel_drag.call(None);clear_inspection.call(());},
+                onpointermove: move |event: PointerEvent| {
+                    let point = event.client_coordinates();
+                    if orbit.peek().engaged() {
+                        if !orbit.write().move_contact(event.pointer_id(),(point.x,point.y),camera()) {return;}
+                        event.prevent_default();clear_inspection.call(());
+                        surface_motion(orbit,camera,move_epoch.clone(),move_running.clone());
+                    } else if !orbit.peek().moving() && event.pointer_type() != "touch" {
+                        let Some(node)=mounted.peek().clone() else{return;};
+                        let hover_epoch=move_hover.clone();let sequence=hover_epoch.get().wrapping_add(1);hover_epoch.set(sequence);
+                        let faces=hover_faces.clone();let view_width=width();
+                        spawn(async move {
+                            let Some(bounds)=mounted_svg_bounds(&node,(view_width,height)).await else{return;};
+                            if hover_epoch.get()!=sequence{return;}
+                            let cursor=bounds.point((point.x,point.y));
+                            let next=if (0.0..=view_width).contains(&cursor.0)&&(0.0..=height).contains(&cursor.1) {
+                                surface_pick(&faces,cursor).or_else(||surface_wall_pick(hover_camera,view_width,height,cursor))
+                            } else {None};
+                            if let Ok(mut value)=active.try_write(){if *value!=next{*value=next;}}
+                        });
+                    }
+                },
+                onwheel: move |event: WheelEvent| {
+                    event.prevent_default();clear_inspection.call(());
+                    // Browser wheel delta is opposite the source wheelDelta sign.
+                    orbit.write().zoom_impulse(camera(),-event.delta().strip_units().y);
+                    surface_motion(orbit,camera,wheel_epoch.clone(),wheel_running.clone());
+                },
+                onkeydown: move |event: KeyboardEvent| {
+                    if event.key()==Key::Escape {event.prevent_default();cancel_drag.call(None);clear_inspection.call(());return;}
+                    if matches!(event.key(),Key::PageUp|Key::PageDown) {
+                        event.prevent_default();cancel_drag.call(None);let current=active().and_then(|value|value.index);clear_inspection.call(());
+                        active.set(surface_inspect_step(&keyboard_faces,width(),height,current,event.key()==Key::PageDown));return;
+                    }
+                    let mut next=camera();match event.key(){Key::ArrowLeft=>next.yaw-=5.0,Key::ArrowRight=>next.yaw+=5.0,Key::ArrowUp=>next.pitch+=5.0,Key::ArrowDown=>next.pitch-=5.0,Key::Home=>next=SurfaceCamera::default(),Key::Character(ref key) if key=="+"||key=="="=>next.zoom*=1.2,Key::Character(ref key) if key=="-"=>next.zoom/=1.2,_=>return}event.prevent_default();cancel_drag.call(None);clear_inspection.call(());camera.set(next.normalized());
+                },
+                g { class:"ix-surface-grid", stroke:"var(--si-sys-color-background-3,var(--ix-color-surface-2))", stroke_width:1,
+                    for (start,end) in grid { {let a=project(start);let b=project(end);rsx!{line{x1:a.0,y1:a.1,x2:b.0,y2:b.1}}} }
                 }
+                for (start,end,name) in axes { {
+                    let a=project(start);let b=project(end);
+                    let center=project(SurfacePoint::default());
+                    let midpoint=((a.0+b.0)*0.5,(a.1+b.1)*0.5);
+                    let length=(midpoint.0-center.0).hypot(midpoint.1-center.1).max(1.0);
+                    let offset=((midpoint.0-center.0)/length,(midpoint.1-center.1)/length);
+                    let anchor=if offset.0 < -0.3 {"end"} else if offset.0 > 0.3 {"start"} else {"middle"};
+                    rsx!{g {class:"ix-surface-axis",font_size:12,fill:"var(--si-sys-color-text-primary,var(--ix-color-text))",
+                        line{x1:a.0,y1:a.1,x2:b.0,y2:b.1,stroke:"var(--si-sys-color-border-3,var(--ix-color-border))",stroke_width:2}
+                        text{x:midpoint.0+offset.0*35.0,y:midpoint.1+offset.1*35.0+4.0,text_anchor:anchor,"{name}"}
+                        for tick in ticks { {
+                            let fraction=(tick+1.0)*0.5;
+                            let p=(a.0+(b.0-a.0)*fraction,a.1+(b.1-a.1)*fraction);
+                            rsx!{
+                                line{x1:p.0,y1:p.1,x2:p.0+offset.0*3.0,y2:p.1+offset.1*3.0,stroke:"var(--si-sys-color-border-3,var(--ix-color-border))"}
+                                text{x:p.0+offset.0*11.0,y:p.1+offset.1*11.0+4.0,text_anchor:anchor,"{tick}"}
+                            }
+                        } }
+                    }}
+                } }
+                if let Some(inspection)=active() {
+                    g {class:"ix-surface-axis-pointer",pointer_events:"none","data-source-index":inspection.index.map(|v|v.to_string()),"data-x":inspection.point.x,"data-y":inspection.point.y,"data-z":inspection.point.z,
+                        for (start,end) in surface_pointer_lines(inspection.point,camera()) { {
+                            let a=project(start);let b=project(end);
+                            rsx!{line{x1:a.0,y1:a.1,x2:b.0,y2:b.1,stroke:"rgba(0,0,0,.8)",stroke_width:1}}
+                        } }
+                        for (start,end,name) in axes { {
+                            let a=project(start);let b=project(end);let center=project(SurfacePoint::default());
+                            let midpoint=((a.0+b.0)*0.5,(a.1+b.1)*0.5);let length=(midpoint.0-center.0).hypot(midpoint.1-center.1).max(1.0);
+                            let offset=((midpoint.0-center.0)/length,(midpoint.1-center.1)/length);
+                            let value=match name {"x"=>inspection.point.x,"y"=>inspection.point.y,_=>inspection.point.z};
+                            let fraction=(value+1.0)*0.5;
+                            let position=(a.0+(b.0-a.0)*fraction+offset.0*22.0,a.1+(b.1-a.1)*fraction+offset.1*22.0);
+                            let text=format!("{value:.2}");let label_width=text.len() as f64*8.0+6.0;
+                            rsx!{g{class:"ix-surface-pointer-label","data-axis":name,
+                                rect{x:position.0-label_width*0.5,y:position.1-11.0,width:label_width,height:22,rx:3,fill:"rgba(0,0,0,.5)"}
+                                text{x:position.0,y:position.1+5.0,text_anchor:"middle",font_size:14,fill:"#fff","{text}"}
+                            }}
+                        } }
+                    }
+                }
+                for face in faces.iter() { polygon { class:"ix-surface-face",points: face.points.clone(),"data-source-indices":"{face.indices[0]},{face.indices[1]},{face.indices[2]},{face.indices[3]}",style:"--ix-surface-light:{face.light_color};--ix-surface-dark:{face.dark_color}",fill:"light-dark(var(--ix-surface-light),var(--ix-surface-dark))", stroke: "#0008", stroke_width: "1", stroke_linejoin:"round" } }
             }
-            for face in faces.iter() { polygon { class:"ix-surface-face",points: face.points.clone(),"data-source-indices":"{face.indices[0]},{face.indices[1]},{face.indices[2]},{face.indices[3]}",style:"--ix-surface-light:{face.light_color};--ix-surface-dark:{face.dark_color}",fill:"light-dark(var(--ix-surface-light),var(--ix-surface-dark))", stroke: "#0008", stroke_width: "1", stroke_linejoin:"round" } }
         }
         if show_instructions {p { class: "ix-chart-instructions", "Drag to rotate; middle-drag or Shift-drag to pan; scroll or pinch to zoom. Arrow keys rotate, +/− zoom, Home resets. Page Up/Down inspect data points." }}
         output {id:"ix-surface-inspection-{id}",class:if active().is_some_and(|v|v.index.is_some()){"ix-chart-tooltip"}else{""},aria_live:"off",
@@ -1627,57 +1620,59 @@ pub fn ZoomChart(
     let wheel_epoch = epoch.clone();
     let wheel_hover = hover_epoch.clone();
     rsx! { div { class: "ix-zoom-chart", role: "group", aria_label: label.clone(),
-        onmounted: move |event| crate::charts::observe_chart_width(width, event),
+        onresize: move |event| crate::charts::resize_chart_width(width, event),
         div { class: "ix-zoom-toolbar",
             crate::IconButton { icon:"zoom-selection",label:"Select zoom area",variant:crate::ButtonVariant::SubtleTertiary,onclick:move |_|{cancel_drag.call(None);active.set(None);brush.toggle();} }
             crate::IconButton { icon:"undo",label:"Restore previous zoom",variant:crate::ButtonVariant::SubtleTertiary,disabled:history.read().is_empty(),onclick:move |_|{cancel_drag.call(None);active.set(None);if let Some(previous)=history.write().pop(){zoom.set(previous);}} }
         }
-        svg { id: "ix-zoom-svg-{id}", width:"100%",height:"600",view_box:"0 0 {width} 600",role:"img","aria-label":label.clone(),tabindex:0,style:"touch-action:none",
+        div { class: "ix-chart-viewport",
             onmounted:move |event: MountedEvent|mounted.set(Some(event.data())),
-            onwheel:move |event:WheelEvent|{
-                event.prevent_default(); if drag.peek().is_some() {cancel_drag.call(None);}
-                wheel_hover.set(wheel_hover.get().wrapping_add(1)); active.set(None);
-                let Some(node)=mounted.peek().clone() else{return;}; let client=event.client_coordinates();let factor=(event.delta().strip_units().y*0.002).exp();let epoch=wheel_epoch.clone();let sequence=epoch.get();let view_width=width();
-                spawn(async move {let Ok(rect)=svg_client_rect(&node,&format!("ix-zoom-svg-{id}")).await else{return;};if epoch.get()!=sequence||rect.size.width<=0.0{return;}let x=(client.x-rect.origin.x)*view_width/rect.size.width;let anchor=((x-left)/plot_width).clamp(0.0,1.0);let Ok(current)=zoom.try_peek().map(|value|*value) else{return;};remember.call(current);if let Ok(mut value)=zoom.try_write(){*value=current.zoom(factor,anchor);}});
-            },
-            onkeydown:move |event:KeyboardEvent|{if event.key()==Key::Escape{event.prevent_default();cancel_drag.call(None);brush.set(false);active.set(None);return;}let current=zoom();let next=match event.key(){Key::ArrowLeft=>current.pan(-(current.end-current.start)*0.1),Key::ArrowRight=>current.pan((current.end-current.start)*0.1),Key::Home=>ChartZoom::default(),Key::Character(ref key) if key=="+"||key=="="=>current.zoom(0.8,0.5),Key::Character(ref key) if key=="-"=>current.zoom(1.25,0.5),_=>return};event.prevent_default();cancel_drag.call(None);remember.call(current);zoom.set(next);},
-            onpointerdown:move |event:PointerEvent|start_drag.call((event,None)),
-            onpointermove:move |event:PointerEvent|{
-                let client=event.client_coordinates();
-                if let Some(mut value)=drag(){
-                    if !value.move_pointer(event.pointer_id(),(client.x,client.y)){return;}
-                    event.prevent_default();drag.set(Some(value));active.set(None);
-                    if let Some(next)=zoom_drag_window(value,left,right){zoom.set(next);}
-                } else if pointer_count>0 {
-                    let Some(node)=mounted.peek().clone() else{return;};let epoch=move_hover.clone();let sequence=epoch.get().wrapping_add(1);epoch.set(sequence);let view_width=width();let visible_range=range.clone();
-                    spawn(async move{let Ok(rect)=svg_client_rect(&node,&format!("ix-zoom-svg-{id}")).await else{return;};if epoch.get()!=sequence||rect.size.width<=0.0||rect.size.height<=0.0{return;}let bounds=SvgBounds{left:rect.origin.x,top:rect.origin.y,width:rect.size.width,height:rect.size.height,view_width,view_height:600.0};let (x,y)=bounds.point((client.x,client.y));let next=if x>=left&&x<=right&&(top..=bottom).contains(&y){Some(visible_range.start+(((x-left)/plot_width)*(visible_range.len().saturating_sub(1))as f64).round()as usize)}else{None};if let Ok(mut value)=active.try_write(){if *value!=next{*value=next;}}});
+            svg { id: "ix-zoom-svg-{id}", width:"100%",height:"600",view_box:"0 0 {width} 600",role:"img","aria-label":label.clone(),tabindex:0,style:"touch-action:none",
+                onwheel:move |event:WheelEvent|{
+                    event.prevent_default(); if drag.peek().is_some() {cancel_drag.call(None);}
+                    wheel_hover.set(wheel_hover.get().wrapping_add(1)); active.set(None);
+                    let Some(node)=mounted.peek().clone() else{return;}; let client=event.client_coordinates();let factor=(event.delta().strip_units().y*0.002).exp();let epoch=wheel_epoch.clone();let sequence=epoch.get();let view_width=width();
+                    spawn(async move {let Some(bounds)=mounted_svg_bounds(&node,(view_width,600.0)).await else{return;};if epoch.get()!=sequence{return;}let (x,_)=bounds.point((client.x,client.y));let anchor=((x-left)/plot_width).clamp(0.0,1.0);let Ok(current)=zoom.try_peek().map(|value|*value) else{return;};remember.call(current);if let Ok(mut value)=zoom.try_write(){*value=current.zoom(factor,anchor);}});
+                },
+                onkeydown:move |event:KeyboardEvent|{if event.key()==Key::Escape{event.prevent_default();cancel_drag.call(None);brush.set(false);active.set(None);return;}let current=zoom();let next=match event.key(){Key::ArrowLeft=>current.pan(-(current.end-current.start)*0.1),Key::ArrowRight=>current.pan((current.end-current.start)*0.1),Key::Home=>ChartZoom::default(),Key::Character(ref key) if key=="+"||key=="="=>current.zoom(0.8,0.5),Key::Character(ref key) if key=="-"=>current.zoom(1.25,0.5),_=>return};event.prevent_default();cancel_drag.call(None);remember.call(current);zoom.set(next);},
+                onpointerdown:move |event:PointerEvent|start_drag.call((event,None)),
+                onpointermove:move |event:PointerEvent|{
+                    let client=event.client_coordinates();
+                    if let Some(mut value)=drag(){
+                        if !value.move_pointer(event.pointer_id(),(client.x,client.y)){return;}
+                        event.prevent_default();drag.set(Some(value));active.set(None);
+                        if let Some(next)=zoom_drag_window(value,left,right){zoom.set(next);}
+                    } else if pointer_count>0 {
+                        let Some(node)=mounted.peek().clone() else{return;};let epoch=move_hover.clone();let sequence=epoch.get().wrapping_add(1);epoch.set(sequence);let view_width=width();let visible_range=range.clone();
+                        spawn(async move{let Some(bounds)=mounted_svg_bounds(&node,(view_width,600.0)).await else{return;};if epoch.get()!=sequence{return;}let (x,y)=bounds.point((client.x,client.y));let next=if x>=left&&x<=right&&(top..=bottom).contains(&y){Some(visible_range.start+(((x-left)/plot_width)*(visible_range.len().saturating_sub(1))as f64).round()as usize)}else{None};if let Ok(mut value)=active.try_write(){if *value!=next{*value=next;}}});
+                    }
+                },
+                onpointerup:move |event:PointerEvent|{
+                    let Some(mut value)=drag() else{return;};let point=event.client_coordinates();if !value.move_pointer(event.pointer_id(),(point.x,point.y)){return;}
+                    if let Some((start,current,initial))=zoom_drag_brush(value,left,right){if (current-start).abs()>4.0{let span=initial.end-initial.start;zoom.set(ChartZoom::new(initial.start+(start.min(current)-left)/plot_width*span,initial.start+(start.max(current)-left)/plot_width*span));}brush.set(false);}
+                    else if let Some(next)=zoom_drag_window(value,left,right){zoom.set(next);}
+                    cancel_drag.call(Some(event.pointer_id()));active.set(None);
+                },
+                onpointercancel:move |event:PointerEvent|cancel_drag.call(Some(event.pointer_id())),
+                onlostpointercapture:move |event:PointerEvent|cancel_drag.call(Some(event.pointer_id())),
+                onpointerleave:move |_|{leave_hover.set(leave_hover.get().wrapping_add(1));active.set(None);},
+                for tick in scale.ticks(){ {let y=bottom-scale.fraction(tick)*(bottom-top);rsx!{g{line{x1:left,y1:y,x2:right,y2:y,stroke:"var(--ix-color-border)",opacity:".3"}text{x:left-8.0,y:y+4.0,text_anchor:"end",fill:"var(--ix-color-text-secondary)","{tick:.0}"}}}} }
+                path { d:area,fill:chart_color(0),opacity:".12" }
+                path { d:path,fill:"none",stroke:chart_color(0),stroke_width:"2" }
+                text {x:left,y:534,fill:"var(--ix-color-text-secondary)","{first_label}"}
+                text {x:right,y:534,text_anchor:"end",fill:"var(--ix-color-text-secondary)","{last_label}"}
+                rect{x:left,y:548,width:plot_width,height:42,fill:"var(--ix-color-surface-1)",stroke:"var(--ix-color-border)"}
+                path{d:overview_path,fill:"none",stroke:chart_color(0),stroke_width:"1",opacity:".6"}
+                rect{class:"ix-zoom-selection",x:shade_start,y:548,width:shade_end-shade_start,height:42}
+                for (start,x) in [(true,shade_start),(false,shade_end)] {
+                    rect { class:"ix-zoom-handle",x:x-4.0,y:545,width:8,height:48,rx:2,role:"slider",tabindex:0,
+                        "aria-label":if start{"Start of visible data"}else{"End of visible data"},"aria-valuemin":0,"aria-valuemax":100,"aria-valuenow":if start{zoom().start*100.0}else{zoom().end*100.0},
+                        onpointerdown:move |event:PointerEvent|{event.stop_propagation();start_drag.call((event,Some(start)));},
+                        onkeydown:move |event:KeyboardEvent|{let step=if event.modifiers().shift(){0.1}else{0.01};let amount=match event.key(){Key::ArrowLeft|Key::ArrowDown=>-step,Key::ArrowRight|Key::ArrowUp=>step,_=>return};event.prevent_default();event.stop_propagation();cancel_drag.call(None);remember.call(zoom());let current=zoom();zoom.set(if start{ChartZoom::new((current.start+amount).clamp(0.0,current.end-0.0001),current.end)}else{ChartZoom::new(current.start,(current.end+amount).clamp(current.start+0.0001,1.0))});},
+                    }
                 }
-            },
-            onpointerup:move |event:PointerEvent|{
-                let Some(mut value)=drag() else{return;};let point=event.client_coordinates();if !value.move_pointer(event.pointer_id(),(point.x,point.y)){return;}
-                if let Some((start,current,initial))=zoom_drag_brush(value,left,right){if (current-start).abs()>4.0{let span=initial.end-initial.start;zoom.set(ChartZoom::new(initial.start+(start.min(current)-left)/plot_width*span,initial.start+(start.max(current)-left)/plot_width*span));}brush.set(false);}
-                else if let Some(next)=zoom_drag_window(value,left,right){zoom.set(next);}
-                cancel_drag.call(Some(event.pointer_id()));active.set(None);
-            },
-            onpointercancel:move |event:PointerEvent|cancel_drag.call(Some(event.pointer_id())),
-            onlostpointercapture:move |event:PointerEvent|cancel_drag.call(Some(event.pointer_id())),
-            onpointerleave:move |_|{leave_hover.set(leave_hover.get().wrapping_add(1));active.set(None);},
-            for tick in scale.ticks(){ {let y=bottom-scale.fraction(tick)*(bottom-top);rsx!{g{line{x1:left,y1:y,x2:right,y2:y,stroke:"var(--ix-color-border)",opacity:".3"}text{x:left-8.0,y:y+4.0,text_anchor:"end",fill:"var(--ix-color-text-secondary)","{tick:.0}"}}}} }
-            path { d:area,fill:chart_color(0),opacity:".12" }
-            path { d:path,fill:"none",stroke:chart_color(0),stroke_width:"2" }
-            text {x:left,y:534,fill:"var(--ix-color-text-secondary)","{first_label}"}
-            text {x:right,y:534,text_anchor:"end",fill:"var(--ix-color-text-secondary)","{last_label}"}
-            rect{x:left,y:548,width:plot_width,height:42,fill:"var(--ix-color-surface-1)",stroke:"var(--ix-color-border)"}
-            path{d:overview_path,fill:"none",stroke:chart_color(0),stroke_width:"1",opacity:".6"}
-            rect{class:"ix-zoom-selection",x:shade_start,y:548,width:shade_end-shade_start,height:42}
-            for (start,x) in [(true,shade_start),(false,shade_end)] {
-                rect { class:"ix-zoom-handle",x:x-4.0,y:545,width:8,height:48,rx:2,role:"slider",tabindex:0,
-                    "aria-label":if start{"Start of visible data"}else{"End of visible data"},"aria-valuemin":0,"aria-valuemax":100,"aria-valuenow":if start{zoom().start*100.0}else{zoom().end*100.0},
-                    onpointerdown:move |event:PointerEvent|{event.stop_propagation();start_drag.call((event,Some(start)));},
-                    onkeydown:move |event:KeyboardEvent|{let step=if event.modifiers().shift(){0.1}else{0.01};let amount=match event.key(){Key::ArrowLeft|Key::ArrowDown=>-step,Key::ArrowRight|Key::ArrowUp=>step,_=>return};event.prevent_default();event.stop_propagation();cancel_drag.call(None);remember.call(zoom());let current=zoom();zoom.set(if start{ChartZoom::new((current.start+amount).clamp(0.0,current.end-0.0001),current.end)}else{ChartZoom::new(current.start,(current.end+amount).clamp(current.start+0.0001,1.0))});},
-                }
+                if let Some((start,current,_))=drag().and_then(|value|zoom_drag_brush(value,left,right)){rect{class:"ix-zoom-selection",x:start.min(current),y:top,width:(current-start).abs(),height:bottom-top}}
             }
-            if let Some((start,current,_))=drag().and_then(|value|zoom_drag_brush(value,left,right)){rect{class:"ix-zoom-selection",x:start.min(current),y:top,width:(current-start).abs(),height:bottom-top}}
         }
         if let Some(tooltip)=tooltip{output{class:"ix-chart-tooltip","{tooltip}"}}
         p{class:"ix-chart-instructions","Scroll to zoom, drag to pan, or move the overview handles. Arrow keys pan; +/− zoom; Home restores the initial 10%."}
@@ -1685,7 +1680,7 @@ pub fn ZoomChart(
 }
 
 pub(crate) const STYLES: &str = r#"
-.ix-surface-chart,.ix-zoom-chart{position:relative;min-width:0;width:100%;color:var(--ix-color-text);background:transparent}.ix-surface-chart>svg,.ix-zoom-chart>svg{display:block;width:100%;max-width:100%;font:12px var(--ix-font)}.ix-chart-instructions{font-size:12px;color:var(--ix-color-text-secondary);margin:8px 0}.ix-zoom-toolbar{display:flex;justify-content:flex-end;gap:4px}.ix-zoom-handle{fill:var(--ix-color-surface-2);stroke:var(--ix-color-border);cursor:ew-resize}.ix-zoom-selection{fill:color-mix(in srgb,var(--ix-color-primary) 20%,transparent);stroke:var(--ix-color-primary)}.ix-zoom-handle:focus-visible{outline:2px solid var(--ix-color-focus)}
+.ix-surface-chart,.ix-zoom-chart{position:relative;min-width:0;width:100%;color:var(--ix-color-text);background:transparent}.ix-chart-viewport{margin:0;padding:0;border:0;width:100%}.ix-chart-viewport>svg{display:block;width:100%;max-width:100%;font:12px var(--ix-font)}.ix-chart-instructions{font-size:12px;color:var(--ix-color-text-secondary);margin:8px 0}.ix-zoom-toolbar{display:flex;justify-content:flex-end;gap:4px}.ix-zoom-handle{fill:var(--ix-color-surface-2);stroke:var(--ix-color-border);cursor:ew-resize}.ix-zoom-selection{fill:color-mix(in srgb,var(--ix-color-primary) 20%,transparent);stroke:var(--ix-color-primary)}.ix-zoom-handle:focus-visible{outline:2px solid var(--ix-color-focus)}
 "#;
 
 #[cfg(test)]
@@ -1703,6 +1698,24 @@ mod tests {
     }
     #[test]
     fn pointer_owner_and_svg_bounds_ignore_child_target_and_accept_outside_motion() {
+        let rect = |x, y, width, height| {
+            dioxus::html::geometry::PixelsRect::new(
+                dioxus::html::geometry::euclid::Point2D::new(x, y),
+                dioxus::html::geometry::PixelsSize::new(width, height),
+            )
+        };
+        assert_eq!(
+            SvgBounds::from_rect(rect(100.0, 200.0, 400.0, 300.0), (800.0, 600.0)),
+            Some(bounds())
+        );
+        assert_eq!(
+            SvgBounds::from_rect(rect(0.0, 0.0, 0.0, 300.0), (800.0, 600.0)),
+            None
+        );
+        assert_eq!(
+            SvgBounds::from_rect(rect(f64::NAN, 0.0, 400.0, 300.0), (800.0, 600.0)),
+            None
+        );
         let mut drag = ChartDrag {
             pointer: 7,
             start: (150.0, 250.0),

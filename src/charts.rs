@@ -10,7 +10,6 @@ use std::{
     collections::BTreeMap,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
 };
 
 static NEXT_CHART_ID: AtomicUsize = AtomicUsize::new(1);
@@ -337,34 +336,24 @@ fn axis_scales(
         .collect()
 }
 
-// MountedData is the common Rust document interface on web and desktop. A scoped
-// task samples only this chart's bounds and is cancelled automatically on unmount.
-// Unlike a JS ResizeObserver bridge this also works with the desktop renderer.
-pub(crate) fn observe_chart_width(mut width: Signal<f64>, event: MountedEvent) {
-    spawn(async move {
-        loop {
-            if width.try_peek().is_err() {
-                return;
-            }
-            if let Ok(bounds) = event.get_client_rect().await {
-                if !bounds.size.width.is_finite() || bounds.size.width <= 0.0 {
-                    futures_timer::Delay::new(Duration::from_millis(500)).await;
-                    continue;
-                }
-                let measured = bounds.size.width.max(240.0);
-                let Ok(current) = width.try_peek().map(|value| *value) else {
-                    return;
-                };
-                if (current - measured).abs() > 1.0 {
-                    let Ok(mut value) = width.try_write() else {
-                        return;
-                    };
-                    *value = measured;
-                }
-            }
-            futures_timer::Delay::new(Duration::from_millis(500)).await;
-        }
-    });
+// Dioxus ResizeEvent reports the host's initial and changed content-box size on
+// web and desktop without a custom JS observer or polling loop.
+pub(crate) fn resize_chart_width(mut width: Signal<f64>, event: ResizeEvent) {
+    let Ok(size) = event.get_content_box_size() else {
+        return;
+    };
+    if !size.width.is_finite() || size.width <= 0.0 {
+        return;
+    }
+    let measured = size.width.max(240.0);
+    let Ok(current) = width.try_peek().map(|value| *value) else {
+        return;
+    };
+    if (current - measured).abs() > 1.0
+        && let Ok(mut value) = width.try_write()
+    {
+        *value = measured;
+    }
 }
 
 fn chart_keyboard_target(
@@ -957,7 +946,8 @@ pub fn CartesianChart(
             p { class: "ix-chart-scroll-hint", hidden: chart_width <= viewport_width + 1.0, "Scroll horizontally or use arrow keys to view the full chart." }
             div { class: "ix-chart-canvas", role: "listbox", tabindex: if valid_points.is_empty() { "-1" } else { "0" }, "aria-label": label.clone(),
                 "aria-activedescendant": if canvas_focused() { keyboard_entry.map(|(series, category)| format!("ix-chart-{id}-{series}-{category}")) } else { None },
-                onmounted: move |event| { mounted.set(Some(event.data())); observe_chart_width(width, event); },
+                onmounted: move |event| mounted.set(Some(event.data())),
+                onresize: move |event| resize_chart_width(width, event),
                 onfocus: move |_| { canvas_focused.set(true); let target = (*keyboard_point.peek()).filter(|point| focus_points.contains(point)).or(keyboard_entry); if let Some(point) = target { keyboard_point.set(Some(point)); active.set(Some(point)); } },
                 onblur: move |_| { canvas_focused.set(false); active.set(None); },
                 onkeydown: move |event: KeyboardEvent| {
@@ -1180,7 +1170,8 @@ pub fn PieChart(
     rsx! { figure { class: "ix-chart ix-chart-pie", "aria-label": label.clone(),
         div { class: "ix-chart-canvas", role: "listbox", tabindex: if valid_points.is_empty() { "-1" } else { "0" }, "aria-label": label.clone(),
             "aria-activedescendant": if canvas_focused() { keyboard_entry.map(|index| format!("ix-chart-pie-{id}-{index}")) } else { None },
-            onmounted: move |event| { mounted.set(Some(event.data())); observe_chart_width(width, event); },
+            onmounted: move |event| mounted.set(Some(event.data())),
+            onresize: move |event| resize_chart_width(width, event),
             onfocus: move |_| { canvas_focused.set(true); let target = (*keyboard_point.peek()).filter(|index| focus_points.contains(&(0,*index))).or(keyboard_entry); if let Some(index) = target { keyboard_point.set(Some(index)); active.set(Some(index)); } },
             onblur: move |_| { canvas_focused.set(false); active.set(None); },
             onkeydown: move |event: KeyboardEvent| {
@@ -1263,7 +1254,7 @@ pub fn GaugeChart(value: f64, #[props(default)] variant: GaugeVariant) -> Elemen
     } else {
         format!("{} / 100 completed", value_label(safe))
     };
-    rsx! { figure { class: if variant == GaugeVariant::Speed { "ix-chart ix-chart-gauge" } else { "ix-chart ix-chart-progress" }, onmounted: move |event| observe_chart_width(width, event),
+    rsx! { figure { class: if variant == GaugeVariant::Speed { "ix-chart ix-chart-gauge" } else { "ix-chart ix-chart-progress" }, onresize: move |event| resize_chart_width(width, event),
         svg { width: "100%", height: if variant == GaugeVariant::Speed { "600" } else { "310" }, view_box: format!("0 0 {chart_width} {}", if variant == GaugeVariant::Speed { 600 } else { 310 }), role: "img", "aria-label": label.clone(),
             title { "{label}" }
             path { d: track, fill: "var(--ix-chart-track)" }
@@ -1308,35 +1299,25 @@ pub const STYLES: &str = r#"
 mod tests {
     use super::*;
 
-    struct TestChartMount;
+    struct TestChartResize;
     struct TestChartConverter;
     macro_rules! test_converter {
         (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
             impl dioxus::html::HtmlEventConverter for TestChartConverter { $(fn $convert(&self, _: &dioxus::html::PlatformEventData) -> dioxus::html::$data { test_converter!(@data $group) })* }
         };
-        (@data Mounted) => { MountedData::new(TestChartMount) };
-        (@data $other:ident) => { panic!("Unexpected non-mounted test event") };
+        (@data Mounted) => { MountedData::new(()) };
+        (@data Resize) => { dioxus::html::ResizeData::new(TestChartResize) };
+        (@data $other:ident) => { panic!("Unexpected chart test event") };
     }
     dioxus::html::with_html_event_groups!(test_converter);
-    impl dioxus::html::RenderedElementBacking for TestChartMount {
+    impl dioxus::html::HasResizeData for TestChartResize {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
-        fn get_client_rect(
+        fn get_content_box_size(
             &self,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = dioxus::html::MountedResult<dioxus::html::geometry::PixelsRect>,
-                    >,
-            >,
-        > {
-            Box::pin(async {
-                Ok(dioxus::html::geometry::PixelsRect::new(
-                    dioxus::html::geometry::euclid::Point2D::new(0.0, 0.0),
-                    dioxus::html::geometry::PixelsSize::new(309.0, 600.0),
-                ))
-            })
+        ) -> dioxus::html::ResizeResult<dioxus::html::geometry::PixelsSize> {
+            Ok(dioxus::html::geometry::PixelsSize::new(309.0, 600.0))
         }
     }
 
@@ -1354,9 +1335,11 @@ mod tests {
             match edit {
                 dioxus::dioxus_core::Mutation::SetId { id }
                 | dioxus::dioxus_core::Mutation::PushId { id } => current_id = id,
-                dioxus::dioxus_core::Mutation::NewEventListener { name } if name == "mounted" => {
+                dioxus::dioxus_core::Mutation::NewEventListener { name }
+                    if matches!(name.as_str(), "mounted" | "resize") =>
+                {
                     dom.runtime().handle_event(
-                        "mounted",
+                        &name,
                         Event::new(
                             Rc::new(dioxus::html::PlatformEventData::new(Box::new(()))),
                             false,

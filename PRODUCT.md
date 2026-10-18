@@ -45,6 +45,7 @@ Bring the Siemens iX interface system to the explicitly selected Dioxus release,
 ## Capabilities and Constraints
 
 - Support Dioxus web and desktop consumers.
+- No JavaScript fallback paths, across every component, task and agent. Use Dioxus composition and explicit mounted-element registration; report unsupported capabilities instead of silently routing them to JavaScript.
 - Keep authored implementation in Rust source files. Use Dioxus APIs for rendering, lifecycle, events, focus, measurements and native inputs/files first. A custom JavaScript binding requires a specific demonstrated framework gap, must remain small, and must be documented. Simplifying existing oversized bridges takes precedence over other tasks; preserve functionality while replacing their implementation. Do not introduce standalone JavaScript or TypeScript runtime files.
 - Broad intended scope includes components, patterns, and useful examples. IMPLEMENTATION.md records current capability coverage and priorities.
 - Preserve familiar terminology and interaction capabilities. Adapt APIs to Rust/Dioxus rather than copying JavaScript syntax; track unsupported functionality explicitly. A focused rewrite of overbuilt subsystems is acceptable while retaining working components, styles/assets, public behavior and useful tests.

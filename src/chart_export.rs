@@ -1,7 +1,11 @@
 //! Export a mounted chart's SVG plot through the host's native image/canvas APIs.
 //!
-//! The small DOM bridge is embedded in Rust and works through Dioxus document
-//! providers on both web and desktop. Chart state and geometry remain Rust.
+//! Direct native image/canvas and pointer-capture integrations use the Dioxus
+//! document provider on web and desktop. Chart state and geometry remain Rust.
+//! Pinned Dioxus 0.8.0-alpha.2 MountedData/PointerData has no pointer-capture,
+//! SVG serialization, canvas rasterization or file-download methods. These
+//! bindings implement those native-only operations; they are not fallback
+//! implementations of Dioxus measurements, events or component ownership.
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use std::fmt;
