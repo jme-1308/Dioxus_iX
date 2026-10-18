@@ -1910,6 +1910,51 @@ fn select_visual_chip(
     } }
 }
 
+// Every keyed option owns its mounted handle. Dioxus disposes it when a
+// filtered option disappears and retains it when the same value is reordered.
+// No DOM lookup or separate option registry is needed.
+fn use_select_option_scroll(active: bool) -> Signal<Option<Rc<MountedData>>> {
+    let mounted = use_signal(|| None::<Rc<MountedData>>);
+    use_effect(use_reactive((&active,), move |(active,)| {
+        let node = mounted();
+        if active {
+            if let Some(node) = node {
+                spawn(async move {
+                    let _ = node
+                        .scroll_to_with_options(dioxus::html::ScrollToOptions {
+                            behavior: dioxus::html::ScrollBehavior::Instant,
+                            vertical: dioxus::html::ScrollLogicalPosition::Nearest,
+                            horizontal: dioxus::html::ScrollLogicalPosition::Nearest,
+                        })
+                        .await;
+                });
+            }
+        }
+    }));
+    mounted
+}
+
+#[component]
+fn SelectAddPresentation(
+    id: String,
+    label: String,
+    aria_label: String,
+    active: bool,
+    onmouseenter: EventHandler<MouseEvent>,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    let mut mounted = use_select_option_scroll(active);
+    rsx! {
+        button { id, r#type: "button", role: "option", tabindex: "-1", "aria-selected": "false",
+            "aria-label": aria_label,
+            class: if active { "ix-select-option ix-select-add ix-select-active" } else { "ix-select-option ix-select-add" },
+            onmounted: move |event| mounted.set(Some(event.data())),
+            onmousedown: move |event| event.prevent_default(), onmouseenter, onclick,
+            crate::Icon { name: "plus", size: 16 } "{label}"
+        }
+    }
+}
+
 #[component]
 fn SelectOptionPresentation(
     id: String,
@@ -1921,11 +1966,13 @@ fn SelectOptionPresentation(
     #[props(default)] onmouseenter: EventHandler<MouseEvent>,
     #[props(default)] onclick: EventHandler<MouseEvent>,
 ) -> Element {
+    let mut mounted = use_select_option_scroll(active);
     rsx! { span { class: "ix-select-item-host", "data-disabled": disabled.to_string(),
         div { class: "ix-select-option-host", "data-selected": selected.to_string(), "data-disabled": disabled.to_string(),
             button { id, value, class: if active { "ix-select-option ix-select-active" } else { "ix-select-option" },
                 r#type: "button", role: "option", tabindex: "-1", disabled,
                 "aria-selected": selected.to_string(),
+                onmounted: move |event| mounted.set(Some(event.data())),
                 onmousedown: move |event| event.prevent_default(), onmouseenter, onclick,
                 span { class: "ix-select-choice", "aria-hidden": "true",
                     if selected { crate::Icon { name: "single-check", size: 16 } }
@@ -2071,7 +2118,7 @@ pub fn Select(
                 required,
                 has_value: !selected.is_empty(),
                 touched: touched.clone(),
-                alive,
+                alive: alive.clone(),
                 input: method_input.clone(),
             },
         );
@@ -2103,69 +2150,42 @@ pub fn Select(
     } else {
         usize::MAX
     };
-    let mut was_open = use_signal(|| false);
-    let mut restore_focus = use_signal(|| true);
-    let focus_id = id.clone();
+    let select_text_id = id.clone();
+    let focus_alive = alive.clone();
     use_effect(move || {
         let is_open = open();
-        if *was_open.peek() && !is_open && *restore_focus.peek() {
-            let id = focus_id.clone();
-            spawn(async move {
-                // Closing and its DOM update are asynchronous. A subsequent
-                // click/Tab may already have focused another control; inspect
-                // and restore atomically so this older close cannot steal it.
-                let task = crate::dom_query::eval(
-                    r#"
-                    const id = await dioxus.recv();
-                    const input = document.getElementById(id), active = document.activeElement;
-                    const root = input?.closest('.ix-select');
-                    if (input?.isConnected && (root?.contains(active) || active === document.body || active === document.documentElement)) {
-                        input.focus({preventScroll:true});
-                    }
-                    return null;
-                "#,
-                );
-                let _ = task.send(id);
-                let _ = task.await;
-            });
-        }
-        if !*was_open.peek() && is_open {
-            restore_focus.set(true);
-            let id = focus_id.clone();
+        if is_open {
+            let node = trigger_ref.peek().clone();
+            let alive = focus_alive.clone();
+            let id = select_text_id.clone();
             let select_text = !*query_dirty.peek();
             spawn(async move {
-                let task = crate::dom_query::eval(
-                    r#"
-                    const [id, selectText] = await dioxus.recv();
-                    const input = document.getElementById(id);
-                    input?.focus({preventScroll:true});
-                    if (selectText) input?.select();
-                    return null;
-                "#,
-                );
-                let _ = task.send((id, select_text));
-                let _ = task.await;
-            });
-        }
-        was_open.set(is_open);
-    });
-    let scroll_list_id = list_id.clone();
-    use_effect(move || {
-        let is_open = open();
-        let index = active();
-        let _query = query();
-        if is_open {
-            let option_id = format!("{scroll_list_id}-{index}");
-            spawn(async move {
-                let task = crate::dom_query::eval(
-                    r#"
-                    const id = await dioxus.recv();
-                    document.getElementById(id)?.scrollIntoView({block:'nearest',inline:'nearest'});
-                    return null;
-                "#,
-                );
-                let _ = task.send(option_id);
-                let _ = task.await;
+                if !alive.get() || !*open.peek() {
+                    return;
+                }
+                if let Some(node) = node {
+                    // Dioxus owns focus. A close needs no restoration: options
+                    // prevent mousedown's focus transfer, and keyboard actions
+                    // originate from the combobox. Outside clicks/Tab therefore
+                    // cannot be overridden by an older close-focus job.
+                    let _ = node.set_focus(true).await;
+                    if !alive.get() || !*open.peek() || !select_text {
+                        return;
+                    }
+                    // Pinned MountedData exposes focus and geometry but has no
+                    // input selection/select-range API on either renderer.
+                    // This exception only selects text; it never moves focus.
+                    #[cfg(any(feature = "web", feature = "desktop"))]
+                    {
+                        let task = crate::dom_query::eval(
+                            "const id = await dioxus.recv(); const input = document.getElementById(id); if (input === document.activeElement) input.select(); return null;",
+                        );
+                        let _ = task.send(id);
+                        let _ = task.await;
+                    }
+                    #[cfg(not(any(feature = "web", feature = "desktop")))]
+                    let _ = id;
+                }
             });
         }
     });
@@ -2266,16 +2286,18 @@ pub fn Select(
             "data-select-measured-facts": measured_facts(),
             "data-feedback-tooltip": tooltip_available.to_string(),
             onfocusout: move |_| {
+                // FocusData in pinned dioxus-html carries neither relatedTarget
+                // nor target containment. One read distinguishes internal focus
+                // movement from leaving the whole control (web and desktop).
                 let id = blur_root_id.clone();
                 spawn(async move {
                     let task = crate::dom_query::eval(r#"
                         const id = await dioxus.recv();
-                        await new Promise(requestAnimationFrame);
                         const root = document.getElementById(id);
                         return !!root?.contains(document.activeElement);
                     "#);
                     if task.send(id).is_ok() && matches!(task.join::<bool>().await, Ok(false)) {
-                        restore_focus.set(false); open.set(false); overflow_open.set(false);
+                        open.set(false); overflow_open.set(false);
                         query.set(String::new()); query_dirty.set(false); active.set(usize::MAX);
                     }
                 });
@@ -2299,7 +2321,7 @@ pub fn Select(
                 if read_only { return; }
                 match event.key() {
                     Key::Escape => { event.prevent_default(); open.set(false); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); }
-                    Key::Tab => { restore_focus.set(false); open.set(false); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); }
+                    Key::Tab => { open.set(false); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); }
                     Key::ArrowDown | Key::ArrowUp => {
                         event.prevent_default();
                         overflow_open.set(false); open.set(true);
@@ -2475,7 +2497,7 @@ pub fn Select(
             if open() && !read_only {
                 SelectOptionsSurface { anchor_id: control_id.clone(), input_id: id.clone(), enable_top_layer,
                     dropdown_width, dropdown_max_width, onnativeerror,
-                    onclose: move |_| { restore_focus.set(false); open.set(false); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); },
+                    onclose: move |_| { open.set(false); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); },
                     div { class: "ix-select-list-header", hidden: hide_list_header || no_matches, "aria-hidden": "true", title: list_header.clone(), "{list_header}" }
                     div { id: list_id.clone(), role: "listbox", "aria-multiselectable": multiple.to_string(), class: "ix-select-list",
                         for (index, option) in visible.iter().cloned().enumerate() {
@@ -2493,10 +2515,9 @@ pub fn Select(
                         }
                         if no_matches && !editable { div { class: "ix-select-empty", "{no_matches_text}" } }
                         if can_add {
-                            button { id: format!("{list_id}-{}", visible.len()), r#type: "button", role: "option", tabindex: "-1", "aria-selected": "false",
-                                "aria-label": format!("{aria_label_add}: {}", query_text.trim()),
-                                class: if active_index == visible.len() { "ix-select-option ix-select-add ix-select-active" } else { "ix-select-option ix-select-add" },
-                                onmousedown: move |event| event.prevent_default(),
+                            SelectAddPresentation { id: format!("{list_id}-{}", visible.len()),
+                                aria_label: format!("{aria_label_add}: {}", query_text.trim()),
+                                label: query_text.trim().to_string(), active: active_index == visible.len(),
                                 onmouseenter: move |_| active.set(add_index),
                                 onclick: move |_| {
                                 let text = query.read().trim().to_string();
@@ -2504,7 +2525,7 @@ pub fn Select(
                                 additions.write().push(SelectOption::new(text.clone(), text.clone())); onadd.call(text.clone());
                                 publish_selection(update_selection(add_selected.clone(), text, multiple), onvaluechange, onvalueschange);
                                 query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); if !multiple { open.set(false); }
-                            }, crate::Icon { name: "plus".to_string(), size: 16 } "{query_text.trim()}" }
+                            } }
                         }
                     }
                 }
@@ -3559,6 +3580,101 @@ mod tests {
             Poll::Pending => panic!("mock native method did not settle"),
         }
     }
+    struct SelectScrollMount(Rc<std::cell::Cell<usize>>);
+    impl dioxus::html::RenderedElementBacking for SelectScrollMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn scroll_to(
+            &self,
+            options: dioxus::html::ScrollToOptions,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            let count = self.0.clone();
+            Box::pin(async move {
+                assert_eq!(options.behavior, dioxus::html::ScrollBehavior::Instant);
+                assert!(matches!(
+                    options.vertical,
+                    dioxus::html::ScrollLogicalPosition::Nearest
+                ));
+                assert!(matches!(
+                    options.horizontal,
+                    dioxus::html::ScrollLogicalPosition::Nearest
+                ));
+                count.set(count.get() + 1);
+                Ok(())
+            })
+        }
+    }
+    #[component]
+    fn SelectScrollTestOption(active: bool, calls: Rc<std::cell::Cell<usize>>) -> Element {
+        let mut mounted = use_select_option_scroll(active);
+        use_hook(move || mounted.set(Some(Rc::new(MountedData::new(SelectScrollMount(calls))))));
+        rsx! { button {} }
+    }
+    type SelectScrollConfig =
+        Rc<std::cell::RefCell<Vec<(String, bool, Rc<std::cell::Cell<usize>>)>>>;
+    fn select_scroll_fixture(config: SelectScrollConfig) -> Element {
+        let options = config.borrow().clone();
+        rsx! { for (key, active, calls) in options {
+            SelectScrollTestOption { key: "{key}", active, calls }
+        } }
+    }
+    fn settle_select_scroll(dom: &mut VirtualDom) {
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+        let mut context = Context::from_waker(Waker::noop());
+        for _ in 0..8 {
+            let work = { pin!(dom.wait_for_work()).poll(&mut context) };
+            match work {
+                Poll::Ready(()) => {
+                    dom.render_immediate_to_vec();
+                }
+                Poll::Pending => return,
+            }
+        }
+        panic!("Select option effects did not settle");
+    }
+    #[test]
+    fn select_option_scroll_uses_keyed_mounts_across_filtering_and_reordering() {
+        let alpha = Rc::new(std::cell::Cell::new(0));
+        let beta = Rc::new(std::cell::Cell::new(0));
+        let config = Rc::new(std::cell::RefCell::new(vec![
+            ("a".into(), true, alpha.clone()),
+            ("b".into(), false, beta.clone()),
+        ]));
+        let mut dom = VirtualDom::new_with_props(select_scroll_fixture, config.clone());
+        dom.rebuild_in_place();
+        settle_select_scroll(&mut dom);
+        assert_eq!((alpha.get(), beta.get()), (1, 0));
+        config.borrow_mut().reverse();
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        settle_select_scroll(&mut dom);
+        assert_eq!(
+            (alpha.get(), beta.get()),
+            (1, 0),
+            "reordering retains the keyed mount"
+        );
+        *config.borrow_mut() = vec![("b".into(), true, beta.clone())];
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        settle_select_scroll(&mut dom);
+        assert_eq!(
+            (alpha.get(), beta.get()),
+            (1, 1),
+            "filtered-out mounts receive no scroll"
+        );
+        config.borrow_mut().clear();
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate_to_vec();
+        settle_select_scroll(&mut dom);
+        assert_eq!((alpha.get(), beta.get()), (1, 1));
+    }
+
     #[test]
     fn select_native_input_descriptor_focuses_its_mount_and_stops_after_unmount() {
         let count = Rc::new(std::cell::Cell::new(0));

@@ -13,7 +13,7 @@ The library must support both Dioxus web and Dioxus desktop applications while r
 - Rust with Dioxus **v0.8.0-alpha.2**, explicitly selected by the user.
 - Release reference: https://github.com/DioxusLabs/dioxus/releases/tag/v0.8.0-alpha.2
 - Do not silently substitute another Dioxus release.
-- Native Rust/Dioxus components, Rust-embedded styles/assets, and small native DOM bridges; no upstream Web Component runtime.
+- Native Rust/Dioxus components and Rust-embedded styles/assets; no upstream Web Component runtime. Dioxus owns normal DOM/lifecycle/event work. Small custom JavaScript bindings are permitted only for demonstrated missing or broken framework capabilities. Existing substantial bridges are the first simplification priority.
 - A library and interactive gallery exist. `just --list` is the command index; preserve build caches and the existing dependency/toolchain configuration.
 
 ## Users
@@ -24,11 +24,11 @@ Dioxus application developers who need reusable Siemens iX components and UI pat
 
 Create a Dioxus UI library based on Siemens Industrial Experience (iX), covering a broad range of UI components, UI patterns, and design tools according to Siemens iX guidelines.
 
-The user changed the goal on **2026-10-18** to **a good approximation of iX, with reliable core interactions**. Retain the recognizable iX Brand design language and coherent component states while adapting the implementation naturally to Rust/Dioxus.
+The user clarified the goal on **2026-10-18**: build **what Siemens iX should be if implemented for Dioxus**, aiming to retain all nondeprecated functionality. Preserve the recognizable Brand design language and coherent states, while using idiomatic Rust/Dioxus implementation and good visual approximation.
 
-Acceptance means common workflows work: clicking, typing, selection, opening and closing surfaces, disabled/loading states, and basic keyboard/focus accessibility. Components should look convincing in representative desktop/narrow layouts and light/dark themes. Useful examples should make those capabilities easy to try.
+Functional coverage should remain broad; common workflows are the first implementation and verification priority, not the final feature limit. The baseline includes: clicking, typing, selection, opening and closing surfaces, disabled/loading states, and basic keyboard/focus accessibility. Components should look convincing in representative desktop/narrow layouts and light/dark themes. Useful examples should make those capabilities easy to try.
 
-Exact DOM structure, exhaustive upstream API/member coverage, invisible computed-style equality, upstream bugs, millisecond timing and frame-by-frame event chronology are **outside the acceptance target**. Existing detailed comparisons remain historical reference. Further deep investigation needs a concrete user-facing defect, a regression, or an explicit request; it must not displace broader component coverage.
+Exact DOM structure, identical JavaScript/custom-element API syntax, invisible computed-style equality, upstream bugs, millisecond timing and frame-by-frame event chronology are **outside the acceptance target**. Missing user-facing capabilities remain recorded work; simplifying implementation does not authorize dropping features. Existing detailed comparisons remain historical reference. Further deep investigation needs a concrete user-facing defect, a regression, or an explicit request; it must not displace broader component coverage.
 
 ## Positioning
 
@@ -45,9 +45,9 @@ Bring the Siemens iX interface system to the explicitly selected Dioxus release,
 ## Capabilities and Constraints
 
 - Support Dioxus web and desktop consumers.
-- Keep authored implementation in Rust source files. The user approved small DOM bridges embedded in Rust for native surface activation, focus, pointer capture, and chart export; component state and interaction logic remain Rust. Do not introduce standalone JavaScript or TypeScript files.
+- Keep authored implementation in Rust source files. Use Dioxus APIs for rendering, lifecycle, events, focus, measurements and native inputs/files first. A custom JavaScript binding requires a specific demonstrated framework gap, must remain small, and must be documented. Simplifying existing oversized bridges takes precedence over other tasks; preserve functionality while replacing their implementation. Do not introduce standalone JavaScript or TypeScript runtime files.
 - Broad intended scope includes components, patterns, and useful examples. IMPLEMENTATION.md records current capability coverage and priorities.
-- Preserve familiar terminology and common interaction expectations. Complete upstream API compatibility is optional.
+- Preserve familiar terminology and interaction capabilities. Adapt APIs to Rust/Dioxus rather than copying JavaScript syntax; track unsupported functionality explicitly. A focused rewrite of overbuilt subsystems is acceptable while retaining working components, styles/assets, public behavior and useful tests.
 - Check representative web and desktop workflows separately. Do not infer usability from compilation alone.
 - Read-only reference: core 5.2.1 at 8bf599bc68365d7752e12832e71b625883b93d7a. This provides stable design/behavior guidance; exact runtime equivalence is not required.
 - Preserve MIT notices and existing packaging boundaries. Network/services and separately licensed assets remain outside the bundled library.

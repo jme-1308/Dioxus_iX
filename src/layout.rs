@@ -379,12 +379,6 @@ fn accept_tab_request(
     !event.default_prevented()
 }
 
-#[derive(serde::Deserialize)]
-struct TabMeasurements {
-    content: f64,
-    available: f64,
-}
-
 fn tabs_overflow(content: f64, available: f64) -> bool {
     content.is_finite() && available.is_finite() && available > 0.0 && content > available
 }
@@ -397,50 +391,19 @@ fn selected_tab(items: &[TabItem], requested: usize) -> Option<usize> {
         .or_else(|| items.iter().position(|item| !item.disabled))
 }
 
-// Measurement/scroll/focus plumbing only. Rust owns overflow, selection and keys.
-// Observe intrinsic widths too, so font, counter and label changes are measured.
-const TABS_MEASURE: &str = r#"
-const id = await dioxus.recv();
-const root = document.getElementById(id);
-if (!root) return;
-let frame = 0, previous = '', done = () => {};
-const cleanup = () => { resize.disconnect(); changes.disconnect(); removal.disconnect(); cancelAnimationFrame(frame); document.fonts?.removeEventListener('loadingdone', schedule); done(); };
-const measure = () => {
-  frame = 0;
-  if (!root.isConnected) { cleanup(); return; }
-  const strip = root.querySelector('.ix-tabs');
-  if (!strip) return;
-  const payload = { content: strip.scrollWidth, available: strip.clientWidth };
-  const json = JSON.stringify(payload);
-  if (json !== previous) { previous = json; dioxus.send(payload); }
-};
-const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
-const resize = new ResizeObserver(schedule);
-const observe = () => { resize.disconnect(); resize.observe(root); root.querySelectorAll('.ix-tabs,.ix-tab-wrapper').forEach(n => resize.observe(n)); schedule(); };
-const changes = new MutationObserver(observe);
-changes.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
-const removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
-removal.observe(document.documentElement, { childList: true, subtree: true });
-document.fonts?.addEventListener('loadingdone', schedule);
-await new Promise(resolve => { done = resolve; observe(); });
-return null;
-"#;
-
-fn reveal_tab(root: String, target: String, focus: bool) {
+// The framework owns element identity and platform-specific focus/scroll plumbing.
+fn reveal_tab(node: Rc<MountedData>, focus: bool) {
     spawn(async move {
-        let task = crate::dom_query::eval(
-            r#"
-const [rootId, targetId, focus] = await dioxus.recv();
-await new Promise(requestAnimationFrame);
-const root = document.getElementById(rootId), tab = document.getElementById(targetId);
-if (root?.contains(tab)) {
-  if (focus) tab.focus({preventScroll:true});
-  tab.scrollIntoView({block:'nearest',inline:'nearest',behavior:'smooth'});
-}
-"#,
-        );
-        let _ = task.send((root, target, focus));
-        let _ = task.await;
+        if focus {
+            let _ = node.set_focus(true).await;
+        }
+        let _ = node
+            .scroll_to_with_options(dioxus::html::ScrollToOptions {
+                behavior: dioxus::html::ScrollBehavior::Smooth,
+                vertical: dioxus::html::ScrollLogicalPosition::Nearest,
+                horizontal: dioxus::html::ScrollLogicalPosition::Nearest,
+            })
+            .await;
     });
 }
 
@@ -478,9 +441,32 @@ pub fn Tabs(
     static TABS_ID: AtomicUsize = AtomicUsize::new(1);
     let root_id = use_hook(|| format!("ix-tabs-{}", TABS_ID.fetch_add(1, Ordering::Relaxed)));
     let prefix = id_prefix.clone().unwrap_or_else(|| root_id.clone());
-    let mount_id = root_id.clone();
     let mut measured_overflow = use_signal(|| false);
-    let mut mounted = use_signal(BTreeMap::<String, MountedEvent>::new);
+    let mut mounted = use_signal(BTreeMap::<String, Rc<MountedData>>::new);
+    let mut strip = use_signal(|| None::<Rc<MountedData>>);
+    let measure = use_callback(move |()| {
+        let node = strip.peek().clone();
+        spawn(async move {
+            if let Some(node) = node {
+                if let (Ok(content), Ok(bounds)) =
+                    (node.get_scroll_size().await, node.get_client_rect().await)
+                {
+                    // The strip has no inline border or padding; round the
+                    // viewport width like the browser's integer scroll size.
+                    let overflow = tabs_overflow(content.width, bounds.size.width.round());
+                    if *measured_overflow.peek() != overflow {
+                        measured_overflow.set(overflow);
+                    }
+                }
+            }
+        });
+    });
+    // Dioxus onresize observes the strip and intrinsic tab widths, including
+    // changes caused by loaded fonts. Prop-driven removals also need a measure.
+    use_effect(use_reactive!(|items, small, rounded, stretched| {
+        let _ = (items, small, rounded, stretched);
+        measure.call(());
+    }));
     let live_keys: BTreeSet<_> = items.iter().map(|item| item.key.clone()).collect();
     use_effect(use_reactive!(|live_keys| {
         mounted.write().retain(|key, _| live_keys.contains(key));
@@ -506,50 +492,35 @@ pub fn Tabs(
         }
     });
     let active_key = active.map(|index| items[index].key.clone());
-    let reveal_root = root_id.clone();
-    let reveal_prefix = prefix.clone();
     use_effect(use_reactive!(|active_key| {
         if let Some(key) = active_key {
-            reveal_tab(
-                reveal_root.clone(),
-                format!(
-                    "{reveal_prefix}-tab-{}",
-                    crate::composition::tab_key_id(&key)
-                ),
-                false,
-            );
+            let node = mounted.read().get(&key).cloned();
+            if let Some(node) = node {
+                reveal_tab(node, false);
+            }
         }
     }));
     let overflowing = measured_overflow();
     let show_menu = overflow_menu || (overflowing && !stretched);
     rsx! { div { id: root_id.clone(), class: "ix-tabs-shell", "data-overflow": overflowing,
-        onmounted: move |_| {
-            let id = mount_id.clone();
-            spawn(async move {
-                let mut task = dioxus::document::eval(TABS_MEASURE);
-                if task.send(id).is_err() { return; }
-                while let Ok(measured) = task.recv::<TabMeasurements>().await {
-                    let overflow = tabs_overflow(measured.content, measured.available);
-                    if *measured_overflow.peek() != overflow { measured_overflow.set(overflow); }
-                }
-            });
-        },
         div { class: "ix-tabs", "data-placement": placement.class(), role: "tablist", "aria-label": label, tabindex: if overflowing { 0 } else { -1 }, "data-small": small, "data-rounded": rounded, "data-stretched": stretched,
+        onmounted: move |event| { strip.set(Some(event.data())); measure.call(()); },
+        onresize: move |_| measure.call(()),
         for (index, item) in items.iter().enumerate() {
             div { key: "{item.key}", class: "ix-tab-wrapper", "data-tab-key": item.key.clone(), "data-selected": active == Some(index),
+                onresize: move |_| measure.call(()),
                 button { class: "ix-tab", r#type: "button", role: "tab", disabled: item.disabled, "aria-label": if rounded { Some(item.label.clone()) } else { None }, title: if rounded { Some(item.label.clone()) } else { None }, "aria-selected": active == Some(index), tabindex: if active.or_else(|| items.iter().position(|item| !item.disabled)) == Some(index) { 0 } else { -1 },
                     id: format!("{prefix}-tab-{}", crate::composition::tab_key_id(&item.key)),
                     "aria-controls": id_prefix.as_ref().map(|prefix| format!("{prefix}-panel-{}", crate::composition::tab_key_id(&item.key))),
-                    onmounted: { let key = item.key.clone(); move |event| { mounted.write().insert(key.clone(), event); } },
+                    onmounted: { let key = item.key.clone(); move |event| { mounted.write().insert(key.clone(), event.data()); } },
                     onclick: move |_| request.call(Some(index)),
-                    onkeydown: { let items = items.clone(); let root = root_id.clone(); let prefix = prefix.clone(); move |event: KeyboardEvent| {
+                    onkeydown: { let items = items.clone(); move |event: KeyboardEvent| {
                         let target = match event.key() { Key::ArrowRight => next_tab(&items, index, true), Key::ArrowLeft => next_tab(&items, index, false), Key::Home => items.iter().position(|item| !item.disabled), Key::End => items.iter().rposition(|item| !item.disabled), _ => return };
                         event.prevent_default();
                         if let Some(target) = target {
                             if keyboard_navigation == TabKeyboardNavigation::Automatic { request.call(Some(target)); }
                             let node = mounted_tab(&items, target, &mounted.peek()).cloned();
-                            if let Some(node) = node { spawn(async move { let _ = node.set_focus(true).await; }); }
-                            reveal_tab(root.clone(), format!("{prefix}-tab-{}", crate::composition::tab_key_id(&items[target].key)), false);
+                            if let Some(node) = node { reveal_tab(node, true); }
                         }
                     } },
                     if rounded { span { class: "ix-tab-rounded-circle", if let Some(icon) = &item.icon { Icon { name: icon.clone(), size: 32 } } else { "{item.label}" } } }
@@ -561,7 +532,7 @@ pub fn Tabs(
         }
     }
         if show_menu { crate::Dropdown { label: "All tabs", aria_label: aria_label_more_tabs, icon: "more-menu", variant: crate::ButtonVariant::SubtleTertiary, class: "ix-tabs-overflow",
-            for (index, item) in items.iter().enumerate() { crate::DropdownItem { key: "{item.key}", label: item.label.clone(), icon: item.icon.clone(), disabled: item.disabled, checked: active == Some(index), checkable: true, onclick: { let key = item.key.clone(); let root = root_id.clone(); let prefix = prefix.clone(); move |_| { request.call(Some(index)); reveal_tab(root.clone(), format!("{prefix}-tab-{}", crate::composition::tab_key_id(&key)), true); } } } }
+            for (index, item) in items.iter().enumerate() { crate::DropdownItem { key: "{item.key}", label: item.label.clone(), icon: item.icon.clone(), disabled: item.disabled, checked: active == Some(index), checkable: true, onclick: { let key = item.key.clone(); move |_| { request.call(Some(index)); let node = mounted.peek().get(&key).cloned(); if let Some(node) = node { reveal_tab(node, true); } } } } }
         } }
     } }
 }

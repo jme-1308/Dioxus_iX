@@ -1,6 +1,6 @@
 # Dioxus iX project rules
 
-Build a good approximation of Siemens iX Brand in Dioxus **=0.8.0-alpha.2** for web and desktop WebView. The read-only upstream is `../ix` at `8bf599bc68365d7752e12832e71b625883b93d7a` (core 5.2.1).
+Build the Dioxus-native counterpart of Siemens iX Brand, aiming to retain its functionality with a good visual approximation, in Dioxus **=0.8.0-alpha.2** for web and desktop WebView. The read-only upstream is `../ix` at `8bf599bc68365d7752e12832e71b625883b93d7a` (core 5.2.1).
 
 ## First priority: simplify custom JavaScript; use Dioxus first
 
@@ -15,11 +15,11 @@ This applies to **every task, agent and delegation**. Simplifying the existing h
 
 ## Acceptance target
 
-- The user replaced the former 1:1 clone requirement with **a good visual approximation and reliable core interactions** on 2026-10-18.
+- The target is **how Siemens iX should work if built for Dioxus**: recognizable Brand appearance, idiomatic Dioxus implementation and an attempt to retain all nondeprecated functionality. Approximation concerns visual/internal equivalence; it is not a core-only feature ceiling.
 - Prioritize recognizable iX appearance, coherent sizing/spacing/states, useful examples, and common interactions: clicking, typing, selecting, opening/closing, disabled/loading behavior, and basic keyboard/focus accessibility.
-- Idiomatic Rust/Dioxus adaptations are acceptable. Full upstream API coverage, identical DOM wrappers, invisible CSS values, upstream quirks, millisecond timing, frame-by-frame event chronology, and exhaustive source-member audits are not acceptance requirements.
+- Preserve user-facing capabilities and useful options through idiomatic Rust props, events and composition. Identical JavaScript/custom-element APIs, DOM wrappers, invisible CSS values, source quirks, millisecond timing, frame-by-frame event chronology and exhaustive source-member audits are not required. Record missing functionality explicitly instead of silently excluding it.
 - Use upstream as a reference, not an exact-equivalence oracle. Verify representative visible states and normal workflows. Investigate deeper only for a reproduced user-facing defect, a regression, or a specific user request.
-- Keep existing useful functionality and tests. Avoid adding large comparison matrices, timing trackers, or audit fan-outs. Once a capability works and looks right, proceed to broader component coverage.
+- Simplify or replace implementation machinery without dropping useful functionality or tests. A focused subsystem rewrite is acceptable; a whole-library rewrite is not assumed. Avoid adding large comparison matrices, timing trackers, or audit fan-outs. Once a capability works and looks right, proceed to broader component coverage.
 
 ## Scope
 

@@ -1506,6 +1506,11 @@ fn DropdownSurface(
     let runtime_owner = runtime.owner_id();
     let root_role = (!external).then_some("button");
     let trigger_marker = (!external).then_some(id.clone());
+    let focus_retention = use_dropdown_focus_retention(
+        context.host_id(),
+        settings.mode == DropdownNavigationMode::RovingTabindex,
+    );
+    let blur_retention = focus_retention.clone();
     rsx! { div {
         id:if external {format!("ix-dropdown-surface-owner-{}",context.id)}else{trigger_id},
         class:"ix-dropdown {class}",role:root_role,tabindex:(!external).then_some(if blocked {-1}else{0}),
@@ -1535,7 +1540,8 @@ fn DropdownSurface(
             "data-ix-overlay-host":id,"data-placement":effective_placement.as_str(),"data-configured-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
             popover:enable_top_layer.then_some("manual"),
             style:format!("position-anchor:--ix-dropdown-anchor-{};--ix-dropdown-area:{};{}",context.id,effective_placement.area(),if suppress_automatic_placement {"position-try-fallbacks:none"} else {""}),
-            DropdownFocusRetention {menu_id:context.host_id(),enabled:settings.mode==DropdownNavigationMode::RovingTabindex}
+            onfocusin:move |_|{if let Some(transport)=focus_retention.borrow().as_ref(){let _=transport.send("focus");}},
+            onfocusout:move |_|{if let Some(transport)=blur_retention.borrow().as_ref(){let _=transport.send("blur");}},
             {children}
         }
         overlay_runtime::OverlayTransport {runtime}
@@ -1768,11 +1774,16 @@ pub fn DropdownItem(
     }}
 }
 
-// Dioxus moves keyed DOM nodes with insertBefore, which can reset browser focus
-// even though the Rust component and its element both survive. This bridge
-// preserves only existing native focus; selection and navigation stay in Rust.
-#[component]
-fn DropdownFocusRetention(menu_id: String, enabled: bool) -> Element {
+// Dioxus alpha.2's keyed insertBefore moves can blur an element whose
+// MountedData survives. MountedData can set focus, but neither it nor the
+// cross-target FocusData exposes activeElement/relatedTarget or a DOM-move
+// notification (dioxus-html events/{mounted,focus}.rs). Keep this narrow native
+// repair until the renderer preserves focus across moves: Dioxus owns focus
+// event dispatch and scope cleanup; observation is limited to this menu.
+fn use_dropdown_focus_retention(
+    menu_id: String,
+    enabled: bool,
+) -> Rc<RefCell<Option<dioxus::document::Eval>>> {
     let transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let dropped = transport.clone();
     use_drop(move || {
@@ -1780,74 +1791,61 @@ fn DropdownFocusRetention(menu_id: String, enabled: bool) -> Element {
             let _ = task.send("finish");
         }
     });
+    let effect_transport = transport.clone();
     use_effect(use_reactive(
         (&menu_id, &enabled),
         move |(menu_id, enabled)| {
-            if let Some(previous) = transport.borrow_mut().take() {
+            if let Some(previous) = effect_transport.borrow_mut().take() {
                 let _ = previous.send("finish");
             }
             if !enabled {
                 return;
             }
             let task = dioxus::document::eval(DROPDOWN_FOCUS_RETENTION);
-            if task.send(menu_id.clone()).is_ok() {
-                if let Some(previous) = transport.borrow_mut().replace(task) {
-                    let _ = previous.send("finish");
-                }
+            if task.send(menu_id).is_ok() {
+                *effect_transport.borrow_mut() = Some(task);
             }
         },
     ));
-    VNode::empty()
+    transport
 }
 
 const DROPDOWN_FOCUS_RETENTION: &str = r#"
-const id = await dioxus.recv(), menu = document.getElementById(id);
+const menu = document.getElementById(await dioxus.recv());
 if (!menu) return;
 const owned = target => {
   const item = target instanceof Element ? target.closest('[data-ix-dropdown-item]') : null;
   return item?.closest('[role="menu"]') === menu ? item : null;
 };
-let focused = owned(document.activeElement), disposed = false, removed;
-const removal = new Promise(resolve => { removed = resolve; });
+let focused = owned(document.activeElement);
+const clear = () => { focused = null; };
 const fallback = () => document.activeElement === document.body || document.activeElement === menu;
 const contains = (nodes, target) => [...nodes].some(node => node === target || node.contains(target));
 const changed = records => {
-  if (disposed) return;
-  if (!menu.isConnected) { removed(); return; }
   const target = focused;
-  if (!target || !target.isConnected || owned(target) !== target || (target.disabled||target.hasAttribute('disabled')) || !fallback()) return;
+  if (!menu.isConnected || !target?.isConnected || owned(target) !== target ||
+      target.disabled || target.hasAttribute('disabled') || !fallback()) return;
   if (records.some(record => contains(record.removedNodes, target)) &&
-      records.some(record => contains(record.addedNodes, target))) {
-    target.focus({preventScroll: true});
-  }
+      records.some(record => contains(record.addedNodes, target))) target.focus({preventScroll: true});
 };
 const observer = new MutationObserver(changed);
-const onFocus = event => { focused = owned(event.target); };
-const clear = () => { focused = null; };
-const onPointer = event => { if (!menu.contains(event.target)) clear(); };
-const onFocusOut = event => {
-  if (event.target !== focused) return;
-  if (event.relatedTarget) { focused = owned(event.relatedTarget); return; }
-  const target = focused;
-  queueMicrotask(() => {
-    if (focused !== target || disposed) return;
-    // A move and its focusout belong to the same DOM mutation batch. An
-    // explicit blur without that move must invalidate the remembered node.
-    changed(observer.takeRecords());
-    if (focused === target && fallback()) clear();
-  });
-};
-document.addEventListener('focusin', onFocus, true);
-document.addEventListener('focusout', onFocusOut, true);
-document.addEventListener('pointerdown', onPointer, true);
+observer.observe(menu, {childList: true, subtree: true});
+// Window deactivation is not exposed by Dioxus's element FocusData.
 window.addEventListener('blur', clear);
-observer.observe(document.body, {childList: true, subtree: true});
-try { await Promise.race([dioxus.recv(), removal]); }
-finally {
-  disposed = true; observer.disconnect();
-  document.removeEventListener('focusin', onFocus, true);
-  document.removeEventListener('focusout', onFocusOut, true);
-  document.removeEventListener('pointerdown', onPointer, true);
+try {
+  for (;;) {
+    const event = await dioxus.recv();
+    if (event === 'finish') break;
+    if (event === 'focus') focused = owned(document.activeElement);
+    else if (event === 'blur' && focused) {
+      // A keyed move and its blur share the renderer's mutation batch. Repair
+      // that move before clearing an explicit blur, without scheduling focus.
+      changed(observer.takeRecords());
+      focused = fallback() ? null : owned(document.activeElement);
+    }
+  }
+} finally {
+  observer.disconnect();
   window.removeEventListener('blur', clear);
 }
 "#;

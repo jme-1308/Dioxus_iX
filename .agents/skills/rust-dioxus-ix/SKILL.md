@@ -7,7 +7,7 @@ Follow [AGENTS.md](../../../AGENTS.md) and consult only the relevant [parity led
 
 ## Priority and implementation choice
 
-The repository's Dioxus-first JavaScript simplification policy takes precedence over other backlog work and historical parity requirements, including for delegated agents. Check the pinned Dioxus source and use its built-in mounted-element, focus, measurement, event and input/file APIs before writing or retaining custom JavaScript. Require a specific demonstrated API gap for each unavoidable bridge; generic DOM or cross-platform arguments are insufficient. Prefer removing redundant infrastructure while preserving ordinary workflows. See AGENTS.md and R02 in IMPLEMENTATION.md.
+The repository's Dioxus-first JavaScript simplification policy takes precedence over other backlog work and historical parity requirements, including for delegated agents. Check the pinned Dioxus source and use its built-in mounted-element, focus, measurement, event and input/file APIs before writing or retaining custom JavaScript. Require a specific demonstrated API gap for each unavoidable bridge; generic DOM or cross-platform arguments are insufficient. Preserve the intended upstream functional breadth through idiomatic Dioxus replacements; ordinary workflows are the verification baseline, not a feature ceiling. Record unsupported capabilities explicitly. Prefer removing redundant infrastructure without dropping useful functionality. See AGENTS.md and R02 in IMPLEMENTATION.md.
 
 ## Contract
 

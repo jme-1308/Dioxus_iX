@@ -41,6 +41,11 @@ path = "examples/gallery/main.rs"
 required-features = ["launch"]
 
 [[example]]
+name = "dioxus_first_probe"
+path = "tools/dioxus_first_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "progress_probe"
 path = "tools/progress_probe.rs"
 required-features = ["launch"]
