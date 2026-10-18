@@ -55,6 +55,7 @@ mod dropdown_inventory;
 pub mod form_control;
 pub mod forms;
 mod header_layout;
+mod icon_button_styles;
 pub mod icons;
 mod item_visual;
 pub mod layout;

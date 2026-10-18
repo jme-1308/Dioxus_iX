@@ -132,7 +132,7 @@ pub fn Button(
 ) -> Element {
     let blocked = disabled || loading;
     let class = format!(
-        "ix-button ix-button-standard ix-button-{} ix-align-{} {}",
+        "ix-button ix-button-standard ix-button-tokenized ix-button-{} ix-align-{} {}",
         variant.as_str(),
         alignment.as_str(),
         class
@@ -172,10 +172,17 @@ pub fn Button(
 }
 
 /// An icon-only action with an explicitly required accessible name.
+///
+/// Size, glyph, oval radius and state styles consume the source semantic tokens.
+/// `icon_color` names a CSS custom property to use for the glyph; the enclosing
+/// theme or a component rule can also supply `--ix-icon-button-color` directly.
+/// Loading replaces the icon and prevents activation like disabled. Native form
+/// controls and the required explicit name remain Rust accessibility adapters.
 #[component]
 pub fn IconButton(
     icon: String,
     label: String,
+    icon_color: Option<String>,
     #[props(default = ButtonVariant::SubtlePrimary)] variant: ButtonVariant,
     #[props(default)] size: ButtonIconSize,
     #[props(default)] disabled: bool,
@@ -186,13 +193,20 @@ pub fn IconButton(
     onclick: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let blocked = disabled || loading;
+    let loading_size = match (!icon.is_empty(), size) {
+        (true, ButtonIconSize::Twelve) => SpinnerSize::Xxs,
+        (true, ButtonIconSize::Sixteen) => SpinnerSize::Xs,
+        _ => SpinnerSize::Sm,
+    };
     rsx! { button {
-        class: "ix-button ix-icon-button ix-button-{variant.as_str()} ix-icon-size-{size.as_str()} {class}",
+        class: "ix-button ix-icon-button ix-button-tokenized ix-icon-button-native ix-button-{variant.as_str()} ix-icon-size-{size.as_str()} {class}",
         class: if oval { "ix-oval" }, r#type: button_type.as_str(),
-        disabled: blocked, aria_label: label.clone(), title: label, aria_busy: loading,
+        style: icon_color.map(|name| format!("--ix-icon-button-color:var({name})")),
+        disabled: blocked, tabindex: if blocked { -1 } else { 0 },
+        aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked,
         onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
-        if loading { Spinner { size: match size { ButtonIconSize::Twelve => SpinnerSize::Xxs, ButtonIconSize::Sixteen => SpinnerSize::Xs, _ => SpinnerSize::Sm }, hide_track: true } }
-        else { crate::Icon { name: icon, size: size.pixels() } }
+        if loading { Spinner { size: loading_size, hide_track: true } }
+        else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }
     } }
 }
 
@@ -430,7 +444,7 @@ pub fn Spinner(
     #[props(default)] hide_track: bool,
     #[props(default = "Loading".to_string())] label: String,
 ) -> Element {
-    rsx! { span { class: "ix-spinner ix-spinner-{variant.as_str()}",
+    rsx! { span { class: "ix-spinner ix-spinner-{variant.as_str()} ix-spinner-{size.as_str()}",
         class: if hide_track { "ix-spinner-no-track" },
         style: "--ix-spinner-size:{size.pixels()}px", role: "status", aria_busy: true, aria_label: label,
         svg { view_box: "0 0 32 32", "aria-hidden": "true",
@@ -982,3 +996,7 @@ mod tests {
 #[cfg(test)]
 #[path = "button_token_tests.rs"]
 mod button_token_tests;
+
+#[cfg(test)]
+#[path = "icon_button_token_tests.rs"]
+mod icon_button_token_tests;

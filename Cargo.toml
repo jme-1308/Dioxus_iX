@@ -41,6 +41,11 @@ path = "examples/gallery/main.rs"
 required-features = ["launch"]
 
 [[example]]
+name = "icon_button_token_probe"
+path = "tools/icon_button_token_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "button_token_probe"
 path = "tools/button_token_probe.rs"
 required-features = ["launch"]
