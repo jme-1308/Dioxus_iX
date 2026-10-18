@@ -121,6 +121,26 @@ fn render_field_feedback(feedback: FieldFeedback, id: Option<String>) -> Element
     }
 }
 
+fn render_text_field_feedback(feedback: FieldFeedback, id: Option<String>) -> Element {
+    let (icon, color) = match feedback.state {
+        FieldState::Default => (None, crate::TypographyColor::Soft),
+        FieldState::Invalid => (Some("error"), crate::TypographyColor::Alarm),
+        FieldState::Valid => (Some("success"), crate::TypographyColor::Std),
+        FieldState::Info => (Some("info"), crate::TypographyColor::Std),
+        FieldState::Warning => (Some("warning"), crate::TypographyColor::Std),
+    };
+    rsx! {
+        crate::Typography { id, format: crate::TypographyFormat::BodyParagraph,
+            text_color: color, class: "ix-text-field-bottom-text ix-helper {feedback.state.class()}",
+            role: if feedback.state == FieldState::Invalid { "alert" } else { "status" },
+            if let Some(icon) = icon {
+                crate::Icon { name: icon, size: 16, class: "ix-text-field-text-icon ix-helper-icon {feedback.state.class()}" }
+            }
+            "{feedback.text}"
+        }
+    }
+}
+
 #[component]
 fn TextControlFeedback(
     feedback: Option<FieldFeedback>,
@@ -132,11 +152,57 @@ fn TextControlFeedback(
         if let Some(feedback) = feedback {
             if show_text_as_tooltip {
                 crate::TooltipFor { id, anchor_id, placement: crate::TooltipPlacement::Bottom, show_delay: 500,
-                    {render_field_feedback(feedback, None)}
+                    {render_text_field_feedback(feedback, None)}
                 }
             } else {
-                {render_field_feedback(feedback, Some(id))}
+                {render_text_field_feedback(feedback, Some(id))}
             }
+        }
+    }
+}
+
+#[component]
+fn TextFieldPresentation(
+    children: Element,
+    label: Option<String>,
+    control_id: String,
+    anchor_id: String,
+    feedback_id: String,
+    required: bool,
+    state: FieldState,
+    feedback: Option<FieldFeedback>,
+    invalid_alert: bool,
+    show_text_as_tooltip: bool,
+    max_length: Option<u32>,
+    length: usize,
+) -> Element {
+    rsx! {
+        div { class: "ix-text-field-wrapper",
+            role: invalid_alert.then_some("alert"), "aria-live": invalid_alert.then_some("polite"),
+            if let Some(label) = label.filter(|text| !text.is_empty()) {
+                div { class: "ix-text-field-top",
+                    div { class: "ix-text-field-label",
+                        label { r#for: control_id,
+                            crate::Typography { format: crate::TypographyFormat::Body,
+                                text_color: if state == FieldState::Invalid { crate::TypographyColor::Alarm } else { crate::TypographyColor::Soft },
+                                "{label}" if required { span { class: "ix-required", "aria-hidden": "true", "*" } }
+                            }
+                        }
+                    }
+                }
+            }
+            div { class: "ix-text-field-slot", {children} }
+            div { class: "ix-text-field-bottom",
+                if !show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: feedback_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: false } }
+                div { class: "ix-text-field-bottom-right",
+                    if let Some(limit) = max_length.filter(|limit| *limit > 0) {
+                        crate::Typography { format: crate::TypographyFormat::Body, text_color: crate::TypographyColor::Soft,
+                            class: "ix-text-field-counter ix-field-counter", "{length}/{limit}"
+                        }
+                    }
+                }
+            }
+            if show_text_as_tooltip { TextControlFeedback { feedback, id: feedback_id, anchor_id, show_text_as_tooltip: true } }
         }
     }
 }
@@ -369,6 +435,15 @@ pub fn Input(
         input_type
     };
     let length = value.encode_utf16().count();
+    let geometry_id = field_id(None);
+    let (padding, measure_padding) = crate::input_geometry::use_adornments(&geometry_id);
+    let input_style = format!(
+        "text-align:{};{}",
+        if text_alignment_end { "end" } else { "start" },
+        padding.map(|facts| facts.padding()).unwrap_or_default()
+    );
+    let invalid_alert =
+        state == FieldState::Invalid && invalid_text.as_ref().is_some_and(|text| !text.is_empty());
     let feedback = field_feedback(
         state,
         helper_text,
@@ -378,18 +453,22 @@ pub fn Input(
         warning_text,
     );
     let has_feedback = feedback.is_some();
-    let has_bottom =
-        max_length.is_some_and(|limit| limit > 0) || (!show_text_as_tooltip && has_feedback);
     let anchor_id = format!("{id}-input-wrap");
     rsx! {
-        div { class: "ix-field {state.class()} {class}",
-            if let Some(text) = label { FieldLabel { text, html_for: id.clone(), required, invalid: state == FieldState::Invalid } }
-            div { id: anchor_id.clone(), class: "ix-input-wrap",
-                if let Some(start) = start { span { class: "ix-input-start", {start} } }
+        div { id: geometry_id, class: "ix-field ix-text-field-native ix-input-native {state.class()} {class}",
+            "data-disabled": disabled.to_string(), "data-readonly": readonly.to_string(),
+            TextFieldPresentation { label, control_id: id.clone(), anchor_id: anchor_id.clone(), feedback_id: help_id.clone(),
+                required, state, feedback, invalid_alert, show_text_as_tooltip, max_length, length,
+                div { id: anchor_id, class: "ix-input-wrap",
+                    onmounted: move |_| measure_padding.call(()),
+                    "data-padding-ready": padding.is_some().to_string(),
+                    "data-padding-start": padding.map(|facts| facts.start.to_string()),
+                    "data-padding-end": padding.map(|facts| facts.end.to_string()),
+                    span { class: "ix-input-start", if let Some(start) = start { {start} } }
                 input { id, class: "ix-input", name, r#type: native_type, value, placeholder,
                     required, disabled, readonly, pattern, minlength: min_length, maxlength: max_length,
                     min, max, step, autocomplete,
-                    style: if text_alignment_end { "text-align:end" } else { "text-align:start" },
+                    style: input_style,
                     "aria-label": aria_label,
                     "aria-invalid": (state == FieldState::Invalid).to_string(),
                     "aria-describedby": has_feedback.then(|| help_id.clone()),
@@ -410,21 +489,23 @@ pub fn Input(
                     onbeforeinput: move |event| if !event.is_composing() { if let Some(text) = event.data().data() { if !allowed.read().allows(&text) { event.prevent_default(); } } },
                     onpaste: move |event| if let Some(text) = event.data_transfer().get_as_text() { if !allowed.read().allows(&text) { event.prevent_default(); } },
                 }
-                if let Some(end) = end { span { class: "ix-input-end", {end} } }
-                if password && !disabled {
-                    button { r#type: "button", class: "ix-password-toggle", "aria-label": if password_visible() { "Hide password" } else { "Show password" },
-                        "aria-pressed": password_visible().to_string(),
-                        onmousedown: move |event| event.prevent_default(),
-                        onclick: move |_| password_visible.toggle(),
-                        crate::Icon { name: (if password_visible() { "eye-cancelled" } else { "eye" }).to_string(), size: 16 }
+                    span { class: "ix-input-end",
+                        if let Some(end) = end { {end} }
+                        if password && !disabled {
+                            span { class: "ix-input-password-holder", style: "display:contents",
+                                onmousedown: move |event| event.prevent_default(),
+                                crate::IconButton { class: "ix-input-password-eye", size: crate::ButtonIconSize::Sixteen,
+                                    variant: crate::ButtonVariant::Tertiary, icon_color: "--ix-input-password-eye-color",
+                                    label: if password_visible() { "Hide password" } else { "Show password" },
+                                    aria_pressed: password_visible(),
+                                    icon: if password_visible() { "eye-cancelled" } else { "eye" },
+                                    onclick: move |_| password_visible.toggle(),
+                                }
+                            }
+                        }
                     }
                 }
             }
-            if show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: true } }
-            if has_bottom { div { class: "ix-field-bottom",
-                if !show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: false } }
-                if let Some(limit) = max_length.filter(|limit| *limit > 0) { span { class: "ix-field-counter", "{length}/{limit}" } }
-            } }
         }
     }
 }
@@ -444,14 +525,14 @@ pub fn Textarea(
     #[props(default)] required: bool,
     #[props(default)] disabled: bool,
     #[props(default)] readonly: bool,
-    #[props(default = 4)] rows: u32,
+    #[props(default)] rows: Option<u32>,
     #[props(default)] cols: Option<u32>,
     #[props(default)] width: Option<String>,
     #[props(default)] height: Option<String>,
     #[props(default)] min_length: Option<u32>,
     #[props(default)] max_length: Option<u32>,
     #[props(default)] aria_label: Option<String>,
-    #[props(default = "vertical".to_string())] resize: String,
+    #[props(default = "both".to_string())] resize: String,
     #[props(default)] helper_text: Option<String>,
     #[props(default)] invalid_text: Option<String>,
     #[props(default)] valid_text: Option<String>,
@@ -503,19 +584,17 @@ pub fn Textarea(
         _ => "vertical",
     };
     let dimensions = format!(
-        "resize:{resize};max-width:100%;{}{}",
+        "resize:{resize};{}{}",
         height
-            .map(|value| format!("height:{value};min-height:0;"))
+            .map(|value| format!("height:{value};"))
             .unwrap_or_default(),
         width
             .map(|value| format!("width:{value};"))
-            .unwrap_or_else(|| if cols.is_some() {
-                "width:auto;".to_string()
-            } else {
-                String::new()
-            })
+            .unwrap_or_default()
     );
     let length = value.encode_utf16().count();
+    let invalid_alert =
+        state == FieldState::Invalid && invalid_text.as_ref().is_some_and(|text| !text.is_empty());
     let feedback = field_feedback(
         state,
         helper_text,
@@ -525,12 +604,13 @@ pub fn Textarea(
         warning_text,
     );
     let has_feedback = feedback.is_some();
-    let has_bottom =
-        max_length.is_some_and(|limit| limit > 0) || (!show_text_as_tooltip && has_feedback);
     let anchor_id = id.clone();
     rsx! {
-        div { class: "ix-field {state.class()} {class}",
-            if let Some(text) = label { FieldLabel { text, html_for: id.clone(), required, invalid: state == FieldState::Invalid } }
+        div { class: "ix-field ix-text-field-native ix-textarea-native {state.class()} {class}",
+            "data-disabled": disabled.to_string(), "data-readonly": readonly.to_string(),
+            TextFieldPresentation { label, control_id: id.clone(), anchor_id, feedback_id: help_id.clone(),
+                required, state, feedback, invalid_alert, show_text_as_tooltip, max_length, length,
+                div { class: "ix-input-wrap",
             textarea { id, class: "ix-input ix-textarea", name, value, placeholder,
                 required, disabled, readonly, rows, cols, minlength: min_length, maxlength: max_length,
                 style: dimensions, "aria-label": aria_label, "aria-invalid": (state == FieldState::Invalid).to_string(),
@@ -543,11 +623,8 @@ pub fn Textarea(
                 onkeydown,
                 onblur: move |event| { onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
             }
-            if show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: true } }
-            if has_bottom { div { class: "ix-field-bottom",
-                if !show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: help_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: false } }
-                if let Some(limit) = max_length.filter(|limit| *limit > 0) { span { class: "ix-field-counter", "{length}/{limit}" } }
-            } }
+                }
+            }
         }
     }
 }
@@ -2656,6 +2733,10 @@ mod checkbox_token_tests;
 #[cfg(test)]
 #[path = "radio_token_tests.rs"]
 mod radio_token_tests;
+
+#[cfg(test)]
+#[path = "input_token_tests.rs"]
+mod input_token_tests;
 
 #[cfg(test)]
 #[path = "group_token_tests.rs"]

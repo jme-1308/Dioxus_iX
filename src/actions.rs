@@ -208,6 +208,7 @@ pub fn IconButton(
     #[props(default)] oval: bool,
     #[props(default)] button_type: ButtonType,
     #[props(default)] class: String,
+    aria_pressed: Option<bool>,
     onclick: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let blocked = disabled || loading;
@@ -221,7 +222,7 @@ pub fn IconButton(
         class: if oval { "ix-oval" }, r#type: button_type.as_str(),
         style: icon_color.map(|name| format!("--ix-icon-button-color:var({name})")),
         disabled: blocked, tabindex: if blocked { -1 } else { 0 },
-        aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked,
+        aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked, aria_pressed,
         onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
         if loading { Spinner { size: loading_size, hide_track: true } }
         else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }
@@ -841,6 +842,9 @@ pub fn Typography(
     #[props(default)] bold: bool,
     #[props(default)] text_decoration: TypographyDecoration,
     #[props(default)] class: String,
+    id: Option<String>,
+    role: Option<String>,
+    aria_live: Option<String>,
     aria_hidden: Option<String>,
 ) -> Element {
     let heading = match format {
@@ -858,7 +862,7 @@ pub fn Typography(
     rsx! { div {
         class: "ix-typography ix-type-{format.as_str()}{color_class} {class}",
         class: if bold { "ix-type-bold" }, style: "text-decoration:{text_decoration.as_str()}",
-        role: heading.map(|_| "heading"), aria_level: heading, "aria-hidden": aria_hidden,
+        id, role: role.or_else(|| heading.map(|_| "heading".to_string())), aria_level: heading, "aria-hidden": aria_hidden, "aria-live": aria_live,
         {children}
     } }
 }
