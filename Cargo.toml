@@ -41,6 +41,11 @@ path = "examples/gallery/main.rs"
 required-features = ["launch"]
 
 [[example]]
+name = "slider_token_probe"
+path = "tools/slider_token_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "expanding_search_probe"
 path = "tools/expanding_search_probe.rs"
 required-features = ["launch"]

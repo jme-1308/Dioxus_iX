@@ -81,6 +81,7 @@ pub mod patterns;
 mod popover_focus;
 mod radio_styles;
 mod select_item;
+mod slider_styles;
 pub mod theme;
 mod toggle_button_styles;
 mod toggle_styles;

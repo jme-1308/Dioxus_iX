@@ -1242,7 +1242,10 @@ fn slider_bounds(min: f64, max: f64) -> (f64, f64) {
     (min.min(max), min.max(max))
 }
 
-/// Native keyboard-operable range slider with optional ticks, trace and value output.
+/// Native range slider with source track, trace and numeric tick presentation.
+/// Values remain controlled. Native disabled/submission, finite-bound safeguards,
+/// marker captions and optional value output are Rust adapters. The existing
+/// value-tooltip renderer does not certify upstream floating/drag chronology.
 #[component]
 pub fn Slider(
     #[props(default)] value: f64,
@@ -1255,7 +1258,7 @@ pub fn Slider(
     #[props(default)] trace: bool,
     #[props(default)] trace_reference: f64,
     #[props(default)] markers: Vec<SliderMarker>,
-    #[props(default = true)] show_value: bool,
+    #[props(default)] show_value: bool,
     #[props(default = true)] show_tooltip: bool,
     #[props(default)] label_start: Option<String>,
     #[props(default)] label_end: Option<String>,
@@ -1264,59 +1267,100 @@ pub fn Slider(
     #[props(default)] valid_text: Option<String>,
     #[props(default)] info_text: Option<String>,
     #[props(default)] warning_text: Option<String>,
+    #[props(default)] show_text_as_tooltip: bool,
+    #[props(default)] class: String,
     #[props(default)] state: FieldState,
     #[props(default)] onvaluechange: EventHandler<f64>,
 ) -> Element {
     let id = field_id(None);
+    let anchor_id = format!("{id}-anchor");
+    let feedback_id = format!("{id}-feedback");
     let (min, max) = slider_bounds(min, max);
     let value = bounded_slider_value(value, min, max);
     let mut focused = use_signal(|| false);
     let mut hovered = use_signal(|| false);
     let span = (max - min).max(f64::EPSILON);
-    let percent = (value - min) / span * 100.0;
-    let reference = (bounded_slider_value(trace_reference, min, max) - min) / span * 100.0;
-    let (start, finish) = if value < trace_reference {
-        (percent, reference)
-    } else {
-        (reference, percent)
-    };
-    let track = if trace {
-        format!(
-            "linear-gradient(to right,var(--ix-color-border) {start}%,var(--ix-slider-accent,var(--ix-color-primary)) {start}%,var(--ix-slider-accent,var(--ix-color-primary)) {finish}%,var(--ix-color-border) {finish}%)"
-        )
-    } else {
-        "var(--ix-color-border)".to_string()
-    };
+    let fraction = (value - min) / span;
+    let reference = (bounded_slider_value(trace_reference, min, max) - min) / span;
+    let start = fraction.min(reference);
+    let end = fraction.max(reference);
     let has_endpoints = label_start.is_some() || label_end.is_some();
     let label_start = label_start.unwrap_or_default();
     let label_end = label_end.unwrap_or_default();
+    let state = if state == FieldState::Default {
+        crate::form_control::validation_class_state(&class)
+    } else {
+        state
+    };
+    let invalid_alert =
+        state == FieldState::Invalid && invalid_text.as_ref().is_some_and(|text| !text.is_empty());
+    let feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
+    let feedback_present = feedback.is_some();
+    let captions: Vec<_> = markers
+        .iter()
+        .filter(|marker| marker.value >= min && marker.value <= max && !marker.label.is_empty())
+        .cloned()
+        .collect();
+    let has_markers = !markers.is_empty();
     rsx! {
-        div { class: "ix-field ix-slider-field {state.class()}",
-            if !label.is_empty() || show_value { div { class: "ix-slider-heading", if !label.is_empty() { FieldLabel { text: label.clone(), html_for: id.clone() } }
-                if show_value { output { "for": id.clone(), "{value}" } }
-            } }
-            div { class: "ix-slider-control", onmouseenter: move |_| hovered.set(true), onmouseleave: move |_| hovered.set(false),
-                if show_tooltip && !disabled && (focused() || hovered()) { output { class: "ix-slider-tooltip", style: "left:{percent}%", "aria-hidden": "true", "{value}" } }
-                input { class: "ix-slider", id: id.clone(), r#type: "range", name, value: value.to_string(),
-                min, max, step: step.max(f64::EPSILON), disabled,
-                "aria-label": if label.is_empty() { "Slider".to_string() } else { label.clone() },
-                "aria-invalid": (state == FieldState::Invalid).to_string(),
-                style: "--ix-slider-track:{track}", list: format!("{id}-markers"),
-                oninput: move |event| if let Ok(value) = event.value().parse::<f64>() { onvaluechange.call(bounded_slider_value(value, min, max)); },
-                onfocus: move |_| focused.set(true), onblur: move |_| focused.set(false),
-                }
-                if !markers.is_empty() {
-                datalist { id: format!("{id}-markers"), for marker in &markers { option { value: marker.value.to_string(), label: marker.label.clone() } } }
-                div { class: "ix-slider-markers", "aria-hidden": "true",
-                    for marker in markers.into_iter().filter(|m| m.value >= min && m.value <= max) {
-                        span { class: if trace && marker.value >= value.min(trace_reference) && marker.value <= value.max(trace_reference) { "ix-slider-marker ix-slider-marker-active" } else { "ix-slider-marker" },
-                            style: "left:{(marker.value-min)/span*100.0}%", i { class: "ix-slider-marker-line" } "{marker.label}" }
+        div { class: "ix-slider-field ix-text-field-native {state.class()} {class}",
+            "data-disabled": disabled.to_string(),
+            if show_value { output { class: "ix-slider-value-output", "for": id.clone(), "{value}" } }
+            TextFieldPresentation { label: (!label.is_empty()).then_some(label.clone()), control_id: id.clone(),
+                anchor_id: anchor_id.clone(), feedback_id: feedback_id.clone(), required: false, state,
+                feedback, invalid_alert, show_text_as_tooltip,
+                max_length: None, length: 0,
+                div { id: anchor_id, class: "ix-slider-container",
+                    div { class: "ix-slider-control",
+                        onmouseenter: move |_| hovered.set(true), onmouseleave: move |_| hovered.set(false),
+                        div { class: "ix-slider-track",
+                            div { class: "ix-slider-thumb-anchor", style: "left:calc({fraction} * (100% - var(--thumb-size)))" }
+                            svg { class: "ix-slider-ticks", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": "true",
+                                for marker in markers.iter().filter(|marker| marker.value >= min && marker.value <= max) {
+                                    circle { class: "ix-slider-tick",
+                                        class: if trace && marker.value >= value.min(trace_reference) && marker.value <= value.max(trace_reference) { "ix-slider-tick-active" },
+                                        class: if marker.value == min { "ix-slider-tick-at-min" },
+                                        class: if marker.value == max && max > min { "ix-slider-tick-at-max" },
+                                        cx: "0", cy: "0", style: format!("--tick-value:{}", (marker.value-min)/span),
+                                    }
+                                }
+                            }
+                        }
+                        input { class: "ix-slider",
+                            class: if trace && fraction != reference { "trace" },
+                            class: if trace && (trace_reference <= min || trace_reference >= max) { "hide-trace-reference" },
+                            id: id.clone(), r#type: "range", name,
+                            min, max, step: step.max(f64::EPSILON), value: value.to_string(), disabled, tabindex: if disabled { -1 } else { 0 },
+                            role: "slider", "aria-label": if label.is_empty() { "Slider".to_string() } else { label },
+                            "aria-valuenow": value.to_string(), "aria-valuemin": min.to_string(), "aria-valuemax": max.to_string(),
+                            "aria-invalid": (state == FieldState::Invalid).to_string(),
+                            "aria-describedby": feedback_present.then_some(feedback_id),
+                            list: has_markers.then_some("markers"),
+                            style: "--value:{fraction};--trace-reference:{reference};--trace-start:{start};--trace-end:{end}",
+                            oninput: move |event| if !disabled { if let Ok(value) = event.value().parse::<f64>() { onvaluechange.call(bounded_slider_value(value, min, max)); } },
+                            onfocus: move |_| focused.set(true), onblur: move |_| focused.set(false),
+                        }
+                        if show_tooltip && !disabled && (focused() || hovered()) {
+                            output { class: "ix-slider-tooltip", style: "left:calc({fraction} * (100% - var(--thumb-size)) + var(--thumb-size) / 2)", "aria-hidden": "true", "{value}" }
+                        }
+                    }
+                    if has_endpoints {
+                        div { class: "ix-slider-endpoints", div { span { "{label_start}" } } div { span { "{label_end}" } } }
+                    }
+                    if !captions.is_empty() {
+                        div { class: "ix-slider-marker-captions", "aria-hidden": "true",
+                            for marker in captions { span { style: "left:calc({(marker.value-min)/span} * (100% - var(--thumb-size)) + var(--thumb-size) / 2)", "{marker.label}" } }
+                        }
                     }
                 }
-                }
             }
-            if has_endpoints { div { class: "ix-slider-endpoints", span { "{label_start}" } span { "{label_end}" } } }
-            HelperText { helper_text, invalid_text, valid_text, info_text, warning_text, state }
         }
     }
 }
@@ -2820,6 +2864,10 @@ mod checkbox_token_tests;
 mod radio_token_tests;
 
 #[cfg(test)]
+#[path = "slider_token_tests.rs"]
+mod slider_token_tests;
+
+#[cfg(test)]
 #[path = "expanding_search_tests.rs"]
 mod expanding_search_tests;
 
@@ -2873,12 +2921,12 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-toggle input:checked+.ix-toggle-track,.ix-theme .ix-toggle[data-mixed=true] .ix-toggle-track{background:var(--ix-color-primary);border-color:var(--ix-color-primary)}.ix-theme .ix-toggle input:checked+.ix-toggle-track:before{transform:translateX(1.25rem);background:var(--ix-color-on-primary)}.ix-theme .ix-toggle[data-mixed=true] .ix-toggle-track:before{transform:translateX(.625rem);background:var(--ix-color-on-primary)}
 .ix-theme .ix-toggle>input:focus-visible+.ix-toggle-track{outline:2px solid var(--ix-color-focus);outline-offset:3px}.ix-theme .ix-toggle:has(:disabled){opacity:.45;cursor:not-allowed}
 .ix-theme .ix-toggle[data-checked=true] .ix-toggle-track{background:var(--ix-color-primary);border-color:var(--ix-color-primary)}.ix-theme .ix-toggle[data-checked=true] .ix-toggle-track:before{transform:translateX(1.25rem);background:var(--ix-color-on-primary)}.ix-theme .ix-toggle[data-mixed=true] .ix-toggle-track:before{transform:translateX(.625rem)}.ix-theme button.ix-toggle:focus-visible .ix-toggle-track{outline:2px solid var(--ix-color-focus);outline-offset:3px}.ix-theme button.ix-toggle[aria-invalid=true] .ix-toggle-track{border-color:var(--ix-color-danger-text)}
-.ix-theme .ix-slider-heading{display:flex;justify-content:space-between;gap:1rem}.ix-theme .ix-slider-heading output{font-variant-numeric:tabular-nums;font-size:.875rem}
-.ix-theme .ix-slider{appearance:none;width:100%;height:1.5rem;margin:.375rem 0;cursor:pointer;background:transparent;accent-color:var(--ix-color-primary)}.ix-theme .ix-slider::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:var(--ix-slider-track,var(--ix-color-border))}.ix-theme .ix-slider::-moz-range-track{height:4px;border-radius:2px;background:var(--ix-slider-track,var(--ix-color-border))}
-.ix-theme .ix-slider::-webkit-slider-thumb{appearance:none;width:1rem;height:1rem;border-radius:50%;background:var(--ix-slider-accent,var(--ix-color-primary));border:0;margin-top:-6px}.ix-theme .ix-slider::-moz-range-thumb{width:1rem;height:1rem;border-radius:50%;background:var(--ix-slider-accent,var(--ix-color-primary));border:0}.ix-theme .ix-slider:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}.ix-theme .ix-slider:disabled{opacity:.45;cursor:not-allowed}
-.ix-theme .ix-slider-markers{position:relative;height:1.5rem;font-size:.75rem;color:var(--ix-color-text-secondary);margin-inline:.5rem}.ix-theme .ix-slider-markers>span{position:absolute;transform:translateX(-50%)}
+
+
+
+
 .ix-theme .ix-range-field{display:flex;align-items:end;gap:2.5rem;position:relative;min-width:0;width:100%}.ix-theme .ix-range-field>.ix-temporal-field,.ix-theme .ix-range-field>.ix-field{flex:1;min-width:0}.ix-theme .ix-range-field:before{content:'';position:absolute;left:calc(50% - .5rem);bottom:1.25rem;width:1rem;border-top:1px solid var(--ix-color-text-secondary)}.ix-theme .ix-range-field:after{content:'';position:absolute;left:calc(50% + .125rem);bottom:1.075rem;width:.35rem;height:.35rem;border-top:1px solid var(--ix-color-text-secondary);border-right:1px solid var(--ix-color-text-secondary);transform:rotate(45deg)}.ix-theme .ix-range-no-arrow:before,.ix-theme .ix-range-no-arrow:after{display:none}.ix-theme .ix-range-no-arrow{gap:.75rem}
-.ix-theme .ix-field-info{--ix-slider-accent:var(--ix-color-info);--ix-check-accent:var(--ix-color-info)}.ix-theme .ix-field-warning{--ix-slider-accent:var(--ix-color-warning);--ix-check-accent:var(--ix-color-warning)}.ix-theme .ix-field-invalid{--ix-slider-accent:var(--ix-color-danger);--ix-check-accent:var(--ix-color-danger)}.ix-theme .ix-field-valid{--ix-slider-accent:var(--ix-color-primary);--ix-check-accent:var(--ix-color-primary)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid) .ix-check-shape{border-color:var(--ix-check-accent)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)[data-checked=true] .ix-check-shape,.ix-theme .ix-radio:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)>input:checked+.ix-check-shape{background:var(--ix-check-accent)}.ix-theme .ix-slider-control{position:relative}.ix-theme .ix-slider-tooltip{position:absolute;bottom:100%;transform:translateX(-50%);font-size:.75rem;line-height:1.5rem;padding:0 .375rem;border-radius:var(--ix-radius);background:var(--ix-color-surface-2);color:var(--ix-color-text);pointer-events:none;white-space:nowrap}.ix-theme .ix-slider-endpoints{display:flex;justify-content:space-between;color:var(--ix-color-text-secondary);font-size:.75rem}.ix-theme .ix-slider-marker-line{display:block;height:6px;width:2px;background:var(--ix-color-border);margin-inline:auto}.ix-theme .ix-slider-marker-active .ix-slider-marker-line{background:var(--ix-slider-accent,var(--ix-color-primary))}.ix-theme .ix-upload-state{display:flex;align-items:center;gap:.5rem;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-upload-button{flex:none}.ix-theme .ix-field-info>.ix-input,.ix-theme .ix-field-info .ix-select-control{border-color:var(--ix-color-info-text)}.ix-theme .ix-field-valid>.ix-input,.ix-theme .ix-field-valid .ix-select-control{border-color:var(--ix-color-success)}.ix-theme .ix-field-warning .ix-select-control{border-color:var(--ix-color-warning-text)}
+.ix-theme .ix-field-info{--ix-slider-accent:var(--ix-color-info);--ix-check-accent:var(--ix-color-info)}.ix-theme .ix-field-warning{--ix-slider-accent:var(--ix-color-warning);--ix-check-accent:var(--ix-color-warning)}.ix-theme .ix-field-invalid{--ix-slider-accent:var(--ix-color-danger);--ix-check-accent:var(--ix-color-danger)}.ix-theme .ix-field-valid{--ix-slider-accent:var(--ix-color-primary);--ix-check-accent:var(--ix-color-primary)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid) .ix-check-shape{border-color:var(--ix-check-accent)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)[data-checked=true] .ix-check-shape,.ix-theme .ix-radio:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)>input:checked+.ix-check-shape{background:var(--ix-check-accent)}.ix-theme .ix-upload-state{display:flex;align-items:center;gap:.5rem;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-upload-button{flex:none}.ix-theme .ix-field-info>.ix-input,.ix-theme .ix-field-info .ix-select-control{border-color:var(--ix-color-info-text)}.ix-theme .ix-field-valid>.ix-input,.ix-theme .ix-field-valid .ix-select-control{border-color:var(--ix-color-success)}.ix-theme .ix-field-warning .ix-select-control{border-color:var(--ix-color-warning-text)}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-toggle-track:before{transition:none}}
 .ix-theme .ix-select{position:relative}
 .ix-theme .ix-select-feedback-tooltip.ix-field-invalid{color:var(--ix-color-danger-text)}.ix-theme .ix-select-feedback-tooltip.ix-field-valid{color:var(--ix-color-success)}.ix-theme .ix-select-feedback-tooltip.ix-field-info{color:var(--ix-color-info-text)}.ix-theme .ix-select-feedback-tooltip.ix-field-warning{color:var(--ix-color-warning-text)}
