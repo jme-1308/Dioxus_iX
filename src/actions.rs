@@ -104,6 +104,12 @@ impl StatusVariant {
 }
 
 /// A native button or styled anchor. Loading prevents activation just like disabled.
+///
+/// Regular buttons consume the source `--ix-button-*` sizing and state variables,
+/// with `--si-sys-*` semantic tokens supplied by an enclosing [`crate::IxTheme`].
+/// The `hover` and `active` classes expose the source visual-state aliases;
+/// `active` locks the pressed appearance without introducing a toggle state.
+/// Missing Brand values retain provisional public-source fallbacks.
 #[component]
 pub fn Button(
     children: Element,
@@ -126,16 +132,24 @@ pub fn Button(
 ) -> Element {
     let blocked = disabled || loading;
     let class = format!(
-        "ix-button ix-button-{} ix-align-{} {}",
+        "ix-button ix-button-standard ix-button-{} ix-align-{} {}",
         variant.as_str(),
         alignment.as_str(),
         class
     );
+    let loading_size = match (
+        icon.as_deref().is_some_and(|name| !name.is_empty()),
+        icon_size,
+    ) {
+        (true, ButtonIconSize::Twelve) => SpinnerSize::Xxs,
+        (true, ButtonIconSize::Sixteen) => SpinnerSize::Xs,
+        _ => SpinnerSize::Sm,
+    };
     let content = rsx! {
-        if loading { Spinner { size: SpinnerSize::Sm, hide_track: true } }
-        else if let Some(name) = icon { crate::Icon { name, size: icon_size.pixels() } }
+        if loading { span { class: "ix-button-loading", Spinner { size: loading_size, hide_track: true } } }
+        else if let Some(name) = icon.filter(|name| !name.is_empty()) { span { class: "ix-button-icon-start", crate::Icon { name, size: icon_size.pixels() } } }
         span { class: "ix-button-content", {children} }
-        if let Some(name) = icon_right { crate::Icon { name, size: icon_size.pixels() } }
+        if let Some(name) = icon_right.filter(|name| !name.is_empty()) { span { class: "ix-button-icon-end", crate::Icon { name, size: icon_size.pixels() } } }
     };
     if let Some(href) = href {
         rsx! { a {
@@ -149,6 +163,7 @@ pub fn Button(
     } else {
         rsx! { button {
             class, r#type: button_type.as_str(), form, disabled: blocked,
+            tabindex: if blocked { -1 } else { 0 },
             aria_label, aria_describedby, aria_disabled: blocked, aria_busy: loading,
             onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
             {content}
@@ -963,3 +978,7 @@ mod tests {
         assert!(html.contains("style=\"text-decoration:line-through\""));
     }
 }
+
+#[cfg(test)]
+#[path = "button_token_tests.rs"]
+mod button_token_tests;

@@ -69,6 +69,7 @@ pub fn IxTheme(
     rsx! {
         style { {BASE_STYLES} }
         style { {crate::actions::STYLES} }
+        style { {crate::button_styles::STYLES} }
         style { {crate::application::STYLES} }
         style { {crate::header_layout::STYLES} }
         style { {crate::chat::STYLES} }

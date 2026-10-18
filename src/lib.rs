@@ -36,6 +36,7 @@ pub(crate) fn test_event_converter_guard() -> std::sync::MutexGuard<'static, ()>
 pub mod actions;
 pub mod application;
 mod application_viewport;
+mod button_styles;
 pub mod catalog;
 pub mod chart_advanced;
 pub mod chart_export;

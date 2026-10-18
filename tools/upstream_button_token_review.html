@@ -1,0 +1,277 @@
+<!doctype html>
+<!-- Excluded actual-source Button token diagnostic; no production state policy emulation. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="ix-icons:path" content="http://127.0.0.1:8089/www/node_modules/@siemens/ix-icons/svg"><title>Pinned Button token states</title><link rel="stylesheet" href="http://127.0.0.1:8089/keyboard-foundation.css"><script type="module" src="http://127.0.0.1:8089/www/build/siemens-ix.esm.js"></script><script nomodule src="http://127.0.0.1:8089/www/build/siemens-ix.js"></script>
+<style>body{margin:0;background:#f4f6f8;color:#202932;font:16px/1.5 system-ui,sans-serif}main{max-width:90rem;margin:auto;padding:24px}h1{font-size:1.75rem;line-height:1.2;margin:0 0 16px}h2{font-size:1.25rem;margin:24px 0 8px}p{max-width:75ch}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:16px 0}button,select{font:inherit;min-height:36px;padding:4px 10px;background:white;color:#202932;border:1px solid #7d8b98;border-radius:4px;cursor:pointer}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid #075c9d;outline-offset:3px}::selection{background:#bddcf2;color:#102c42}.matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.scope{padding:16px;border:1px solid #bdc6ce;background:white;min-width:0}.scope-title{font:600 16px/1.5 system-ui,sans-serif;margin:0 0 16px;color:#202932}.specimens{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}.specimen{display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding:6px;min-width:120px}.label{font:12px/1.5 system-ui,sans-serif;color:#384b5b}.nested{border:1px dashed #7d8b98;padding:8px;margin-top:16px}pre{max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:white;border:1px solid #bdc6ce;font:13px/1.5 ui-monospace,monospace;font-variant-numeric:tabular-nums;scrollbar-color:#7d8b98 #f4f6f8}@media(max-width:900px){.matrix{grid-template-columns:1fr}main{padding:16px}}</style></head>
+<body data-ix-theme="brand"><main><h1>Pinned Button token states</h1><p>Actual source buttons under developer-authored system-font and semantic tokens. Hover and active classes are shipped CSS diagnostic aliases; focus uses actual native focus. These measurements are not full Brand font or color values.</p><p id="button-status" role="status" data-ready="false" data-run="idle">Loading pinned Button…</p><div class="controls"><button id="button-baseline" disabled>Baseline tokens</button><button id="button-revised" disabled>Revise tokens</button><button id="button-restored" disabled>Restore baseline</button><label>State <select id="button-state" disabled></select></label><button id="button-capture" disabled>Capture state</button><button id="button-run" disabled>Run token states</button></div><button id="button-outside">Outside keyboard seed</button><div id="button-matrix" class="matrix"></div><h2>Computed observations</h2><pre id="button-result">{}</pre></main>
+<script type="module">
+const spec={
+  "revision": "8bf599bc68365d7752e12832e71b625883b93d7a",
+  "fixture": "Developer-authored system-token Button adapter, not full Brand metrics",
+  "variants": [
+    "primary",
+    "secondary",
+    "tertiary",
+    "subtle-primary",
+    "subtle-secondary",
+    "subtle-tertiary",
+    "danger-primary",
+    "danger-secondary",
+    "danger-tertiary"
+  ],
+  "states": [
+    "rest",
+    "hover",
+    "active",
+    "disabled",
+    "loading",
+    "focus"
+  ],
+  "revisions": [
+    {
+      "id": "baseline",
+      "revision": 0
+    },
+    {
+      "id": "revised",
+      "revision": 1
+    },
+    {
+      "id": "restored",
+      "revision": 0
+    }
+  ],
+  "scopes": [
+    {
+      "id": "light-normal",
+      "index": 0,
+      "scheme": "light",
+      "density": "normal"
+    },
+    {
+      "id": "light-compact",
+      "index": 1,
+      "scheme": "light",
+      "density": "compact"
+    },
+    {
+      "id": "dark-normal",
+      "index": 2,
+      "scheme": "dark",
+      "density": "normal"
+    },
+    {
+      "id": "dark-compact",
+      "index": 3,
+      "scheme": "dark",
+      "density": "compact"
+    }
+  ],
+  "colorTokens": [
+    "si-sys-color-effects-focus",
+    "si-sys-color-background-danger",
+    "si-sys-color-background-danger-active",
+    "si-sys-color-background-1",
+    "si-sys-color-background-danger-hover",
+    "si-sys-color-text-on-danger",
+    "si-sys-color-text-disabled",
+    "si-sys-color-text-danger",
+    "si-sys-color-border-danger",
+    "si-sys-color-border-3",
+    "si-sys-color-background-accent",
+    "si-sys-color-background-accent-active",
+    "si-sys-color-background-accent-hover",
+    "si-sys-color-text-on-accent",
+    "si-sys-color-background-accent-secondary",
+    "si-sys-color-background-accent-secondary-active",
+    "si-sys-color-background-accent-secondary-hover",
+    "si-sys-color-border-accent",
+    "si-sys-color-border-accent-active",
+    "si-sys-color-border-accent-hover",
+    "si-sys-color-text-accent",
+    "si-sys-color-text-accent-active",
+    "si-sys-color-text-accent-hover",
+    "si-sys-color-background-2",
+    "si-sys-color-background-selected",
+    "si-sys-color-background-hover",
+    "si-sys-color-text-primary",
+    "si-sys-color-border-2"
+  ],
+  "sentinel": {
+    "color": "rgb(24+(13*k+7*s+3*r)%160,32+(11*k+5*s+7*r)%150,40+(7*k+3*s+11*r)%140); k indexcolorTokens, s scopeIndex, r revision",
+    "height": "32-8*(scopeIndex%2)+4*revision px",
+    "minWidth": "64+2*scopeIndex+4*revision px",
+    "paddingHorizontal": "10+scopeIndex+revision px",
+    "iconGap": "4+scopeIndex+revision px",
+    "radius": "3+scopeIndex+revision px",
+    "borderWidth": "1+revision px",
+    "outlineOffset": "3+revision px",
+    "font": "600 (14+scopeIndex+revision)px/(20+scopeIndex+revision)px system-ui, sans-serif",
+    "letterSpacing": "0.25+0.25*revision px",
+    "spinnerSizes": {
+      "size-40": 12,
+      "size-50": 16,
+      "size-60": 20
+    }
+  },
+  "extras": [
+    "anchor",
+    "icon-start",
+    "icon-end",
+    "icon-both",
+    "alignment-start",
+    "loading12",
+    "loading16",
+    "loading20",
+    "loading24",
+    "component-override",
+    "host-active",
+    "nested"
+  ],
+  "extraScope": "light-normal; nested ownfixed dark-compact scopeIndex3 revision0",
+  "componentOverride": {
+    "--ix-button--height": "40+4*revision px",
+    "--ix-button-padding": "2px 18px",
+    "--ix-button-border-radius-left": "2+revision px",
+    "--ix-button-border-radius-right": "9+revision px",
+    "--ix-button-primary--background": "rgb(31, 81, 123)",
+    "--ix-button-primary--color": "rgb(255, 255, 255)",
+    "--ix-button-primary--border-color": "rgb(11, 41, 73)"
+  },
+  "props": {
+    "type": "button",
+    "label": "Action",
+    "icon": "add",
+    "iconRight": "add",
+    "anchorHref": "#button-token-anchor",
+    "iconSizes": [
+      "12",
+      "16",
+      "20",
+      "24"
+    ]
+  },
+  "ids": {
+    "scope": "button-scope-{scopeID}",
+    "row": "button-{scopeID}-{variant}",
+    "extra": "button-extra-{key}",
+    "status": "button-status",
+    "run": "button-run",
+    "result": "button-result",
+    "state": "button-state",
+    "controls": [
+      "button-baseline",
+      "button-revised",
+      "button-restored"
+    ]
+  },
+  "resultSchema": [
+    "ok",
+    "revision",
+    "fixture",
+    "phases",
+    "errors",
+    "activation",
+    "limits"
+  ],
+  "phaseSchema": [
+    "id",
+    "revision",
+    "state",
+    "rows",
+    "extras",
+    "settleFrames"
+  ],
+  "rowSchema": [
+    "id",
+    "scope",
+    "scopeIndex",
+    "revision",
+    "variant",
+    "state",
+    "kind",
+    "key",
+    "host",
+    "control",
+    "icons",
+    "spinner",
+    "content",
+    "nativeFacts"
+  ],
+  "computedSchema": [
+    "display",
+    "width",
+    "height",
+    "minWidth",
+    "boxSizing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderTopColor",
+    "borderTopStyle",
+    "borderTopLeftRadius",
+    "borderTopRightRadius",
+    "borderBottomLeftRadius",
+    "borderBottomRightRadius",
+    "backgroundColor",
+    "color",
+    "fontSize",
+    "lineHeight",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "letterSpacing",
+    "fontFeatureSettings",
+    "outlineColor",
+    "outlineWidth",
+    "outlineStyle",
+    "outlineOffset",
+    "opacity",
+    "pointerEvents",
+    "justifyContent",
+    "textAlign",
+    "marginLeft",
+    "marginRight"
+  ],
+  "counts": {
+    "coreRowsPerState": 36,
+    "states": 6,
+    "revisions": 3,
+    "coreRows": 648,
+    "extraRowsPerRevision": 12,
+    "extraRows": 36,
+    "totalRows": 684
+  },
+  "settlement": "definition/component readiness; fonts.ready; fixed2RAF/microtasks after each public phase or real sequential focus; no desiredstyle waits",
+  "visualInputs": "hover/active literal source inner shipped aliases; disabled/loading alsoboth aliases; focus actual sequential nativecontrol.focus after outsideTab; extras host-active literal actualhostclass",
+  "activation": "separate representative native click enabled/disabled/loading and anchor consumer cancellation; record original defaults,windowreach and counts; no submit/navigation claim"
+};
+const byId=id=>document.getElementById('button-'+id),core=[],extras=[],scopes=[],errors=[],journal=[];
+const objects=new WeakMap();let objectSequence=0;function object(n){if(!objects.has(n))objects.set(n,++objectSequence);return objects.get(n);}
+let ready=false,busy=false,revision=0,revisionID='baseline',state='rest',sequence=0;
+function log(kind,data={}){journal.push({seq:++sequence,kind,time:performance.now(),...data});}
+function tokens(root,s,r){for(const[k,name]of spec.colorTokens.entries())root.style.setProperty('--'+name,`rgb(${24+(13*k+7*s+3*r)%160}, ${32+(11*k+5*s+7*r)%150}, ${40+(7*k+3*s+11*r)%140})`);const sizes={'size-80':32-8*(s%2)+4*r,'size-120':64+2*s+4*r,'spacing-x-40':10+s+r,'spacing-x-20':4+s+r,'border-radius-xs':3+s+r,'border-width-default':1+r,'border-width-selected':2+r,'border-width-emphasis':3+r,'focus-ring-offset':3+r,'size-40':12,'size-50':16,'size-60':20,'size-130':40};for(const[k,v]of Object.entries(sizes))root.style.setProperty('--si-sys-sizing-'+k,v+'px');root.style.setProperty('--si-sys-typography-body-sbold',`600 ${14+s+r}px/${20+s+r}px system-ui, sans-serif`);root.style.setProperty('--si-ref-typography-letter-spacing-normal',`${0.25+0.25*r}px`);root.dataset.scopeIndex=String(s);root.dataset.revision=String(r);root.dataset.ixTheme='brand';root.dataset.ixColorSchema=s>=2?'dark':'light';root.dataset.ixDensity=s%2?'compact':'normal';}
+function make(scope,id,key,props={},kind='core'){const wrap=document.createElement('div');wrap.className='specimen';const label=document.createElement('span');label.className='label';label.textContent=key;const host=document.createElement('ix-button');host.id=id;host.dataset.buttonKey=key;host.type='button';host.variant=props.variant??'primary';for(const[k,v]of Object.entries(props))host[k]=v;host.textContent=spec.props.label;wrap.append(label,host);(scope.querySelector('.specimens')??scope).append(wrap);const item={host,scope:scope.dataset.scopeId,key,kind,props};return item;}
+function construct(){for(const entry of spec.scopes){const root=document.createElement('section');root.id='button-scope-'+entry.id;root.dataset.scopeId=entry.id;root.className='scope';const title=document.createElement('h2');title.className='scope-title';title.textContent=entry.id;const content=document.createElement('div');content.className='specimens';root.append(title,content);tokens(root,entry.index,0);byId('matrix').append(root);scopes.push({entry,node:root});for(const variant of spec.variants)core.push(make(root,`button-${entry.id}-${variant}`,variant,{variant}));}const primary=scopes[0].node;
+for(const key of spec.extras){let scope=primary,props={variant:'primary'};if(key==='anchor'){props.href=spec.props.anchorHref;props.target='_self';props.rel='nofollow';}if(['icon-start','icon-both','alignment-start'].includes(key)||key.startsWith('loading'))props.icon=spec.props.icon;if(['icon-end','icon-both'].includes(key))props.iconRight=spec.props.iconRight;if(key==='alignment-start')props.alignment='start';if(key.startsWith('loading')){props.loading=true;props.iconSize=key.slice(7);}if(key==='nested'){scope=document.createElement('div');scope.dataset.scopeId='nested';scope.className='nested';tokens(scope,3,0);primary.append(scope);}const item=make(scope,`button-extra-${key}`,key,props,'extra');if(key==='host-active')item.host.classList.add('active');extras.push(item);}}
+function control(item){return item.host.shadowRoot?.querySelector('button,a')??null;}
+function deepActive(){let n=document.activeElement;while(n?.shadowRoot?.activeElement)n=n.shadowRoot.activeElement;return n;}
+function metrics(n){if(!(n instanceof Element))return null;const cs=getComputedStyle(n),r=n.getBoundingClientRect();return{object:object(n),tag:n.tagName,id:n.id,class:n.className,attrs:Object.fromEntries([...n.attributes].map(a=>[a.name,a.value])),computed:Object.fromEntries(spec.computedSchema.map(k=>[k,cs[k]])),rect:{x:r.x,y:r.y,width:r.width,height:r.height}};}
+function capture(item,currentState=state){const host=item.host,n=control(item),scope=host.closest('[data-scope-id]');return{id:host.id,scope:item.scope,scopeIndex:Number(scope.dataset.scopeIndex),revision:Number(scope.dataset.revision),variant:host.variant,state:currentState,kind:item.kind,key:item.key,host:metrics(host),control:metrics(n),icons:[...host.shadowRoot?.querySelectorAll('ix-icon')??[]].map(n=>({side:n.classList.contains('icon-right')?'end':'start',node:metrics(n)})),spinner:[...host.shadowRoot?.querySelectorAll('ix-spinner')??[]].map(n=>({host:metrics(n),size:n.size,inner:metrics(n.shadowRoot?.querySelector('.spinner,.xxs,.xs,.sm,.md,.xxl')),hideTrack:n.hideTrack})),content:metrics(host.shadowRoot?.querySelector('.content')),nativeFacts:{disabledProperty:n?.disabled??null,ariaDisabled:n?.getAttribute('aria-disabled'),hostTabIndex:host.tabIndex,controlTabIndex:n?.tabIndex,focused:n===deepActive(),matchesFocus:n?.matches(':focus'),matchesFocusVisible:n?.matches(':focus-visible'),matchesHover:n?.matches(':hover'),matchesActive:n?.matches(':active'),hostActive:host.classList.contains('active'),hostFocused:host.classList.contains('ix-focused'),loading:host.loading,disabled:host.disabled,href:n?.getAttribute('href'),target:n?.getAttribute('target'),rel:n?.getAttribute('rel')}};}
+async function settle(){await document.fonts.ready;for(let index=1;index<=2;index++)await new Promise(resolve=>requestAnimationFrame(timestamp=>queueMicrotask(()=>{log('native-frame',{index,timestamp,revisionID,state});resolve();})));}
+function setOverrides(){const n=extras.find(x=>x.key==='component-override').host;for(const[k,v]of Object.entries({'--ix-button--height':`${40+4*revision}px`,'--ix-button-padding':'2px 18px','--ix-button-border-radius-left':`${2+revision}px`,'--ix-button-border-radius-right':`${9+revision}px`,'--ix-button-primary--background':'rgb(31, 81, 123)','--ix-button-primary--color':'rgb(255, 255, 255)','--ix-button-primary--border-color':'rgb(11, 41, 73)'}))n.style.setProperty(k,v);}
+async function setRevision(id){const p=spec.revisions.find(x=>x.id===id);if(!p)throw Error('Unknown revision '+id);revision=p.revision;revisionID=id;for(const{entry,node}of scopes)tokens(node,entry.index,revision);setOverrides();await setState('rest');}
+async function setState(value){if(!spec.states.includes(value))throw Error('Unknown state '+value);state=value;byId('state').value=value;byId('outside').focus();for(const item of core){item.host.disabled=value==='disabled';item.host.loading=value==='loading';}for(const item of core){const n=control(item);n.classList.toggle('hover',['hover','disabled','loading'].includes(value));n.classList.toggle('active',['active','disabled','loading'].includes(value));}await settle();}
+function seedKeyboard(){const n=byId('outside');n.focus();const event=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,composed:true,cancelable:true});n.dispatchEvent(event);log('native-keyboard-seed',{defaultPrevented:event.defaultPrevented});}
+async function phaseSnapshot(){const measured=[];if(state==='focus'){seedKeyboard();for(const item of core){const n=control(item);log('native-focus-input-before',{id:item.host.id});n.focus();await settle();measured.push(capture(item));log('native-focus-input-observed',{id:item.host.id,focused:n===deepActive()});}}else measured.push(...core.map(item=>capture(item)));return{id:revisionID+':'+state,revision,state,rows:measured,extras:state==='rest'?extras.map(item=>capture(item,item.key==='host-active'?'host-active':item.props.loading?'loading':'rest')):[],settleFrames:2};}
+async function nativeClickObservation(n){const events=[];let original=null;const capture=event=>{if(event.composedPath()[0]!==n)return;original=event;events.push({site:'document-capture',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});},bubble=event=>{if(event.composedPath()[0]!==n)return;events.push({site:'window-bubble',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});};document.addEventListener('click',capture,true);window.addEventListener('click',bubble);n.click();document.removeEventListener('click',capture,true);window.removeEventListener('click',bubble);return{eventObserved:!!original,defaultPrevented:original?.defaultPrevented??null,events};}
+async function activation(){await setRevision('restored');const item=core[0],n=control(item),out=[];let count=0;const consumer=event=>{count++;};item.host.addEventListener('click',consumer);for(const scenario of ['enabled','disabled','loading']){item.host.disabled=scenario==='disabled';item.host.loading=scenario==='loading';await settle();const before=count,held=control(item);const observed=await nativeClickObservation(held);out.push({scenario,consumerDelta:count-before,...observed,host:metrics(item.host),control:metrics(held)});}item.host.removeEventListener('click',consumer);item.host.disabled=false;item.host.loading=false;const a=extras.find(v=>v.key==='anchor'),anchor=control(a);let anchorCount=0,prevented=null;const cancel=event=>{anchorCount++;event.preventDefault();prevented=event.defaultPrevented;};a.host.addEventListener('click',cancel);const observed=await nativeClickObservation(anchor);a.host.removeEventListener('click',cancel);out.push({scenario:'anchor-consumer-cancel',consumerDelta:anchorCount,...observed,consumerPrevented:prevented,host:metrics(a.host),control:metrics(anchor)});await settle();return out;}
+function controls(enabled){for(const n of document.querySelectorAll('.controls button,.controls select'))n.disabled=!enabled;}
+const limits=['Semantic and sizing tokens are developer-authored neutral system-font sentinels; complete Brand metrics/color fidelity remain unproved','Hover/active states use literal shipped inner aliases, not proof of physical pointer hover/press; focus rows use actual sequential native focus','Source host and inner control versus Rust native root are separate measured layers','Fixed2 native RAF plus font readiness are observation horizons, not desired style waits','Anchor cancellation and nativeclick smoke do not certify browser navigation, form submission, trusted key defaults or assistive technology'];
+function publish(result){byId('result').textContent=JSON.stringify(result,null,2);}
+async function run(){if(!ready||busy)return;busy=true;controls(false);byId('status').dataset.run='running';const phases=[];try{for(const rev of spec.revisions){await setRevision(rev.id);for(const st of spec.states){await setState(st);phases.push(await phaseSnapshot());}}const smoke=await activation(),result={ok:true,revision:spec.revision,fixture:spec.fixture,phases,activation:smoke,errors:[...errors],journal:[...journal],limits};publish(result);byId('status').dataset.run='done';byId('status').textContent='684 source token/state rows observed';return result;}catch(error){errors.push(String(error));const result={ok:false,error:String(error),phases,errors:[...errors]};publish(result);byId('status').dataset.run='done';return result;}finally{busy=false;controls(ready);}}
+async function command(id){if(!ready||busy)return;busy=true;controls(false);try{await setRevision(id);publish({ok:true,revision:spec.revision,fixture:spec.fixture,phases:[await phaseSnapshot()],errors:[...errors],limits});}catch(error){errors.push(String(error));}finally{busy=false;controls(ready);}}
+for(const st of spec.states){const option=document.createElement('option');option.value=st;option.textContent=st;byId('state').append(option);}for(const rev of spec.revisions)byId(rev.id).addEventListener('click',event=>{event.preventDefault();event.stopPropagation();command(rev.id);});byId('state').addEventListener('change',async event=>{event.stopPropagation();if(!ready||busy)return;busy=true;controls(false);try{await setState(event.target.value);publish({ok:true,revision:spec.revision,phases:[await phaseSnapshot()],errors:[...errors],limits});}finally{busy=false;controls(true);}});byId('run').addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run();});byId('capture').addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();if(ready&&!busy)publish({ok:true,revision:spec.revision,phases:[await phaseSnapshot()],errors:[...errors],limits});});window.addEventListener('error',event=>errors.push(event.message));window.addEventListener('unhandledrejection',event=>errors.push(String(event.reason)));
+window.upstreamButtonTokenReview=Object.freeze({run,snapshot:()=>({ready,revision,state,rows:core.map(item=>capture(item)),extras:extras.map(item=>capture(item))})});try{const{defineCustomElements}=await import('http://127.0.0.1:8089/www/node_modules/@siemens/ix-icons/loader/index.es2017.js');defineCustomElements();await Promise.all(['ix-button','ix-spinner','ix-icon'].map(tag=>customElements.whenDefined(tag)));construct();await Promise.all([...core,...extras].map(item=>item.host.componentOnReady()));await setRevision('baseline');await Promise.all([...extras,...core].flatMap(item=>[...item.host.shadowRoot.querySelectorAll('ix-icon,ix-spinner')]).map(n=>n.componentOnReady?.()));await settle();ready=true;controls(true);byId('status').dataset.ready='true';byId('status').textContent='Ready: source Button matrix';publish({ok:true,revision:spec.revision,phases:[await phaseSnapshot()],errors:[...errors],limits});}catch(error){errors.push(String(error));byId('status').textContent='Pinned Button unavailable: '+error;publish({ok:false,error:String(error),errors:[...errors]});}
+</script></body></html>
