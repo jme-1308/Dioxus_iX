@@ -132,9 +132,11 @@ fn toggle_variant_conversion_rejects_danger_and_rendering_keeps_icon_toggle_sepa
         assert_eq!(attribute(opening, "aria-disabled"), Some("false"));
     }
     let icon_toggle = opening_with_class(&html, "ix-icon-button").unwrap();
-    assert!(!classes(icon_toggle).contains(&"ix-button-tokenized"));
+    assert!(classes(icon_toggle).contains(&"ix-button-tokenized"));
+    assert!(classes(icon_toggle).contains(&"ix-icon-toggle-button-native"));
+    assert!(!classes(icon_toggle).contains(&"ix-toggle-button-native"));
     assert_eq!(html.matches("ix-toggle-button-native").count(), 7);
-    assert_eq!(html.matches("ix-button-tokenized").count(), 7);
+    assert_eq!(html.matches("ix-button-tokenized").count(), 8);
 }
 
 #[test]

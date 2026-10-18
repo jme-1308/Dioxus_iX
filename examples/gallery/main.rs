@@ -32,6 +32,7 @@ mod header_nested_review;
 mod header_switch_review;
 mod icon_button_review;
 mod icon_scenarios;
+mod icon_toggle_button_review;
 mod layout;
 mod layout_scenarios;
 mod menu_category_review;
@@ -204,7 +205,7 @@ fn Gallery() -> Element {
                     h1 { "{page().label()}" }
                     p { class: "review-intro", "Interactive Rust ports of iX example scenarios. This is a work in progress; exact Brand tokens and complete upstream parity are still being verified." }
                     match page() {
-                        GalleryPage::Actions => rsx! { toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
+                        GalleryPage::Actions => rsx! { icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples {} },
                         GalleryPage::Forms => rsx! { text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },

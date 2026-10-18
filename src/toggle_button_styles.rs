@@ -1,10 +1,16 @@
-//! Source-aligned sizing, icon/spinner constraints, and 6-variant pressed state token styles for [`crate::ToggleButton`].
+//! Source-aligned sizing, icon/spinner constraints for [`crate::ToggleButton`], and shared
+//! 9-variant selected/active state rules (plus 6-variant pressed token defaults) for
+//! `.ix-button.ix-button-tokenized.ix-button-selectable` ([`crate::ToggleButton`] and [`crate::IconToggleButton`]).
 //!
-//! Scoped strictly to `.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native` and loaded
-//! after [`crate::button_styles::STYLES`] so shared button base tokens and layout rules are reused.
+//! Loaded after [`crate::button_styles::STYLES`] and [`crate::icon_button_styles::STYLES`]:
+//! text-toggle sizing, icon, and spinner constraints stay strictly on `.ix-toggle-button-native`
+//! so `.ix-icon-button-native` dimensions never leak, while `.ix-button-selectable` carries
+//! the shared selected, `.ix-toggle-active`/`:active` inner-active, and host `.active` rules
+//! across all 9 button variants (danger variants intentionally omit default `--pressed*` tokens
+//! to match `button.vars.scss` while honoring custom `--ix-button-danger-*--*--pressed*` overrides).
 
 pub(crate) const STYLES: &str = r#"
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable {
   --ix-button-primary--background--pressed: var(--si-sys-color-background-accent-hover, color-mix(in srgb, var(--ix-color-primary) 85%, var(--ix-color-text)));
   --ix-button-primary--background--pressed-active: var(--si-sys-color-background-accent-active, color-mix(in srgb, var(--ix-color-primary) 72%, var(--ix-color-text)));
   --ix-button-primary--background--pressed-hover: var(--si-sys-color-background-accent-hover, color-mix(in srgb, var(--ix-color-primary) 85%, var(--ix-color-text)));
@@ -60,6 +66,8 @@ pub(crate) const STYLES: &str = r#"
   --ix-button-tertiary--color--pressed: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
   --ix-button-tertiary--color--pressed-active: var(--si-sys-color-text-accent-active, color-mix(in srgb, var(--ix-color-secondary) 72%, var(--ix-color-text)));
   --ix-button-tertiary--color--pressed-hover: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native {
   --ix-toggle-button--height: var(--si-sys-sizing-size-80, var(--_ix-button-height, 32px));
   --ix-toggle-button--min-width: var(--si-sys-sizing-size-120, 80px);
   --ix-toggle-button-icon-right--icon-size: var(--si-sys-sizing-icon-lg, 20px);
@@ -88,196 +96,292 @@ pub(crate) const STYLES: &str = r#"
   min-width: var(--ix-spinner-small--size);
   min-height: var(--ix-spinner-small--size);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
   border-color: var(--ix-button-primary--border-color--active);
   background-color: var(--ix-button-primary--background--active);
   color: var(--ix-button-primary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
   background-color: var(--ix-button-primary--background--pressed);
   color: var(--ix-button-primary--color--pressed);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
   border-color: var(--ix-button-primary--border-color--hover);
   background-color: var(--ix-button-primary--background--pressed-hover);
   color: var(--ix-button-primary--color--pressed-hover);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
   border-color: var(--ix-button-primary--border-color--active);
   background-color: var(--ix-button-primary--background--pressed-hover);
   color: var(--ix-button-primary--color--pressed-active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
   border-color: var(--ix-button-primary--border-color--active);
   background-color: var(--ix-button-primary--background--active);
   color: var(--ix-button-primary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
   border-color: var(--ix-button-secondary--border-color--active);
   background-color: var(--ix-button-secondary--background--active);
   color: var(--ix-button-secondary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
   background-color: var(--ix-button-secondary--background--pressed);
   color: var(--ix-button-secondary--color--pressed);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
   border-color: var(--ix-button-secondary--border-color--hover);
   background-color: var(--ix-button-secondary--background--pressed-hover);
   color: var(--ix-button-secondary--color--pressed-hover);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
   border-color: var(--ix-button-secondary--border-color--active);
   background-color: var(--ix-button-secondary--background--pressed-hover);
   color: var(--ix-button-secondary--color--pressed-active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
   border-color: var(--ix-button-secondary--border-color--active);
   background-color: var(--ix-button-secondary--background--active);
   color: var(--ix-button-secondary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
   border-color: var(--ix-button-tertiary--border-color--active);
   background-color: var(--ix-button-tertiary--background--active);
   color: var(--ix-button-tertiary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
   background-color: var(--ix-button-tertiary--background--pressed);
   color: var(--ix-button-tertiary--color--pressed);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
   border-color: var(--ix-button-tertiary--border-color--hover);
   background-color: var(--ix-button-tertiary--background--pressed-hover);
   color: var(--ix-button-tertiary--color--pressed-hover);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
   border-color: var(--ix-button-tertiary--border-color--active);
   background-color: var(--ix-button-tertiary--background--pressed-hover);
   color: var(--ix-button-tertiary--color--pressed-active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
   border-color: var(--ix-button-tertiary--border-color--active);
   background-color: var(--ix-button-tertiary--background--active);
   color: var(--ix-button-tertiary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
   border-color: var(--ix-button-subtle-primary--border-color--active);
   background-color: var(--ix-button-subtle-primary--background--active);
   color: var(--ix-button-subtle-primary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
   background-color: var(--ix-button-subtle-primary--background--pressed);
   color: var(--ix-button-subtle-primary--color--pressed);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
   border-color: var(--ix-button-subtle-primary--border-color--hover);
   background-color: var(--ix-button-subtle-primary--background--pressed-hover);
   color: var(--ix-button-subtle-primary--color--pressed-hover);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
   border-color: var(--ix-button-subtle-primary--border-color--active);
   background-color: var(--ix-button-subtle-primary--background--pressed-hover);
   color: var(--ix-button-subtle-primary--color--pressed-active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
   border-color: var(--ix-button-subtle-primary--border-color--active);
   background-color: var(--ix-button-subtle-primary--background--active);
   color: var(--ix-button-subtle-primary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
   border-color: var(--ix-button-subtle-secondary--border-color--active);
   background-color: var(--ix-button-subtle-secondary--background--active);
   color: var(--ix-button-subtle-secondary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
   background-color: var(--ix-button-subtle-secondary--background--pressed);
   color: var(--ix-button-subtle-secondary--color--pressed);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
   border-color: var(--ix-button-subtle-secondary--border-color--hover);
   background-color: var(--ix-button-subtle-secondary--background--pressed-hover);
   color: var(--ix-button-subtle-secondary--color--pressed-hover);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
   border-color: var(--ix-button-subtle-secondary--border-color--active);
   background-color: var(--ix-button-subtle-secondary--background--pressed-hover);
   color: var(--ix-button-subtle-secondary--color--pressed-active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
   border-color: var(--ix-button-subtle-secondary--border-color--active);
   background-color: var(--ix-button-subtle-secondary--background--active);
   color: var(--ix-button-subtle-secondary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
   border-color: var(--ix-button-subtle-tertiary--border-color--active);
   background-color: var(--ix-button-subtle-tertiary--background--active);
   color: var(--ix-button-subtle-tertiary--color--active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
   background-color: var(--ix-button-subtle-tertiary--background--pressed);
   color: var(--ix-button-subtle-tertiary--color--pressed);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
   border-color: var(--ix-button-subtle-tertiary--border-color--hover);
   background-color: var(--ix-button-subtle-tertiary--background--pressed-hover);
   color: var(--ix-button-subtle-tertiary--color--pressed-hover);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
   border-color: var(--ix-button-subtle-tertiary--border-color--active);
   background-color: var(--ix-button-subtle-tertiary--background--pressed-hover);
   color: var(--ix-button-subtle-tertiary--color--pressed-active);
 }
-.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
   border-color: var(--ix-button-subtle-tertiary--border-color--active);
   background-color: var(--ix-button-subtle-tertiary--background--active);
   color: var(--ix-button-subtle-tertiary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-danger-primary--border-color--active);
+  background-color: var(--ix-button-danger-primary--background--active);
+  color: var(--ix-button-danger-primary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-danger-primary--background--pressed);
+  color: var(--ix-button-danger-primary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-danger-primary--border-color--hover);
+  background-color: var(--ix-button-danger-primary--background--pressed-hover);
+  color: var(--ix-button-danger-primary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-danger-primary--border-color--active);
+  background-color: var(--ix-button-danger-primary--background--pressed-hover);
+  color: var(--ix-button-danger-primary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-danger-primary--border-color--active);
+  background-color: var(--ix-button-danger-primary--background--active);
+  color: var(--ix-button-danger-primary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-danger-secondary--border-color--active);
+  background-color: var(--ix-button-danger-secondary--background--active);
+  color: var(--ix-button-danger-secondary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-danger-secondary--background--pressed);
+  color: var(--ix-button-danger-secondary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-danger-secondary--border-color--hover);
+  background-color: var(--ix-button-danger-secondary--background--pressed-hover);
+  color: var(--ix-button-danger-secondary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-danger-secondary--border-color--active);
+  background-color: var(--ix-button-danger-secondary--background--pressed-hover);
+  color: var(--ix-button-danger-secondary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-danger-secondary--border-color--active);
+  background-color: var(--ix-button-danger-secondary--background--active);
+  color: var(--ix-button-danger-secondary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-danger-tertiary--border-color--active);
+  background-color: var(--ix-button-danger-tertiary--background--active);
+  color: var(--ix-button-danger-tertiary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-danger-tertiary--background--pressed);
+  color: var(--ix-button-danger-tertiary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-danger-tertiary--border-color--hover);
+  background-color: var(--ix-button-danger-tertiary--background--pressed-hover);
+  color: var(--ix-button-danger-tertiary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-danger-tertiary--border-color--active);
+  background-color: var(--ix-button-danger-tertiary--background--pressed-hover);
+  color: var(--ix-button-danger-tertiary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-button-selectable.ix-button-danger-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-danger-tertiary--border-color--active);
+  background-color: var(--ix-button-danger-tertiary--background--active);
+  color: var(--ix-button-danger-tertiary--color--active);
 }
 "#;

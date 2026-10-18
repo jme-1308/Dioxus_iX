@@ -269,7 +269,7 @@ pub fn ToggleButton(
 ) -> Element {
     let blocked = disabled || loading;
     rsx! { button {
-        class: "ix-button ix-button-tokenized ix-toggle-button-native ix-button-{variant.as_str()} {class}",
+        class: "ix-button ix-button-tokenized ix-button-selectable ix-toggle-button-native ix-button-{variant.as_str()} {class}",
         class: if pressed { "ix-selected" },
         r#type: "button", disabled: blocked, tabindex: if blocked { -1 } else { 0 },
         aria_pressed: pressed, aria_disabled: blocked, aria_busy: loading, aria_label,
@@ -285,7 +285,13 @@ pub fn ToggleButton(
     } }
 }
 
-/// Icon toggle; the accessible label stays constant as its pressed state changes.
+/// Controlled icon toggle; update `pressed` from `onpressedchange`.
+///
+/// Shares source control/glyph sizing and oval tokens with [`IconButton`], and
+/// selected-state recipes with [`ToggleButton`]. The explicit accessible label
+/// stays constant as `pressed` changes. Loading replaces the glyph and blocks
+/// requests. `active` locks the source host active look; `ix-toggle-active`
+/// exposes its separate inner active diagnostic alias.
 #[component]
 pub fn IconToggleButton(
     icon: String,
@@ -296,17 +302,24 @@ pub fn IconToggleButton(
     #[props(default)] oval: bool,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
+    #[props(default)] class: String,
     onpressedchange: EventHandler<bool>,
 ) -> Element {
     let blocked = disabled || loading;
+    let loading_size = match (!icon.is_empty(), size) {
+        (true, ButtonIconSize::Twelve) => SpinnerSize::Xxs,
+        (true, ButtonIconSize::Sixteen) => SpinnerSize::Xs,
+        _ => SpinnerSize::Sm,
+    };
     rsx! { button {
-        class: "ix-button ix-icon-button ix-button-{variant.as_str()} ix-icon-size-{size.as_str()}",
+        class: "ix-button ix-icon-button ix-button-tokenized ix-icon-button-native ix-icon-toggle-button-native ix-button-selectable ix-button-{variant.as_str()} ix-icon-size-{size.as_str()} {class}",
         class: if pressed { "ix-selected" }, class: if oval { "ix-oval" },
-        r#type: "button", disabled: blocked, aria_pressed: pressed, aria_label: label.clone(),
+        r#type: "button", disabled: blocked, tabindex: if blocked { -1 } else { 0 },
+        aria_disabled: blocked, aria_pressed: pressed, aria_label: label.clone(),
         title: label, aria_busy: loading,
         onclick: move |_| { if !blocked { onpressedchange.call(!pressed); } },
-        if loading { Spinner { size: SpinnerSize::Sm, hide_track: true } }
-        else { crate::Icon { name: icon, size: size.pixels() } }
+        if loading { Spinner { size: loading_size, hide_track: true } }
+        else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }
     } }
 }
 
@@ -1034,3 +1047,7 @@ mod icon_button_token_tests;
 #[cfg(test)]
 #[path = "toggle_button_token_tests.rs"]
 mod toggle_button_token_tests;
+
+#[cfg(test)]
+#[path = "icon_toggle_button_token_tests.rs"]
+mod icon_toggle_button_token_tests;

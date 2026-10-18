@@ -114,8 +114,12 @@ fn icon_button_defaults_and_variants_retain_distinct_control_markers() {
     assert!(classes(toggle).contains(&"ix-button-tokenized"));
     assert!(classes(toggle).contains(&"ix-toggle-button-native"));
     assert!(!classes(toggle).contains(&"ix-icon-button-native"));
-    assert_eq!(html.matches("ix-button-tokenized").count(), 12);
-    assert_eq!(html.matches("ix-icon-button-native").count(), 10);
+    let icon_toggle = opening_with_class(&html, "ix-icon-toggle-button-native").unwrap();
+    assert!(classes(icon_toggle).contains(&"ix-icon-button-native"));
+    assert!(classes(icon_toggle).contains(&"ix-button-selectable"));
+    assert!(!classes(icon_toggle).contains(&"ix-toggle-button-native"));
+    assert_eq!(html.matches("ix-button-tokenized").count(), 13);
+    assert_eq!(html.matches("ix-icon-button-native").count(), 11);
 }
 
 #[test]
