@@ -14,6 +14,7 @@ const focusableSelector='a[href],area[href],button,input:not([type="hidden"]),se
 const groups=['secondary','default','overflow','avatar'].map(name=>root.querySelector('[data-header-group="'+name+'"]'));
 const hosts=['small','large'].map(name=>root.querySelector('[data-header-popup-host="'+name+'"]'));
 const more=()=>root.querySelector('[data-header-more-button]');
+const boundMore=new WeakSet();
 const generation=()=>root.getAttribute('data-generation')||'0';
 const activeHost=()=>hosts[root.getAttribute('data-small')==='true'?0:1];
 const open=()=>root.getAttribute('data-open')==='true';
@@ -54,6 +55,12 @@ function send(report,event){
   transport.value=value;
   const stop=!transport.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
   if(event){if(prevent&&event.cancelable)event.preventDefault();if(stop)event.stopPropagation();}
+}
+function bindMoreClick(){
+  const trigger=more();if(!trigger||boundMore.has(trigger))return;
+  boundMore.add(trigger);
+  // Source Dropdown binds its trigger before document-level overlay handling.
+  trigger.addEventListener('click',event=>send(facts('click',event),event),{signal});
 }
 function reportPresence(){
   const report=facts('presence');
@@ -123,10 +130,10 @@ function requestFocus(){
     reportPresence();
   });
 }
-function sync(){if(!alive||!root.isConnected)return;syncPopups();reportPresence();requestFocus();}
+function sync(){if(!alive||!root.isConnected)return;bindMoreClick();syncPopups();reportPresence();requestFocus();}
 root.addEventListener('keydown',event=>send(facts('key',event),event),{capture:true,signal});
 document.addEventListener('click',event=>{
-  if(open()||event.composedPath().includes(more()))send(facts('click',event),event);
+  if(open()&&!event.composedPath().includes(more()))send(facts('click',event),event);
 },{signal});
 document.addEventListener('pointerdown',event=>{
   if(open()||event.composedPath().includes(root))send(facts('pointer',event),event);

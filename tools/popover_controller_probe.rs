@@ -80,10 +80,13 @@ enum FocusMode {
     TabNested,
     TabDropdownActive,
     TabDropdownRoving,
+    HeaderSmallIsolated,
+    HeaderSmallChild,
+    HeaderHistoryChild,
 }
 
 impl FocusMode {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 18] = [
         Self::Default,
         Self::Priority,
         Self::HeaderOnly,
@@ -99,6 +102,9 @@ impl FocusMode {
         Self::TabNested,
         Self::TabDropdownActive,
         Self::TabDropdownRoving,
+        Self::HeaderSmallIsolated,
+        Self::HeaderSmallChild,
+        Self::HeaderHistoryChild,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -117,6 +123,9 @@ impl FocusMode {
             Self::TabNested => "tab-nested",
             Self::TabDropdownActive => "tab-dropdown-active",
             Self::TabDropdownRoving => "tab-dropdown-roving",
+            Self::HeaderSmallIsolated => "header-small-isolated",
+            Self::HeaderSmallChild => "header-small-child",
+            Self::HeaderHistoryChild => "header-history-child",
         }
     }
     fn from_key(value: &str) -> Self {
@@ -124,6 +133,12 @@ impl FocusMode {
             .into_iter()
             .find(|mode| mode.key() == value)
             .unwrap_or_default()
+    }
+    fn is_header(self) -> bool {
+        matches!(
+            self,
+            Self::HeaderSmallIsolated | Self::HeaderSmallChild | Self::HeaderHistoryChild
+        )
     }
 }
 
@@ -259,7 +274,9 @@ fn Fixture(
                 button { id: "popover-focus-remove-body", onclick: move |_| dynamic_body.set(false), "Remove parent body control" }
             }
             if focus_mode != FocusMode::NoTrigger { PopoverTrigger { popover: handles[0], trigger_mode: if hover_parent { PopoverTriggerMode::Hover } else { PopoverTriggerMode::Click }, "Parent native trigger" } }
-            Panel { index: 0 }
+            if focus_mode.is_header() {
+                HeaderProbeOwner { initial_small: focus_mode != FocusMode::HeaderHistoryChild, with_child: focus_mode != FocusMode::HeaderSmallIsolated, Panel { index: 0 } }
+            } else { Panel { index: 0 } }
             if !nested_child_host || (focus_mode != FocusMode::Default && focus_mode != FocusMode::Excluded && focus_mode != FocusMode::TabNested) { Panel { index: 1 } }
             if focus_mode != FocusMode::Default { Panel { index: 4 } }
             PopoverTrigger { popover: handles[2], "Unrelated native trigger" }
@@ -314,14 +331,15 @@ fn Panel(index: usize) -> Element {
 #[component]
 fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
     let ProbeContext { handles, rows, .. } = use_context();
-    let hide_close = matches!(
-        mode,
-        FocusMode::Static
-            | FocusMode::FooterOnly
-            | FocusMode::NoTrigger
-            | FocusMode::CachedAdd
-            | FocusMode::CachedRemove
-    );
+    let hide_close = mode.is_header()
+        || matches!(
+            mode,
+            FocusMode::Static
+                | FocusMode::FooterOnly
+                | FocusMode::NoTrigger
+                | FocusMode::CachedAdd
+                | FocusMode::CachedRemove
+        );
     let body = match mode {
         FocusMode::Priority => {
             rsx! { button { id: "popover-focus-body", "First body action" } button { id: "popover-focus-body-later", "Later body action" } }
@@ -360,6 +378,13 @@ fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
         FocusMode::CachedAdd | FocusMode::CachedRemove => {
             rsx! { if dynamic_body() { button { id: "popover-focus-body", "Dynamic body action" } } p { "Dynamic content changes through Rust fixture state." } }
         }
+        FocusMode::HeaderSmallIsolated
+        | FocusMode::HeaderSmallChild
+        | FocusMode::HeaderHistoryChild => rsx! {
+            button { id: "popover-parent-before-header", "Parent before Header" }
+            HeaderProbeContents {}
+            button { id: "popover-parent-after-header", "Parent after Header" }
+        },
         _ => rsx! { p { "Static body copy without an interactive control." } },
     };
     rsx! {
@@ -375,6 +400,84 @@ fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
             else if mode == FocusMode::Positive { button { id: "popover-focus-footer-three", tabindex: "3", "Footer positive three" } }
             else if matches!(mode, FocusMode::Tab | FocusMode::TabPositive | FocusMode::TabNested | FocusMode::TabDropdownActive | FocusMode::TabDropdownRoving) { button { id: "popover-tab-last", tabindex: if mode == FocusMode::TabPositive { "3" } else { "0" }, "Tab footer last" } }
             else { span { "Static footer copy" } }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HeaderProbeContext {
+    child: DropdownHandle,
+    small: Signal<bool>,
+    root_veto: Signal<bool>,
+    root_open: Signal<bool>,
+    with_child: bool,
+}
+
+#[component]
+fn HeaderProbeOwner(initial_small: bool, with_child: bool, children: Element) -> Element {
+    let ProbeContext { rows, .. } = use_context();
+    let child = use_dropdown();
+    let mut small = use_signal(|| initial_small);
+    let mut roving = use_signal(|| false);
+    let mut root_veto = use_signal(|| false);
+    let mut child_veto = use_signal(|| false);
+    let root_open = use_signal(|| false);
+    use_context_provider(|| HeaderProbeContext {
+        child,
+        small,
+        root_veto,
+        root_open,
+        with_child,
+    });
+    rsx! {
+        section { id: "popover-header-probe", "data-initial-small": initial_small.to_string(), "data-small": small().to_string(), "data-roving": roving().to_string(), "data-root-veto": root_veto().to_string(), "data-child-veto": child_veto().to_string(), "data-root-open": root_open().to_string(), "data-child-open": child.is_open().to_string(), "data-with-child": with_child.to_string(),
+            div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:8px 0",
+                button { id: "popover-header-toggle-size", tabindex: "-1", onclick: move |_| { let next = !small(); small.set(next); }, "Toggle retained Header small / large" }
+                button { id: "popover-header-toggle-roving", tabindex: "-1", onclick: move |_| { let next = !roving(); roving.set(next); }, "Toggle child navigation mode" }
+                button { id: "popover-header-toggle-root-veto", tabindex: "-1", onclick: move |_| { let next = !root_veto(); root_veto.set(next); }, "Toggle Header close veto" }
+                button { id: "popover-header-toggle-child-veto", tabindex: "-1", onclick: move |_| { let next = !child_veto(); child_veto.set(next); }, "Toggle Header child close veto" }
+            }
+            input { id: "popover-header-small", r#type: "hidden", oninput: move |event| small.set(event.value() == "true") }
+            input { id: "popover-header-roving", r#type: "hidden", oninput: move |event| roving.set(event.value() == "true") }
+            input { id: "popover-header-root-veto", r#type: "hidden", oninput: move |event| root_veto.set(event.value() == "true") }
+            input { id: "popover-header-child-veto", r#type: "hidden", oninput: move |event| child_veto.set(event.value() == "true") }
+            {children}
+            if with_child {
+                div { id: "popover-header-child-surface", "data-open": child.is_open().to_string(),
+                    Dropdown { controller: child, label: "Header Popover child", enable_top_layer: true, navigation_mode: if roving() { DropdownNavigationMode::RovingTabindex } else { DropdownNavigationMode::ActiveDescendant },
+                        onbeforechange: move |event: DropdownChangeEvent| { if !event.open && child_veto() { event.prevent_default(); } record(rows, "header-child-request", "header-child", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
+                        onchange: move |open| record(rows, "header-child-completed", "header-child", json!({"open":open})),
+                        DropdownItem { label: "Header child first" }
+                        DropdownItem { label: "Header child last" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn HeaderProbeContents() -> Element {
+    let ProbeContext { rows, .. } = use_context();
+    let HeaderProbeContext {
+        child,
+        small,
+        root_veto,
+        mut root_open,
+        with_child,
+        ..
+    } = use_context();
+    rsx! {
+        div { id: "popover-header-content", style: "width:640px;max-width:100%;height:240px",
+            Application { force_breakpoint: if small() { ApplicationBreakpoint::Small } else { ApplicationBreakpoint::Large },
+                header: rsx! { ApplicationHeader { name: "Header Popover fixture", aria_label_more_menu_icon_button: "Header Popover More", enable_top_layer: true,
+                    onbeforeoverflowchange: move |event: HeaderOverflowEvent| { if !event.open && root_veto() { event.prevent_default(); } record(rows, "header-request", "header", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
+                    onoverflowchange: move |open| { root_open.set(open); record(rows, "header-completed", "header", json!({"open":open})); },
+                    actions: rsx! { button { id: "popover-header-default-action", "Header default action" } if with_child { DropdownTrigger { dropdown: child, "Header child trigger" } } },
+                    overflow: rsx! { button { id: "popover-header-overflow-action", "Header permanent overflow action" } },
+                } },
+                p { "Real retained ApplicationHeader nested inside the parent Popover." }
+            }
         }
     }
 }
@@ -458,7 +561,8 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[];
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[];
+let readFailureHeader=()=>null;
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -469,6 +573,9 @@ try {
  const describe=n=>n?{id:n.id,tag:n.tagName,label:n.getAttribute?.('aria-label'),objectId:objectId(n)}:null;
  const local=()=>{const node=get('popover-child-local');return{node:describe(node),instance:node?.dataset.instance,draft:node?.dataset.draft,count:node?.dataset.count,input:describe(get('popover-child-draft')),inputValue:get('popover-child-draft')?.value};};
  const geometry=host=>{if(!host)return null;const box=host.getBoundingClientRect(),style=getComputedStyle(host),ancestor=host.parentElement?.closest('[popover]');return{box:{x:box.x,y:box.y,width:box.width,height:box.height},clientRectCount:host.getClientRects().length,display:style.display,visibility:style.visibility,opacity:style.opacity,inert:host.inert,hidden:host.hidden,nativeParent:describe(host.parentElement),popoverAncestor:describe(ancestor),ancestorPopoverOpen:ancestor?.matches(':popover-open')??null,ancestors:(()=>{const rows=[];let node=host.parentElement;while(node&&rows.length<10){const value=getComputedStyle(node);rows.push({...describe(node),display:value.display,visibility:value.visibility,inert:node.inert,hidden:node.hidden});node=node.parentElement;}return rows;})()};};
+ const headerNodes=()=>{const owner=get('popover-header-probe'),content=get('popover-header-content'),header=content?.querySelector('.ix-application-header'),root=header?.querySelector('.ix-header-layout'),more=header?.querySelector('[data-header-more-button]'),small=header?.querySelector('[data-header-popup-host="small"]'),large=header?.querySelector('[data-header-popup-host="large"]'),trigger=header?.querySelector('.ix-header-slot-default [data-ix-overlay-trigger]'),child=get('popover-header-child-surface'),host=child?.querySelector('[data-ix-overlay-host]');return{owner,content,header,root,more,small,large,trigger,child,host};};
+ const headerFacts=()=>{const n=headerNodes();if(!n.owner)return null;const element=node=>node?{...describe(node),connected:node.isConnected,open:node.dataset.open,overlayOpen:node.dataset.ixOverlayOpen,owner:node.dataset.ixOverlayOwner,overlayRoot:node.dataset.ixOverlayRoot,overlayHost:node.dataset.ixOverlayHost,generation:node.dataset.generation,overlayGeneration:node.dataset.ixOverlayGeneration,active:node.dataset.active,hidden:node.hidden,inert:node.inert,ariaExpanded:node.getAttribute('aria-expanded'),popoverOpen:node.hasAttribute('popover')?node.matches(':popover-open'):null,geometry:geometry(node)}:null;const observer=n.root?.querySelector('input[data-header-layout-observer]'),transport=n.root?.querySelector('input[data-ix-overlay-transport]'),value=input=>{try{return JSON.parse(input?.value??'null');}catch{return input?.value;}};return{initialSmall:n.owner.dataset.initialSmall,small:n.owner.dataset.small,roving:n.owner.dataset.roving,rootVeto:n.owner.dataset.rootVeto,childVeto:n.owner.dataset.childVeto,callbackRootOpen:n.owner.dataset.rootOpen,childOpen:n.owner.dataset.childOpen,withChild:n.owner.dataset.withChild,headerClass:n.header?.className,bridge:{headerNative:n.root?.dataset.headerLayoutNative,rootData:n.root?Object.fromEntries(Object.entries(n.root.dataset)):null,observer:{node:describe(observer),connected:!!observer?.isConnected,owner:observer?.getAttribute('data-header-layout-observer'),lastActualValue:value(observer)},transport:{node:describe(transport),connected:!!transport?.isConnected,owner:transport?.getAttribute('data-ix-overlay-transport'),native:transport?.getAttribute('data-ix-overlay-native'),lastActualValue:value(transport)},documentRegistryOwner:document.documentElement.getAttribute('data-ix-overlay-registry-native')},root:element(n.root),more:element(n.more),smallHost:element(n.small),largeHost:element(n.large),childTrigger:element(n.trigger),childHost:element(n.host),defaultAction:element(get('popover-header-default-action')),overflowAction:element(get('popover-header-overflow-action')),parentBefore:element(get('popover-parent-before-header')),parentAfter:element(get('popover-parent-after-header')),portContainedMenuToggle:element(n.header?.querySelector('.ix-header-menu-toggle')),physical:{parentContainsHeader:native('parent')?.contains(n.header),parentContainsChildHost:native('parent')?.contains(n.host),headerContainsChildTrigger:n.header?.contains(n.trigger),childTriggerAncestors:(()=>{const rows=[];let node=n.trigger;while(node&&rows.length<12){rows.push({node:describe(node),overlayHost:node.getAttribute('data-ix-overlay-host'),headerPopup:node.getAttribute('data-header-popup-host')});node=node.parentElement;}return rows;})()}};};
+ readFailureHeader=headerFacts;
  const snapshot=()=>({topology:fixture()?.dataset.topology,focusMode:fixture()?.dataset.focusMode,dynamicBody:fixture()?.dataset.dynamicBody,state:read(),veto:Object.fromEntries(names.map(name=>[name,get('popover-'+name+'-veto')?.checked])),vetoOpen:Object.fromEntries(names.map(name=>[name,get('popover-'+name+'-veto-open')?.checked])),native:Object.fromEntries(names.map(name=>{const host=native(name);let open=false;try{open=!!host?.matches(':popover-open');}catch{}return[name,{host:describe(host),connected:!!host?.isConnected,open,generation:host?.dataset.surfaceGeneration,overlayOpen:host?.dataset.ixOverlayOpen,geometry:geometry(host)}];})),childLocal:local(),active:describe(document.activeElement),log:logs()});
  const assert=(value,label)=>{if(!value)throw Error(label+' '+JSON.stringify({scenario,snapshot:snapshot()}));assertions.push({scenario,label});};
  const expect=(expected)=>{const current=snapshot();for(const name of names){const open=expected.includes(name);assert(current.state[name]===open,name+' Rust visibility '+open);assert(current.native[name].connected&&current.native[name].open===open,name+' connected native visibility '+open);}};
@@ -476,7 +583,7 @@ try {
  const expectTrigger=name=>assert(document.activeElement?.getAttribute('popovertarget')===native(name)?.id,'native focus returns configured '+name+' trigger');
  const requests=(name,open)=>logs().filter(row=>row.kind==='request'&&row.target===name&&(open===undefined||row.details.open===open));
  const completions=(name,open)=>logs().filter(row=>row.kind==='completed'&&row.target===name&&(open===undefined||row.details.open===open));
- const wait=async(fn,label)=>{let end=performance.now()+5000;while(performance.now()<end){if(fn())return;await sleep(10);}throw Error('Timeout '+label+' '+JSON.stringify(snapshot()));};
+ const wait=async(fn,label)=>{let end=performance.now()+5000;while(performance.now()<end){if(fn())return;await sleep(10);}throw Error('Timeout '+label+' '+JSON.stringify({snapshot:snapshot(),header:headerFacts()}));};
  const settle=async()=>{for(let i=0;i<5;i++)await new Promise(requestAnimationFrame);await sleep(40);};
  const input=(id,value)=>{const el=get(id);if(!el)throw Error('Missing input '+id);el.value=value;el.dispatchEvent(new Event('input',{bubbles:true,composed:true}));};
  const command=async(action,target,value)=>{const previous=Number(fixture().dataset.completed),detail={action,target,value};driverJournal.push({scenario,kind:'public-Rust-command-via-synthetic-input',detail});input('popover-command',JSON.stringify(detail));await wait(()=>Number(fixture()?.dataset.completed)>previous,'command '+action+' '+target);await settle();};
@@ -554,12 +661,13 @@ try {
  const tab=async(label,target,shift=false,afterDispatch=null)=>{
   if(!target)throw Error('Missing native Tab target '+label);target.focus();await settle();assert(document.activeElement===target,'actual native seeded Tab focus '+label);
   const before={state:read(),active:describe(document.activeElement),dropdownOpen:get('popover-tab-dropdown')?.dataset.open??null},nativeStart=nativeTabRows().length,rustStart=logs().length,event=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',shiftKey:shift,bubbles:true,cancelable:true,composed:true});
-  let reachedDocument=false,reachedWindow=false;const listeners=new AbortController(),dropdown=target.closest('#popover-tab-dropdown'),dropdownHost=dropdown?.querySelector('[data-ix-overlay-host]'),deferredTimeline=[],secondaryEvents=[];
-  const phase=(name,extra={})=>{const host=dropdownHost,row={phase:name,time:performance.now(),active:describe(document.activeElement),activeObject:objectId(document.activeElement),originalDefaultPrevented:event.defaultPrevented,targetConnected:target.isConnected,dropdown:dropdown?{connected:dropdown.isConnected,open:dropdown.dataset.open,host:describe(host),hostConnected:!!host?.isConnected,nativeOpen:host?.matches(':popover-open')??null,hidden:host?.hidden,inert:host?.inert,geometry:geometry(host)}:null,rustCallbacks:logs().slice(rustStart),...extra};if(dropdown)deferredTimeline.push(row);return row;};
+  let reachedDocument=false,reachedWindow=false;const listeners=new AbortController(),dropdown=target.closest('#popover-tab-dropdown'),dropdownHost=dropdown?.querySelector('[data-ix-overlay-host]'),headerScope=get('popover-header-probe'),hasTimeline=!!dropdown||!!headerScope,deferredTimeline=[],secondaryEvents=[];
+  const phase=(name,extra={})=>{const host=dropdownHost,row={phase:name,time:performance.now(),active:describe(document.activeElement),activeObject:objectId(document.activeElement),originalDefaultPrevented:event.defaultPrevented,targetConnected:target.isConnected,dropdown:dropdown?{connected:dropdown.isConnected,open:dropdown.dataset.open,host:describe(host),hostConnected:!!host?.isConnected,nativeOpen:host?.matches(':popover-open')??null,hidden:host?.hidden,inert:host?.inert,geometry:geometry(host)}:null,header:headerScope?headerFacts():null,rustCallbacks:logs().slice(rustStart),...extra};if(hasTimeline)deferredTimeline.push(row);return row;};
   document.addEventListener('keydown',actual=>{if(actual===event){reachedDocument=true;phase('late-document-bubble');}},{passive:true,signal:listeners.signal});
   window.addEventListener('keydown',actual=>{if(actual===event){reachedWindow=true;phase('window-bubble');}},{passive:true,signal:listeners.signal});
-  if(dropdown){
-   for(const type of ['beforetoggle','toggle'])dropdownHost?.addEventListener(type,native=>phase('native-'+type,{oldState:native.oldState,newState:native.newState}),{passive:true,signal:listeners.signal});
+  if(hasTimeline){
+   const nodes=headerScope?headerNodes():null,hosts=dropdown?[dropdownHost]:[nodes?.small,nodes?.large,nodes?.host];
+   for(const host of hosts.filter(Boolean))for(const type of ['beforetoggle','toggle'])host.addEventListener(type,native=>phase('native-'+type,{oldState:native.oldState,newState:native.newState,nativeToggleTarget:describe(native.target)}),{passive:true,signal:listeners.signal});
    for(const type of ['focusin','focusout'])document.addEventListener(type,native=>phase('native-'+type,{focusEventTarget:describe(native.target),relatedTarget:describe(native.relatedTarget)}),{capture:true,passive:true,signal:listeners.signal});
    requestAnimationFrame(time=>{if(!listeners.signal.aborted)phase('native-frame-before-release',{frameTime:time});});
   }
@@ -573,7 +681,7 @@ try {
   driverJournal.push({scenario,kind:'synthetic-native-Tab',label,shift,trusted:event.isTrusted,target:describe(target),beforeActive:describe(document.activeElement),nativeDefaultNavigation:false});
   target.dispatchEvent(event);const immediateDefaultPrevented=event.defaultPrevented,immediateActive=describe(document.activeElement);phase('post-dispatch');
   const actionFacts=afterDispatch?afterDispatch({phase,dispatchSecondary}):null;if(afterDispatch)phase('after-same-turn-action',{actionFacts});
-  if(dropdown){const frame=name=>new Promise(resolve=>requestAnimationFrame(time=>resolve(phase(name,{frameTime:time}))));const firstFrame=frame('first-native-frame');await Promise.resolve();phase('post-dispatch-microtask');await firstFrame;await frame('second-native-frame');}
+  if(hasTimeline){const frame=name=>new Promise(resolve=>requestAnimationFrame(time=>resolve(phase(name,{frameTime:time}))));const firstFrame=frame('first-native-frame');await Promise.resolve();phase('post-dispatch-microtask');await firstFrame;await frame('second-native-frame');}
   await settle();phase('settled');
   const row={label,shift,trusted:event.isTrusted,target:describe(target),immediateDefaultPrevented,settledDefaultPrevented:event.defaultPrevented,reachedDocument,reachedWindow,immediateActive,afterActive:describe(document.activeElement),afterActiveObject:objectId(document.activeElement),before,nativePhases:nativeTabRows().slice(nativeStart),rustCallbacks:logs().slice(rustStart),afterState:read(),dropdownOpen:get('popover-tab-dropdown')?.dataset.open??null,deferredTimeline,secondaryEvents,actionFacts};
   tabCases.push(row);save({phase:'synthetic-Tab',tab:row});listeners.abort();return row;
@@ -657,9 +765,52 @@ try {
  row=await tab('captured Dropdown exit followed by same-turn parent public hide',queued.trigger,false,()=>{const detail={action:'hide',target:'parent'};driverJournal.push({scenario,kind:'public-Rust-command-via-synthetic-input',detail,sameTurn:true});input('popover-command',JSON.stringify(detail));return{action:'parent-public-hide',detail};});
  const closingAfterFocus=row.deferredTimeline.filter(value=>value.phase==='native-focusin'&&value.focusEventTarget?.objectId===objectId(queued.after));
  checkQueued(row,queued.parentTrigger,false,false,{matched:closingAfterFocus.length===0,expected:{settledConfiguredParentTrigger:true,closingAfterNeverFocused:true},actual:{action:row.actionFacts,closingAfterFocus}});
+ const headerClick=(target,label)=>{
+  if(!target)throw Error('Missing actual Header click target '+label);let actual=null;target.addEventListener('click',event=>actual=event,{capture:true,once:true,passive:true});target.focus();target.click();
+  driverJournal.push({scenario,kind:'synthetic-actual-native-Header-click',label,target:describe(target),trusted:actual?.isTrusted,defaultPrevented:actual?.defaultPrevented,activeAfter:describe(document.activeElement)});
+ };
+ const openHeader=async(label)=>{
+  const n=headerNodes(),start=logs().length,clicked=n.root?.dataset.open!=='true';if(clicked)headerClick(n.more,label);
+  await wait(()=>{const n=headerNodes(),host=n.owner?.dataset.small==='true'?n.small:n.large;return n.root?.dataset.open==='true'&&host?.matches(':popover-open');},'actual Header native popup opens '+label);await settle();
+  if(clicked){const callbacks=logs().slice(start),requests=callbacks.filter(row=>row.kind==='header-request'&&row.details.open===true),completions=callbacks.filter(row=>row.kind==='header-completed'&&row.details.open===true),matched=requests.length===1&&requests[0].details.vetoed===false&&completions.length===1;headerOpeningChecks.push({scenario,label,matched,expected:{acceptedTrueRequests:1,trueCompletions:1},actual:{requests,completions,root:headerFacts()?.root}});assert(matched,'one accepted Header true request and completion per actual More opening click '+label);}
+ };
+ const headerSetup=async(label,{isolated=false,history=false,roving=false,rootVeto=false,childVeto=false}={})=>{
+  await freshFocus(history?'header-history-child':isolated?'header-small-isolated':'header-small-child',label);await command('show','parent');
+  await wait(()=>{const n=headerNodes();return n.root?.dataset.ixOverlayReady==='true'&&n.more&&!n.more.hidden&&n.header?.classList.contains(history?'ix-app-large':'ix-app-small');},'actual forced Header breakpoint and permanent overflow presence');await settle();
+  const stages=[{phase:'fresh-header-ready',facts:headerFacts()}];
+  if(roving){input('popover-header-roving','true');await wait(()=>headerNodes().owner?.dataset.roving==='true','actual Rust Header child roving mode');await settle();}
+  await openHeader(history?'open actual More while Large':'open actual More while Small');stages.push({phase:'actual-More-open-before-history',facts:headerFacts()});
+  if(history){
+   const held=headerNodes(),start=logs().length;driverJournal.push({scenario,kind:'public-fixture-Rust-breakpoint-change',from:'large-open',to:'small',remount:false,explicitRediscovery:false});input('popover-header-small','true');
+   await wait(()=>headerNodes().owner?.dataset.small==='true'&&headerNodes().header?.classList.contains('ix-app-small'),'same Application changes Large to Small');await settle();
+   const current=headerNodes(),reopenRequired=current.root?.dataset.open!=='true';stages.push({phase:'natural-retained-Large-to-Small-before-any-reopen',facts:headerFacts(),callbacks:logs().slice(start),sameActualObjects:{header:held.header===current.header,root:held.root===current.root,more:held.more===current.more,smallHost:held.small===current.small,largeHost:held.large===current.large,childTrigger:held.trigger===current.trigger,childHost:held.host===current.host},extraAdapterReopenRequired:reopenRequired});
+   if(reopenRequired){driverJournal.push({scenario,kind:'extra-port-adapter-input',reason:'Header mode reconciliation naturally closed the popup; source retained-open history under investigation',input:'actual More click after recorded natural Small state'});await openHeader('EXTRA port adapter reopen after natural mode-close');stages.push({phase:'extra-port-adapter-More-reopen',facts:headerFacts(),sourceEquivalentInput:false});}
+  }
+  if(rootVeto){input('popover-header-root-veto','true');await wait(()=>headerNodes().owner?.dataset.rootVeto==='true','actual Rust Header root close veto');}
+  if(childVeto){input('popover-header-child-veto','true');await wait(()=>headerNodes().owner?.dataset.childVeto==='true','actual Rust Header child close veto');}
+  return{isolated,history,roving,rootVeto,childVeto,stages,limits:['Port contained Small ApplicationHeader has a native menu toggle; source custom menu control presence and candidate eligibility require actual comparison','Port More is a native button; source More is a shadow custom button and is not assumed to be in the same parent focus candidate list','Large-to-Small natural mode-close and any extra More reopen are explicitly recorded rather than equated with source retained-open history under investigation']};
+ };
+ const headerRaw=async(label,options,origin,backwards=false)=>{
+  const setup=await headerSetup(label,options);
+  if(origin==='child'){
+   headerClick(headerNodes().trigger,'actual external Header child trigger');await wait(()=>headerNodes().owner?.dataset.childOpen==='true'&&headerNodes().host?.matches(':popover-open'),'actual external Header child opens');await settle();
+   if(options.roving){const trigger=headerNodes().trigger;trigger.focus();const event=new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true,cancelable:true,composed:true});trigger.dispatchEvent(event);driverJournal.push({scenario,kind:'synthetic-actual-native-Header-child-ArrowDown',target:describe(trigger),trusted:event.isTrusted,defaultPrevented:event.defaultPrevented});await settle();setup.stages.push({phase:'actual-ArrowDown-roving-preparation-before-explicit-Tab-seed',facts:headerFacts(),active:describe(document.activeElement),items:Array.from(headerNodes().host?.querySelectorAll('[data-ix-dropdown-item]')??[]).map(item=>({...describe(item),tabindexAttribute:item.getAttribute('tabindex'),tabIndex:item.tabIndex,active:item===document.activeElement}))});}
+  }
+  const n=headerNodes(),target=origin==='more'?n.more:origin==='first'?get('popover-header-default-action'):origin==='last'?get('popover-header-overflow-action'):origin==='parent-after'?get('popover-parent-after-header'):options.roving?n.host?.querySelector('[data-ix-dropdown-item]'):n.trigger,before={header:headerFacts(),popoverState:read(),active:describe(document.activeElement),logs:logs()};
+  const result=await tab(label,target,backwards);headerCases.push({label,classification:'raw actual public Header/Popover/Dropdown observation pending paired source acceptance; no guessed parent-adjacent target or root policy assertion',origin,shift:backwards,setup,before,tab:result,after:{header:headerFacts(),popoverState:read(),active:describe(document.activeElement),logs:logs()}});
+ };
+ for(const backwards of [false,true])await headerRaw('isolated Header More '+(backwards?'reverse':'forward')+' Tab',{isolated:true},'more',backwards);
+ await headerRaw('isolated Header first default action reverse Tab',{isolated:true},'first',true);
+ await headerRaw('isolated Header last permanent overflow action forward Tab',{isolated:true},'last');
+ await headerRaw('parent boundary forward while actual Header remains open',{isolated:true},'parent-after');
+ for(const backwards of [false,true])await headerRaw('Header external active-descendant child '+(backwards?'reverse':'forward')+' Tab',{},'child',backwards);
+ for(const backwards of [false,true])await headerRaw('Header external roving child '+(backwards?'reverse':'forward')+' Tab',{roving:true},'child',backwards);
+ await headerRaw('Header root false veto on external child forward Tab',{rootVeto:true},'child');
+ await headerRaw('Header child false veto on external child forward Tab',{childVeto:true},'child');
+ for(const backwards of [false,true])await headerRaw('Header open Large then retained Small external child '+(backwards?'reverse':'forward')+' Tab',{history:true},'child',backwards);
  assert(tabChecks.every(check=>check.matched),'all named document Tab policy comparisons match pinned source contract');
  assert(deferredChecks.every(check=>check.matched),'all five Dropdown exits defer their exact target focus beyond original dispatch');
  assert(queuedChecks.every(check=>check.matched),'all five source-paired adversarial queued-focus cases preserve captured jobs and target identity');
- return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks}; }
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,failureHeader:readFailureHeader()}; }
 "#;
