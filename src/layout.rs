@@ -1109,8 +1109,11 @@ fn request_workflow_selection(
     true
 }
 
-// Reports native DOM topology only. Rust owns order interpretation, selection,
-// cancellation, settings propagation and all activation behavior.
+// Pinned Dioxus alpha.2 has no mounted tree/document-order API (html events/
+// mounted.rs). Core VComponent internals are private; keyed children can move
+// without rerendering or remounting (core diff/{component,iterator}.rs), so
+// registration/effect order cannot recover wrapped or reordered steps. Keep
+// this narrow topology observer; Rust owns selection, veto and activation.
 #[cfg(any(feature = "web", feature = "desktop"))]
 const WORKFLOW_ORDER_BRIDGE: &str = r#"
 const rootId = await dioxus.recv();

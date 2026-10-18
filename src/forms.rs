@@ -436,7 +436,8 @@ pub fn Input(
     };
     let length = value.encode_utf16().count();
     let geometry_id = field_id(None);
-    let (padding, measure_padding) = crate::input_geometry::use_adornments(&geometry_id);
+    let adornments = crate::input_geometry::use_adornments();
+    let padding = adornments.facts;
     let input_style = format!(
         "text-align:{};{}",
         if text_alignment_end { "end" } else { "start" },
@@ -460,11 +461,10 @@ pub fn Input(
             TextFieldPresentation { label, control_id: id.clone(), anchor_id: anchor_id.clone(), feedback_id: help_id.clone(),
                 required, state, feedback, invalid_alert, show_text_as_tooltip, max_length, length,
                 div { id: anchor_id, class: "ix-input-wrap",
-                    onmounted: move |_| measure_padding.call(()),
                     "data-padding-ready": padding.is_some().to_string(),
                     "data-padding-start": padding.map(|facts| facts.start.to_string()),
                     "data-padding-end": padding.map(|facts| facts.end.to_string()),
-                    span { class: "ix-input-start", if let Some(start) = start { {start} } }
+                    span { class: "ix-input-start", onresize: adornments.start_resized, if let Some(start) = start { {start} } }
                 input { id, class: "ix-input", name, r#type: native_type, value, placeholder,
                     required, disabled, readonly, pattern, minlength: min_length, maxlength: max_length,
                     min, max, step, autocomplete,
@@ -489,7 +489,7 @@ pub fn Input(
                     onbeforeinput: move |event| if !event.is_composing() { if let Some(text) = event.data().data() { if !allowed.read().allows(&text) { event.prevent_default(); } } },
                     onpaste: move |event| if let Some(text) = event.data_transfer().get_as_text() { if !allowed.read().allows(&text) { event.prevent_default(); } },
                 }
-                    span { class: "ix-input-end",
+                    span { class: "ix-input-end", onresize: adornments.end_resized,
                         if let Some(end) = end { {end} }
                         if password && !disabled {
                             span { class: "ix-input-password-holder", style: "display:contents",
@@ -1686,75 +1686,177 @@ fn select_add_allowed(value: String, before: EventHandler<SelectAddEvent>) -> bo
     !event.default_prevented()
 }
 
-// Native geometry and lifecycle plumbing. Filtering, additions, selection and
-// open/close state remain Rust-owned. The input is the invoker so typed keys
-// remain in the combobox while the surface enters the top layer.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const SELECT_POPOVER_BRIDGE: &str = r#"
-const [id, anchorId, inputId, topLayer] = await dioxus.recv();
-const panel = document.getElementById(id), anchor = document.getElementById(anchorId), input = document.getElementById(inputId);
-if (!panel || !anchor || !input) return {error:'Select surface is not mounted'};
-if (topLayer && typeof panel.showPopover !== 'function') return {error:'Popover API is unavailable'};
-let disposed = false, frame = 0;
-const events = new AbortController();
-const place = () => {
-  if (disposed || !panel.isConnected || !anchor.isConnected) { cleanup(); return; }
-  const viewport = window.visualViewport;
-  const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
-  const width = viewport?.width ?? document.documentElement.clientWidth;
-  const height = viewport?.height ?? window.innerHeight;
-  const rect = anchor.getBoundingClientRect(), roomWidth = Math.max(0, width);
-  const requestedWidth = panel.dataset.requestedWidth, requestedMax = panel.dataset.requestedMaxWidth;
-  const direction = getComputedStyle(anchor).direction;
-  panel.style.minWidth = Math.min(rect.width, roomWidth) + 'px';
-  panel.style.width = Math.min(rect.width, roomWidth) + 'px';
-  panel.style.width = requestedWidth ? `min(${requestedWidth}, ${roomWidth}px)` : Math.min(rect.width, roomWidth) + 'px';
-  panel.style.maxWidth = roomWidth + 'px';
-  panel.style.maxWidth = requestedMax ? `min(${requestedMax}, ${roomWidth}px)` : '100%';
-  const sourceCap = 'calc(var(--ix-dropdown-overflow--max-height) - var(--ix-dropdown--offset))';
-  panel.style.maxHeight = sourceCap;
-  const desired = panel.offsetHeight;
-  const below = Math.max(0, top + height - rect.bottom), above = Math.max(0, rect.top - top);
-  const flipped = below < desired && above >= desired;
-  const room = flipped ? above : below;
-  panel.style.maxHeight = `min(${room}px, ${sourceCap})`;
-  const start = direction === 'rtl' ? rect.right - panel.offsetWidth : rect.left;
-  panel.style.left = Math.max(left, Math.min(start, left + width - panel.offsetWidth)) + 'px';
-  panel.style.top = (flipped ? rect.top - Math.min(desired, room) : rect.bottom) + 'px';
-  panel.dataset.placement = flipped ? 'top-start' : 'bottom-start';
-  panel.dataset.direction = direction;
-};
-const schedule = () => { if (!disposed && !frame) frame = requestAnimationFrame(() => { frame = 0; place(); }); };
-const resize = new ResizeObserver(schedule);
-const changes = new MutationObserver(schedule);
-const ancestry = new MutationObserver(schedule);
-const removal = new MutationObserver(() => { if (!panel.isConnected || !anchor.isConnected) cleanup(); });
-function cleanup() {
-  if (disposed) return;
-  disposed = true; events.abort(); resize.disconnect(); changes.disconnect(); ancestry.disconnect(); removal.disconnect();
-  cancelAnimationFrame(frame); delete panel.__ixSelectCleanup;
+#[derive(Clone, Default)]
+struct MountedAnchor(Option<Rc<MountedData>>);
+
+impl PartialEq for MountedAnchor {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(left), Some(right)) => Rc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
-panel.__ixSelectCleanup = cleanup;
-try {
-  if (topLayer) panel.showPopover({source:input}); place();
-  resize.observe(anchor); resize.observe(panel);
-  changes.observe(panel, {childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['data-requested-width','data-requested-max-width']});
-  for (let node = anchor; node; node = node.parentElement) ancestry.observe(node, {attributes:true,attributeFilter:['dir','style','class']});
-  removal.observe(document.documentElement, {childList:true,subtree:true});
-  window.addEventListener('resize', schedule, {signal:events.signal});
-  document.addEventListener('scroll', schedule, {capture:true,signal:events.signal});
-  window.visualViewport?.addEventListener('resize', schedule, {signal:events.signal});
-  window.visualViewport?.addEventListener('scroll', schedule, {signal:events.signal});
-  document.fonts?.addEventListener('loadingdone', schedule, {signal:events.signal});
-  panel.addEventListener('toggle', event => { if (event.newState === 'closed') cleanup(); }, {signal:events.signal});
-  return {error:null};
-} catch(error) { cleanup(); return {error:String(error)}; }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SelectPopupMetrics {
+    anchor_x: f64,
+    anchor_y: f64,
+    anchor_width: f64,
+    anchor_height: f64,
+    popup_width: f64,
+    popup_height: f64,
+    content_height: f64,
+    viewport_left: f64,
+    viewport_top: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+    rtl: bool,
+}
+
+impl SelectPopupMetrics {
+    fn approx_eq(self, other: Self) -> bool {
+        const EPSILON: f64 = 0.25;
+        self.rtl == other.rtl
+            && (self.anchor_x - other.anchor_x).abs() <= EPSILON
+            && (self.anchor_y - other.anchor_y).abs() <= EPSILON
+            && (self.anchor_width - other.anchor_width).abs() <= EPSILON
+            && (self.anchor_height - other.anchor_height).abs() <= EPSILON
+            && (self.popup_width - other.popup_width).abs() <= EPSILON
+            && (self.popup_height - other.popup_height).abs() <= EPSILON
+            && (self.content_height - other.content_height).abs() <= EPSILON
+            && (self.viewport_left - other.viewport_left).abs() <= EPSILON
+            && (self.viewport_top - other.viewport_top).abs() <= EPSILON
+            && (self.viewport_width - other.viewport_width).abs() <= EPSILON
+            && (self.viewport_height - other.viewport_height).abs() <= EPSILON
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SelectPopupLayout {
+    style: String,
+    placement: &'static str,
+    direction: &'static str,
+}
+
+fn place_select_popup(
+    metrics: Option<SelectPopupMetrics>,
+    dropdown_width: Option<&str>,
+    dropdown_max_width: Option<&str>,
+) -> SelectPopupLayout {
+    const SOURCE_CAP: &str =
+        "calc(var(--ix-dropdown-overflow--max-height) - var(--ix-dropdown--offset))";
+    let Some(metrics) = metrics else {
+        return SelectPopupLayout {
+            style: format!(
+                "width:{};max-width:{};max-height:{SOURCE_CAP}",
+                dropdown_width.unwrap_or("100%"),
+                dropdown_max_width.unwrap_or("100%")
+            ),
+            placement: "bottom-start",
+            direction: "ltr",
+        };
+    };
+    let room_width = metrics.viewport_width.max(0.0);
+    let min_width = metrics.anchor_width.max(0.0).min(room_width);
+    let width_css = match dropdown_width {
+        Some(width) => format!("min({width}, {room_width}px)"),
+        None => format!("{min_width}px"),
+    };
+    let max_width_css = match dropdown_max_width {
+        Some(max_width) => format!("min({max_width}, {room_width}px)"),
+        None => "100%".to_string(),
+    };
+    // CSS resolves authored lengths (including %, rem, calc and tokens).
+    // Position against the actual mounted width rather than parsing CSS in Rust.
+    let popup_width = metrics.popup_width.max(0.0).min(room_width);
+    let desired = metrics.content_height.max(metrics.popup_height).max(0.0);
+    let anchor_bottom = metrics.anchor_y + metrics.anchor_height;
+    let anchor_right = metrics.anchor_x + metrics.anchor_width;
+    let below = (metrics.viewport_top + metrics.viewport_height - anchor_bottom).max(0.0);
+    let above = (metrics.anchor_y - metrics.viewport_top).max(0.0);
+    let flipped = below < desired && above > below;
+    let room = if flipped { above } else { below };
+    let start = if metrics.rtl {
+        anchor_right - popup_width
+    } else {
+        metrics.anchor_x
+    };
+    let left = start
+        .min(metrics.viewport_left + room_width - popup_width)
+        .max(metrics.viewport_left);
+    let top = if flipped {
+        metrics.anchor_y - metrics.popup_height.max(0.0).min(room)
+    } else {
+        anchor_bottom
+    };
+    SelectPopupLayout {
+        style: format!(
+            "min-width:{min_width}px;width:{width_css};max-width:{max_width_css};max-height:min({room}px, {SOURCE_CAP});left:{left}px;top:{top}px"
+        ),
+        placement: if flipped { "top-start" } else { "bottom-start" },
+        direction: if metrics.rtl { "rtl" } else { "ltr" },
+    }
+}
+
+// Pinned Dioxus =0.8.0-alpha.2 `MountedData` / `RenderedElementBacking` exposes
+// `get_client_rect`, `get_scroll_offset`, `get_scroll_size`, `scroll_to`, `scroll`
+// and `set_focus`, but has no Popover API method (`showPopover({ source })`) to
+// promote a `[popover="auto"]` surface into the browser top layer while keeping
+// the combobox input as the invoker.
+#[cfg(any(feature = "web", feature = "desktop"))]
+const SELECT_TOP_LAYER_OPEN: &str = r#"
+const [id, inputId] = await dioxus.recv();
+const panel = document.getElementById(id), input = document.getElementById(inputId);
+if (!panel || !input) return {error:'Select surface is not mounted'};
+if (typeof panel.showPopover !== 'function') return {error:'Popover API is unavailable'};
+try { panel.showPopover({source:input}); return {error:null}; }
+catch (error) { return {error:String(error)}; }
+"#;
+
+// Pinned Dioxus =0.8.0-alpha.2 `MountedData` provides element client rects via
+// `get_client_rect()`, but has no viewport box (`visualViewport` / `clientWidth` /
+// `innerHeight`) or computed CSS `direction` query on `MountedData` or `document`.
+#[cfg(any(feature = "web", feature = "desktop"))]
+const SELECT_VIEWPORT_QUERY: &str = r#"
+const anchorId = await dioxus.recv();
+const anchor = document.getElementById(anchorId);
+const viewport = window.visualViewport;
+return {
+  left: viewport?.offsetLeft ?? 0,
+  top: viewport?.offsetTop ?? 0,
+  width: viewport?.width ?? document.documentElement.clientWidth,
+  height: viewport?.height ?? window.innerHeight,
+  rtl: !!anchor && getComputedStyle(anchor).direction === 'rtl',
+};
+"#;
+
+// Pinned Dioxus HTML events attach to rendered elements; MountedData has no
+// document/visualViewport scroll or inherited-style-change subscription. These
+// native invalidations are needed for fixed positioning when an ancestor moves
+// without resizing. Dioxus owns the stream lifetime and all resulting layout.
+#[cfg(any(feature = "web", feature = "desktop"))]
+const SELECT_LAYOUT_INVALIDATION: &str = r#"
+const id = await dioxus.recv(), anchor = document.getElementById(id);
+const events = new AbortController(), changed = () => dioxus.send(null);
+const opts = {signal:events.signal,passive:true};
+window.addEventListener('resize',changed,opts);
+document.addEventListener('scroll',changed,{...opts,capture:true});
+window.visualViewport?.addEventListener('resize',changed,opts);
+window.visualViewport?.addEventListener('scroll',changed,opts);
+const inherited = new MutationObserver(changed);
+for(let node=anchor;node;node=node.parentElement)
+  inherited.observe(node,{attributes:true,attributeFilter:['dir','style','class']});
+try { await dioxus.recv(); } finally { events.abort(); inherited.disconnect(); }
 "#;
 
 #[component]
 fn SelectOptionsSurface(
     anchor_id: String,
     input_id: String,
+    anchor: MountedAnchor,
+    content_revision: u64,
     enable_top_layer: bool,
     dropdown_width: Option<String>,
     dropdown_max_width: Option<String>,
@@ -1765,51 +1867,184 @@ fn SelectOptionsSurface(
     let surface_id = field_id(None);
     let mut native = use_signal(|| enable_top_layer);
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
+    let mut metrics = use_signal(|| None::<SelectPopupMetrics>);
     let alive = use_hook(|| Rc::new(std::cell::Cell::new(true)));
+    let generation = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
     let lifetime = alive.clone();
-    let cleanup_id = surface_id.clone();
     use_drop(move || {
         lifetime.set(false);
-        #[cfg(any(feature = "web", feature = "desktop"))]
-        {
-            let encoded = serde_json::to_string(&cleanup_id).expect("string serialization");
-            let _ = dioxus::document::eval(&format!(
-                "document.getElementById({encoded})?.__ixSelectCleanup?.();"
-            ));
-        }
-        #[cfg(not(any(feature = "web", feature = "desktop")))]
-        let _ = cleanup_id;
     });
-    let inline_style = format!(
-        "width:{};max-width:{}",
-        dropdown_width.as_deref().unwrap_or("100%"),
-        dropdown_max_width.as_deref().unwrap_or("100%")
+    let anchor_slot = use_hook(|| Rc::new(std::cell::RefCell::new(None::<Rc<MountedData>>)));
+    *anchor_slot.borrow_mut() = anchor.0.clone();
+    let measure_anchor = anchor_slot.clone();
+    let measure_anchor_id = anchor_id.clone();
+    let measure_alive = alive.clone();
+    let measure_generation = generation.clone();
+    let measure = use_callback(move |()| {
+        let Some(surface) = mounted.peek().clone() else {
+            return;
+        };
+        let Some(anchor_node) = measure_anchor.borrow().clone() else {
+            return;
+        };
+        measure_generation.set(measure_generation.get().wrapping_add(1));
+        let revision = measure_generation.get();
+        let generation = measure_generation.clone();
+        let alive = measure_alive.clone();
+        let anchor_id = measure_anchor_id.clone();
+        spawn(async move {
+            let (Ok(anchor_rect), Ok(popup_rect)) = (
+                anchor_node.get_client_rect().await,
+                surface.get_client_rect().await,
+            ) else {
+                return;
+            };
+            let Ok(content) = surface.get_scroll_size().await else {
+                return;
+            };
+            #[cfg(any(feature = "web", feature = "desktop"))]
+            let viewport =
+                {
+                    #[derive(serde::Deserialize)]
+                    struct ViewportReply {
+                        left: f64,
+                        top: f64,
+                        width: f64,
+                        height: f64,
+                        rtl: bool,
+                    }
+                    let query = crate::dom_query::eval(SELECT_VIEWPORT_QUERY);
+                    if query.send(anchor_id).is_ok() {
+                        query.join::<ViewportReply>().await.ok().map(|reply| {
+                            (reply.left, reply.top, reply.width, reply.height, reply.rtl)
+                        })
+                    } else {
+                        None
+                    }
+                };
+            #[cfg(not(any(feature = "web", feature = "desktop")))]
+            let viewport: Option<(f64, f64, f64, f64, bool)> = {
+                let _ = anchor_id;
+                None
+            };
+            let Some((viewport_left, viewport_top, viewport_width, viewport_height, rtl)) =
+                viewport
+            else {
+                return;
+            };
+            if !alive.get() || generation.get() != revision {
+                return;
+            }
+            let next = SelectPopupMetrics {
+                anchor_x: anchor_rect.origin.x,
+                anchor_y: anchor_rect.origin.y,
+                anchor_width: anchor_rect.size.width,
+                anchor_height: anchor_rect.size.height,
+                popup_width: popup_rect.size.width,
+                popup_height: popup_rect.size.height,
+                content_height: content.height,
+                viewport_left,
+                viewport_top,
+                viewport_width,
+                viewport_height,
+                rtl,
+            };
+            if !metrics
+                .peek()
+                .is_some_and(|current| current.approx_eq(next))
+            {
+                metrics.set(Some(next));
+            }
+        });
+    });
+    use_effect(use_reactive!(
+        |anchor, dropdown_width, dropdown_max_width, content_revision| {
+            let _ = (anchor, dropdown_width, dropdown_max_width, content_revision);
+            measure.call(());
+        }
+    ));
+    let mut external_revision = use_signal(|| 0_u64);
+    #[cfg(any(feature = "web", feature = "desktop"))]
+    {
+        let stream = use_hook(|| Rc::new(std::cell::RefCell::new(None::<dioxus::document::Eval>)));
+        let cleanup = stream.clone();
+        use_drop(move || {
+            if let Some(stream) = cleanup.borrow_mut().take() {
+                let _ = stream.send("stop");
+            }
+        });
+        use_effect(move || {
+            let mut task = dioxus::document::eval(SELECT_LAYOUT_INVALIDATION);
+            if task.send(&anchor_id).is_err() {
+                return;
+            }
+            *stream.borrow_mut() = Some(task);
+            spawn(async move {
+                while task.recv::<()>().await.is_ok() {
+                    external_revision.with_mut(|revision| *revision = revision.wrapping_add(1));
+                }
+            });
+        });
+    }
+    use_effect(move || {
+        let _ = external_revision();
+        measure.call(());
+    });
+    let layout = place_select_popup(
+        metrics(),
+        dropdown_width.as_deref(),
+        dropdown_max_width.as_deref(),
     );
     let mounted_id = surface_id.clone();
     rsx! {
         if !native() {
             button { r#type: "button", class: "ix-select-backdrop", tabindex: "-1", "aria-label": "Close selection list", onclick: move |_| onclose.call(()) }
         }
-        div { id: surface_id, class: "ix-select-popup", style: if native() { String::new() } else { inline_style },
+        div { id: surface_id, class: "ix-select-popup", style: layout.style,
             "popover": native().then_some("auto"), "data-top-layer": native().to_string(),
+            "data-placement": layout.placement, "data-direction": layout.direction,
             "data-requested-width": dropdown_width.clone(), "data-requested-max-width": dropdown_max_width.clone(),
             onmounted: move |event| {
                 mounted.set(Some(event.data()));
+                if !enable_top_layer {
+                    measure.call(());
+                    return;
+                }
                 let alive = alive.clone();
-                let id = mounted_id.clone(); let anchor = anchor_id.clone(); let input = input_id.clone();
+                let id = mounted_id.clone();
+                let input = input_id.clone();
                 spawn(async move {
                     #[cfg(any(feature = "web", feature = "desktop"))]
                     let failure = {
-                        #[derive(serde::Deserialize)] struct Reply { error: Option<String> }
-                        let bridge = crate::dom_query::eval(SELECT_POPOVER_BRIDGE);
-                        if let Err(error) = bridge.send((id, anchor, input, enable_top_layer)) { Some(crate::NativeSurfaceError::Rejected(error.to_string())) }
-                        else { match bridge.join::<Reply>().await { Ok(reply) => reply.error.map(crate::NativeSurfaceError::Rejected), Err(error) => Some(crate::NativeSurfaceError::Rejected(error.to_string())) } }
+                        #[derive(serde::Deserialize)]
+                        struct Reply {
+                            error: Option<String>,
+                        }
+                        let bridge = crate::dom_query::eval(SELECT_TOP_LAYER_OPEN);
+                        if let Err(error) = bridge.send((id, input)) {
+                            Some(crate::NativeSurfaceError::Rejected(error.to_string()))
+                        } else {
+                            match bridge.join::<Reply>().await {
+                                Ok(reply) => reply.error.map(crate::NativeSurfaceError::Rejected),
+                                Err(error) => Some(crate::NativeSurfaceError::Rejected(error.to_string())),
+                            }
+                        }
                     };
                     #[cfg(not(any(feature = "web", feature = "desktop")))]
-                    let failure = { let _ = (id, anchor, input); Some(crate::NativeSurfaceError::UnsupportedRenderer) };
-                    if alive.get() { if let Some(error) = failure { native.set(false); onnativeerror.call(error); } }
+                    let failure = {
+                        let _ = (id, input);
+                        Some(crate::NativeSurfaceError::UnsupportedRenderer)
+                    };
+                    if alive.get() {
+                        if let Some(error) = failure {
+                            native.set(false);
+                            onnativeerror.call(error);
+                        }
+                        measure.call(());
+                    }
                 });
             },
+            onresize: move |_| measure.call(()),
             ontoggle: move |_| {
                 let node = mounted.peek().clone();
                 spawn(async move { if let Some(node) = node { if let Ok(bounds) = node.get_client_rect().await {
@@ -2169,6 +2404,8 @@ pub fn Select(
             controller.bindings.borrow_mut().remove(&method_token);
         }
     });
+    let mut control_ref = use_signal(|| None::<Rc<MountedData>>);
+    let mut control_revision = use_signal(|| 0_u64);
     let mut trigger_ref = use_signal(|| None::<Rc<MountedData>>);
     let mut additions = use_signal(Vec::<SelectOption>::new);
     let mut overflow_open = use_signal(|| false);
@@ -2488,6 +2725,8 @@ pub fn Select(
                 feedback: if tooltip_available { None } else { visual_feedback.clone() },
                 show_text_as_tooltip: false, max_length: None, length: 0,
             div { id: control_id.clone(), class: "ix-select-control", "data-readonly": readonly.to_string(), "data-disabled": disabled.to_string(), "data-open": open().to_string(),
+                onmounted: move |event| { control_ref.set(Some(event.data())); control_revision += 1; },
+                onresize: move |_| { control_revision += 1; measure_layout.call(()); },
                 div { class: "ix-select-input-container",
                     div { class: "ix-select-values ix-select-chips",
                         onmounted: move |event| { chips_ref.set(Some(event.data())); measure_layout.call(()); },
@@ -2630,7 +2869,13 @@ pub fn Select(
                 }
             }
             if open() && !read_only {
-                SelectOptionsSurface { anchor_id: control_id.clone(), input_id: id.clone(), enable_top_layer,
+                SelectOptionsSurface { anchor_id: control_id.clone(), input_id: id.clone(),
+                    anchor: MountedAnchor(control_ref()),
+                    content_revision: (visible.len() as u64)
+                        ^ (u64::from(can_add) << 32)
+                        ^ (u64::from(no_matches) << 33)
+                        ^ (control_revision() << 34),
+                    enable_top_layer,
                     dropdown_width, dropdown_max_width, onnativeerror,
                     onclose: move |_| { open.set(false); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); },
                     div { class: "ix-select-list-header", hidden: hide_list_header || no_matches, "aria-hidden": "true", title: list_header.clone(), "{list_header}" }
@@ -3958,10 +4203,12 @@ mod tests {
     }
     fn select_surface_contract_fixture() -> Element {
         rsx! {
-            SelectOptionsSurface { anchor_id: "control", input_id: "choice", enable_top_layer: true,
+            SelectOptionsSurface { anchor_id: "control", input_id: "choice",
+                anchor: MountedAnchor::default(), content_revision: 0, enable_top_layer: true,
                 dropdown_width: Some("320px".into()), dropdown_max_width: None,
                 onnativeerror: move |_| {}, onclose: move |_| {}, "Native list" }
-            SelectOptionsSurface { anchor_id: "inline-control", input_id: "inline-choice", enable_top_layer: false,
+            SelectOptionsSurface { anchor_id: "inline-control", input_id: "inline-choice",
+                anchor: MountedAnchor::default(), content_revision: 0, enable_top_layer: false,
                 dropdown_width: Some("280px".into()), dropdown_max_width: Some("90%".into()),
                 onnativeerror: move |_| {}, onclose: move |_| {}, "Inline list" }
         }
@@ -3984,7 +4231,8 @@ mod tests {
     fn select_reactive_surface_fixture(config: SelectSurfaceTestConfig) -> Element {
         let (width, max_width) = config.borrow().clone();
         rsx! {
-            SelectOptionsSurface { anchor_id: "reactive-control", input_id: "reactive-choice", enable_top_layer: true,
+            SelectOptionsSurface { anchor_id: "reactive-control", input_id: "reactive-choice",
+                anchor: MountedAnchor::default(), content_revision: 0, enable_top_layer: true,
                 dropdown_width: width, dropdown_max_width: max_width,
                 onnativeerror: move |_| {}, onclose: move |_| {}, "Stable open list" }
         }
@@ -4004,6 +4252,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(initial.contains("data-requested-width=\"480px\""));
+        assert!(initial.contains("width:480px;max-width:100%"));
         *config.borrow_mut() = (Some("480px".into()), Some("360px".into()));
         // Dioxus 0.8 inserts root error/suspense boundaries. The fixture lives
         // at APP; rerendering ROOT only revisits their memoized child props.
@@ -4012,6 +4261,7 @@ mod tests {
         let limited = dioxus_ssr::render(&dom);
         assert!(limited.contains(&format!("id=\"{id}\"")));
         assert!(limited.contains("data-requested-max-width=\"360px\""));
+        assert!(limited.contains("width:480px;max-width:360px"));
         *config.borrow_mut() = (None, None);
         dom.mark_dirty(ScopeId::APP);
         dom.render_immediate_to_vec();
@@ -4019,6 +4269,72 @@ mod tests {
         assert!(reset.contains(&format!("id=\"{id}\"")));
         assert!(!reset.contains("data-requested-width="));
         assert!(!reset.contains("data-requested-max-width="));
+        assert!(reset.contains("width:100%;max-width:100%"));
+    }
+    #[test]
+    fn select_popup_placement_flips_and_aligns_rtl_and_width_constraints_in_rust() {
+        let base = SelectPopupMetrics {
+            anchor_x: 360.0,
+            anchor_y: 80.0,
+            anchor_width: 240.0,
+            anchor_height: 40.0,
+            popup_width: 240.0,
+            popup_height: 180.0,
+            content_height: 180.0,
+            viewport_left: 0.0,
+            viewport_top: 0.0,
+            viewport_width: 1000.0,
+            viewport_height: 600.0,
+            rtl: true,
+        };
+        let wide_rtl = place_select_popup(
+            Some(SelectPopupMetrics {
+                popup_width: 480.0,
+                ..base
+            }),
+            Some("480px"),
+            Some("600px"),
+        );
+        assert_eq!(wide_rtl.placement, "bottom-start");
+        assert_eq!(wide_rtl.direction, "rtl");
+        assert!(wide_rtl.style.contains("left:120px;top:120px"));
+        let capped_rtl = place_select_popup(
+            Some(SelectPopupMetrics {
+                popup_width: 360.0,
+                ..base
+            }),
+            Some("480px"),
+            Some("360px"),
+        );
+        assert!(capped_rtl.style.contains("left:240px;top:120px"));
+        let percent_rtl = place_select_popup(
+            Some(SelectPopupMetrics {
+                popup_width: 500.0,
+                ..base
+            }),
+            Some("50%"),
+            None,
+        );
+        assert!(percent_rtl.style.contains("left:100px;top:120px"));
+        let clipped = SelectPopupMetrics {
+            anchor_y: 400.0,
+            popup_height: 100.0,
+            content_height: 700.0,
+            ..base
+        };
+        assert_eq!(
+            place_select_popup(Some(clipped), None, None).placement,
+            "top-start"
+        );
+        let near_bottom = SelectPopupMetrics {
+            anchor_y: 500.0,
+            rtl: false,
+            ..base
+        };
+        let flipped = place_select_popup(Some(near_bottom), None, None);
+        assert_eq!(flipped.placement, "top-start");
+        assert_eq!(flipped.direction, "ltr");
+        assert!(flipped.style.contains("left:360px;top:320px"));
     }
     fn inline_select_contract_fixture() -> Element {
         rsx! {

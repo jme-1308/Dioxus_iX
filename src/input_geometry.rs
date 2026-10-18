@@ -1,9 +1,7 @@
-//! Native adornment facts; padding policy and CSS remain in Rust.
+//! Dioxus-owned adornment measurements; padding policy and CSS remain in Rust.
 use dioxus::prelude::*;
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Adornments {
     pub start: f64,
     pub end: f64,
@@ -24,79 +22,113 @@ impl Adornments {
     }
 }
 
-pub(crate) fn use_adornments(id: &str) -> (Option<Adornments>, EventHandler<()>) {
-    let mut measured = use_signal(|| None::<Adornments>);
-    let alive = use_hook(|| Rc::new(Cell::new(true)));
-    let generation = use_hook(|| Rc::new(Cell::new(0_u64)));
-    let channel = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let cleanup_alive = alive.clone();
-    let cleanup_channel = channel.clone();
-    use_drop(move || {
-        cleanup_alive.set(false);
-        if let Some(channel) = cleanup_channel.borrow_mut().take() {
-            let _ = channel.send("stop");
-        }
-    });
-    let id = id.to_string();
-    let mounted = use_callback(move |_| {
-        generation.set(generation.get().wrapping_add(1));
-        let current = generation.get();
-        let generation = generation.clone();
-        measured.set(None);
-        if let Some(old) = channel.borrow_mut().take() {
-            let _ = old.send("stop");
-        }
-        let id = id.clone();
-        let alive = alive.clone();
-        let channel = channel.clone();
-        spawn(async move {
-            if !alive.get() || generation.get() != current {
-                return;
-            }
-            let mut task = dioxus::document::eval(OBSERVE);
-            if task.send(id).is_err() {
-                return;
-            }
-            *channel.borrow_mut() = Some(task);
-            while let Ok(facts) = task.recv::<Adornments>().await {
-                if !alive.get() || generation.get() != current {
-                    break;
-                }
-                if facts.valid() && *measured.peek() != Some(facts) {
-                    measured.set(Some(facts));
-                }
-            }
-        });
-    });
-    (measured(), mounted)
+/// Dioxus emits the initial border-box size as well as later resize changes.
+/// The wrappers are framework-owned: no queries, mounted-handle registry or
+/// independent observer lifecycle is needed for their widths.
+#[derive(Clone, Copy)]
+pub(crate) struct AdornmentMeasurement {
+    pub facts: Option<Adornments>,
+    pub start_resized: EventHandler<ResizeEvent>,
+    pub end_resized: EventHandler<ResizeEvent>,
 }
 
-// Observe captured native objects only. No CSS writes or UI policy in this bridge.
-const OBSERVE: &str = r#"
-const id=await dioxus.recv(),root=document.getElementById(id);
-if(!root)return;
-let frame=0,previous='',disconnected;
-const gone=new Promise(resolve=>{disconnected=resolve;});
-const measure=()=>{
- frame=0;if(!root.isConnected){disconnected();return;}
- const start=root.querySelector('.ix-input-start'),end=root.querySelector('.ix-input-end');
- if(!start||!end)return;
- const facts={start:start.getBoundingClientRect().width,end:end.getBoundingClientRect().width};
- const json=JSON.stringify(facts);if(json!==previous){previous=json;dioxus.send(facts);}
-};
-const schedule=()=>{if(!frame)frame=requestAnimationFrame(measure);};
-const resize=new ResizeObserver(schedule);
-const observe=()=>{resize.disconnect();root.querySelectorAll('.ix-input-start,.ix-input-end').forEach(node=>resize.observe(node));schedule();};
-const changes=new MutationObserver(observe);changes.observe(root,{childList:true,subtree:true});
-const removal=new MutationObserver(()=>{if(!root.isConnected)disconnected();});
-removal.observe(document.documentElement,{childList:true,subtree:true});
-try{observe();await Promise.race([dioxus.recv(),gone]);}
-finally{resize.disconnect();changes.disconnect();removal.disconnect();cancelAnimationFrame(frame);}
-"#;
+pub(crate) fn use_adornments() -> AdornmentMeasurement {
+    let mut widths = use_signal(|| [None::<f64>; 2]);
+    let record = use_callback(move |(side, event): (usize, ResizeEvent)| {
+        if let Ok(size) = event.get_border_box_size() {
+            let width = size.width;
+            if width.is_finite() && width >= 0.0 && widths.peek()[side] != Some(width) {
+                widths.write()[side] = Some(width);
+            }
+        }
+    });
+    let [start, end] = widths();
+    AdornmentMeasurement {
+        facts: start
+            .zip(end)
+            .map(|(start, end)| Adornments { start, end })
+            .filter(|facts| facts.valid()),
+        start_resized: use_callback(move |event| record.call((0, event))),
+        end_resized: use_callback(move |event| record.call((1, event))),
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    struct Resized(f64);
+    impl dioxus::html::HasResizeData for Resized {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_border_box_size(
+            &self,
+        ) -> dioxus::html::ResizeResult<dioxus::html::geometry::PixelsSize> {
+            Ok(dioxus::html::geometry::PixelsSize::new(self.0, 24.0))
+        }
+    }
+    fn resized(width: f64) -> ResizeEvent {
+        Event::new(
+            Rc::new(dioxus::html::ResizeData::new(Resized(width))),
+            false,
+        )
+    }
+    #[derive(Clone)]
+    struct Fixture(Rc<RefCell<Option<AdornmentMeasurement>>>);
+    impl PartialEq for Fixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    fn fixture(props: Fixture) -> Element {
+        *props.0.borrow_mut() = Some(use_adornments());
+        rsx! { div {} }
+    }
+    #[test]
+    fn framework_resize_reports_initial_and_changed_adornment_widths() {
+        let capture = Fixture(Rc::new(RefCell::new(None)));
+        let mut dom = VirtualDom::new_with_props(fixture, capture.clone());
+        dom.rebuild_in_place();
+        let handlers = capture.0.borrow().unwrap();
+        handlers.start_resized.call(resized(20.5));
+        dom.render_immediate_to_vec();
+        assert_eq!(
+            capture.0.borrow().unwrap().facts,
+            None,
+            "both initial sizes are required"
+        );
+        handlers.end_resized.call(resized(32.0));
+        dom.render_immediate_to_vec();
+        assert_eq!(
+            capture.0.borrow().unwrap().facts,
+            Some(Adornments {
+                start: 20.5,
+                end: 32.0
+            })
+        );
+        handlers.start_resized.call(resized(88.0));
+        handlers.end_resized.call(resized(0.0));
+        dom.render_immediate_to_vec();
+        assert_eq!(
+            capture.0.borrow().unwrap().facts,
+            Some(Adornments {
+                start: 88.0,
+                end: 0.0
+            })
+        );
+        handlers.end_resized.call(resized(f64::NAN));
+        dom.render_immediate_to_vec();
+        assert_eq!(
+            capture.0.borrow().unwrap().facts,
+            Some(Adornments {
+                start: 88.0,
+                end: 0.0
+            })
+        );
+    }
+
     #[test]
     fn native_facts_reject_nonfinite_or_negative_dimensions() {
         for bad in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {

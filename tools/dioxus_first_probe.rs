@@ -35,6 +35,14 @@ fn Preview() -> Element {
     let mut manual = use_signal(|| false);
     let mut tab = use_signal(|| 0_usize);
     let mut dark = use_signal(|| false);
+    let mut expanded_adornment = use_signal(|| false);
+    let mut show_suffix = use_signal(|| true);
+    let mut adornment_disabled = use_signal(|| false);
+    let mut input_value = use_signal(|| "access".to_string());
+    let mut native_value = use_signal(String::new);
+    let mut popup_width = use_signal(|| false);
+    let mut rtl = use_signal(|| false);
+    let mut surface_error = use_signal(String::new);
     let mut chip_wide = use_signal(|| false);
     let mut chip_disabled = use_signal(|| false);
     let mut chip_readonly = use_signal(|| false);
@@ -120,6 +128,37 @@ fn Preview() -> Element {
                 output { id:"r02-selected", "Selected: {selected()}; group: {selected_group}" }
             }
             section { class:"r02-section",
+                h2 { "Input adornments" }
+                Input { id:"r02-adorned", label:"Access code", input_type:"password", value:input_value(),
+                    onvaluechange:move |value|input_value.set(value), disabled:adornment_disabled(),
+                    start:rsx! { span { if expanded_adornment(){"Equipment reference"}else{"ID"} } },
+                    end:if show_suffix(){Some(rsx!{span { "unit" }})}else{None},
+                }
+                div { class:"r02-controls",
+                    Button { onclick:move |_|expanded_adornment.set(!expanded_adornment()), "Change prefix" }
+                    Checkbox { label:"Show suffix", checked:show_suffix(), oncheckedchange:move |value|show_suffix.set(value) }
+                    Checkbox { label:"Disable access code", checked:adornment_disabled(), oncheckedchange:move |value|adornment_disabled.set(value) }
+                }
+                output { id:"r02-input-value", "Value: {input_value()}" }
+            }
+            section { class:"r02-section",
+                h2 { "Native selection surface" }
+                div { dir:if rtl(){"rtl"}else{"ltr"}, onkeydown:move |event|if event.key()==Key::F2{popup_width.set(!popup_width());},
+                    Select { id:"r02-native-select", label:"Native equipment", enable_top_layer:true,
+                        options:vec![SelectOption::new("alpha","Alpha"),SelectOption::new("beta","Beta"),SelectOption::new("gamma","Gamma")],
+                        value:native_value(), onvaluechange:move |value|native_value.set(value),
+                        dropdown_width:popup_width().then(||"300px".to_string()),
+                        onnativeerror:move |error:NativeSurfaceError|surface_error.set(error.to_string()),
+                    }
+                }
+                div { class:"r02-controls",
+                    Button { onclick:move |_|popup_width.set(!popup_width()), "Change popup width" }
+                    Checkbox { label:"Right-to-left surface", checked:rtl(), oncheckedchange:move |value|rtl.set(value) }
+                }
+                output { id:"r02-native-value", "Native selected: {native_value()}" }
+                output { id:"r02-native-error", "{surface_error()}" }
+            }
+            section { class:"r02-section",
                 h2 { "Tabs and resize" }
                 div { class:"r02-controls",
                     Button { variant:ButtonVariant::Secondary, onclick:move |_|wide.set(!wide()), "Resize tab strip" }
@@ -203,5 +242,26 @@ const header=root().querySelector('[aria-label="Header actions"]');header.click(
 await wait('header callback open',()=>document.querySelector('#r02-header-changes').textContent==='Changes: [true]');
 header.click();
 await wait('header callback close',()=>document.querySelector('#r02-header-changes').textContent==='Changes: [true, false]');
-return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true,dropdownChanges:document.querySelector('#r02-dropdown-changes').textContent,narrowChips:narrow,wideChips:5,headerChanges:document.querySelector('#r02-header-changes').textContent};
+const adorned=document.getElementById('r02-adorned'),wrap=adorned.closest('.ix-input-wrap');
+await wait('adornment mount',()=>wrap.dataset.paddingReady==='true'&&+wrap.dataset.paddingStart>0&&+wrap.dataset.paddingEnd>0);
+const firstStart=+wrap.dataset.paddingStart,firstEnd=+wrap.dataset.paddingEnd;
+button('Change prefix').click();
+await wait('adornment resize',()=>+wrap.dataset.paddingStart>firstStart);
+const grownStart=+wrap.dataset.paddingStart;
+const eye=root().querySelector('button[aria-label="Show password"]');eye.click();
+await wait('password reveal',()=>adorned.type==='text');
+const native=document.getElementById('r02-native-select');native.scrollIntoView({block:'center'});native.click();
+await wait('native select open',()=>native.getAttribute('aria-expanded')==='true'&&!!document.querySelector('#r02-native-select-select-root .ix-select-popup:popover-open'));
+const nativePanel=document.querySelector('#r02-native-select-select-root .ix-select-popup');
+const nativeAnchor=document.querySelector('#r02-native-select-select-root .ix-select-control');
+const follows=()=>{const a=nativeAnchor.getBoundingClientRect(),p=nativePanel.getBoundingClientRect();return Math.abs((nativePanel.dataset.placement==='top-start'?a.top-p.bottom:p.top-a.bottom))<2;};
+await wait('native anchored placement',follows);
+window.scrollBy(0,40);
+await wait('native follows scroll',follows);
+
+native.dispatchEvent(new KeyboardEvent('keydown',{key:'F2',bubbles:true,cancelable:true}));
+await wait('native width update',()=>Math.abs(nativePanel.getBoundingClientRect().width-300)<2);
+const nativeOption=[...nativePanel.querySelectorAll('[role=option]')].find(n=>n.textContent.trim()==='Beta');nativeOption.click();
+await wait('native select commit',()=>document.querySelector('#r02-native-value').textContent==='Native selected: beta'&&native.getAttribute('aria-expanded')==='false');
+return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true,dropdownChanges:document.querySelector('#r02-dropdown-changes').textContent,narrowChips:narrow,wideChips:5,adornments:{firstStart,firstEnd,grownStart},nativeFollowsScroll:true,nativeSelection:document.querySelector('#r02-native-value').textContent,headerChanges:document.querySelector('#r02-header-changes').textContent};
 "#;

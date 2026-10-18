@@ -331,6 +331,7 @@ pub(crate) const STYLES: &str = r#"
   margin: 0;
   flex-direction: column;
   max-width: 100%;
+  max-height: calc(var(--ix-dropdown-overflow--max-height) - var(--ix-dropdown--offset));
   min-width: 0;
   background-color: var(--ix-dropdown--background);
   color: var(--ix-dropdown--color);
