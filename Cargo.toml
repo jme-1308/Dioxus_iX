@@ -41,6 +41,11 @@ path = "examples/gallery/main.rs"
 required-features = ["launch"]
 
 [[example]]
+name = "toggle_token_probe"
+path = "tools/toggle_token_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "radio_token_probe"
 path = "tools/radio_token_probe.rs"
 required-features = ["launch"]

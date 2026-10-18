@@ -85,6 +85,7 @@ pub fn IxTheme(
         style { {crate::forms::STYLES} }
         style { {crate::checkbox_styles::STYLES} }
         style { {crate::radio_styles::STYLES} }
+        style { {crate::toggle_styles::STYLES} }
         style { {crate::layout::STYLES} }
         style { {crate::notifications::STYLES} }
         style { {crate::overlays::STYLES} }

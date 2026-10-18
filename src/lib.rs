@@ -78,6 +78,7 @@ mod radio_styles;
 mod select_item;
 pub mod theme;
 mod toggle_button_styles;
+mod toggle_styles;
 pub mod tooltip;
 pub mod tree;
 

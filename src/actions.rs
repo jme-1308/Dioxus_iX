@@ -841,6 +841,7 @@ pub fn Typography(
     #[props(default)] bold: bool,
     #[props(default)] text_decoration: TypographyDecoration,
     #[props(default)] class: String,
+    aria_hidden: Option<String>,
 ) -> Element {
     let heading = match format {
         TypographyFormat::H1 => Some(1),
@@ -857,7 +858,7 @@ pub fn Typography(
     rsx! { div {
         class: "ix-typography ix-type-{format.as_str()}{color_class} {class}",
         class: if bold { "ix-type-bold" }, style: "text-decoration:{text_decoration.as_str()}",
-        role: heading.map(|_| "heading"), aria_level: heading,
+        role: heading.map(|_| "heading"), aria_level: heading, "aria-hidden": aria_hidden,
         {children}
     } }
 }

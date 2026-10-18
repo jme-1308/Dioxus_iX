@@ -743,7 +743,8 @@ pub fn RadioGroup(
     }
 }
 
-/// On/Off switch with native form mirror and accessible three-state button.
+/// Controlled three-state switch with a native form mirror and source token geometry.
+/// Accept `oncheckedchange` by updating `checked` and clearing `indeterminate`.
 #[component]
 pub fn Toggle(
     #[props(default)] checked: bool,
@@ -757,6 +758,11 @@ pub fn Toggle(
     #[props(default = "Off".to_string())] text_off: String,
     #[props(default = "Mixed".to_string())] text_indeterminate: String,
     #[props(default)] label: Option<String>,
+    #[props(default)] state: FieldState,
+    #[props(default)] class: String,
+    aria_label: Option<String>,
+    aria_labelledby: Option<String>,
+    #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] oncheckedchange: EventHandler<bool>,
 ) -> Element {
     let mut button = use_signal(|| None::<Rc<MountedData>>);
@@ -768,8 +774,16 @@ pub fn Toggle(
     } else {
         text_off
     };
+    let aria_labelledby = aria_labelledby.filter(|value| !value.is_empty());
+    let accessible_label = if aria_labelledby.is_some() {
+        None
+    } else {
+        aria_label.or(label).or(Some(text.clone()))
+    };
+    let invalid = state == FieldState::Invalid || (attempted() && required && !checked);
     rsx! {
-        span { class: "ix-checkbox-field",
+        span { class: "ix-toggle-field ix-toggle-native {state.class()} {class}",
+            "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(), "data-invalid": invalid.to_string(),
             input { class: "ix-check-native", r#type: "checkbox", name, value, checked, disabled, required,
                 "aria-hidden": "true", tabindex: "-1",
                 oninvalid: move |event| {
@@ -778,14 +792,23 @@ pub fn Toggle(
                     spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } });
                 },
             }
-            button { class: "ix-toggle", r#type: "button", role: if indeterminate { "checkbox" } else { "switch" }, disabled,
+            button { class: "ix-toggle ix-toggle-control {state.class()} {class}", r#type: "button", role: "switch", disabled,
                 "data-mixed": indeterminate.to_string(), "data-checked": checked.to_string(),
-                "aria-label": label.unwrap_or(text.clone()),
+                "aria-label": accessible_label, "aria-labelledby": aria_labelledby, "aria-disabled": disabled.to_string(),
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
-                "aria-required": required.to_string(), "aria-invalid": (attempted() && required && !checked).to_string(),
-                onmounted: move |event| button.set(Some(event.data())), onclick: move |_| oncheckedchange.call(!checked),
-                span { class: "ix-toggle-track", "aria-hidden": "true" }
-                if !hide_text { span { "{text}" } }
+                "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
+                onmounted: move |event| button.set(Some(event.data())), onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                span { class: "ix-toggle-wrapper",
+                    span { class: if checked { if indeterminate { "ix-toggle-switch checked indeterminate" } else { "ix-toggle-switch checked" } } else if indeterminate { "ix-toggle-switch indeterminate" } else { "ix-toggle-switch" },
+                        "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(), "aria-hidden": "true",
+                        span { class: "ix-toggle-slider" }
+                    }
+                    if !hide_text {
+                        crate::Typography { format: crate::TypographyFormat::Body,
+                            class: "ix-toggle-label", aria_hidden: "true", "{text}"
+                        }
+                    }
+                }
             }
             if attempted() && required && !checked { span { class: "ix-helper ix-field-invalid", role: "alert", "Please enable this option" } }
         }
@@ -2532,6 +2555,10 @@ mod checkbox_token_tests;
 #[cfg(test)]
 #[path = "radio_token_tests.rs"]
 mod radio_token_tests;
+
+#[cfg(test)]
+#[path = "toggle_token_tests.rs"]
+mod toggle_token_tests;
 
 pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-upload-state{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ix-theme .ix-upload[data-multiline=true] .ix-upload-state>span{white-space:normal;overflow-wrap:anywhere}.ix-theme .ix-upload-button{flex:none;white-space:nowrap}.ix-theme .ix-upload[data-file-over=true]{border-style:solid;border-color:var(--ix-color-primary)}.ix-theme .ix-upload[aria-busy=true]{border-style:solid}.ix-theme .ix-upload:has(.ix-upload-error){flex-wrap:wrap}.ix-theme .ix-upload-error{flex-basis:100%;color:var(--ix-color-danger-text);overflow-wrap:anywhere}

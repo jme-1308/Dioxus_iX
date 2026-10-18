@@ -1,0 +1,768 @@
+<!doctype html>
+<!-- Development-only comparison of actual pinned Typography under authored system-font tokens. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pinned Toggle anatomy matrix</title>
+<link rel="stylesheet" href="http://127.0.0.1:8089/keyboard-foundation.css"><script type="module" src="http://127.0.0.1:8089/www/build/siemens-ix.esm.js"></script><script nomodule src="http://127.0.0.1:8089/www/build/siemens-ix.js"></script>
+<style>body{margin:0;background:#f4f6f8;color:#202932;font:16px/1.5 system-ui,sans-serif}main{max-width:96rem;margin:auto;padding:24px}h1{font-size:1.75rem;line-height:1.2;margin:0 0 16px}h2{font-size:1.25rem;margin:24px 0 8px}p{max-width:75ch}.controls{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}button{font:inherit;min-height:36px;padding:4px 10px;background:white;color:#202932;border:1px solid #7d8b98;border-radius:4px;cursor:pointer}button:disabled{opacity:.5;cursor:default}button:focus-visible,select:focus-visible{outline:2px solid #075c9d;outline-offset:3px}::selection{background:#bddcf2;color:#102c42}.matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.scope{padding:16px;border:1px solid #bdc6ce;background:white;min-width:0}.scope[data-ix-color-schema=dark]{background:#202932}.scope-title{color:#202932;background:#f4f6f8;font:600 16px/1.5 system-ui,sans-serif;padding:8px;margin:0 0 16px}.specimen{padding:8px 0;border-bottom:1px solid #bdc6ce;overflow-wrap:anywhere}.specimen-label{display:block;font:12px/1.5 system-ui,sans-serif;color:#384b5b;background:#eef2f5;padding:2px 4px;margin-bottom:4px}.nested{margin-top:24px;padding:12px;border:1px solid #7d8b98;background:#202932}pre{max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:white;border:1px solid #bdc6ce;font:13px/1.5 ui-monospace,monospace;font-variant-numeric:tabular-nums;scrollbar-color:#7d8b98 #f4f6f8}@media(max-width:900px){.matrix{grid-template-columns:1fr}main{padding:16px}}</style></head>
+<body data-ix-theme="brand"><div id="toggle-pointer-park" style="position:fixed;top:0;right:0;z-index:20;width:112px;height:72px;background:#eef2f5;color:#384b5b;border:1px solid #7d8b98;font:12px/1.4 system-ui,sans-serif;display:flex;align-items:center;justify-content:center;text-align:center">Pointer parking area</div><main id="toggle-review"><h1>Pinned Toggle anatomy matrix</h1><p>Actual source togglees under developer-authored system-font and semantic tokens. Matrix states use public disabled props and real native focus. Pointer observations require genuine browser input; no hover aliases are supplied.</p><p id="toggle-status" role="status" data-ready="false" data-run="idle">Loading pinned Toggle…</p><div class="controls"><button id="toggle-baseline" disabled>Baseline tokens</button><button id="toggle-revised" disabled>Revise tokens</button><button id="toggle-restored" disabled>Restore baseline</button><label>State <select id="toggle-state" disabled></select></label><button id="toggle-capture" disabled>Capture state</button><button id="toggle-run" disabled>Run matrix</button></div><button id="toggle-outside" type="button">Outside keyboard seed</button><fieldset><legend>Actual pointer diagnostic</legend><label>Case <select id="toggle-pointer-case"></select></label><p id="toggle-pointer-status" role="status">Loading pointer target</p><div id="toggle-pointer-mount"></div><pre id="toggle-pointer-result" aria-hidden="true">{}</pre></fieldset><fieldset><legend>Accepting selection consumer</legend><button type="button" id="toggle-reset">Reset</button><button type="button" id="toggle-mixed">Set mixed</button><button type="button" id="toggle-enable">Enable</button><button type="button" id="toggle-disable">Disable</button><button type="button" id="toggle-external-checked">Set checked externally</button><input type="hidden" id="toggle-controlled-json" value="{}"></fieldset><div id="toggle-matrix" class="matrix"></div><h2>Computed anatomy observations</h2><pre id="toggle-result" aria-hidden="true">{}</pre></main>
+<script type="module">
+const spec={
+  "revision": "8bf599bc68365d7752e12832e71b625883b93d7a",
+  "scopes": [
+    {
+      "id": "light-normal",
+      "index": 0,
+      "scheme": "light",
+      "density": "normal"
+    },
+    {
+      "id": "light-compact",
+      "index": 1,
+      "scheme": "light",
+      "density": "compact"
+    },
+    {
+      "id": "dark-normal",
+      "index": 2,
+      "scheme": "dark",
+      "density": "normal"
+    },
+    {
+      "id": "dark-compact",
+      "index": 3,
+      "scheme": "dark",
+      "density": "compact"
+    }
+  ],
+  "variants": [
+    "default",
+    "valid",
+    "info",
+    "warning",
+    "invalid"
+  ],
+  "states": [
+    "rest",
+    "disabled",
+    "focus"
+  ],
+  "revisions": [
+    {
+      "id": "baseline",
+      "revision": 0
+    },
+    {
+      "id": "revised",
+      "revision": 1
+    },
+    {
+      "id": "restored",
+      "revision": 0
+    }
+  ],
+  "colorFormula": "rgb(24+(13*k+7*s+3*r)%160,32+(11*k+5*s+7*r)%150,40+(7*k+3*s+11*r)%140)",
+  "fixture": "Developer-authored system-token Toggle anatomy adapter; not full Brand metrics",
+  "colorTokens": [
+    "si-sys-color-effects-focus",
+    "si-sys-color-text-disabled",
+    "si-sys-color-text-primary",
+    "si-sys-color-background-accent",
+    "si-sys-color-background-accent-active",
+    "si-sys-color-background-accent-hover",
+    "si-sys-color-background-information",
+    "si-sys-color-background-information-active",
+    "si-sys-color-background-information-hover",
+    "si-sys-color-background-danger",
+    "si-sys-color-background-danger-active",
+    "si-sys-color-background-danger-hover",
+    "si-sys-color-background-warning",
+    "si-sys-color-background-warning-active",
+    "si-sys-color-background-warning-hover",
+    "si-sys-color-border-warning",
+    "si-sys-color-background-1",
+    "si-sys-color-background-selected",
+    "si-sys-color-background-hover",
+    "si-sys-color-border-2",
+    "si-sys-color-border-danger",
+    "si-sys-color-text-on-accent",
+    "si-sys-color-text-inverse",
+    "si-sys-color-text-on-information",
+    "si-sys-color-text-on-danger",
+    "si-sys-color-text-on-warning",
+    "si-sys-color-text-secondary"
+  ],
+  "paintTokens": {
+    "ix-toggle--outline-color--focus": "si-sys-color-effects-focus",
+    "ix-toggle-label--color--disabled": "si-sys-color-text-disabled",
+    "ix-toggle--color": "si-sys-color-text-primary",
+    "ix-toggle--color--active": "si-sys-color-text-primary",
+    "ix-toggle--color--disabled": "si-sys-color-text-disabled",
+    "ix-toggle--color--hover": "si-sys-color-text-primary",
+    "ix-toggle-mixed--background": "si-sys-color-background-accent",
+    "ix-toggle-mixed--background--active": "si-sys-color-background-accent-active",
+    "ix-toggle-mixed--background--disabled": "si-sys-color-text-disabled",
+    "ix-toggle-mixed--background--hover": "si-sys-color-background-accent-hover",
+    "ix-toggle-mixed--background--info": "si-sys-color-background-information",
+    "ix-toggle-mixed--background--info--active": "si-sys-color-background-information-active",
+    "ix-toggle-mixed--background--info--hover": "si-sys-color-background-information-hover",
+    "ix-toggle-mixed--background--invalid": "si-sys-color-background-danger",
+    "ix-toggle-mixed--background--invalid--active": "si-sys-color-background-danger-active",
+    "ix-toggle-mixed--background--invalid--hover": "si-sys-color-background-danger-hover",
+    "ix-toggle-mixed--background--valid": "si-sys-color-background-accent",
+    "ix-toggle-mixed--background--valid--active": "si-sys-color-background-accent-active",
+    "ix-toggle-mixed--background--valid--hover": "si-sys-color-background-accent-hover",
+    "ix-toggle-mixed--background--warning": "si-sys-color-background-warning",
+    "ix-toggle-mixed--background--warning--active": "si-sys-color-background-warning-active",
+    "ix-toggle-mixed--background--warning--hover": "si-sys-color-background-warning-hover",
+    "ix-toggle-mixed--border-color": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--disabled": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--info": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--info--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--info--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--invalid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--invalid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--invalid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--valid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--valid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--valid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-mixed--border-color--warning": "si-sys-color-border-warning",
+    "ix-toggle-mixed--border-color--warning--active": "si-sys-color-border-warning",
+    "ix-toggle-mixed--border-color--warning--hover": "si-sys-color-border-warning",
+    "ix-toggle-off--background": "si-sys-color-background-1",
+    "ix-toggle-off--background--active": "si-sys-color-background-selected",
+    "ix-toggle-off--background--disabled": "rgba(0, 0, 0, 0)",
+    "ix-toggle-off--background--hover": "si-sys-color-background-hover",
+    "ix-toggle-off--background--info": "si-sys-color-background-1",
+    "ix-toggle-off--background--info--active": "si-sys-color-background-selected",
+    "ix-toggle-off--background--info--hover": "si-sys-color-background-hover",
+    "ix-toggle-off--background--invalid": "si-sys-color-background-1",
+    "ix-toggle-off--background--invalid--active": "si-sys-color-background-selected",
+    "ix-toggle-off--background--invalid--hover": "si-sys-color-background-hover",
+    "ix-toggle-off--background--valid": "si-sys-color-background-1",
+    "ix-toggle-off--background--valid--active": "si-sys-color-background-selected",
+    "ix-toggle-off--background--valid--hover": "si-sys-color-background-hover",
+    "ix-toggle-off--background--warning": "si-sys-color-background-1",
+    "ix-toggle-off--background--warning--active": "si-sys-color-background-selected",
+    "ix-toggle-off--background--warning--hover": "si-sys-color-background-hover",
+    "ix-toggle-off--border-color": "si-sys-color-border-2",
+    "ix-toggle-off--border-color--active": "si-sys-color-border-2",
+    "ix-toggle-off--border-color--disabled": "si-sys-color-text-disabled",
+    "ix-toggle-off--border-color--hover": "si-sys-color-border-2",
+    "ix-toggle-off--border-color--info": "si-sys-color-background-information",
+    "ix-toggle-off--border-color--info--active": "si-sys-color-background-information",
+    "ix-toggle-off--border-color--info--hover": "si-sys-color-background-information",
+    "ix-toggle-off--border-color--invalid": "si-sys-color-border-danger",
+    "ix-toggle-off--border-color--invalid--active": "si-sys-color-border-danger",
+    "ix-toggle-off--border-color--invalid--hover": "si-sys-color-border-danger",
+    "ix-toggle-off--border-color--valid": "si-sys-color-border-2",
+    "ix-toggle-off--border-color--valid--active": "si-sys-color-border-2",
+    "ix-toggle-off--border-color--valid--hover": "si-sys-color-border-2",
+    "ix-toggle-off--border-color--warning": "si-sys-color-border-warning",
+    "ix-toggle-off--border-color--warning--active": "si-sys-color-border-warning",
+    "ix-toggle-off--border-color--warning--hover": "si-sys-color-border-warning",
+    "ix-toggle-on--background": "si-sys-color-background-accent",
+    "ix-toggle-on--background--active": "si-sys-color-background-accent-active",
+    "ix-toggle-on--background--disabled": "si-sys-color-text-disabled",
+    "ix-toggle-on--background--hover": "si-sys-color-background-accent-hover",
+    "ix-toggle-on--background--info": "si-sys-color-background-information",
+    "ix-toggle-on--background--info--active": "si-sys-color-background-information-active",
+    "ix-toggle-on--background--info--hover": "si-sys-color-background-information-hover",
+    "ix-toggle-on--background--invalid": "si-sys-color-background-danger",
+    "ix-toggle-on--background--invalid--active": "si-sys-color-background-danger-active",
+    "ix-toggle-on--background--invalid--hover": "si-sys-color-background-danger-hover",
+    "ix-toggle-on--background--valid": "si-sys-color-background-accent",
+    "ix-toggle-on--background--valid--active": "si-sys-color-background-accent-active",
+    "ix-toggle-on--background--valid--hover": "si-sys-color-background-accent-hover",
+    "ix-toggle-on--background--warning": "si-sys-color-background-warning",
+    "ix-toggle-on--background--warning--active": "si-sys-color-background-warning-active",
+    "ix-toggle-on--background--warning--hover": "si-sys-color-background-warning-hover",
+    "ix-toggle-on--border-color": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--disabled": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--info": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--info--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--info--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--invalid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--invalid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--invalid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--valid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--valid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--valid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-on--border-color--warning": "si-sys-color-border-warning",
+    "ix-toggle-on--border-color--warning--active": "si-sys-color-border-warning",
+    "ix-toggle-on--border-color--warning--hover": "si-sys-color-border-warning",
+    "ix-toggle-thumb--box-shadow": "transparent",
+    "ix-toggle-thumb-mixed--background": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-mixed--background--active": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-mixed--background--disabled": "si-sys-color-text-inverse",
+    "ix-toggle-thumb-mixed--background--hover": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-mixed--background--info": "si-sys-color-text-on-information",
+    "ix-toggle-thumb-mixed--background--info--active": "si-sys-color-text-on-information",
+    "ix-toggle-thumb-mixed--background--info--hover": "si-sys-color-text-on-information",
+    "ix-toggle-thumb-mixed--background--invalid": "si-sys-color-text-on-danger",
+    "ix-toggle-thumb-mixed--background--invalid--active": "si-sys-color-text-on-danger",
+    "ix-toggle-thumb-mixed--background--invalid--hover": "si-sys-color-text-on-danger",
+    "ix-toggle-thumb-mixed--background--valid": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-mixed--background--valid--active": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-mixed--background--valid--hover": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-mixed--background--warning": "si-sys-color-text-on-warning",
+    "ix-toggle-thumb-mixed--background--warning--active": "si-sys-color-text-on-warning",
+    "ix-toggle-thumb-mixed--background--warning--hover": "si-sys-color-text-on-warning",
+    "ix-toggle-thumb-mixed--border-color": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--disabled": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--info": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--info--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--info--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--invalid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--invalid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--invalid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--valid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--valid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--valid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--warning": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--warning--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-mixed--border-color--warning--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--background": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--active": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--disabled": "si-sys-color-text-disabled",
+    "ix-toggle-thumb-off--background--hover": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--info": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--info--active": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--info--hover": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--invalid": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--invalid--active": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--invalid--hover": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--valid": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--valid--active": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--valid--hover": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--warning": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--warning--active": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--background--warning--hover": "si-sys-color-text-secondary",
+    "ix-toggle-thumb-off--border-color": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--disabled": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--info": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--info--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--info--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--invalid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--invalid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--invalid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--valid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--valid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--valid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--warning": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--warning--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-off--border-color--warning--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--background": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-on--background--active": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-on--background--disabled": "si-sys-color-text-inverse",
+    "ix-toggle-thumb-on--background--hover": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-on--background--info": "si-sys-color-text-on-information",
+    "ix-toggle-thumb-on--background--info--active": "si-sys-color-text-on-information",
+    "ix-toggle-thumb-on--background--info--hover": "si-sys-color-text-on-information",
+    "ix-toggle-thumb-on--background--invalid": "si-sys-color-text-on-danger",
+    "ix-toggle-thumb-on--background--invalid--active": "si-sys-color-text-on-danger",
+    "ix-toggle-thumb-on--background--invalid--hover": "si-sys-color-text-on-danger",
+    "ix-toggle-thumb-on--background--valid": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-on--background--valid--active": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-on--background--valid--hover": "si-sys-color-text-on-accent",
+    "ix-toggle-thumb-on--background--warning": "si-sys-color-text-on-warning",
+    "ix-toggle-thumb-on--background--warning--active": "si-sys-color-text-on-warning",
+    "ix-toggle-thumb-on--background--warning--hover": "si-sys-color-text-on-warning",
+    "ix-toggle-thumb-on--border-color": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--disabled": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--info": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--info--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--info--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--invalid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--invalid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--invalid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--valid": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--valid--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--valid--hover": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--warning": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--warning--active": "rgba(0, 0, 0, 0)",
+    "ix-toggle-thumb-on--border-color--warning--hover": "rgba(0, 0, 0, 0)"
+  },
+  "computedSchema": [
+    "display",
+    "width",
+    "height",
+    "minWidth",
+    "boxSizing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderTopColor",
+    "borderTopStyle",
+    "borderTopLeftRadius",
+    "borderTopRightRadius",
+    "borderBottomLeftRadius",
+    "borderBottomRightRadius",
+    "backgroundColor",
+    "color",
+    "fontSize",
+    "lineHeight",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "letterSpacing",
+    "fontFeatureSettings",
+    "outlineColor",
+    "outlineWidth",
+    "outlineStyle",
+    "outlineOffset",
+    "opacity",
+    "pointerEvents",
+    "justifyContent",
+    "textAlign",
+    "marginLeft",
+    "marginRight",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "position",
+    "flexShrink",
+    "gap",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "content",
+    "fill",
+    "stroke",
+    "strokeWidth",
+    "cursor",
+    "visibility",
+    "alignItems",
+    "marginTop",
+    "marginBottom",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "transform",
+    "transitionProperty",
+    "transitionDuration",
+    "transitionTimingFunction",
+    "transitionDelay",
+    "flexDirection",
+    "wordBreak",
+    "whiteSpace",
+    "overflow",
+    "marginBlockStart",
+    "marginBlockEnd",
+    "marginInlineStart"
+  ],
+  "core": [
+    {
+      "key": "default-off",
+      "variant": "default",
+      "booleanKey": "off",
+      "checked": false,
+      "indeterminate": false
+    },
+    {
+      "key": "default-checked",
+      "variant": "default",
+      "booleanKey": "checked",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "key": "default-mixed",
+      "variant": "default",
+      "booleanKey": "mixed",
+      "checked": false,
+      "indeterminate": true
+    },
+    {
+      "key": "default-both",
+      "variant": "default",
+      "booleanKey": "both",
+      "checked": true,
+      "indeterminate": true
+    },
+    {
+      "key": "valid-off",
+      "variant": "valid",
+      "booleanKey": "off",
+      "checked": false,
+      "indeterminate": false
+    },
+    {
+      "key": "valid-checked",
+      "variant": "valid",
+      "booleanKey": "checked",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "key": "valid-mixed",
+      "variant": "valid",
+      "booleanKey": "mixed",
+      "checked": false,
+      "indeterminate": true
+    },
+    {
+      "key": "valid-both",
+      "variant": "valid",
+      "booleanKey": "both",
+      "checked": true,
+      "indeterminate": true
+    },
+    {
+      "key": "info-off",
+      "variant": "info",
+      "booleanKey": "off",
+      "checked": false,
+      "indeterminate": false
+    },
+    {
+      "key": "info-checked",
+      "variant": "info",
+      "booleanKey": "checked",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "key": "info-mixed",
+      "variant": "info",
+      "booleanKey": "mixed",
+      "checked": false,
+      "indeterminate": true
+    },
+    {
+      "key": "info-both",
+      "variant": "info",
+      "booleanKey": "both",
+      "checked": true,
+      "indeterminate": true
+    },
+    {
+      "key": "warning-off",
+      "variant": "warning",
+      "booleanKey": "off",
+      "checked": false,
+      "indeterminate": false
+    },
+    {
+      "key": "warning-checked",
+      "variant": "warning",
+      "booleanKey": "checked",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "key": "warning-mixed",
+      "variant": "warning",
+      "booleanKey": "mixed",
+      "checked": false,
+      "indeterminate": true
+    },
+    {
+      "key": "warning-both",
+      "variant": "warning",
+      "booleanKey": "both",
+      "checked": true,
+      "indeterminate": true
+    },
+    {
+      "key": "invalid-off",
+      "variant": "invalid",
+      "booleanKey": "off",
+      "checked": false,
+      "indeterminate": false
+    },
+    {
+      "key": "invalid-checked",
+      "variant": "invalid",
+      "booleanKey": "checked",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "key": "invalid-mixed",
+      "variant": "invalid",
+      "booleanKey": "mixed",
+      "checked": false,
+      "indeterminate": true
+    },
+    {
+      "key": "invalid-both",
+      "variant": "invalid",
+      "booleanKey": "both",
+      "checked": true,
+      "indeterminate": true
+    }
+  ],
+  "extras": [
+    {
+      "key": "default",
+      "variant": "default",
+      "checked": false,
+      "indeterminate": false
+    },
+    {
+      "key": "hide-text",
+      "variant": "default",
+      "checked": true,
+      "indeterminate": false,
+      "hideText": true,
+      "ariaLabel": "Setting"
+    },
+    {
+      "key": "stable-label",
+      "variant": "info",
+      "checked": false,
+      "indeterminate": true,
+      "textOn": "Setting",
+      "textOff": "Setting",
+      "textIndeterminate": "Setting",
+      "ariaLabel": "Setting"
+    },
+    {
+      "key": "override",
+      "variant": "warning",
+      "checked": true,
+      "indeterminate": true
+    },
+    {
+      "key": "required-invalid",
+      "variant": "invalid",
+      "checked": false,
+      "indeterminate": false,
+      "required": true
+    },
+    {
+      "key": "nested",
+      "variant": "valid",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "key": "controlled",
+      "variant": "default",
+      "checked": false,
+      "indeterminate": false,
+      "name": "toggle-value",
+      "value": "consent"
+    },
+    {
+      "key": "wrapping",
+      "variant": "default",
+      "checked": false,
+      "indeterminate": false,
+      "textOn": "A longer setting label that wraps across several lines",
+      "textOff": "A longer setting label that wraps across several lines",
+      "textIndeterminate": "A longer setting label that wraps across several lines",
+      "width": 160
+    }
+  ],
+  "pointerCases": [
+    {
+      "id": "default-off",
+      "variant": "default",
+      "checked": false,
+      "indeterminate": false
+    },
+    {
+      "id": "default-checked",
+      "variant": "default",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "id": "default-mixed",
+      "variant": "default",
+      "checked": false,
+      "indeterminate": true
+    },
+    {
+      "id": "default-both",
+      "variant": "default",
+      "checked": true,
+      "indeterminate": true
+    },
+    {
+      "id": "info-checked",
+      "variant": "info",
+      "checked": true,
+      "indeterminate": false
+    },
+    {
+      "id": "warning-mixed",
+      "variant": "warning",
+      "checked": false,
+      "indeterminate": true
+    },
+    {
+      "id": "invalid-off",
+      "variant": "invalid",
+      "checked": false,
+      "indeterminate": false
+    }
+  ],
+  "controlledSteps": [
+    "click-on",
+    "click-off",
+    "mixed-click",
+    "disabled-click",
+    "enabled-click",
+    "external-checked",
+    "reset"
+  ],
+  "tokens": {
+    "size60": "20-4*(s%2)+floor(s/2)+2*r",
+    "size70": "size60+4",
+    "size100": "44+2*s+4*r",
+    "spacingX10": "2+s+r",
+    "spacingY10": "1+s+r",
+    "spacingX40": "10+s+r",
+    "spacingX50": "11+s+r",
+    "spacingY20": "2+s+r",
+    "spacingY40": "7+s+r",
+    "borderWidth": "1+r",
+    "fullRadius": "99+s+r",
+    "focusOffset": "3+r",
+    "motion": "0s baseline/restored;0.001s revised",
+    "scopeFont": "400 16px/24px system-ui,sans-serif",
+    "labelFont": "400 (14+s+r)px/(20+s+r)px system-ui,sans-serif",
+    "letterSpacing": ".25+.25*r"
+  },
+  "override": {
+    "hostMinHeight": "36+2*r px",
+    "hostMaxHeight": "100px",
+    "hostMarginBlockStart": "4px",
+    "hostMarginBlockEnd": "6px",
+    "switchWidth": "60+2*r px",
+    "switchMinMaxWidth": "60+2*r px",
+    "switchHeight": "32+2*r px",
+    "thumbWidth": "17+r px",
+    "thumbHeight": "13+r px",
+    "thumbLeft": "3px",
+    "thumbBottom": "4px",
+    "checkedTransform": "translateX(31+2*r px)",
+    "mixedTransform": "translateX(15+r px)",
+    "radius": "12+r px",
+    "borderWidth": "2px",
+    "focusWidth": "3px",
+    "focusOffset": "6px",
+    "labelMarginBlockStart": "5px",
+    "labelMarginInlineStart": "13px",
+    "labelMinHeight": "26px"
+  },
+  "counts": {
+    "corePerPhase": 80,
+    "extrasPerRest": 8,
+    "phases": 9,
+    "total": 744
+  },
+  "ids": {
+    "root": "toggle-review",
+    "status": "toggle-status",
+    "run": "toggle-run",
+    "result": "toggle-result",
+    "state": "toggle-state",
+    "phase": [
+      "toggle-baseline",
+      "toggle-revised",
+      "toggle-restored"
+    ],
+    "controlled": [
+      "toggle-reset",
+      "toggle-mixed",
+      "toggle-enable",
+      "toggle-disable",
+      "toggle-external-checked"
+    ],
+    "pointerCase": "toggle-pointer-case",
+    "pointerTarget": "toggle-pointer-target",
+    "pointerResult": "toggle-pointer-result"
+  },
+  "schema": {
+    "row": [
+      "id",
+      "scope",
+      "scopeIndex",
+      "revision",
+      "variant",
+      "booleanKey",
+      "checked",
+      "indeterminate",
+      "disabled",
+      "required",
+      "hideText",
+      "state",
+      "kind",
+      "key",
+      "host",
+      "control",
+      "wrapper",
+      "switch",
+      "slider",
+      "thumb",
+      "label",
+      "labelText",
+      "nativeFacts"
+    ],
+    "sourceControl": "actual focusable ix-toggle host",
+    "nativeControl": "actual button typebutton; outerfield raw",
+    "requestPair": [
+      "sequence",
+      "value"
+    ],
+    "controlledState": [
+      "checked",
+      "mixed",
+      "disabled",
+      "requests",
+      "formData"
+    ]
+  },
+  "commonAriaLabel": "Setting",
+  "pointerParking": "Actual native pointer parked over fixed #toggle-pointer-park before keyboard Enter Run; no synthetichover override"
+},byId=id=>document.getElementById("toggle-"+id);
+const core=[],extras=[],scopes=[],errors=[],journal=[],objects=new WeakMap(),events=new WeakMap();let ready=false,busy=false,revision=0,revisionID='baseline',state='rest',sequence=0,objectSequence=0,eventSequence=0,pointerItem=null,pointerCase=null;
+const oid=n=>{if(!objects.has(n))objects.set(n,++objectSequence);return objects.get(n);},eid=e=>{if(!events.has(e))events.set(e,++eventSequence);return events.get(e);};
+function log(kind,data={}){journal.push({seq:++sequence,kind,time:performance.now(),revisionID,state,...data});}
+function tokens(root,s,r){for(const[k,name]of spec.colorTokens.entries())root.style.setProperty('--'+name,`rgb(${24+(13*k+7*s+3*r)%160}, ${32+(11*k+5*s+7*r)%150}, ${40+(7*k+3*s+11*r)%140})`);const size=20-4*(s%2)+Math.floor(s/2)+2*r;for(const[k,v]of Object.entries({'size-60':size,'size-70':size+4,'size-100':44+2*s+4*r,'spacing-x-10':2+s+r,'spacing-y-10':1+s+r,'spacing-x-40':10+s+r,'spacing-x-50':11+s+r,'spacing-y-20':2+s+r,'spacing-y-40':7+s+r,'border-width-default':1+r,'border-radius-full':99+s+r,'focus-ring-offset':3+r}))root.style.setProperty('--si-sys-sizing-'+k,v+'px');root.style.setProperty('--theme-default-time',r?'0.001s':'0s');root.style.setProperty('--si-sys-typography-body',`400 ${14+s+r}px/${20+s+r}px system-ui, sans-serif`);root.style.setProperty('--si-ref-typography-letter-spacing-normal',`${.25+.25*r}px`);root.style.font='400 16px/24px system-ui, sans-serif';root.style.color='var(--si-sys-color-text-primary)';root.dataset.scopeIndex=String(s);root.dataset.revision=String(r);root.dataset.ixTheme='brand';root.dataset.ixColorSchema=s>=2?'dark':'light';root.dataset.ixDensity=s%2?'compact':'normal';}
+function variant(host,value){for(const c of ['ix-valid','ix-info','ix-warning','ix-invalid'])host.classList.remove(c);if(value!=='default')host.classList.add(value==='invalid'?'ix-invalid':'ix-'+value);}
+function make(scope,id,descriptor,kind='core'){const wrap=document.createElement('div');wrap.className='specimen';if(descriptor.width)wrap.style.width=descriptor.width+'px';const label=document.createElement('span');label.className='specimen-label';label.textContent=descriptor.key;const host=document.createElement('ix-toggle');host.id=id;if(descriptor.key!=='default'||kind==='core'){host.checked=!!descriptor.checked;host.indeterminate=!!descriptor.indeterminate;host.required=!!descriptor.required;host.hideText=!!descriptor.hideText;}for(const name of ['textOn','textOff','textIndeterminate'])if(name in descriptor)host[name]=descriptor[name];host.setAttribute('aria-label',descriptor.ariaLabel??spec.commonAriaLabel);if(descriptor.name)host.name=descriptor.name;if(descriptor.value)host.value=descriptor.value;variant(host,descriptor.variant);if(descriptor.key==='override')host.classList.add('fixture-toggle-override');wrap.append(label,host);let parent=scope;if(descriptor.key==='controlled'){parent=document.createElement('form');parent.id='toggle-controlled-form';scope.append(parent);parent.addEventListener('submit',event=>{event.preventDefault();log('source-form-submit-prevented');});}parent.append(wrap);if(descriptor.key==='controlled'){const peer=document.createElement('div');peer.id='toggle-layout-peer';peer.textContent='Layout reference';parent.append(peer);}return{host,scope:scope.dataset.scopeId,descriptor,kind,key:descriptor.key};}
+function construct(){for(const entry of spec.scopes){const root=document.createElement('section');root.id='toggle-scope-'+entry.id;root.dataset.scopeId=entry.id;root.className='scope';const title=document.createElement('h2');title.className='scope-title';title.textContent=entry.id;root.append(title);tokens(root,entry.index,0);byId('matrix').append(root);scopes.push({entry,node:root});for(const descriptor of spec.core)core.push(make(root,`toggle-${entry.id}-${descriptor.key}`,descriptor));}for(const descriptor of spec.extras){let scope=scopes[0].node;if(descriptor.key==='nested'){scope=document.createElement('section');scope.dataset.scopeId='nested';scope.className='nested';tokens(scope,3,0);scopes[0].node.append(scope);}extras.push(make(scope,'toggle-extra-'+descriptor.key,descriptor,'extra'));}const pscope=byId('pointer-mount');pscope.dataset.scopeId='pointer';tokens(pscope,0,0);pointerItem=make(pscope,'toggle-pointer-target',{...spec.pointerCases[0],key:'pointer'},'pointer');}
+const control=item=>item.host;
+function deepActive(){let n=document.activeElement;while(n?.shadowRoot?.activeElement)n=n.shadowRoot.activeElement;return n;}
+function metric(n,pseudo=null){if(!(n instanceof Element))return null;const cs=getComputedStyle(n,pseudo),r=pseudo?null:n.getBoundingClientRect();return{object:oid(n),tag:n.tagName,pseudo,id:n.id,attrs:pseudo?{}:Object.fromEntries([...n.attributes].map(a=>[a.name,a.value])),class:pseudo?null:n.getAttribute('class'),computed:Object.fromEntries(spec.computedSchema.map(k=>[k,cs[k]])),rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null};}
+function capture(item,current=state){const host=item.host,root=host.shadowRoot,sw=root?.querySelector('.switch'),slider=root?.querySelector('.slider'),label=root?.querySelector('ix-typography'),scope=host.closest('[data-scope-id]');return{id:host.id,scope:item.scope,scopeIndex:Number(scope.dataset.scopeIndex),revision:Number(scope.dataset.revision),variant:item.descriptor.variant,booleanKey:item.descriptor.booleanKey??(item.descriptor.checked?(item.descriptor.indeterminate?'both':'checked'):(item.descriptor.indeterminate?'mixed':'off')),checked:host.checked,indeterminate:host.indeterminate,disabled:host.disabled,required:host.required,hideText:host.hideText,state:current,kind:item.kind,key:item.key,host:metric(host),control:metric(host),wrapper:metric(root?.querySelector('.wrapper')),switch:metric(sw),slider:metric(slider),thumb:metric(slider,'::before'),label:metric(label),labelText:label?.textContent??null,nativeFacts:{disabledProperty:host.disabled,tabIndex:host.tabIndex,focused:host===deepActive(),matchesFocus:host.matches(':focus'),matchesFocusVisible:host.matches(':focus-visible'),hostFocused:host.classList.contains('ix-focused'),rootHover:host.matches(':hover'),rootActive:host.matches(':active'),switchHover:sw?.matches(':hover'),switchActive:sw?.matches(':active'),hostAriaChecked:host.getAttribute('aria-checked'),hostAriaDisabled:host.getAttribute('aria-disabled'),role:host.getAttribute('role'),formData:item.key==='controlled'?formData():null}};}
+async function settle(label='observation'){await document.fonts.ready;for(let index=1;index<=2;index++)await new Promise(resolve=>requestAnimationFrame(timestamp=>queueMicrotask(()=>{log('native-frame',{label,index,timestamp});resolve();})));}
+async function childrenReady(){const children=[...core,...extras,pointerItem].map(item=>item.host.shadowRoot?.querySelector('ix-typography')).filter(Boolean);await Promise.all(children.map(async n=>{await n.componentOnReady();log('source-child-ready',{object:oid(n),tag:n.tagName});}));}
+function overrides(){let sheet=document.getElementById('toggle-component-overrides');if(!sheet){sheet=document.createElement('style');sheet.id='toggle-component-overrides';document.head.append(sheet);}const values={'--ix-toggle--min-height':`${36+2*revision}px`,'--ix-toggle--max-height':'100px','--ix-toggle--margin-block-start':'4px','--ix-toggle--margin-block-end':'6px','--ix-toggle-switch--width':`${60+2*revision}px`,'--ix-toggle-switch--min-width':`${60+2*revision}px`,'--ix-toggle-switch--max-width':`${60+2*revision}px`,'--ix-toggle-switch--height':`${32+2*revision}px`,'--ix-toggle-slider--width':`${17+revision}px`,'--ix-toggle-slider--height':`${13+revision}px`,'--ix-toggle-slider--left':'3px','--ix-toggle-slider--bottom':'4px','--ix-toggle-slider-checked--transform':`translateX(${31+2*revision}px)`,'--ix-toggle-slider--transform':`translateX(${15+revision}px)`,'--ix-toggle-slider--border-radius':`${12+revision}px`,'--ix-toggle-slider--border-width':'2px','--ix-toggle-switch--border-width':'2px','--ix-toggle--outline-width--focus':'3px','--ix-toggle-switch--outline-offset':'6px','--ix-toggle-label--margin-block-start':'5px','--ix-toggle-label--margin-inline-start':'13px','--ix-toggle-label--min-height':'26px'};sheet.textContent='.fixture-toggle-override{'+Object.entries(values).map(([k,v])=>k+':'+v).join(';')+'}';}
+async function setState(value){state=value;byId('state').value=value;byId('outside').focus();for(const item of core){item.host.checked=item.descriptor.checked;item.host.indeterminate=item.descriptor.indeterminate;item.host.disabled=value==='disabled';}await settle('source-parent-commit');await childrenReady();await settle('source-child-ready-observation');}
+async function setRevision(id){const entry=spec.revisions.find(x=>x.id===id);revision=entry.revision;revisionID=id;for(const{entry,node}of scopes)tokens(node,entry.index,revision);overrides();await setState('rest');}
+function seedKeyboard(){byId('outside').focus();const event=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,composed:true,cancelable:true});byId('outside').dispatchEvent(event);log('synthetic-keyboard-seed',{defaultPrevented:event.defaultPrevented});}
+async function phase(){const rows=[];if(state==='focus'){seedKeyboard();for(const item of core){control(item).focus();await settle('actual-native-focus');rows.push(capture(item));}}else rows.push(...core.map(item=>capture(item)));return{id:revisionID+':'+state,revision,state,rows,extras:state==='rest'?extras.map(item=>capture(item,'rest')):[],settleFrames:2,settlement:{parentCommitFrames:2,childReadiness:'actual current ix-typography componentOnReady',finalObservationFrames:2,focusAdditionalPerRowFrames:state==='focus'?2:0}};}
+const requests=[];function controlledItem(){return extras.find(x=>x.key==='controlled');}function formData(){return[...new FormData(byId('controlled-form')).entries()].map(([name,value])=>[name,String(value)]);}function consumerState(){const n=controlledItem().host;return{checked:n.checked,mixed:n.indeterminate,disabled:n.disabled,requests:requests.map(x=>({...x})),formData:formData()};}function geometry(){return{host:metric(controlledItem().host)?.rect,peer:metric(byId('layout-peer'))?.rect};}function paintConsumer(){byId('controlled-json').value=JSON.stringify(consumerState());}
+function installConsumer(){const held=controlledItem().host;held.addEventListener('checkedChange',event=>{if(event.composedPath()[0]!==held)return;requests.push({sequence:requests.length+1,value:event.detail,checkedAtEvent:held.checked,mixedAtEvent:held.indeterminate,disabledAtEvent:held.disabled});log('source-post-mutation-checked-event',{...requests.at(-1),event:eid(event),defaultPrevented:event.defaultPrevented});paintConsumer();});for(const name of ['reset','mixed','enable','disable','external-checked'])byId(name).addEventListener('click',event=>{event.preventDefault();event.stopPropagation();if(name==='reset'){held.checked=false;held.indeterminate=false;held.disabled=false;requests.length=0;}if(name==='mixed'){held.checked=false;held.indeterminate=true;held.disabled=false;}if(name==='enable')held.disabled=false;if(name==='disable')held.disabled=true;if(name==='external-checked'){held.checked=true;held.indeterminate=false;held.disabled=false;}log('public-consumer-command',{name,state:consumerState()});paintConsumer();});paintConsumer();}
+async function nativeClick(n){const observed=[];let original=null;const c=event=>{if(event.composedPath()[0]!==n)return;original=event;observed.push({site:'document-capture',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});},b=event=>{if(event.composedPath()[0]!==n)return;observed.push({site:'window-bubble',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});};document.addEventListener('click',c,true);window.addEventListener('click',b);n.click();document.removeEventListener('click',c,true);window.removeEventListener('click',b);return{eventObserved:!!original,defaultPrevented:original?.defaultPrevented??null,events:observed};}
+async function settleConsumer(){await settle('source-consumer-parent');await childrenReady();await settle('source-consumer-ready');paintConsumer();}
+async function controlledHistory(){await setRevision('restored');byId('reset').click();await settleConsumer();const steps=[];for(const name of spec.controlledSteps){if(name==='mixed-click')byId('mixed').click();if(name==='disabled-click')byId('disable').click();if(name==='enabled-click')byId('enable').click();await settleConsumer();const before=consumerState(),geometryBefore=geometry();let original=null;if(name==='external-checked')byId('external-checked').click();else if(name==='reset')byId('reset').click();else original=await nativeClick(control(controlledItem()));await settleConsumer();const after=consumerState();steps.push({name,before,after,geometryBefore,geometryAfter:geometry(),original,requestsDelta:name==='reset'?[]:after.requests.slice(before.requests.length),row:capture(controlledItem(),'rest')});}return{steps,state:consumerState()};}
+async function noHandlerDiagnostic(){const held=extras.find(x=>x.key==='default'),before=capture(held,'rest');const original=await nativeClick(held.host);await settleConsumer();const after=capture(held,'rest');held.host.checked=false;held.host.indeterminate=false;await settleConsumer();return{before,original,after,limit:'Source auto mutation versus Rust absent accepting callback is explicit API differential; outside744pairedrows'};}
+const pointerObservations=[];function pointerOutput(){const result={ok:true,observations:pointerObservations,case:pointerCase,limits:['Only actual event-delivered pseudo qualifications are measured; no fake hover/active aliases','Active firstRAF and afterup secondRAF are observation times, not guaranteed active/hover goldens']};byId('pointer-result').textContent=JSON.stringify(result,null,2);return result;}
+async function configurePointer(id){pointerCase=spec.pointerCases.find(x=>x.id===id)??spec.pointerCases[0];pointerItem.descriptor={...pointerCase,key:'pointer'};pointerItem.host.checked=pointerCase.checked;pointerItem.host.indeterminate=pointerCase.indeterminate;pointerItem.host.disabled=false;variant(pointerItem.host,pointerCase.variant);byId('pointer-status').dataset.ready='false';await settle('pointer-public-props');await pointerItem.host.shadowRoot.querySelector('ix-typography').componentOnReady();await settle('pointer-component-ready');byId('pointer-status').dataset.ready='true';byId('pointer-status').dataset.case=pointerCase.id;byId('pointer-status').textContent='Ready: '+pointerCase.id;pointerOutput();}
+function installPointer(){const held=pointerItem.host;for(const type of ['pointerdown','pointerup'])held.addEventListener(type,event=>{const original={event:eid(event),type,trusted:event.isTrusted,pointerType:event.pointerType,button:event.button,clientX:event.clientX,clientY:event.clientY,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName,defaultPrevented:event.defaultPrevented};const before={checked:held.checked,mixed:held.indeterminate};const record=phase=>{pointerObservations.push({case:pointerCase.id,phase,original,before,row:capture(pointerItem,phase),after:{checked:held.checked,mixed:held.indeterminate}});pointerOutput();byId('pointer-status').textContent=pointerCase.id+' '+phase;};if(type==='pointerdown')requestAnimationFrame(()=>record('pointerdown-frame'));else requestAnimationFrame(()=>requestAnimationFrame(()=>record('pointerup-second-frame')));},{passive:true});held.shadowRoot.querySelector('ix-typography')?.addEventListener('pointerenter',event=>{const original={event:eid(event),type:event.type,trusted:event.isTrusted,pointerType:event.pointerType,clientX:event.clientX,clientY:event.clientY,defaultPrevented:event.defaultPrevented},before={checked:held.checked,mixed:held.indeterminate};requestAnimationFrame(()=>{pointerObservations.push({case:pointerCase.id,phase:'label-hover-frame',original,before,row:capture(pointerItem,'label-hover-frame'),after:{checked:held.checked,mixed:held.indeterminate}});pointerOutput();});},{passive:true});byId('pointer-case').addEventListener('change',event=>{event.stopPropagation();configurePointer(event.target.value);});}
+function controls(enabled){for(const n of document.querySelectorAll('.controls button,.controls select'))n.disabled=!enabled;}
+const limits=['Authored semantic/systemfont tokens, not full numeric Brand metrics','Source clears mixed and mutates checked before checkedChange; veto restores both, Rust accepting controlled consumer is an API adapter, cancellation unpaired','Source focusable customhost versus native button and outerfield remain raw structural adapters','No hover/active aliases; physical pointer proof requires separately qualified browser events','Readiness and source/Rust fixedframes do not imply publication chronology equality','Validation/touched/cancellation/ElementInternals/fullforms/AT are not certified'];
+function publish(result){byId('result').textContent=JSON.stringify(result,null,2);}
+async function run(){if(!ready||busy)return;busy=true;controls(false);byId('status').dataset.run='running';const phases=[];try{for(const rev of spec.revisions){await setRevision(rev.id);for(const st of spec.states){await setState(st);phases.push(await phase());}}const controlled=await controlledHistory(),directNoHandler=await noHandlerDiagnostic(),result={ok:true,revision:spec.revision,fixture:spec.fixture,phases,controlled,directNoHandler,pointer:pointerOutput(),errors:[...errors],journal:[...journal],limits};publish(result);byId('status').dataset.run='done';byId('status').textContent='744 source Toggle anatomy rows observed';return result;}catch(error){errors.push(String(error));const result={ok:false,error:String(error),phases,errors:[...errors],journal};publish(result);byId('status').dataset.run='done';return result;}finally{busy=false;controls(ready);}}
+for(const value of spec.states){const n=document.createElement('option');n.value=value;n.textContent=value;byId('state').append(n);}for(const p of spec.pointerCases){const n=document.createElement('option');n.value=p.id;n.textContent=p.id;byId('pointer-case').append(n);}for(const rev of spec.revisions)byId(rev.id).addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();if(!ready||busy)return;busy=true;try{await setRevision(rev.id);publish({ok:true,phases:[await phase()],errors:[...errors]});}finally{busy=false;}});byId('state').addEventListener('change',async event=>{event.stopPropagation();if(!ready||busy)return;busy=true;try{await setState(event.target.value);publish({ok:true,phases:[await phase()],errors:[...errors]});}finally{busy=false;}});byId('run').addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run();});byId('capture').addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();if(ready&&!busy)publish({ok:true,phases:[await phase()],errors:[...errors]});});window.addEventListener('error',event=>errors.push(event.message));window.addEventListener('unhandledrejection',event=>errors.push(String(event.reason)));
+const api=Object.freeze({run,snapshot:()=>({ready,revision,state,rows:core.map(item=>capture(item)),extras:extras.map(item=>capture(item,'rest'))}),pointer:()=>({ok:true,case:pointerCase,observations:pointerObservations.map(x=>({...x}))})});window.upstreamToggleTokenReview=api;window.ixToggleTokenReview=api;
+try{await Promise.all(['ix-toggle','ix-typography'].map(tag=>customElements.whenDefined(tag)));construct();await Promise.all([...core,...extras,pointerItem].map(item=>item.host.componentOnReady()));installConsumer();installPointer();await setRevision('baseline');await configurePointer(spec.pointerCases[0].id);ready=true;controls(true);byId('status').dataset.ready='true';byId('status').textContent='Ready: source Toggle anatomy';publish({ok:true,revision:spec.revision,phases:[await phase()],errors:[...errors]});}catch(error){errors.push(String(error));byId('status').textContent='Pinned Toggle unavailable: '+error;publish({ok:false,error:String(error),errors:[...errors]});}
+</script></body></html>
