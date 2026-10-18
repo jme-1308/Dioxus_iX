@@ -640,7 +640,10 @@ pub fn CheckboxGroup(
     }
 }
 
-/// Native radio. Give all controls in a group the same `name` for native arrow navigation.
+/// Native radio with Brand token geometry, selection dot and label typography.
+/// Give controls the same `name` for native arrow navigation and form grouping.
+/// The consumer accepts selections by updating `checked` from the callbacks;
+/// the source's cancellable event and automatic group mutations are separate APIs.
 #[component]
 pub fn Radio(
     value: String,
@@ -650,21 +653,35 @@ pub fn Radio(
     #[props(default)] disabled: bool,
     #[props(default)] required: bool,
     #[props(default)] state: FieldState,
+    #[props(default)] class: String,
+    aria_label: Option<String>,
     #[props(default)] oncheckedchange: EventHandler<bool>,
     #[props(default)] onvaluechange: EventHandler<String>,
 ) -> Element {
     let selected = value.clone();
+    let accessible_label = aria_label.unwrap_or_else(|| label.clone());
     rsx! {
-        label { class: "ix-check ix-radio {state.class()}",
+        label { class: "ix-check ix-radio ix-radio-native {state.class()} {class}",
+            "data-checked": checked.to_string(), "data-disabled": disabled.to_string(),
+            "data-label-less": label.is_empty().to_string(),
             input { r#type: "radio", name, value, checked, disabled, required,
-                "aria-label": label.clone(),
+                "aria-label": accessible_label,
                 "aria-invalid": (state == FieldState::Invalid).to_string(),
-                // A native radio change is emitted only when it becomes checked.
-                // FormData::checked only parses checkbox booleans; radios return their value.
+                // Radio change fires only when becoming checked. FormData::checked
+                // parses checkbox booleans; a radio instead returns its value.
                 onchange: move |_| { oncheckedchange.call(true); onvaluechange.call(selected.clone()); },
             }
-            span { class: "ix-check-shape", "aria-hidden": "true" }
-            span { "{label}" }
+            span { class: "ix-radio-button", "aria-hidden": "true",
+                span { class: "ix-check-shape",
+                    span { class: "ix-radio-dot" }
+                }
+            }
+            if !label.is_empty() {
+                crate::Typography { format: crate::TypographyFormat::Body,
+                    text_color: if disabled { crate::TypographyColor::Weak } else { crate::TypographyColor::Std },
+                    class: "ix-radio-label", "{label}"
+                }
+            }
         }
     }
 }
@@ -718,7 +735,7 @@ pub fn RadioGroup(
             div { class: if horizontal { "ix-choices ix-choices-row" } else { "ix-choices" },
                 for option in options {
                     Radio { key: "{option.value}", name: name.clone(), checked: option.value == value,
-                        value: option.value, label: option.label, disabled: option.disabled, required, onvaluechange }
+                        value: option.value, label: option.label, disabled: disabled || option.disabled, required, state, onvaluechange }
                 }
             }
             HelperText { helper_text, invalid_text, state }
@@ -2511,6 +2528,10 @@ pub fn Upload(
 #[cfg(test)]
 #[path = "checkbox_token_tests.rs"]
 mod checkbox_token_tests;
+
+#[cfg(test)]
+#[path = "radio_token_tests.rs"]
+mod radio_token_tests;
 
 pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-upload-state{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ix-theme .ix-upload[data-multiline=true] .ix-upload-state>span{white-space:normal;overflow-wrap:anywhere}.ix-theme .ix-upload-button{flex:none;white-space:nowrap}.ix-theme .ix-upload[data-file-over=true]{border-style:solid;border-color:var(--ix-color-primary)}.ix-theme .ix-upload[aria-busy=true]{border-style:solid}.ix-theme .ix-upload:has(.ix-upload-error){flex-wrap:wrap}.ix-theme .ix-upload-error{flex-basis:100%;color:var(--ix-color-danger-text);overflow-wrap:anywhere}

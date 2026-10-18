@@ -1,0 +1,511 @@
+<!doctype html>
+<!-- Development-only comparison of actual pinned Typography under authored system-font tokens. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pinned Radio anatomy matrix</title>
+<link rel="stylesheet" href="http://127.0.0.1:8089/keyboard-foundation.css"><script type="module" src="http://127.0.0.1:8089/www/build/siemens-ix.esm.js"></script><script nomodule src="http://127.0.0.1:8089/www/build/siemens-ix.js"></script>
+<style>body{margin:0;background:#f4f6f8;color:#202932;font:16px/1.5 system-ui,sans-serif}main{max-width:96rem;margin:auto;padding:24px}h1{font-size:1.75rem;line-height:1.2;margin:0 0 16px}h2{font-size:1.25rem;margin:24px 0 8px}p{max-width:75ch}.controls{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}button{font:inherit;min-height:36px;padding:4px 10px;background:white;color:#202932;border:1px solid #7d8b98;border-radius:4px;cursor:pointer}button:disabled{opacity:.5;cursor:default}button:focus-visible,select:focus-visible{outline:2px solid #075c9d;outline-offset:3px}::selection{background:#bddcf2;color:#102c42}.matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.scope{padding:16px;border:1px solid #bdc6ce;background:white;min-width:0}.scope[data-ix-color-schema=dark]{background:#202932}.scope-title{color:#202932;background:#f4f6f8;font:600 16px/1.5 system-ui,sans-serif;padding:8px;margin:0 0 16px}.specimen{padding:8px 0;border-bottom:1px solid #bdc6ce;overflow-wrap:anywhere}.specimen-label{display:block;font:12px/1.5 system-ui,sans-serif;color:#384b5b;background:#eef2f5;padding:2px 4px;margin-bottom:4px}.nested{margin-top:24px;padding:12px;border:1px solid #7d8b98;background:#202932}pre{max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:white;border:1px solid #bdc6ce;font:13px/1.5 ui-monospace,monospace;font-variant-numeric:tabular-nums;scrollbar-color:#7d8b98 #f4f6f8}@media(max-width:900px){.matrix{grid-template-columns:1fr}main{padding:16px}}</style></head>
+<body data-ix-theme="brand"><main id="radio-review"><h1>Pinned Radio anatomy matrix</h1><p>Actual source radioes under developer-authored system-font and semantic tokens. Matrix states use public disabled props and real native focus. Pointer observations require genuine browser input; no hover aliases are supplied.</p><p id="radio-status" role="status" data-ready="false" data-run="idle">Loading pinned Radio…</p><div class="controls"><button id="radio-baseline" disabled>Baseline tokens</button><button id="radio-revised" disabled>Revise tokens</button><button id="radio-restored" disabled>Restore baseline</button><label>State <select id="radio-state" disabled></select></label><button id="radio-capture" disabled>Capture state</button><button id="radio-run" disabled>Run matrix</button></div><button id="radio-outside" type="button">Outside keyboard seed</button><fieldset><legend>Actual pointer diagnostic</legend><label>Case <select id="radio-pointer-case"></select></label><p id="radio-pointer-status" role="status">Loading pointer target</p><div id="radio-pointer-mount"></div><pre id="radio-pointer-result" aria-hidden="true">{}</pre></fieldset><fieldset><legend>Accepting selection consumer</legend><button type="button" id="radio-reset">Reset</button><button type="button" id="radio-off">Set unchecked</button><button type="button" id="radio-enable">Enable</button><button type="button" id="radio-disable">Disable</button><button type="button" id="radio-external-checked">Set checked externally</button><input type="hidden" id="radio-controlled-json" value="{}"></fieldset><div id="radio-matrix" class="matrix"></div><h2>Computed anatomy observations</h2><pre id="radio-result" aria-hidden="true">{}</pre></main>
+<script type="module">
+const spec={
+  "revision": "8bf599bc68365d7752e12832e71b625883b93d7a",
+  "scopes": [
+    {
+      "id": "light-normal",
+      "index": 0,
+      "scheme": "light",
+      "density": "normal"
+    },
+    {
+      "id": "light-compact",
+      "index": 1,
+      "scheme": "light",
+      "density": "compact"
+    },
+    {
+      "id": "dark-normal",
+      "index": 2,
+      "scheme": "dark",
+      "density": "normal"
+    },
+    {
+      "id": "dark-compact",
+      "index": 3,
+      "scheme": "dark",
+      "density": "compact"
+    }
+  ],
+  "variants": [
+    "default",
+    "valid",
+    "info",
+    "warning",
+    "invalid"
+  ],
+  "states": [
+    "rest",
+    "disabled",
+    "focus"
+  ],
+  "revisions": [
+    {
+      "id": "baseline",
+      "revision": 0
+    },
+    {
+      "id": "revised",
+      "revision": 1
+    },
+    {
+      "id": "restored",
+      "revision": 0
+    }
+  ],
+  "colorFormula": "rgb(24+(13*k+7*s+3*r)%160,32+(11*k+5*s+7*r)%150,40+(7*k+3*s+11*r)%140)",
+  "computedSchema": [
+    "display",
+    "width",
+    "height",
+    "minWidth",
+    "boxSizing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderTopColor",
+    "borderTopStyle",
+    "borderTopLeftRadius",
+    "borderTopRightRadius",
+    "borderBottomLeftRadius",
+    "borderBottomRightRadius",
+    "backgroundColor",
+    "color",
+    "fontSize",
+    "lineHeight",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "letterSpacing",
+    "fontFeatureSettings",
+    "outlineColor",
+    "outlineWidth",
+    "outlineStyle",
+    "outlineOffset",
+    "opacity",
+    "pointerEvents",
+    "justifyContent",
+    "textAlign",
+    "marginLeft",
+    "marginRight",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "position",
+    "flexShrink",
+    "gap",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "content",
+    "fill",
+    "stroke",
+    "strokeWidth",
+    "cursor",
+    "visibility",
+    "alignItems",
+    "marginTop",
+    "marginBottom",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth"
+  ],
+  "fixture": "Developer-authored system-token Radio anatomy adapter; not full Brand metrics",
+  "colorTokens": [
+    "si-sys-color-text-on-accent",
+    "si-sys-color-effects-focus",
+    "si-sys-color-background-accent",
+    "si-sys-color-background-accent-active",
+    "si-sys-color-text-disabled",
+    "si-sys-color-background-accent-hover",
+    "si-sys-color-background-information",
+    "si-sys-color-background-information-active",
+    "si-sys-color-background-information-hover",
+    "si-sys-color-background-danger",
+    "si-sys-color-background-danger-active",
+    "si-sys-color-background-danger-hover",
+    "si-sys-color-background-warning",
+    "si-sys-color-background-warning-active",
+    "si-sys-color-background-warning-hover",
+    "si-sys-color-border-warning",
+    "si-sys-color-text-inverse",
+    "si-sys-color-text-on-information",
+    "si-sys-color-text-on-danger",
+    "si-sys-color-text-on-warning",
+    "si-sys-color-text-primary",
+    "si-sys-color-background-1",
+    "si-sys-color-background-selected",
+    "si-sys-color-background-hover",
+    "si-sys-color-border-2",
+    "si-sys-color-border-information",
+    "si-sys-color-border-danger"
+  ],
+  "paintTokens": {
+    "ix-radio-checkmark--background": "si-sys-color-text-on-accent",
+    "ix-radio--outline-color--focus": "si-sys-color-effects-focus",
+    "ix-radio-checked--background": "si-sys-color-background-accent",
+    "ix-radio-checked--background--active": "si-sys-color-background-accent-active",
+    "ix-radio-checked--background--disabled": "si-sys-color-text-disabled",
+    "ix-radio-checked--background--hover": "si-sys-color-background-accent-hover",
+    "ix-radio-checked--background--info": "si-sys-color-background-information",
+    "ix-radio-checked--background--info--active": "si-sys-color-background-information-active",
+    "ix-radio-checked--background--info--hover": "si-sys-color-background-information-hover",
+    "ix-radio-checked--background--invalid": "si-sys-color-background-danger",
+    "ix-radio-checked--background--invalid--active": "si-sys-color-background-danger-active",
+    "ix-radio-checked--background--invalid--hover": "si-sys-color-background-danger-hover",
+    "ix-radio-checked--background--warning": "si-sys-color-background-warning",
+    "ix-radio-checked--background--warning--active": "si-sys-color-background-warning-active",
+    "ix-radio-checked--background--warning--hover": "si-sys-color-background-warning-hover",
+    "ix-radio-checked--border-color": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--active": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--disabled": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--hover": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--info": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--info--active": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--info--hover": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--invalid": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--invalid--active": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--invalid--hover": "rgba(0, 0, 0, 0)",
+    "ix-radio-checked--border-color--warning": "si-sys-color-border-warning",
+    "ix-radio-checked--border-color--warning--active": "si-sys-color-border-warning",
+    "ix-radio-checked--border-color--warning--hover": "si-sys-color-border-warning",
+    "ix-radio-checked--color": "si-sys-color-text-on-accent",
+    "ix-radio-checked--color--active": "si-sys-color-text-on-accent",
+    "ix-radio-checked--color--disabled": "si-sys-color-text-inverse",
+    "ix-radio-checked--color--hover": "si-sys-color-text-on-accent",
+    "ix-radio-checked--color--info": "si-sys-color-text-on-information",
+    "ix-radio-checked--color--info--active": "si-sys-color-text-on-information",
+    "ix-radio-checked--color--info--hover": "si-sys-color-text-on-information",
+    "ix-radio-checked--color--invalid": "si-sys-color-text-on-danger",
+    "ix-radio-checked--color--invalid--active": "si-sys-color-text-on-danger",
+    "ix-radio-checked--color--invalid--hover": "si-sys-color-text-on-danger",
+    "ix-radio-checked--color--warning": "si-sys-color-text-on-warning",
+    "ix-radio-checked--color--warning--active": "si-sys-color-text-on-warning",
+    "ix-radio-checked--color--warning--hover": "si-sys-color-text-on-warning",
+    "ix-radio-label--color": "si-sys-color-text-primary",
+    "ix-radio-label--color--disabled": "si-sys-color-text-disabled",
+    "ix-radio-unchecked--background": "si-sys-color-background-1",
+    "ix-radio-unchecked--background--active": "si-sys-color-background-selected",
+    "ix-radio-unchecked--background--disabled": "rgba(0, 0, 0, 0)",
+    "ix-radio-unchecked--background--hover": "si-sys-color-background-hover",
+    "ix-radio-unchecked--background--info": "si-sys-color-background-1",
+    "ix-radio-unchecked--background--info--active": "si-sys-color-background-selected",
+    "ix-radio-unchecked--background--info--hover": "si-sys-color-background-hover",
+    "ix-radio-unchecked--background--invalid": "si-sys-color-background-1",
+    "ix-radio-unchecked--background--invalid--active": "si-sys-color-background-selected",
+    "ix-radio-unchecked--background--invalid--hover": "si-sys-color-background-hover",
+    "ix-radio-unchecked--background--warning": "si-sys-color-background-1",
+    "ix-radio-unchecked--background--warning--active": "si-sys-color-background-selected",
+    "ix-radio-unchecked--background--warning--hover": "si-sys-color-background-hover",
+    "ix-radio-unchecked--border-color": "si-sys-color-border-2",
+    "ix-radio-unchecked--border-color--active": "si-sys-color-border-2",
+    "ix-radio-unchecked--border-color--disabled": "si-sys-color-text-disabled",
+    "ix-radio-unchecked--border-color--hover": "si-sys-color-border-2",
+    "ix-radio-unchecked--border-color--info": "si-sys-color-border-information",
+    "ix-radio-unchecked--border-color--info--active": "si-sys-color-border-information",
+    "ix-radio-unchecked--border-color--info--hover": "si-sys-color-border-information",
+    "ix-radio-unchecked--border-color--invalid": "si-sys-color-border-danger",
+    "ix-radio-unchecked--border-color--invalid--active": "si-sys-color-border-danger",
+    "ix-radio-unchecked--border-color--invalid--hover": "si-sys-color-border-danger",
+    "ix-radio-unchecked--border-color--warning": "si-sys-color-border-warning",
+    "ix-radio-unchecked--border-color--warning--active": "si-sys-color-border-warning",
+    "ix-radio-unchecked--border-color--warning--hover": "si-sys-color-border-warning",
+    "ix-radio-checkmark--border-color": "white"
+  },
+  "core": [
+    {
+      "key": "default-off",
+      "variant": "default",
+      "booleanKey": "off",
+      "checked": false,
+      "label": "Select"
+    },
+    {
+      "key": "default-checked",
+      "variant": "default",
+      "booleanKey": "checked",
+      "checked": true,
+      "label": "Select"
+    },
+    {
+      "key": "valid-off",
+      "variant": "valid",
+      "booleanKey": "off",
+      "checked": false,
+      "label": "Select"
+    },
+    {
+      "key": "valid-checked",
+      "variant": "valid",
+      "booleanKey": "checked",
+      "checked": true,
+      "label": "Select"
+    },
+    {
+      "key": "info-off",
+      "variant": "info",
+      "booleanKey": "off",
+      "checked": false,
+      "label": "Select"
+    },
+    {
+      "key": "info-checked",
+      "variant": "info",
+      "booleanKey": "checked",
+      "checked": true,
+      "label": "Select"
+    },
+    {
+      "key": "warning-off",
+      "variant": "warning",
+      "booleanKey": "off",
+      "checked": false,
+      "label": "Select"
+    },
+    {
+      "key": "warning-checked",
+      "variant": "warning",
+      "booleanKey": "checked",
+      "checked": true,
+      "label": "Select"
+    },
+    {
+      "key": "invalid-off",
+      "variant": "invalid",
+      "booleanKey": "off",
+      "checked": false,
+      "label": "Select"
+    },
+    {
+      "key": "invalid-checked",
+      "variant": "invalid",
+      "booleanKey": "checked",
+      "checked": true,
+      "label": "Select"
+    }
+  ],
+  "extras": [
+    {
+      "key": "default",
+      "variant": "default",
+      "checked": false,
+      "label": "Select"
+    },
+    {
+      "key": "label-less",
+      "variant": "default",
+      "checked": false,
+      "label": "",
+      "ariaLabel": "Select"
+    },
+    {
+      "key": "override",
+      "variant": "warning",
+      "checked": true,
+      "label": "Select"
+    },
+    {
+      "key": "required-invalid",
+      "variant": "invalid",
+      "checked": false,
+      "required": true,
+      "label": "Select"
+    },
+    {
+      "key": "nested",
+      "variant": "default",
+      "checked": true,
+      "label": "Select"
+    },
+    {
+      "key": "controlled",
+      "variant": "default",
+      "checked": false,
+      "label": "Select",
+      "name": "radio-value",
+      "value": "consent"
+    }
+  ],
+  "pointerCases": [
+    {
+      "id": "default-off",
+      "variant": "default",
+      "checked": false
+    },
+    {
+      "id": "default-checked",
+      "variant": "default",
+      "checked": true
+    },
+    {
+      "id": "info-off",
+      "variant": "info",
+      "checked": false
+    },
+    {
+      "id": "info-checked",
+      "variant": "info",
+      "checked": true
+    },
+    {
+      "id": "warning-off",
+      "variant": "warning",
+      "checked": false
+    },
+    {
+      "id": "warning-checked",
+      "variant": "warning",
+      "checked": true
+    },
+    {
+      "id": "invalid-off",
+      "variant": "invalid",
+      "checked": false
+    }
+  ],
+  "controlledSteps": [
+    "click-on",
+    "click-again",
+    "external-off-click",
+    "disabled-click",
+    "enabled-click",
+    "external-checked",
+    "reset"
+  ],
+  "tokens": {
+    "size60": "20-4*(s%2)+floor(s/2)+2*r",
+    "size70": "size60+4",
+    "size30": "8+s+r",
+    "spacingY10": "2+s+r",
+    "spacingX40": "10+s+r",
+    "borderWidth": "1+r",
+    "fullRadius": "99+s+r",
+    "focusOffset": "3+r",
+    "scopeFont": "400 16px/24px system-ui,sans-serif",
+    "labelFont": "400 (14+s+r)px/(20+s+r)px system-ui,sans-serif",
+    "letterSpacing": ".25+.25*r"
+  },
+  "override": {
+    "wrapperWidth": "30+2*r",
+    "wrapperHeight": "28+2*r",
+    "shapeWidth": "26+2*r",
+    "shapeHeight": "24+2*r",
+    "targetSize": "36+2*r",
+    "dotWidth": "11+r",
+    "dotHeight": "7+r",
+    "radius": "13+r",
+    "labelMargin": "3px 0 5px 14px",
+    "borderWidth": "2px",
+    "focusWidth": "3px",
+    "focusOffset": "6px",
+    "dotColor": "rgb(245,247,249)"
+  },
+  "counts": {
+    "corePerPhase": 40,
+    "extrasPerRest": 6,
+    "phases": 9,
+    "total": 378
+  },
+  "ids": {
+    "root": "radio-review",
+    "status": "radio-status",
+    "run": "radio-run",
+    "result": "radio-result",
+    "state": "radio-state",
+    "phase": [
+      "radio-baseline",
+      "radio-revised",
+      "radio-restored"
+    ],
+    "controlled": [
+      "radio-reset",
+      "radio-off",
+      "radio-enable",
+      "radio-disable",
+      "radio-external-checked"
+    ],
+    "pointerCase": "radio-pointer-case",
+    "pointerTarget": "radio-pointer-target",
+    "pointerResult": "radio-pointer-result"
+  },
+  "schema": {
+    "row": [
+      "id",
+      "scope",
+      "scopeIndex",
+      "revision",
+      "variant",
+      "booleanKey",
+      "checked",
+      "disabled",
+      "required",
+      "state",
+      "kind",
+      "key",
+      "host",
+      "control",
+      "layout",
+      "wrapper",
+      "shape",
+      "dot",
+      "label",
+      "before",
+      "nativeFacts"
+    ],
+    "sourceControl": "actual ix-radio HOST; no inner nativeinput",
+    "nativeControl": "actual input type radio; outline projected to label",
+    "requestPair": [
+      "sequence",
+      "value"
+    ],
+    "controlledState": [
+      "checked",
+      "disabled",
+      "requests",
+      "formData"
+    ]
+  }
+},byId=id=>document.getElementById("radio-"+id);
+const core=[],extras=[],scopes=[],errors=[],journal=[],objects=new WeakMap(),events=new WeakMap();let ready=false,busy=false,revision=0,revisionID='baseline',state='rest',sequence=0,objectSequence=0,eventSequence=0,pointerItem=null,pointerCase=null;
+const oid=n=>{if(!objects.has(n))objects.set(n,++objectSequence);return objects.get(n);},eid=e=>{if(!events.has(e))events.set(e,++eventSequence);return events.get(e);};
+function log(kind,data={}){journal.push({seq:++sequence,kind,time:performance.now(),revisionID,state,...data});}
+function tokens(root,s,r){for(const[k,name]of spec.colorTokens.entries())root.style.setProperty('--'+name,`rgb(${24+(13*k+7*s+3*r)%160}, ${32+(11*k+5*s+7*r)%150}, ${40+(7*k+3*s+11*r)%140})`);const size=20-4*(s%2)+Math.floor(s/2)+2*r;for(const[k,v]of Object.entries({'size-60':size,'size-70':size+4,'size-30':8+s+r,'spacing-y-10':2+s+r,'spacing-x-40':10+s+r,'border-width-default':1+r,'border-radius-full':99+s+r,'focus-ring-offset':3+r}))root.style.setProperty('--si-sys-sizing-'+k,v+'px');root.style.setProperty('--si-sys-typography-body',`400 ${14+s+r}px/${20+s+r}px system-ui, sans-serif`);root.style.setProperty('--si-ref-typography-letter-spacing-normal',`${.25+.25*r}px`);root.style.font='400 16px/24px system-ui, sans-serif';root.style.color='var(--si-sys-color-text-primary)';root.dataset.scopeIndex=String(s);root.dataset.revision=String(r);root.dataset.ixTheme='brand';root.dataset.ixColorSchema=s>=2?'dark':'light';root.dataset.ixDensity=s%2?'compact':'normal';}
+function variant(host,value){for(const c of ['ix-valid','ix-info','ix-warning','ix-invalid'])host.classList.remove(c);if(value!=='default')host.classList.add(value==='invalid'?'ix-invalid':'ix-'+value);}
+function make(scope,id,descriptor,kind='core'){const wrap=document.createElement('div');wrap.className='specimen';const label=document.createElement('span');label.className='specimen-label';label.textContent=descriptor.key;const host=document.createElement('ix-radio');host.id=id;host.label=descriptor.label??'Select';if(descriptor.key!=='default'||kind==='core'){host.checked=!!descriptor.checked;host.required=!!descriptor.required;}if(descriptor.ariaLabel)host.setAttribute('aria-label',descriptor.ariaLabel);if(descriptor.name)host.name=descriptor.name;if(descriptor.value)host.value=descriptor.value;variant(host,descriptor.variant);if(descriptor.key==='override')host.classList.add('fixture-radio-override');wrap.append(label,host);let parent=scope;if(descriptor.key==='controlled'){parent=document.createElement('form');parent.id='radio-controlled-form';scope.append(parent);parent.addEventListener('submit',event=>{event.preventDefault();log('source-form-submit-prevented');});}parent.append(wrap);if(descriptor.key==='controlled'){const peer=document.createElement('div');peer.id='radio-layout-peer';peer.textContent='Layout reference';parent.append(peer);}return{host,scope:scope.dataset.scopeId,descriptor,kind,key:descriptor.key};}
+function construct(){for(const entry of spec.scopes){const root=document.createElement('section');root.id='radio-scope-'+entry.id;root.dataset.scopeId=entry.id;root.className='scope';const title=document.createElement('h2');title.className='scope-title';title.textContent=entry.id;root.append(title);tokens(root,entry.index,0);byId('matrix').append(root);scopes.push({entry,node:root});for(const descriptor of spec.core)core.push(make(root,`radio-${entry.id}-${descriptor.key}`,descriptor));}for(const descriptor of spec.extras){let scope=scopes[0].node;if(descriptor.key==='nested'){scope=document.createElement('section');scope.dataset.scopeId='nested';scope.className='nested';tokens(scope,3,0);scopes[0].node.append(scope);}extras.push(make(scope,'radio-extra-'+descriptor.key,descriptor,'extra'));}const pscope=byId('pointer-mount');pscope.dataset.scopeId='pointer';tokens(pscope,0,0);pointerItem=make(pscope,'radio-pointer-target',{...spec.pointerCases[0],key:'pointer',label:'Select'},'pointer');}
+const control=item=>item.host;
+function deepActive(){let n=document.activeElement;while(n?.shadowRoot?.activeElement)n=n.shadowRoot.activeElement;return n;}
+function metric(n,pseudo=null){if(!(n instanceof Element))return null;const cs=getComputedStyle(n,pseudo),r=pseudo?null:n.getBoundingClientRect();return{object:oid(n),tag:n.tagName,pseudo,id:n.id,attrs:pseudo?{}:Object.fromEntries([...n.attributes].map(a=>[a.name,a.value])),class:pseudo?null:n.getAttribute('class'),computed:Object.fromEntries(spec.computedSchema.map(k=>[k,cs[k]])),rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null};}
+function capture(item,current=state){const host=item.host,root=host.shadowRoot,wrapper=root?.querySelector('.radio-button'),label=root?.querySelector('ix-typography'),shape=root?.querySelector('.radio-checkmark'),scope=host.closest('[data-scope-id]');return{id:host.id,scope:item.scope,scopeIndex:Number(scope.dataset.scopeIndex),revision:Number(scope.dataset.revision),variant:item.descriptor.variant,booleanKey:item.descriptor.booleanKey??(item.descriptor.checked?'checked':'off'),checked:host.checked,disabled:host.disabled,required:host.required,state:current,kind:item.kind,key:item.key,host:metric(host),control:metric(host),layout:metric(root?.querySelector('label')),wrapper:metric(wrapper),shape:metric(shape),dot:metric(shape?.querySelector('.checkmark')),label:metric(label),before:metric(wrapper,'::before'),nativeFacts:{disabledProperty:host.disabled,tabIndex:host.tabIndex,focused:host===deepActive(),matchesFocus:host.matches(':focus'),matchesFocusVisible:host.matches(':focus-visible'),rootHover:host.matches(':hover'),rootActive:host.matches(':active'),hostAriaChecked:host.getAttribute('aria-checked'),hostAriaDisabled:host.getAttribute('aria-disabled'),role:host.getAttribute('role'),formData:item.key==='controlled'?formData():null}};}
+async function settle(label='observation'){await document.fonts.ready;for(let index=1;index<=2;index++)await new Promise(resolve=>requestAnimationFrame(timestamp=>queueMicrotask(()=>{log('native-frame',{label,index,timestamp});resolve();})));}
+async function childrenReady(){const children=[...core,...extras,pointerItem].map(item=>item.host.shadowRoot?.querySelector('ix-typography')).filter(Boolean);await Promise.all(children.map(async n=>{await n.componentOnReady();log('source-child-ready',{object:oid(n),tag:n.tagName});}));}
+function overrides(){let sheet=document.getElementById('radio-component-overrides');if(!sheet){sheet=document.createElement('style');sheet.id='radio-component-overrides';document.head.append(sheet);}const values={'--ix-radio-button--width':`${30+2*revision}px`,'--ix-radio-button--height':`${28+2*revision}px`,'--ix-radio-checkmark--width':`${26+2*revision}px`,'--ix-radio-checkmark--min-width':`${26+2*revision}px`,'--ix-radio-checkmark--max-width':`${26+2*revision}px`,'--ix-radio-checkmark--height':`${24+2*revision}px`,'--ix-radio-checkmark--min-height':`${24+2*revision}px`,'--ix-radio-checkmark--max-height':`${24+2*revision}px`,'--ix-radio--target-size':`${36+2*revision}px`,'--ix-radio-selection-indicator--width':`${11+revision}px`,'--ix-radio-selection-indicator--height':`${7+revision}px`,'--ix-radio-checkmark--border-radius':`${13+revision}px`,'--ix-radio--margin':'3px 0 5px 14px','--ix-radio--border-width':'2px','--ix-radio--outline-width--focus':'3px','--ix-radio--focus--outline-offset':'6px','--ix-radio-checkmark--background':'rgb(245,247,249)'};sheet.textContent='.fixture-radio-override{'+Object.entries(values).map(([k,v])=>k+':'+v).join(';')+'}';}
+async function setState(value){state=value;byId('state').value=value;byId('outside').focus();for(const item of core){item.host.checked=item.descriptor.checked;item.host.disabled=value==='disabled';}await settle('source-parent-commit');await childrenReady();await settle('source-child-ready-observation');}
+async function setRevision(id){const entry=spec.revisions.find(x=>x.id===id);revision=entry.revision;revisionID=id;for(const{entry,node}of scopes)tokens(node,entry.index,revision);overrides();await setState('rest');}
+function seedKeyboard(){byId('outside').focus();const event=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,composed:true,cancelable:true});byId('outside').dispatchEvent(event);log('synthetic-keyboard-seed',{defaultPrevented:event.defaultPrevented});}
+async function phase(){const rows=[];if(state==='focus'){seedKeyboard();for(const item of core){control(item).focus();await settle('actual-native-focus');rows.push(capture(item));}}else rows.push(...core.map(item=>capture(item)));return{id:revisionID+':'+state,revision,state,rows,extras:state==='rest'?extras.map(item=>capture(item,'rest')):[],settleFrames:2,settlement:{parentCommitFrames:2,childReadiness:'actual current ix-typography componentOnReady',finalObservationFrames:2,focusAdditionalPerRowFrames:state==='focus'?2:0}};}
+const requests=[];function controlledItem(){return extras.find(x=>x.key==='controlled');}function formData(){return[...new FormData(byId('controlled-form')).entries()].map(([name,value])=>[name,String(value)]);}function consumerState(){const n=controlledItem().host;return{checked:n.checked,disabled:n.disabled,requests:requests.map(x=>({...x})),formData:formData()};}function geometry(){return{host:metric(controlledItem().host)?.rect,peer:metric(byId('layout-peer'))?.rect};}function paintConsumer(){byId('controlled-json').value=JSON.stringify(consumerState());}
+function installConsumer(){const held=controlledItem().host;held.addEventListener('checkedChange',event=>{if(event.composedPath()[0]!==held)return;requests.push({sequence:requests.length+1,value:event.detail,checkedAtEvent:held.checked,disabledAtEvent:held.disabled});log('source-pre-mutation-checked-event',{...requests.at(-1),event:eid(event),defaultPrevented:event.defaultPrevented});paintConsumer();});for(const name of ['reset','off','enable','disable','external-checked'])byId(name).addEventListener('click',event=>{event.preventDefault();event.stopPropagation();if(name==='reset'){held.checked=false;held.disabled=false;requests.length=0;}if(name==='off')held.checked=false;if(name==='enable')held.disabled=false;if(name==='disable')held.disabled=true;if(name==='external-checked'){held.checked=true;held.disabled=false;}log('public-consumer-command',{name,state:consumerState()});paintConsumer();});paintConsumer();}
+async function nativeClick(n){const observed=[];let original=null;const c=event=>{if(event.composedPath()[0]!==n)return;original=event;observed.push({site:'document-capture',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});},b=event=>{if(event.composedPath()[0]!==n)return;observed.push({site:'window-bubble',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});};document.addEventListener('click',c,true);window.addEventListener('click',b);n.click();document.removeEventListener('click',c,true);window.removeEventListener('click',b);return{eventObserved:!!original,defaultPrevented:original?.defaultPrevented??null,events:observed};}
+async function settleConsumer(){await settle('source-consumer-parent');await childrenReady();await settle('source-consumer-ready');paintConsumer();}
+async function controlledHistory(){await setRevision('restored');byId('reset').click();await settleConsumer();const steps=[];for(const name of spec.controlledSteps){if(['external-off-click','disabled-click','external-checked'].includes(name))byId('off').click();if(name==='disabled-click')byId('disable').click();if(name==='enabled-click')byId('enable').click();await settleConsumer();const before=consumerState(),geometryBefore=geometry();let original=null;if(name==='external-checked')byId('external-checked').click();else if(name==='reset')byId('reset').click();else original=await nativeClick(control(controlledItem()));await settleConsumer();const after=consumerState();steps.push({name,before,after,geometryBefore,geometryAfter:geometry(),original,requestsDelta:name==='reset'?[]:after.requests.slice(before.requests.length),row:capture(controlledItem(),'rest')});}return{steps,state:consumerState()};}
+const pointerObservations=[];function pointerOutput(){const result={ok:true,observations:pointerObservations,case:pointerCase,limits:['Only actual event-delivered pseudo qualifications are measured; no fake hover/active aliases','Active firstRAF and afterup secondRAF are observation times, not guaranteed active/hover goldens']};byId('pointer-result').textContent=JSON.stringify(result,null,2);return result;}
+async function configurePointer(id){pointerCase=spec.pointerCases.find(x=>x.id===id)??spec.pointerCases[0];pointerItem.descriptor={...pointerCase,key:'pointer',label:'Select'};pointerItem.host.checked=pointerCase.checked;pointerItem.host.disabled=false;variant(pointerItem.host,pointerCase.variant);byId('pointer-status').dataset.ready='false';await settle('pointer-public-props');await pointerItem.host.shadowRoot.querySelector('ix-typography').componentOnReady();await settle('pointer-component-ready');byId('pointer-status').dataset.ready='true';byId('pointer-status').dataset.case=pointerCase.id;byId('pointer-status').textContent='Ready: '+pointerCase.id;pointerOutput();}
+function installPointer(){const held=pointerItem.host;for(const type of ['pointerdown','pointerup'])held.addEventListener(type,event=>{const original={event:eid(event),type,trusted:event.isTrusted,pointerType:event.pointerType,button:event.button,clientX:event.clientX,clientY:event.clientY,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName,defaultPrevented:event.defaultPrevented};const before={checked:held.checked};const record=phase=>{pointerObservations.push({case:pointerCase.id,phase,original,before,row:capture(pointerItem,phase),after:{checked:held.checked}});pointerOutput();byId('pointer-status').textContent=pointerCase.id+' '+phase;};if(type==='pointerdown')requestAnimationFrame(()=>record('pointerdown-frame'));else requestAnimationFrame(()=>requestAnimationFrame(()=>record('pointerup-second-frame')));},{passive:true});byId('pointer-case').addEventListener('change',event=>{event.stopPropagation();configurePointer(event.target.value);});}
+function controls(enabled){for(const n of document.querySelectorAll('.controls button,.controls select'))n.disabled=!enabled;}
+const limits=['Authored semantic/systemfont tokens, not full numeric Brand metrics','Source cancellable checkedChange precedes automatic mutation; Rust accepting native controlled consumer is an API adapter, cancellation unpaired','Source focusable radio host versus native input and label-wide ring remain raw structural adapters','No hover/active aliases; physical pointer proof requires separately qualified browser events','Readiness and source/Rust fixedframes do not imply publication chronology equality','RadioGroup validation/touched/roving/cancellation/ElementInternals/fullforms/AT are not certified'];
+function publish(result){byId('result').textContent=JSON.stringify(result,null,2);}
+async function run(){if(!ready||busy)return;busy=true;controls(false);byId('status').dataset.run='running';const phases=[];try{for(const rev of spec.revisions){await setRevision(rev.id);for(const st of spec.states){await setState(st);phases.push(await phase());}}const controlled=await controlledHistory(),result={ok:true,revision:spec.revision,fixture:spec.fixture,phases,controlled,pointer:pointerOutput(),errors:[...errors],journal:[...journal],limits};publish(result);byId('status').dataset.run='done';byId('status').textContent='378 source Radio anatomy rows observed';return result;}catch(error){errors.push(String(error));const result={ok:false,error:String(error),phases,errors:[...errors],journal};publish(result);byId('status').dataset.run='done';return result;}finally{busy=false;controls(ready);}}
+for(const value of spec.states){const n=document.createElement('option');n.value=value;n.textContent=value;byId('state').append(n);}for(const p of spec.pointerCases){const n=document.createElement('option');n.value=p.id;n.textContent=p.id;byId('pointer-case').append(n);}for(const rev of spec.revisions)byId(rev.id).addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();if(!ready||busy)return;busy=true;try{await setRevision(rev.id);publish({ok:true,phases:[await phase()],errors:[...errors]});}finally{busy=false;}});byId('state').addEventListener('change',async event=>{event.stopPropagation();if(!ready||busy)return;busy=true;try{await setState(event.target.value);publish({ok:true,phases:[await phase()],errors:[...errors]});}finally{busy=false;}});byId('run').addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run();});byId('capture').addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();if(ready&&!busy)publish({ok:true,phases:[await phase()],errors:[...errors]});});window.addEventListener('error',event=>errors.push(event.message));window.addEventListener('unhandledrejection',event=>errors.push(String(event.reason)));
+const api=Object.freeze({run,snapshot:()=>({ready,revision,state,rows:core.map(item=>capture(item)),extras:extras.map(item=>capture(item,'rest'))}),pointer:()=>({ok:true,case:pointerCase,observations:pointerObservations.map(x=>({...x}))})});window.upstreamRadioTokenReview=api;window.ixRadioTokenReview=api;
+try{await Promise.all(['ix-radio','ix-typography'].map(tag=>customElements.whenDefined(tag)));construct();await Promise.all([...core,...extras,pointerItem].map(item=>item.host.componentOnReady()));installConsumer();installPointer();await setRevision('baseline');await configurePointer(spec.pointerCases[0].id);ready=true;controls(true);byId('status').dataset.ready='true';byId('status').textContent='Ready: source Radio anatomy';publish({ok:true,revision:spec.revision,phases:[await phase()],errors:[...errors]});}catch(error){errors.push(String(error));byId('status').textContent='Pinned Radio unavailable: '+error;publish({ok:false,error:String(error),errors:[...errors]});}
+</script></body></html>
