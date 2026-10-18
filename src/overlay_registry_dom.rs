@@ -16,10 +16,12 @@ const owner=__OWNER__,listeners=new AbortController(),signal=listeners.signal;
 const documentSlot=Symbol.for('dioxus-ix.document-native-domain.v1');
 const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:owner,eventSequence:0,eventIds:new WeakMap()});
 nativeDocument.inventoryReaders||=new Map();
+nativeDocument.triggerReaders||=new Map();
 function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds.get(event);if(!id){id=++nativeDocument.eventSequence;nativeDocument.eventIds.set(event,id);}return id;}
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
-const keyTargets=new Map(),clickTargets=new Map(),handledBubbleKeys=new WeakSet();
+const keyTargets=new Map(),clickTargets=new Map(),triggerKeyTargets=new Map(),navigationTargets=new Map(),handledBubbleKeys=new WeakSet();
+const navigationBindings=new Map();
 const tabFocusCaptures=new Map(),nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
 const anchorObservers=new Map();
 const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map(),itemScrollFrames=new Set();let itemObjectSequence=0;
@@ -81,29 +83,96 @@ function findItemsHost(root,id){
   const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?document.getElementById(configured):null;
   return element instanceof HTMLElement&&element.isConnected?element:findHost(root.getAttribute('data-ix-overlay-items-owner')||id);
 }
-// A declared ID resolves to one actual object for this root lifetime. Later
-// observations cannot retarget a retained binding to a same-ID replacement.
-const declaredTriggers=new WeakMap();
+// Rust publishes committed declaration/disposal versions. Each attempt retains
+// its own ID and may resolve later; a newer attempt never cancels an older wait.
+// Current resolution, installed trigger handlers and AD navigation are distinct.
+const declaredTriggers=new Map();
+function triggerBindingAlive(binding){
+  return alive&&binding.root.isConnected&&binding.root.getAttribute('data-ix-overlay-owner')===owner&&binding.root.getAttribute('data-ix-overlay-root')===binding.id&&binding.root.getAttribute('data-ix-overlay-generation')===binding.generation;
+}
+function resolveTriggerAttempt(binding,attempt){
+  if(!triggerBindingAlive(binding))return;
+  // None is the source undefined reference. Empty/invalid CSS-selector error
+  // behavior is an API adapter; it must not clear a previous actual binding.
+  const element=document.getElementById(attempt.declaration===null?'undefined':attempt.declaration);
+  if(!(element instanceof HTMLElement))return;
+  binding.pending.delete(attempt.version);
+  binding.current=element;
+  if(!binding.installed)binding.installed=element;
+  element.setAttribute('data-ix-overlay-trigger',binding.id);
+  const anchor=binding.root.getAttribute('data-ix-overlay-anchor-name');
+  if(anchor)element.style.setProperty('anchor-name',anchor);
+  // Capture the actual assignment path ONCE at this resolution. Later movement
+  // changes live ancestry, never this historical event or its queue order.
+  binding.assignments.push(Object.freeze({sequence:++binding.assignmentSequence,ancestors:Object.freeze(triggerAncestors(element,binding.id))}));
+}
+function configuredTriggerBinding(id,root){
+  const version=root?.getAttribute('data-ix-overlay-trigger-version');
+  if(version===null||version===undefined)return null;
+  const generation=root.getAttribute('data-ix-overlay-generation')||'0';
+  let binding=declaredTriggers.get(root);
+  if(!binding?.pending||binding.id!==id||binding.generation!==generation){
+    binding={root,id,generation,version:null,disposeVersion:null,current:null,installed:null,pending:new Map(),assignmentSequence:0,assignments:[]};
+    declaredTriggers.set(root,binding);
+  }
+  const disposeVersion=root.getAttribute('data-ix-overlay-trigger-dispose-version')||'0';
+  if(binding.disposeVersion!==null&&binding.disposeVersion!==disposeVersion)binding.installed=null;
+  binding.disposeVersion=disposeVersion;
+  if(binding.version!==version){
+    binding.version=version;
+    const attempt=Object.freeze({version,declaration:root.getAttribute('data-ix-overlay-trigger-id')});
+    binding.pending.set(version,attempt);resolveTriggerAttempt(binding,attempt);
+  }
+  return binding;
+}
+function retryTriggerAttempts(){
+  for(const binding of declaredTriggers.values())if(binding.pending&&triggerBindingAlive(binding))for(const attempt of Array.from(binding.pending.values()))resolveTriggerAttempt(binding,attempt);
+}
+function acknowledgeTriggerAssignment(command){
+  for(const binding of declaredTriggers.values())if(binding.assignments&&binding.id===command.root&&Number(binding.generation)===command.generation){
+    binding.assignments=binding.assignments.filter(emission=>emission.sequence>command.sequence);
+  }
+}
 function findTrigger(id,root){
+  const rootOwner=root?.getAttribute('data-ix-overlay-owner');
+  if(rootOwner&&rootOwner!==owner){const reader=nativeDocument.triggerReaders.get(rootOwner);return reader?reader(id,root):null;}
+  const binding=configuredTriggerBinding(id,root);
+  if(binding)return binding.current;
+  // Compatibility for renderers/owners without committed-binding metadata.
   const declared=root?.getAttribute('data-ix-overlay-trigger-id');
   if(declared){
-    const key=id+'@'+root.getAttribute('data-ix-overlay-generation')+'@'+declared;
-    let binding=declaredTriggers.get(root);
-    if(!binding||binding.key!==key){binding={key,element:null};declaredTriggers.set(root,binding);}
-    if(!binding.element){
-      const element=document.getElementById(declared);
-      if(element instanceof HTMLElement){
-        binding.element=element;
-        element.setAttribute('data-ix-overlay-trigger',id);
-        const anchor=root.getAttribute('data-ix-overlay-anchor-name');
-        if(anchor)element.style.setProperty('anchor-name',anchor);
-      }
-    }
-    return binding.element;
+    let legacy=declaredTriggers.get(root);
+    const generation=root.getAttribute('data-ix-overlay-generation')||'0',key=id+'@'+generation+'@'+declared;
+    if(!legacy||legacy.key!==key){legacy={key,root,id,generation,current:null,installed:null};declaredTriggers.set(root,legacy);}
+    if(!legacy.current){const element=document.getElementById(declared);if(element instanceof HTMLElement){legacy.current=element;legacy.installed=element;element.setAttribute('data-ix-overlay-trigger',id);const anchor=root.getAttribute('data-ix-overlay-anchor-name');if(anchor)element.style.setProperty('anchor-name',anchor);}}
+    return legacy.current;
   }
   for(const n of document.querySelectorAll('[data-ix-overlay-trigger]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-trigger')===id)return n;
   const tid=root?.getAttribute('data-ix-overlay-trigger-id'),el=tid?document.getElementById(tid):null;
   return el instanceof HTMLElement&&el.isConnected?el:null;
+}
+const triggerReader=(id,root)=>findTrigger(id,root);nativeDocument.triggerReaders.set(owner,triggerReader);
+function navigationBindingFor(root){
+  const state=navigationBindings.get(root.getAttribute('data-ix-overlay-root'));
+  return state&&state.root===root&&state.generation===Number(root.getAttribute('data-ix-overlay-generation'))?state:null;
+}
+function bindNavigationConfigurations(){
+  for(const state of navigationBindings.values()){
+    const root=state.root||Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(element=>element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-owner')===owner&&element.getAttribute('data-ix-overlay-root')===state.id&&Number(element.getAttribute('data-ix-overlay-generation'))===state.generation);
+    if(!root||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner||Number(root.getAttribute('data-ix-overlay-generation'))!==state.generation)continue;
+    state.root=root;
+    // Even disabled/legacy configurations retain their actual registration for
+    // resource cleanup, without acquiring this configured-string event route.
+    if(!state.enabled||state.mode!=='active-descendant'||state.element||!root.hasAttribute('data-ix-overlay-trigger-version'))continue;
+    const element=findTrigger(state.id,root)||findAnchor(root),captured=captureItem(element);
+    if(captured){state.element=element;state.capture=captured.capture;}
+  }
+}
+function configureNavigation(command){
+  const previous=navigationBindings.get(command.root);
+  if(previous&&previous.generation===command.generation&&previous.version===command.version)return;
+  navigationBindings.set(command.root,{id:command.root,generation:command.generation,version:command.version,mode:command.mode,enabled:command.enabled,root:null,element:null,capture:null});
+  bindNavigationConfigurations();syncKeyTargets();reportObserve();
 }
 function findAnchor(root){
   const id=root?.getAttribute('data-ix-overlay-anchor-id'),el=id?document.getElementById(id):null;
@@ -302,7 +371,7 @@ function collectFacts(kind,event,phase=''){
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
     const declared_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
     const open=root.hasAttribute('data-ix-overlay-open')?root.getAttribute('data-ix-overlay-open')==='true':root.getAttribute('data-open')==='true';
-    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id,root),anchor=findAnchor(root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
+    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id,root),triggerBinding=declaredTriggers.get(root),installedTrigger=triggerBinding?.installed||(!root.hasAttribute('data-ix-overlay-trigger-version')?trigger:null),navigationBinding=navigationBindingFor(root),anchor=findAnchor(root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
     const discovery_ready=declared_ready&&(!root.hasAttribute('data-ix-overlay-trigger-id')||!!trigger);
     if(anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node)))anchors.push(id);
     if(trigger)addCand(trigger);
@@ -327,7 +396,11 @@ function collectFacts(kind,event,phase=''){
       items:itemsWithEl.map(e=>e.num),focused_item,
       item_focus_captures,
       inventory,own_inventory,trigger_on_path:!!trigger&&path.includes(trigger),
-      configured_trigger_listener:root.hasAttribute('data-ix-overlay-trigger-id')&&!!trigger&&event?.currentTarget===trigger?captureItem(event.currentTarget)?.capture:null,
+      assignment_emissions:triggerBinding?.assignments??null,
+      trigger_listener_capture:captureItem(installedTrigger)?.capture??null,
+      configured_trigger_listener:(root.hasAttribute('data-ix-overlay-trigger-version')||root.hasAttribute('data-ix-overlay-trigger-id'))&&!!installedTrigger&&event?.currentTarget===installedTrigger?captureItem(event.currentTarget)?.capture:null,
+      navigation_binding:navigationBinding?.enabled&&navigationBinding.element?{version:navigationBinding.version,capture:captureItem(navigationBinding.element)?.capture}:null,
+      navigation_listener:navigationBinding?.enabled&&navigationBinding.element&&event?.currentTarget===navigationBinding.element?{version:navigationBinding.version,capture:captureItem(event.currentTarget)?.capture}:null,
       focusable_ids:focusables.map(nativeId).filter(Boolean),
       focus_count:focusables.length,focused_index,on_trigger,inside,
       trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
@@ -619,11 +692,14 @@ function syncExecution(){
   }
 }
 function syncKeyTargets(){
-  const wanted=new Set(),wantedClicks=new Set(),currentIds=new Set();
+  const wanted=new Set(),wantedClicks=new Set(),wantedTriggerKeys=new Set(),wantedNavigation=new Set(),currentIds=new Set();
+  bindNavigationConfigurations();
   for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner)continue;
     currentIds.add(root.getAttribute('data-ix-overlay-root'));
-    const target=findTrigger(root.getAttribute('data-ix-overlay-root'),root);
+    const current=findTrigger(root.getAttribute('data-ix-overlay-root'),root),binding=declaredTriggers.get(root);
+    const managed=root.hasAttribute('data-ix-overlay-trigger-version');
+    const target=managed?binding?.installed:current;
     if(!target)continue;
     wantedClicks.add(target);
     if(!clickTargets.has(target)){
@@ -631,12 +707,33 @@ function syncKeyTargets(){
       clickTargets.set(target,listener);target.addEventListener('click',listener,{signal});
     }
     if(root.getAttribute('data-ix-overlay-mode')!=='active-descendant')continue;
+    if(managed){
+      wantedTriggerKeys.add(target);
+      if(!triggerKeyTargets.has(target)){
+        const listener=event=>{handledBubbleKeys.add(event);send(collectFacts('key',event,'trigger-key'),event);};
+        triggerKeyTargets.set(target,listener);target.addEventListener('keydown',listener,{signal});
+      }
+      continue;
+    }
     wanted.add(target);
     if(!keyTargets.has(target)){
       const listener=event=>{if(handledBubbleKeys.has(event))return;handledBubbleKeys.add(event);send(collectFacts('key',event,'bubble'),event);};
       keyTargets.set(target,listener);target.addEventListener('keydown',listener,{signal});
     }
   }
+  bindNavigationConfigurations();
+  for(const [id,state]of navigationBindings){
+    if(state.root&&(!state.root.isConnected||state.root.getAttribute('data-ix-overlay-owner')!==owner||Number(state.root.getAttribute('data-ix-overlay-generation'))!==state.generation)){navigationBindings.delete(id);continue;}
+    if(!state.enabled||state.mode!=='active-descendant'||!state.element)continue;
+    wantedNavigation.add(state.element);
+    if(!navigationTargets.has(state.element)){
+      // Both roles may run on the same event. The WeakSet only suppresses the
+      // document fallback; it must never swallow another installed role.
+      const listener=event=>{handledBubbleKeys.add(event);send(collectFacts('key',event,'navigation'),event);};
+      navigationTargets.set(state.element,listener);state.element.addEventListener('keydown',listener,{signal});
+    }
+  }
+  for(const [root,binding]of declaredTriggers)if(!triggerBindingAlive(binding))declaredTriggers.delete(root);
   for(const id of lastFocus.keys())if(!currentIds.has(id))lastFocus.delete(id);
   for(const [id,lease]of itemInventoryLeases){
     const current=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(root=>root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id);
@@ -644,6 +741,8 @@ function syncKeyTargets(){
   }
   for(const [target,listener]of keyTargets)if(!wanted.has(target)){target.removeEventListener('keydown',listener);keyTargets.delete(target);}
   for(const [target,listener]of clickTargets)if(!wantedClicks.has(target)){target.removeEventListener('click',listener);clickTargets.delete(target);}
+  for(const [target,listener]of triggerKeyTargets)if(!wantedTriggerKeys.has(target)){target.removeEventListener('keydown',listener);triggerKeyTargets.delete(target);}
+  for(const [target,listener]of navigationTargets)if(!wantedNavigation.has(target)){target.removeEventListener('keydown',listener);navigationTargets.delete(target);}
 }
 function syncAnchorObservers(){
   const wanted=new Set();
@@ -724,6 +823,9 @@ function itemCueMutation(change){
   return false;
 }
 const observer=new MutationObserver(changes=>{
+  // Each outstanding source ID wait observes real child-list changes. Resolve
+  // all retained attempts in their admission order, never only the latest ID.
+  if(changes.some(change=>change.type==='childList'))retryTriggerAttempts();
   reportObserve();
   // Child-list/log/geometry work is still observed for raw discovery, but only
   // writes to actual cue fields force projection without a Rust work signal.
@@ -732,7 +834,7 @@ const observer=new MutationObserver(changes=>{
   if(changes.some(itemCueMutation))syncItemCues(null,false,true);
 });
 observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
-  'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
+  'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-trigger-version','data-ix-overlay-trigger-dispose-version','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
   'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
   ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
   ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked'
@@ -856,6 +958,8 @@ function scheduleNativeFocus(){
 try{
   reportObserve();
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
+    if(command?.assignment_ack){acknowledgeTriggerAssignment(command.assignment_ack);reportObserve();}
+    if(command?.navigation_config)configureNavigation(command.navigation_config);
     if(command?.restore_trigger)queueTriggerRestore(command.restore_trigger);
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
     if(command?.completion_frame){nativeFocusCommands.push({kind:'completion',command:command.completion_frame});scheduleNativeFocus();}
@@ -865,11 +969,12 @@ try{
     if(command?.roving_attributes)executeRovingAttributes(command.roving_attributes);
   }
 }finally{
-  alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
+  alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;tabFocusCaptures.clear();
   for(const frame of itemScrollFrames)cancelAnimationFrame(frame);itemScrollFrames.clear();itemCaptureNodes.clear();
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
+  if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);
   for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');

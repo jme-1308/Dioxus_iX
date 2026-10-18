@@ -6,7 +6,9 @@ use crate::dropdown_inventory::{
     Activation, Inventory, InventoryFacts, InventoryMode, ItemKind, ItemRef,
 };
 use crate::overlay_registry::{CloseBehavior, OverlayKind};
-use crate::overlay_runtime::{self, Callbacks, Change, KeyDecision, KeyFacts, NodeHandle, Reason};
+use crate::overlay_runtime::{
+    self, Callbacks, Change, KeyDecision, KeyFacts, KeyRoute, NodeHandle, Reason,
+};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -185,6 +187,26 @@ struct FocusRequest {
     last: bool,
     allow_checked: bool,
 }
+/// Source watcher decisions are Rust state. The native bridge only resolves
+/// each committed declaration and holds the actual objects it receives.
+#[derive(Default)]
+struct TriggerDeclaration {
+    value: Option<String>,
+    version: u64,
+    dispose_version: u64,
+}
+impl TriggerDeclaration {
+    fn update(&mut self, value: &Option<String>) {
+        if self.value == *value {
+            return;
+        }
+        self.version = self.version.wrapping_add(1).max(1);
+        if value.as_ref().is_some_and(|value| !value.is_empty()) {
+            self.dispose_version = self.dispose_version.wrapping_add(1).max(1);
+        }
+        self.value = value.clone();
+    }
+}
 struct MenuState {
     alive: bool,
     surface: bool,
@@ -202,6 +224,7 @@ struct MenuState {
     placement: DropdownPlacement,
     fallback_placement: Option<DropdownPlacement>,
     anchor_in_dropdown_item: bool,
+    declaration: TriggerDeclaration,
 }
 #[derive(Clone)]
 struct DropdownContext {
@@ -216,6 +239,14 @@ struct DropdownContext {
     focus_task: Rc<RefCell<Option<dioxus::core::Task>>>,
 }
 impl DropdownContext {
+    fn native_key_route(&self) -> bool {
+        self.state.borrow().native
+            || self
+                .node
+                .borrow()
+                .as_ref()
+                .is_some_and(NodeHandle::native_observed)
+    }
     fn node_id(&self) -> String {
         format!("ix-dropdown-node-{}", self.id)
     }
@@ -413,6 +444,17 @@ impl DropdownContext {
         };
         *current = change.open;
         drop(current);
+        if changed && let Some(node) = self.node.borrow().clone() {
+            if change.open {
+                let state = self.state.borrow();
+                node.configure_navigation(
+                    state.settings.mode.as_str(),
+                    !state.settings.disable_focus_handling,
+                );
+            } else {
+                node.clear_navigation();
+            }
+        }
         if let Some(version) = trigger_cleanup
             && let Some(node) = self.node.borrow().clone()
             && node.queue_trigger_restore(version)
@@ -532,7 +574,13 @@ impl DropdownContext {
         }
     }
     fn inventory_key(&self, facts: &KeyFacts, raw: &InventoryFacts) -> KeyDecision {
-        let mode = self.state.borrow().settings.mode;
+        let mode = if facts.navigation_mode.as_deref() == Some("active-descendant") {
+            DropdownNavigationMode::ActiveDescendant
+        } else if facts.navigation_mode.as_deref() == Some("roving-tabindex") {
+            DropdownNavigationMode::RovingTabindex
+        } else {
+            self.state.borrow().settings.mode
+        };
         let inventory = Inventory::new(mode.inventory_mode(), raw.clone());
         let current = inventory.active();
         let mut result = KeyDecision::default();
@@ -670,7 +718,10 @@ impl DropdownContext {
         }
         visited.push(self.id);
         let mut result = KeyDecision::default();
-        if facts.default_prevented || !self.state.borrow().alive || self.state.borrow().blocked {
+        let ordinary = facts.route == KeyRoute::Navigation;
+        if !self.state.borrow().alive
+            || !ordinary && (facts.default_prevented || self.state.borrow().blocked)
+        {
             return result;
         }
         let (open, mode, no_focus, no_trap, anchor_submenu) = {
@@ -687,7 +738,7 @@ impl DropdownContext {
             facts.key.as_str(),
             "Home" | "End" | "ArrowDown" | "ArrowUp" | "Enter" | " "
         );
-        if facts.on_trigger && opening_key {
+        if !ordinary && facts.on_trigger && opening_key {
             if !open {
                 if anchor_submenu {
                     // Anchor-submenu keyboard delegation is a separate source
@@ -731,7 +782,9 @@ impl DropdownContext {
                 return result;
             }
         }
-        if !open || no_focus {
+        // The experimental listener returns for an already-open AD menu.
+        // Ordinary navigation is a separately installed, retained listener.
+        if facts.route == KeyRoute::Trigger || !open || (!ordinary && no_focus) {
             return result;
         }
         if facts.key == "Tab" {
@@ -982,6 +1035,7 @@ pub fn use_dropdown() -> DropdownHandle {
                 placement: DropdownPlacement::default(),
                 fallback_placement: None,
                 anchor_in_dropdown_item: false,
+                declaration: TriggerDeclaration::default(),
             }))
         }),
         entries: use_hook(|| Rc::new(RefCell::new(BTreeMap::new()))),
@@ -1126,7 +1180,7 @@ pub fn DropdownTrigger(
         "data-ix-overlay-trigger":id,style:"anchor-name:--ix-dropdown-anchor-{context.id}",
         onmounted:move |event| *mount.borrow_mut()=Some(event.data()),
         onclick:move |event:MouseEvent| {if !blocked&&!click.state.borrow().blocked&&event.default_action_enabled()&&click.trigger_click_allowed(){let previous=*click.open.peek();click.request_from_trigger(!previous,Reason::Trigger,click.keyboard_mode());}},
-        onkeydown:move |event:KeyboardEvent| {if !key.state.borrow().native{fallback_key(&key,event,true);}},
+        onkeydown:move |event:KeyboardEvent| {if !key.native_key_route(){fallback_key(&key,event,true);}},
         if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
         else if let Some(icon)=icon {Icon {name:icon,size:20}}
         {children}
@@ -1212,6 +1266,7 @@ fn DropdownSurface(
         state.settings = settings.clone();
         state.blocked = blocked;
         state.placement = placement;
+        state.declaration.update(&trigger);
     }
     let node = use_hook({
         let context = context.clone();
@@ -1405,6 +1460,10 @@ fn DropdownSurface(
                     state.forward = None;
                 }
                 if *configure.open.peek() {
+                    configure_node.configure_navigation(
+                        mode.as_str(),
+                        !configure.state.borrow().settings.disable_focus_handling,
+                    );
                     if mode == DropdownNavigationMode::RovingTabindex {
                         configure.focus_edge(false);
                     } else if !configure.state.borrow().settings.disable_focus_handling {
@@ -1421,6 +1480,9 @@ fn DropdownSurface(
     let generation = state.generation;
     let focus_target = state.focus_target.clone();
     let focus_version = state.focus_epoch;
+    let trigger_version =
+        (state.declaration.version > 0).then(|| state.declaration.version.to_string());
+    let trigger_dispose_version = state.declaration.dispose_version.to_string();
     let effective_placement = if state.anchor_in_dropdown_item {
         DropdownPlacement::RightStart
     } else if !settings.suppress_trigger_visibility_check {
@@ -1448,6 +1510,7 @@ fn DropdownSurface(
         id:if external {format!("ix-dropdown-surface-owner-{}",context.id)}else{trigger_id},
         class:"ix-dropdown {class}",role:root_role,tabindex:(!external).then_some(if blocked {-1}else{0}),
         "data-ix-overlay-trigger-id":trigger,"data-ix-overlay-anchor-name":format!("--ix-dropdown-anchor-{}",context.id),
+        "data-ix-overlay-trigger-version":trigger_version,"data-ix-overlay-trigger-dispose-version":trigger_dispose_version,
         "aria-label":(!external).then_some(aria_name.clone()),"aria-disabled":(!external).then_some(blocked.to_string()),"aria-busy":(!external).then_some(loading.to_string()),
         "aria-haspopup":(!external).then_some("menu"),"aria-expanded":(!external).then_some(open.to_string()),
         "aria-controls":(!external).then_some(host_id.clone()),
@@ -1459,9 +1522,9 @@ fn DropdownSurface(
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,"data-ix-overlay-focus-target":focus_target,"data-ix-overlay-focus-version":focus_version.to_string(),
         style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
-        onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;if !external{*mount_trigger.borrow_mut()=Some(event.data());}mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}},
+        onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;if !external{*mount_trigger.borrow_mut()=Some(event.data());}mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.configure_navigation(state.settings.mode.as_str(),!state.settings.disable_focus_handling);drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}},
         onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}},
-        onkeydown:move |event:KeyboardEvent|{if !key_context.state.borrow().native{fallback_key(&key_context,event,!external);}},
+        onkeydown:move |event:KeyboardEvent|{if !key_context.native_key_route(){fallback_key(&key_context,event,!external);}},
         if !external {button {class:"ix-dropdown-trigger ix-button ix-button-{variant.as_str()}",r#type:"button",disabled:blocked,"aria-hidden":"true",inert:true,tabindex:-1,
             if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
             else if let Some(icon)=icon {Icon {name:icon,size:20}}
@@ -1498,6 +1561,8 @@ fn fallback_key(context: &DropdownContext, event: KeyboardEvent, on_trigger: boo
         inside: !on_trigger,
         popover_ancestor: false,
         inventory: None,
+        route: KeyRoute::Legacy,
+        navigation_mode: None,
     };
     if event.key() == Key::Escape {
         let node = context.node.borrow().clone();
@@ -1690,7 +1755,7 @@ pub fn DropdownItem(
         },
         onkeydown:move |event:KeyboardEvent|{if !disabled&&!dropdown.and_then(DropdownHandle::try_context).is_some_and(|child|child.state.borrow().blocked) {
             if event.key()==Key::Enter||event.key()==Key::Character(" ".into()){onitemclick.call(DropdownItemClickEvent{label:key_label.clone(),prevented:Rc::new(Cell::new(false))});}
-            if let Some(context)=&key_context{if !context.state.borrow().native{fallback_key(context,event.clone(),false);event.stop_propagation();}}
+            if let Some(context)=&key_context{if !context.native_key_route(){fallback_key(context,event.clone(),false);event.stop_propagation();}}
         }},
         ..attributes,
         if let Some(name)=icon{Icon {name,size:20}}
@@ -2300,6 +2365,98 @@ mod tests {
             })
             .unwrap();
         (open, seen)
+    }
+
+    #[test]
+    fn observed_native_root_does_not_run_a_second_renderer_key_fallback() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.click("Menu");
+        let context = h.context();
+        let node = context.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        assert!(!context.state.borrow().native);
+        assert!(!node.native_observed());
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        dispatch(
+            &h.dom,
+            "input",
+            transport,
+            serde_json::json!({
+                "owner":runtime.owner_id(),"sequence":1,"kind":"observe",
+                "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
+                    "discovery_ready":true,"root_capture":"actual-menu-root"}]
+            })
+            .to_string(),
+        );
+        assert!(node.native_observed());
+        assert!(
+            !context.state.borrow().native,
+            "observation did not invoke its key callback"
+        );
+        assert!(!h.key("Menu", Key::End).0);
+        assert!(!h.key("Alpha", Key::Home).0);
+        node.unregister();
+        assert!(!node.native_observed());
+    }
+
+    #[test]
+    fn trigger_declaration_preserves_falsy_watchers_and_roundtrip_attempts() {
+        let mut declaration = TriggerDeclaration::default();
+        declaration.update(&None);
+        assert_eq!((declaration.version, declaration.dispose_version), (0, 0));
+        for (value, expected) in [
+            (Some("a"), (1, 1)),
+            (Some("a"), (1, 1)),
+            (Some("b"), (2, 2)),
+            (None, (3, 2)),
+            (Some(""), (4, 2)),
+            (Some("a"), (5, 3)),
+        ] {
+            declaration.update(&value.map(str::to_owned));
+            assert_eq!((declaration.version, declaration.dispose_version), expected);
+        }
+    }
+
+    #[test]
+    fn retained_ordinary_navigation_ignores_new_focus_flag_and_current_trigger() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.click("Menu");
+        h.config.borrow_mut().no_focus = true;
+        h.update();
+        let context = h.context();
+        let items = context.entries.borrow().keys().copied().collect::<Vec<_>>();
+        let ordinary = KeyFacts {
+            route: KeyRoute::Navigation,
+            navigation_mode: Some("active-descendant".into()),
+            key: "Home".into(),
+            default_prevented: true,
+            items: items.clone(),
+            // A retained receiver need not be the current trigger or host.
+            on_trigger: false,
+            inside: false,
+            ..KeyFacts::default()
+        };
+        let result = h.dom.in_runtime(|| context.key(&ordinary));
+        assert!(result.prevent);
+        let trigger = KeyFacts {
+            route: KeyRoute::Trigger,
+            key: "End".into(),
+            on_trigger: true,
+            items,
+            ..KeyFacts::default()
+        };
+        let result = h.dom.in_runtime(|| context.key(&trigger));
+        assert!(
+            !result.prevent,
+            "open AD experimental listener does not navigate"
+        );
     }
 
     #[test]

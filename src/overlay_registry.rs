@@ -10,7 +10,7 @@
 //! 2. Live composed-trigger overlay ancestry and presentation order
 //!    (`overlay-coordinator.ts:96-119, 188-363`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) enum OverlayKind {
@@ -45,6 +45,16 @@ impl CloseBehavior {
     }
 }
 
+/// One resolved trigger's discovery, captured before a later move or rebind.
+/// Sequences are positive and increase within one registered node generation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct AssignmentEmission {
+    #[serde(default)]
+    pub(crate) sequence: u64,
+    #[serde(default)]
+    pub(crate) ancestors: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct NativeFact {
     #[serde(default)]
@@ -59,6 +69,10 @@ pub(crate) struct NativeFact {
     /// ancestry may come from an anchor. None preserves legacy fact producers.
     #[serde(default)]
     pub(crate) assignment_ancestors: Option<Vec<String>>,
+    /// None retains legacy once-ready discovery. Some records actual emissions;
+    /// an empty list emits nothing, including for an anchor-only Dropdown.
+    #[serde(default)]
+    pub(crate) assignment_emissions: Option<Vec<AssignmentEmission>>,
     #[serde(default)]
     pub(crate) discovery_ready: bool,
 }
@@ -75,6 +89,8 @@ struct NodeEntry {
     discovered: bool,
     trigger_ancestors: Vec<String>,
     assignment_ancestors: Option<Vec<String>>,
+    assignment_sequence: u64,
+    pending_assignments: VecDeque<AssignmentEmission>,
     assigned_children: Vec<String>,
 }
 
@@ -96,6 +112,8 @@ impl NodeEntry {
             discovered: false,
             trigger_ancestors: Vec::new(),
             assignment_ancestors: None,
+            assignment_sequence: 0,
+            pending_assignments: VecDeque::new(),
             assigned_children: Vec::new(),
         }
     }
@@ -165,6 +183,8 @@ impl Registry {
                         || n.discovered
                         || !n.assigned_children.is_empty()
                         || !n.trigger_ancestors.is_empty()
+                        || n.assignment_sequence != 0
+                        || !n.pending_assignments.is_empty()
                 });
                 if should_prune {
                     self.prune_hierarchy_references(&fact.id);
@@ -174,6 +194,8 @@ impl Registry {
                         node.discovered = false;
                         node.trigger_ancestors.clear();
                         node.assignment_ancestors = None;
+                        node.assignment_sequence = 0;
+                        node.pending_assignments.clear();
                         node.assigned_children.clear();
                     }
                 }
@@ -201,15 +223,40 @@ impl Registry {
                 node.discovery_ready = fact.discovery_ready;
                 node.trigger_ancestors = cleaned_ancestors;
                 node.assignment_ancestors = assignment_ancestors;
+                if let Some(emissions) = &fact.assignment_emissions {
+                    for emission in emissions {
+                        if emission.sequence == 0 || emission.sequence <= node.assignment_sequence {
+                            continue;
+                        }
+                        let mut ancestors = Vec::with_capacity(emission.ancestors.len());
+                        for ancestor in &emission.ancestors {
+                            if ancestor != &fact.id && !ancestors.contains(ancestor) {
+                                ancestors.push(ancestor.clone());
+                            }
+                        }
+                        node.assignment_sequence = emission.sequence;
+                        node.pending_assignments.push_back(AssignmentEmission {
+                            sequence: emission.sequence,
+                            ancestors,
+                        });
+                    }
+                }
                 if node.discovery_ready && !node.discovered {
                     if node.kind == OverlayKind::Header {
                         node.discovered = true;
                         rediscover_all = true;
-                    } else {
+                    } else if fact.assignment_emissions.is_none() {
                         newly_ready.push(fact.id.clone());
                     }
                 }
             }
+        }
+
+        // Retry immutable event-time ancestry, including when only a formerly
+        // missing foreign parent was observed in this partition. Keeping the
+        // head pending preserves emission order across that renderer adapter.
+        for id in self.order.clone() {
+            self.discover_pending(&id);
         }
 
         if rediscover_all {
@@ -563,11 +610,36 @@ impl Registry {
         else {
             return;
         };
+        self.discover_assignment(child_id, &ancestors);
+    }
+
+    fn discover_pending(&mut self, child_id: &str) {
+        loop {
+            let Some(emission) = self
+                .nodes
+                .get(child_id)
+                .filter(|node| node.connected && node.discovery_ready)
+                .and_then(|node| node.pending_assignments.front())
+                .cloned()
+            else {
+                return;
+            };
+            if !self.discover_assignment(child_id, &emission.ancestors) {
+                return;
+            }
+            if let Some(node) = self.nodes.get_mut(child_id) {
+                node.pending_assignments.pop_front();
+            }
+        }
+    }
+
+    /// True means the event found a receiver or definitively had no receiver.
+    fn discover_assignment(&mut self, child_id: &str, ancestors: &[String]) -> bool {
         let kind = self.nodes.get(child_id).map(|node| node.kind);
         let unknown_ancestor = ancestors.iter().any(|id| !self.nodes.contains_key(id));
-        let nearest = ancestors.into_iter().find(|anc_id| {
-            anc_id != child_id
-                && self.nodes.get(anc_id).is_some_and(|node| {
+        let nearest = ancestors.iter().find(|anc_id| {
+            anc_id.as_str() != child_id
+                && self.nodes.get(*anc_id).is_some_and(|node| {
                     Some(node.kind) == kind
                         || kind.is_some_and(|kind| kind.is_dropdown() && node.kind.is_dropdown())
                 })
@@ -576,24 +648,24 @@ impl Registry {
             // A foreign renderer may have committed its native host before its
             // Rust owner joins. Retry discovery instead of latching no parent.
             if unknown_ancestor {
-                return;
+                return false;
             }
             if let Some(child) = self.nodes.get_mut(child_id) {
                 child.discovered = true;
             }
-            return;
+            return true;
         };
         if !self
             .nodes
-            .get(&parent_id)
+            .get(parent_id)
             .is_some_and(|n| n.connected && n.discovery_ready)
         {
-            return;
+            return false;
         }
         if let Some(child) = self.nodes.get_mut(child_id) {
             child.discovered = true;
         }
-        if let Some(parent) = self.nodes.get_mut(&parent_id)
+        if let Some(parent) = self.nodes.get_mut(parent_id)
             && !parent.assigned_children.iter().any(|c| c == child_id)
         {
             parent.assigned_children.push(child_id.to_string());
@@ -601,9 +673,10 @@ impl Registry {
                 // cacheNestedPopoverId immediately syncs, including while the
                 // parent is closed; Dropdown deliberately retains its separate
                 // controller-presentation snapshot boundary.
-                self.snapshot_children(&parent_id);
+                self.snapshot_children(parent_id);
             }
         }
+        true
     }
 
     fn presented_reaches(&self, start: &str, target: &str) -> bool {
@@ -651,8 +724,208 @@ mod tests {
             connected: true,
             trigger_ancestors: ancestors.iter().map(|s| (*s).to_string()).collect(),
             assignment_ancestors: None,
+            assignment_emissions: None,
             discovery_ready: ready,
         }
+    }
+
+    fn emission_fact(
+        id: &str,
+        generation: u64,
+        live_ancestors: &[&str],
+        emissions: &[(u64, &[&str])],
+    ) -> NativeFact {
+        let mut observed = fact(id, generation, live_ancestors, true);
+        observed.assignment_ancestors = Some(
+            live_ancestors
+                .iter()
+                .map(|ancestor| (*ancestor).to_owned())
+                .collect(),
+        );
+        observed.assignment_emissions = Some(
+            emissions
+                .iter()
+                .map(|(sequence, ancestors)| AssignmentEmission {
+                    sequence: *sequence,
+                    ancestors: ancestors
+                        .iter()
+                        .map(|ancestor| (*ancestor).to_owned())
+                        .collect(),
+                })
+                .collect(),
+        );
+        observed
+    }
+
+    #[test]
+    fn resolved_rebind_retains_assignments_and_controller_snapshot_boundary() {
+        let mut reg = Registry::new();
+        for id in ["a", "b", "moved", "child", "peer"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            emission_fact("a", 1, &[], &[]),
+            emission_fact("b", 1, &[], &[]),
+            emission_fact("moved", 1, &[], &[]),
+            emission_fact("child", 1, &["a"], &[(1, &["child", "a", "a"])]),
+            emission_fact("peer", 1, &["a"], &[(1, &["a"])]),
+        ]);
+        reg.set_open("a", true);
+        reg.set_open("b", true);
+        reg.set_open("moved", true);
+        assert_eq!(reg.cached_children("a"), ["child", "peer"]);
+        assert!(reg.cached_children("b").is_empty());
+
+        reg.observe(&[emission_fact("child", 1, &["b"], &[(2, &["b"])])]);
+        assert_eq!(reg.assigned_children("a"), ["child", "peer"]);
+        assert_eq!(reg.assigned_children("b"), ["child"]);
+        assert_eq!(reg.live_parent("child").as_deref(), Some("b"));
+        assert_eq!(reg.cached_parent("child").as_deref(), Some("a"));
+        assert!(reg.cached_children("b").is_empty());
+
+        // The same resolution, reported after its actual trigger moved, cannot
+        // emit into a third parent or rewrite either existing cache.
+        reg.observe(&[emission_fact("child", 1, &["moved"], &[(2, &["moved"])])]);
+        assert_eq!(reg.live_parent("child").as_deref(), Some("moved"));
+        assert!(reg.assigned_children("moved").is_empty());
+        assert_eq!(reg.cached_children("a"), ["child", "peer"]);
+        reg.set_open("b", false);
+        reg.set_open("b", true);
+        assert_eq!(reg.cached_children("b"), ["child"]);
+
+        // A successful return binding emits again but does not reorder the
+        // parent's first assignments or change the child's lifetime.
+        reg.observe(&[emission_fact("child", 1, &["a"], &[(3, &["a"])])]);
+        assert_eq!(reg.assigned_children("a"), ["child", "peer"]);
+        assert_eq!(reg.assigned_children("b"), ["child"]);
+        assert_eq!(reg.generation("child"), Some(1));
+    }
+
+    #[test]
+    fn pending_resolution_uses_captured_ancestry_and_preserves_emission_order() {
+        let mut reg = Registry::new();
+        for id in ["b", "moved", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            emission_fact("b", 1, &[], &[]),
+            emission_fact("moved", 1, &[], &[]),
+            emission_fact("child", 1, &["b"], &[(1, &["late"]), (2, &["b"])]),
+        ]);
+        assert!(reg.assigned_children("b").is_empty());
+        assert_eq!(reg.nodes["child"].pending_assignments.len(), 2);
+
+        reg.observe(&[emission_fact(
+            "child",
+            1,
+            &["moved"],
+            &[(0, &["moved"]), (1, &["moved"]), (2, &["moved"])],
+        )]);
+        assert!(reg.assigned_children("moved").is_empty());
+        assert_eq!(reg.nodes["child"].pending_assignments.len(), 2);
+
+        reg.register("late".into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        // Registration is not readiness; neither pending event may overtake it.
+        reg.observe(&[emission_fact("b", 1, &[], &[])]);
+        assert!(reg.assigned_children("late").is_empty());
+        assert!(reg.assigned_children("b").is_empty());
+        // A parent-only owner partition can release an already stored event.
+        reg.observe(&[emission_fact("late", 1, &[], &[])]);
+        assert_eq!(reg.assigned_children("late"), ["child"]);
+        assert_eq!(reg.assigned_children("b"), ["child"]);
+        assert!(reg.assigned_children("moved").is_empty());
+        assert!(reg.nodes["child"].pending_assignments.is_empty());
+        assert_eq!(reg.nodes["child"].assignment_sequence, 2);
+    }
+
+    #[test]
+    fn explicit_empty_emissions_do_not_assign_anchor_but_it_receives_children() {
+        let mut reg = Registry::new();
+        for id in ["root", "anchor", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            emission_fact("root", 1, &[], &[]),
+            emission_fact("anchor", 1, &["root"], &[]),
+            emission_fact("child", 1, &["anchor", "root"], &[(1, &["anchor", "root"])]),
+        ]);
+        assert!(reg.assigned_children("root").is_empty());
+        assert_eq!(reg.assigned_children("anchor"), ["child"]);
+        reg.set_open("root", true);
+        reg.set_open("anchor", true);
+        assert_eq!(reg.live_parent("anchor").as_deref(), Some("root"));
+        assert!(reg.cached_children("root").is_empty());
+        assert_eq!(reg.cached_children("anchor"), ["child"]);
+        reg.observe(&[emission_fact("anchor", 1, &["root"], &[])]);
+        assert!(reg.assigned_children("root").is_empty());
+    }
+
+    #[test]
+    fn assignment_sequences_follow_registration_and_disconnect_lifetimes() {
+        let mut reg = Registry::new();
+        for id in ["a", "b", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            emission_fact("a", 1, &[], &[]),
+            emission_fact("b", 1, &[], &[]),
+            emission_fact("child", 1, &["a"], &[(5, &["a"])]),
+        ]);
+        reg.register(
+            "child".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Inside,
+        );
+        reg.observe(&[emission_fact("child", 1, &["b"], &[(1, &["b"])])]);
+        assert!(reg.assigned_children("b").is_empty());
+        assert_eq!(reg.assigned_children("a"), ["child"]);
+
+        reg.register(
+            "child".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+        );
+        reg.observe(&[emission_fact("child", 1, &["a"], &[(99, &["a"])])]);
+        assert!(reg.assigned_children("a").is_empty());
+        reg.observe(&[emission_fact("child", 2, &["b"], &[(1, &["b"])])]);
+        assert_eq!(reg.assigned_children("b"), ["child"]);
+        reg.observe(&[emission_fact("child", 2, &["b"], &[(2, &["missing"])])]);
+        assert_eq!(reg.nodes["child"].pending_assignments.len(), 1);
+        let mut disconnected = emission_fact("child", 2, &[], &[]);
+        disconnected.connected = false;
+        reg.observe(&[disconnected]);
+        assert!(reg.assigned_children("b").is_empty());
+        assert!(reg.nodes["child"].pending_assignments.is_empty());
+        assert_eq!(reg.nodes["child"].assignment_sequence, 0);
+        reg.observe(&[emission_fact("child", 2, &["a"], &[(1, &["a"])])]);
+        assert_eq!(reg.assigned_children("a"), ["child"]);
+    }
+
+    #[test]
+    fn header_discover_all_still_emits_current_trigger_without_a_new_binding() {
+        let mut reg = Registry::new();
+        reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
+        reg.register(
+            "child".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+        );
+        let mut header = emission_fact("header", 1, &[], &[]);
+        header.discovery_ready = false;
+        reg.observe(&[header.clone(), emission_fact("child", 1, &[], &[(1, &[])])]);
+        // The binding itself has not changed. Only explicit discover-all may
+        // turn this later live move into a remembered assignment.
+        reg.observe(&[emission_fact("child", 1, &["header"], &[])]);
+        assert!(reg.assigned_children("header").is_empty());
+        header.discovery_ready = true;
+        reg.observe(&[header]);
+        assert_eq!(reg.assigned_children("header"), ["child"]);
+        assert!(reg.cached_children("header").is_empty());
+        reg.set_open("header", true);
+        assert_eq!(reg.cached_children("header"), ["child"]);
     }
 
     #[test]
@@ -1075,6 +1348,7 @@ mod tests {
             connected: false,
             trigger_ancestors: Vec::new(),
             assignment_ancestors: None,
+            assignment_emissions: None,
             discovery_ready: false,
         }]);
         assert!(reg.cached_children("a").is_empty());

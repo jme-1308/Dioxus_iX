@@ -61,6 +61,8 @@ pub(crate) struct Change {
 }
 #[derive(Clone, Debug, Default)]
 pub(crate) struct KeyFacts {
+    pub(crate) route: KeyRoute,
+    pub(crate) navigation_mode: Option<String>,
     pub(crate) key: String,
     pub(crate) shift: bool,
     pub(crate) alt: bool,
@@ -75,6 +77,13 @@ pub(crate) struct KeyFacts {
     pub(crate) inside: bool,
     pub(crate) popover_ancestor: bool,
     pub(crate) inventory: Option<InventoryFacts>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum KeyRoute {
+    #[default]
+    Legacy,
+    Trigger,
+    Navigation,
 }
 #[derive(Clone, Debug, Default)]
 pub(crate) struct KeyDecision {
@@ -139,9 +148,23 @@ struct Entry {
     item_visual: Option<Rc<dyn Fn() -> RootVisual>>,
     descendant_focus: Option<DescendantFocusCallback>,
     submenu: Option<SubmenuAccess>,
+    navigation: Option<NavigationConfiguration>,
     suppress_trigger_restore: bool,
     callbacks: Callbacks,
     scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
+}
+#[derive(Clone)]
+struct NavigationConfiguration {
+    version: u64,
+    mode: String,
+    enabled: bool,
+    capture: Option<String>,
+    sent: bool,
+}
+#[derive(Clone, Deserialize)]
+struct NavigationBinding {
+    version: u64,
+    capture: String,
 }
 #[derive(Default)]
 struct Ack {
@@ -575,6 +598,11 @@ impl RuntimeHandle {
             let suppress_trigger_restore = runtime.nodes.get(&id).is_some_and(|entry| {
                 entry.generation == generation && entry.suppress_trigger_restore
             });
+            let navigation = runtime
+                .nodes
+                .get(&id)
+                .filter(|entry| entry.generation == generation)
+                .and_then(|entry| entry.navigation.clone());
             runtime
                 .registry
                 .register(id.clone(), generation, kind, behavior);
@@ -597,6 +625,7 @@ impl RuntimeHandle {
                     item_visual: None,
                     descendant_focus: None,
                     submenu: None,
+                    navigation,
                     suppress_trigger_restore,
                     callbacks,
                     scope,
@@ -709,6 +738,13 @@ impl RuntimeHandle {
                 state.roving.clear_all();
                 state.roving_hosts.clear();
                 state.roving_writes.clear();
+                for entry in state.nodes.values_mut() {
+                    if let Some(configuration) = &mut entry.navigation {
+                        configuration.version = configuration.version.wrapping_add(1).max(1);
+                        configuration.capture = None;
+                        configuration.sent = false;
+                    }
+                }
             }
             state.document = document.to_string();
             state.domain = Some(domain);
@@ -1330,10 +1366,73 @@ impl RuntimeHandle {
                 .replace("__OWNER__", &owner),
         );
         self.0.borrow_mut().bridge = Some(bridge);
+        self.flush_navigation_configurations();
         self.flush_completion_frames();
         self.flush_roving_writes();
         self.flush_item_focus();
         self.flush_descendant_focus();
+    }
+    fn configure_navigation(&self, id: &str, generation: u64, mode: &str, enabled: bool) -> bool {
+        if !matches!(mode, "active-descendant" | "roving-tabindex") {
+            return false;
+        }
+        {
+            let mut state = self.0.borrow_mut();
+            let Some(entry) = state.nodes.get_mut(id).filter(|entry| {
+                entry.generation == generation && entry.kind == OverlayKind::Dropdown
+            }) else {
+                return false;
+            };
+            let version = entry.navigation.as_ref().map_or(1, |configuration| {
+                configuration.version.wrapping_add(1).max(1)
+            });
+            entry.navigation = Some(NavigationConfiguration {
+                version,
+                mode: mode.into(),
+                enabled,
+                capture: None,
+                sent: false,
+            });
+        }
+        self.flush_navigation_configurations();
+        true
+    }
+    fn flush_navigation_configurations(&self) {
+        let commands =
+            {
+                let state = self.0.borrow();
+                state.order.iter().filter_map(|id| {
+                let entry = state.nodes.get(id)?;
+                let configuration = entry.navigation.as_ref().filter(|config| !config.sent)?;
+                Some((id.clone(), entry.generation, configuration.version,
+                    serde_json::json!({"navigation_config":{
+                        "root":id,"generation":entry.generation,"version":configuration.version,
+                        "mode":configuration.mode,"enabled":configuration.enabled
+                    }})))
+            }).collect::<Vec<_>>()
+            };
+        for (id, generation, version, command) in commands {
+            if !self
+                .0
+                .borrow()
+                .bridge
+                .as_ref()
+                .is_some_and(|bridge| bridge.send(command).is_ok())
+            {
+                break;
+            }
+            if let Some(configuration) = self
+                .0
+                .borrow_mut()
+                .nodes
+                .get_mut(&id)
+                .filter(|entry| entry.generation == generation)
+                .and_then(|entry| entry.navigation.as_mut())
+                .filter(|configuration| configuration.version == version)
+            {
+                configuration.sent = true;
+            }
+        }
     }
     fn flush_item_focus(&self) {
         let jobs = self.0.borrow().item_focus.unsent();
@@ -1482,9 +1581,30 @@ impl RuntimeHandle {
                     runtime
                         .item_captures
                         .insert(node.id.clone(), (node.generation, captures));
+                    if let Some(binding) = &node.navigation_binding
+                        && !binding.capture.is_empty()
+                        && !node.root_capture.is_empty()
+                        && runtime.item_root_captures.get(&node.id).is_some_and(
+                            |(generation, root, _)| {
+                                *generation == node.generation && *root == node.root_capture
+                            },
+                        )
+                        && let Some(configuration) = runtime
+                            .nodes
+                            .get_mut(&node.id)
+                            .and_then(|entry| entry.navigation.as_mut())
+                            .filter(|configuration| {
+                                configuration.enabled
+                                    && configuration.version == binding.version
+                                    && configuration.capture.is_none()
+                            })
+                    {
+                        configuration.capture = Some(binding.capture.clone());
+                    }
                 }
             }
         }
+        self.flush_navigation_configurations();
         // Native open attributes may lag the Rust callback during an original
         // click. Reconcile with read(), never overwrite current state from DOM.
         let snapshots = {
@@ -1517,6 +1637,7 @@ impl RuntimeHandle {
                     connected: node.is_some(),
                     discovery_ready: node.is_some_and(|node| node.discovery_ready),
                     assignment_ancestors: node.and_then(|node| node.assignment_ancestors.clone()),
+                    assignment_emissions: node.and_then(|node| node.assignment_emissions.clone()),
                     trigger_ancestors: node
                         .map_or_else(Vec::new, |node| node.trigger_ancestors.clone()),
                 }
@@ -1534,12 +1655,38 @@ impl RuntimeHandle {
                         connected: node.connected,
                         discovery_ready: node.discovery_ready,
                         assignment_ancestors: node.assignment_ancestors.clone(),
+                        assignment_emissions: node.assignment_emissions.clone(),
                         trigger_ancestors: node.trigger_ancestors.clone(),
                     })
                     .collect::<Vec<_>>();
                 domain.observe_all(&all);
             } else {
                 domain.observe_owner(&report.owner, &facts);
+            }
+        }
+        // Both registries now own the immutable records, including ancestry
+        // awaiting a foreign owner's readiness. Native may release its copies
+        // only after this admission, never merely after sending a report.
+        for node in &report.nodes {
+            if !node.connected
+                || !self
+                    .entry(&node.id)
+                    .is_some_and(|entry| entry.generation == node.generation)
+            {
+                continue;
+            }
+            let Some(sequence) = node
+                .assignment_emissions
+                .as_ref()
+                .and_then(|records| records.iter().map(|record| record.sequence).max())
+                .filter(|sequence| *sequence > 0)
+            else {
+                continue;
+            };
+            if let Some(bridge) = self.0.borrow().bridge.as_ref() {
+                let _ = bridge.send(serde_json::json!({"assignment_ack":{
+                    "root":node.id,"generation":node.generation,"sequence":sequence
+                }}));
             }
         }
         if report.kind == "modality" {
@@ -1733,6 +1880,40 @@ impl RuntimeHandle {
         KeyDecision::default()
     }
     fn key_owner<'a>(&self, report: &'a Report) -> Option<&'a NodeFacts> {
+        if matches!(report.phase.as_str(), "navigation" | "trigger-key") {
+            return report.nodes.iter().find(|node| {
+                let Some(entry) = self.entry(&node.id).filter(|entry| {
+                    entry.kind == OverlayKind::Dropdown
+                        && entry.generation == node.generation
+                        && node.connected
+                }) else {
+                    return false;
+                };
+                if !self.matches_root_capture(node) {
+                    return false;
+                }
+                if report.phase == "navigation" {
+                    let Some(configuration) = entry
+                        .navigation
+                        .filter(|configuration| configuration.enabled)
+                    else {
+                        return false;
+                    };
+                    node.navigation_listener.as_ref().is_some_and(|listener| {
+                        listener.version == configuration.version
+                            && !listener.capture.is_empty()
+                            && configuration.capture.as_deref() == Some(listener.capture.as_str())
+                    })
+                } else {
+                    let installed = node
+                        .trigger_listener_capture
+                        .as_deref()
+                        .unwrap_or(&node.trigger_capture);
+                    !installed.is_empty()
+                        && node.configured_trigger_listener.as_deref() == Some(installed)
+                }
+            });
+        }
         if report.phase == "capture" {
             if let Some(owner) = report.hosts.iter().rev().find_map(|id| {
                 let entry = self
@@ -1781,6 +1962,17 @@ impl RuntimeHandle {
                                 && node.on_trigger))
                 })
             })
+    }
+    fn matches_root_capture(&self, node: &NodeFacts) -> bool {
+        !node.root_capture.is_empty()
+            && self
+                .0
+                .borrow()
+                .item_root_captures
+                .get(&node.id)
+                .is_some_and(|(generation, root, _)| {
+                    *generation == node.generation && *root == node.root_capture
+                })
     }
     fn reported_kind(&self, report: &Report, id: &str) -> Option<OverlayKind> {
         let node = report
@@ -1851,6 +2043,25 @@ impl RuntimeHandle {
         let Some(callback) = entry.callbacks.key.clone() else {
             return KeyDecision::default();
         };
+        let route = match report.phase.as_str() {
+            "trigger-key" => KeyRoute::Trigger,
+            "navigation" => KeyRoute::Navigation,
+            _ => KeyRoute::Legacy,
+        };
+        let navigation_mode = if route == KeyRoute::Navigation {
+            entry
+                .navigation
+                .as_ref()
+                .map(|configuration| configuration.mode.clone())
+        } else {
+            None
+        };
+        if route == KeyRoute::Navigation
+            && navigation_mode.as_deref() == Some("active-descendant")
+            && matches!(report.key.as_str(), "Escape" | "Tab")
+        {
+            return KeyDecision::default();
+        }
         let domain_root = entry
             .submenu
             .as_ref()
@@ -1867,6 +2078,8 @@ impl RuntimeHandle {
             .and_then(|node| node.own_inventory.as_ref().or(node.inventory.as_ref()))
             .or(owner.inventory.as_ref());
         let mut facts = KeyFacts {
+            route,
+            navigation_mode,
             key: report.key.clone(),
             shift: report.shift,
             alt: report.alt,
@@ -1886,23 +2099,29 @@ impl RuntimeHandle {
                 .cloned()
                 .map(|facts| self.projected_inventory(facts)),
         };
-        let capture = owner.mode == "roving-tabindex";
-        if report.phase == "capture" && !capture {
+        let capture = if route == KeyRoute::Navigation {
+            facts.navigation_mode.as_deref() == Some("roving-tabindex")
+        } else {
+            owner.mode == "roving-tabindex"
+        };
+        if route == KeyRoute::Legacy && report.phase == "capture" && !capture {
             // Mark the native route before Dioxus's own bubble fallback runs.
             // The private callback returns without action for prevented facts.
             facts.default_prevented = true;
             callback(&facts);
             return KeyDecision::default();
         }
-        if (matches!(report.phase.as_str(), "bubble" | "fallback") && capture)
-            || facts.default_prevented
-            || (report.phase == "fallback" && !matches!(report.key.as_str(), "Escape" | "Tab"))
+        if route == KeyRoute::Legacy
+            && ((matches!(report.phase.as_str(), "bubble" | "fallback") && capture)
+                || facts.default_prevented
+                || (report.phase == "fallback" && !matches!(report.key.as_str(), "Escape" | "Tab")))
         {
             // Active-descendant arrows/activation belong to the actual trigger
             // listener, not an unrelated input in an externally hosted menu.
             return KeyDecision::default();
         }
-        if !capture
+        if route == KeyRoute::Legacy
+            && !capture
             && !facts.on_trigger
             && !owner.trigger_on_path
             && !report.triggers.contains(&owner.id)
@@ -1910,7 +2129,7 @@ impl RuntimeHandle {
         {
             return KeyDecision::default();
         }
-        if !facts.inside && !facts.on_trigger {
+        if route == KeyRoute::Legacy && !facts.inside && !facts.on_trigger {
             return KeyDecision::default();
         }
         let owner_open = self.read_current(&owner.id, &entry) == Some(true);
@@ -1926,7 +2145,7 @@ impl RuntimeHandle {
         {
             self.0.borrow_mut().keyboard = true;
         }
-        if report.key == "Escape" {
+        if report.key == "Escape" && route != KeyRoute::Navigation {
             if !self.owns_topmost(&owner.id) {
                 return KeyDecision::default();
             }
@@ -1995,7 +2214,12 @@ impl RuntimeHandle {
         } else {
             None
         };
-        let mut decision = callback(&facts);
+        let mut decision = if route == KeyRoute::Legacy {
+            callback(&facts)
+        } else {
+            self.with_owner(&owner.id, entry.generation, || callback(&facts))
+                .unwrap_or_default()
+        };
         if let Some((root, generation, target)) = tab_release.filter(|_| decision.release_focus) {
             if self
                 .entry(&root)
@@ -2123,9 +2347,12 @@ impl RuntimeHandle {
         if report.phase == "trigger" {
             if !report.default_prevented {
                 for node in &report.nodes {
-                    if node.trigger_capture.is_empty()
-                        || node.configured_trigger_listener.as_deref()
-                            != Some(node.trigger_capture.as_str())
+                    let installed = node
+                        .trigger_listener_capture
+                        .as_deref()
+                        .unwrap_or(&node.trigger_capture);
+                    if installed.is_empty()
+                        || node.configured_trigger_listener.as_deref() != Some(installed)
                     {
                         continue;
                     }
@@ -2134,14 +2361,14 @@ impl RuntimeHandle {
                         .filter(|entry| {
                             node.connected
                                 && entry.generation == node.generation
+                                && !node.root_capture.is_empty()
                                 && self
                                     .0
                                     .borrow()
                                     .item_root_captures
                                     .get(&node.id)
-                                    .is_some_and(|(generation, _, capture)| {
-                                        *generation == node.generation
-                                            && *capture == node.trigger_capture
+                                    .is_some_and(|(generation, root, _)| {
+                                        *generation == node.generation && *root == node.root_capture
                                     })
                                 && !self
                                     .0
@@ -2884,6 +3111,38 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    pub(crate) fn native_observed(&self) -> bool {
+        self.runtime().is_some_and(|runtime| {
+            let state = runtime.0.borrow();
+            state
+                .nodes
+                .get(&self.id)
+                .is_some_and(|entry| entry.generation == self.generation)
+                && state.registry.is_connected(&self.id)
+                && state
+                    .item_root_captures
+                    .get(&self.id)
+                    .is_some_and(|(generation, root, _)| {
+                        *generation == self.generation && !root.is_empty()
+                    })
+        })
+    }
+    pub(crate) fn configure_navigation(&self, mode: &str, enabled: bool) -> bool {
+        self.runtime().is_some_and(|runtime| {
+            runtime.configure_navigation(&self.id, self.generation, mode, enabled)
+        })
+    }
+    pub(crate) fn clear_navigation(&self) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        let mode = runtime
+            .entry(&self.id)
+            .filter(|entry| entry.generation == self.generation)
+            .and_then(|entry| entry.navigation.map(|configuration| configuration.mode))
+            .unwrap_or_else(|| "active-descendant".into());
+        runtime.configure_navigation(&self.id, self.generation, &mode, false)
+    }
     pub(crate) async fn query_inventory(&self) -> Option<InventoryFacts> {
         let runtime = self.runtime()?;
         runtime
@@ -3479,6 +3738,14 @@ mod submenu_runtime;
 #[path = "submenu_runtime_tests.rs"]
 mod submenu_runtime_tests;
 
+#[cfg(test)]
+#[path = "overlay_assignment_tests.rs"]
+mod overlay_assignment_tests;
+
+#[cfg(test)]
+#[path = "overlay_navigation_tests.rs"]
+mod overlay_navigation_tests;
+
 #[path = "descendant_transport.rs"]
 mod descendant_transport;
 
@@ -3567,11 +3834,19 @@ struct NodeFacts {
     #[serde(default)]
     trigger_capture: String,
     #[serde(default)]
+    trigger_listener_capture: Option<String>,
+    #[serde(default)]
+    navigation_binding: Option<NavigationBinding>,
+    #[serde(default)]
+    navigation_listener: Option<NavigationBinding>,
+    #[serde(default)]
     discovery_ready: bool,
     #[serde(default)]
     trigger_ancestors: Vec<String>,
     #[serde(default)]
     assignment_ancestors: Option<Vec<String>>,
+    #[serde(default)]
+    assignment_emissions: Option<Vec<crate::overlay_registry::AssignmentEmission>>,
     #[serde(default)]
     mode: String,
     #[serde(default)]

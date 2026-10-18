@@ -940,6 +940,7 @@ mod tests {
             connected: true,
             trigger_ancestors: ancestors.iter().map(|id| (*id).to_owned()).collect(),
             assignment_ancestors: None,
+            assignment_emissions: None,
             discovery_ready: true,
         }
     }
