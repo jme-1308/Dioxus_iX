@@ -1,5 +1,6 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
+use crate::overlay_completion::CompletionQueue;
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue, TriggerRestoreQueue};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
@@ -149,6 +150,7 @@ struct Runtime {
     ack: Ack,
     pending_focus: PendingFocusQueue,
     trigger_restores: TriggerRestoreQueue,
+    completions: CompletionQueue,
     bridge: Option<dioxus::document::Eval>,
     domain: Option<Domain>,
     document: String,
@@ -160,6 +162,7 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         self.pending_focus.clear();
         self.trigger_restores.clear();
+        self.completions.clear();
         if let Some(domain) = &self.domain {
             domain.remove_owner(&self.owner);
         }
@@ -198,6 +201,7 @@ impl RuntimeHandle {
             ack: Ack::default(),
             pending_focus: PendingFocusQueue::default(),
             trigger_restores: TriggerRestoreQueue::default(),
+            completions: CompletionQueue::default(),
             bridge: None,
             domain: None,
             document: String::new(),
@@ -235,6 +239,7 @@ impl RuntimeHandle {
             {
                 runtime.pending_focus.remove_root(&id, old_generation);
                 runtime.trigger_restores.remove_root(&id, old_generation);
+                runtime.completions.remove_root(&id, old_generation);
             }
             let revision = runtime
                 .nodes
@@ -348,6 +353,12 @@ impl RuntimeHandle {
             let mut state = self.0.borrow_mut();
             state.pending_focus.clear();
             state.trigger_restores.clear();
+            // Initial native attachment must retain pre-bridge notifications.
+            // Adopting another document cancels old-document frame work as an
+            // explicit renderer-lifetime adapter.
+            if !state.document.is_empty() {
+                state.completions.clear();
+            }
             state.document = document.to_string();
             state.domain = Some(domain);
             (state.order.clone(), state.categories.clone())
@@ -883,6 +894,7 @@ impl RuntimeHandle {
         {
             runtime.pending_focus.remove_root(id, generation);
             runtime.trigger_restores.remove_root(id, generation);
+            runtime.completions.remove_root(id, generation);
             runtime.nodes.remove(id);
             runtime.order.retain(|candidate| candidate != id);
             runtime.registry.unregister(id, generation);
@@ -908,6 +920,36 @@ impl RuntimeHandle {
             &crate::overlay_registry_dom::BRIDGE.replace("__OWNER__", &owner),
         );
         self.0.borrow_mut().bridge = Some(bridge);
+        self.flush_completion_frames();
+    }
+    fn flush_completion_frames(&self) {
+        let frames = self.0.borrow().completions.unsent();
+        for frame in frames {
+            let sent =
+                {
+                    let state = self.0.borrow();
+                    let Some(bridge) = &state.bridge else { return };
+                    bridge.send(serde_json::json!({"completion_frame":{
+                    "sequence":frame.sequence,"root":frame.root,"generation":frame.generation
+                }})).is_ok()
+                };
+            if !sent {
+                // Keep this and later admissions for a subsequent bridge;
+                // never turn a failed native enrollment into sync delivery.
+                break;
+            }
+            self.0.borrow_mut().completions.mark_sent(&frame);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn pending_completion_frames(&self) -> Vec<(u64, String, u64)> {
+        self.0
+            .borrow()
+            .completions
+            .frames()
+            .into_iter()
+            .map(|frame| (frame.sequence, frame.root, frame.generation))
+            .collect()
     }
     fn observe(&self, report: &Report) -> KeyDecision {
         {
@@ -1595,6 +1637,33 @@ impl RuntimeHandle {
         if query.owner != self.owner_id() {
             return;
         }
+        if let Some(sequence) = query.completion_sequence {
+            let (Some(root), Some(generation)) =
+                (query.completion_root, query.completion_generation)
+            else {
+                return;
+            };
+            let callback = self
+                .0
+                .borrow_mut()
+                .completions
+                .take(sequence, &root, generation);
+            if let Some(callback) = callback {
+                self.with_owner(&root, generation, || {
+                    let Some(entry) = self
+                        .entry(&root)
+                        .filter(|entry| entry.generation == generation)
+                    else {
+                        return;
+                    };
+                    if self.read_current(&root, &entry).is_some() {
+                        event.prevent_default();
+                        callback();
+                    }
+                });
+            }
+            return;
+        }
         if let Some(sequence) = query.trigger_restore_sequence {
             let (Some(root), Some(generation)) =
                 (query.trigger_restore_root, query.trigger_restore_generation)
@@ -1754,6 +1823,33 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    /// Retain each changed-state completion until an explicit native frame,
+    /// including changes admitted before the shared bridge is mounted.
+    pub(crate) fn queue_completion(&self, callback: Rc<dyn Fn()>) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let Some(entry) = runtime
+                    .entry(&self.id)
+                    .filter(|entry| entry.generation == self.generation)
+                else {
+                    return false;
+                };
+                if runtime.read_current(&self.id, &entry).is_none() {
+                    return false;
+                }
+                runtime.0.borrow_mut().completions.admit(
+                    self.id.clone(),
+                    self.generation,
+                    callback,
+                );
+                runtime.flush_completion_frames();
+                true
+            })
+            .unwrap_or(false)
+    }
     pub(crate) fn queue_trigger_restore(&self, focus_version: u64) -> bool {
         let Some(runtime) = self.runtime() else {
             return false;
@@ -2121,6 +2217,12 @@ struct Query {
     trigger_restore_root: Option<String>,
     #[serde(default)]
     trigger_restore_generation: Option<u64>,
+    #[serde(default)]
+    completion_sequence: Option<u64>,
+    #[serde(default)]
+    completion_root: Option<String>,
+    #[serde(default)]
+    completion_generation: Option<u64>,
 }
 
 #[cfg(test)]
@@ -2595,6 +2697,164 @@ mod tests {
             Rc::new(dioxus::html::FormData::new(RawForm(value.to_string()))),
             true,
         )
+    }
+    fn completion_event(runtime: &RuntimeHandle, frame: &(u64, String, u64)) -> FormEvent {
+        event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
+            "completion_sequence":frame.0,"completion_root":frame.1,"completion_generation":frame.2}))
+    }
+
+    #[test]
+    fn completion_frames_restore_registered_owner_and_defer_reentrant_work_past_snapshot() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        let caller = fixture.0.caller.get().unwrap();
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        let first_log = delivered.clone();
+        let nested_node = node.clone();
+        dom.in_scope(caller, || {
+            assert!(node.queue_completion(Rc::new(move || {
+                assert_eq!(current_scope_id(), owner);
+                assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
+                first_log.borrow_mut().push(1);
+                let nested_log = first_log.clone();
+                assert!(nested_node.queue_completion(Rc::new(move || {
+                    assert_eq!(current_scope_id(), owner);
+                    nested_log.borrow_mut().push(3);
+                })));
+            })));
+            let second_log = delivered.clone();
+            assert!(node.queue_completion(Rc::new(move || {
+                assert_eq!(current_scope_id(), owner);
+                second_log.borrow_mut().push(2);
+            })));
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "no synchronous fallback before the native bridge"
+        );
+        dom.in_scope(owner, || {
+            runtime.attach_document("completion-owner-bootstrap")
+        });
+        let frame = runtime.pending_completion_frames();
+        assert_eq!(
+            frame.len(),
+            2,
+            "initial document attachment retains admitted writes"
+        );
+        dom.in_scope(ScopeId::APP, || {
+            let mut show = fixture.0.show_caller.get().unwrap();
+            show.set(false);
+        });
+        dom.render_immediate_to_vec();
+        assert!(fixture.0.caller_dropped.get());
+        // Later reports and the current closed state do not erase captured
+        // completion payloads. Delivery still reads through the owner scope.
+        fixture.0.open.set(false);
+        dom.in_scope(owner, || {
+            runtime.observe(&report(&runtime, 80, "observe", serde_json::json!([])));
+        });
+        let wrong_owner = event(serde_json::json!({"owner":"foreign-runtime","sequence":0,
+            "completion_sequence":frame[0].0,"completion_root":frame[0].1,"completion_generation":frame[0].2}));
+        runtime.query(wrong_owner.clone());
+        assert!(wrong_owner.default_action_enabled());
+        let out_of_order = completion_event(&runtime, &frame[1]);
+        runtime.query(out_of_order.clone());
+        assert!(out_of_order.default_action_enabled());
+        assert!(delivered.borrow().is_empty());
+        for captured in &frame {
+            let ack = completion_event(&runtime, captured);
+            dom.in_scope(ScopeId::APP, || runtime.query(ack.clone()));
+            assert!(!ack.default_action_enabled());
+            let repeat = completion_event(&runtime, captured);
+            runtime.query(repeat.clone());
+            assert!(repeat.default_action_enabled());
+        }
+        assert_eq!(*delivered.borrow(), [1, 2]);
+        let next_frame = runtime.pending_completion_frames();
+        assert_eq!(
+            next_frame.len(),
+            1,
+            "reentrant work waits for the next frame snapshot"
+        );
+        let ack = completion_event(&runtime, &next_frame[0]);
+        runtime.query(ack.clone());
+        assert!(!ack.default_action_enabled());
+        assert_eq!(*delivered.borrow(), [1, 2, 3]);
+        let dropped_log = delivered.clone();
+        assert!(node.queue_completion(Rc::new(move || dropped_log.borrow_mut().push(4))));
+        let dropped_frame = runtime.pending_completion_frames().pop().unwrap();
+        drop(dom);
+        assert!(runtime.pending_completion_frames().is_empty());
+        let stale = completion_event(&runtime, &dropped_frame);
+        runtime.query(stale.clone());
+        assert!(stale.default_action_enabled());
+        assert_eq!(*delivered.borrow(), [1, 2, 3]);
+        assert!(!node.queue_completion(Rc::new(|| panic!("dropped owner"))));
+    }
+
+    #[test]
+    fn completion_ack_cannot_retarget_replaced_registration_or_consume_wrong_tuple() {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let old = model(
+            &runtime,
+            "completion-root",
+            OverlayKind::Dropdown,
+            log.clone(),
+        );
+        let delivered = Rc::new(Cell::new(0));
+        let first = delivered.clone();
+        assert!(
+            old.node
+                .queue_completion(Rc::new(move || first.set(first.get() + 1)))
+        );
+        let old_frame = runtime.pending_completion_frames().pop().unwrap();
+        let joined = model(&runtime, "completion-root", OverlayKind::Dropdown, log);
+        assert_eq!(
+            runtime.pending_completion_frames().as_slice(),
+            std::slice::from_ref(&old_frame),
+            "same-generation settings joins retain completion jobs"
+        );
+        let wrong_generation = completion_event(&runtime, &(old_frame.0, old_frame.1.clone(), 2));
+        runtime.query(wrong_generation.clone());
+        assert!(wrong_generation.default_action_enabled());
+        let replacement = runtime.register(
+            "completion-root".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            Callbacks {
+                read: Rc::new(|| Some(false)),
+                before: Rc::new(|_| true),
+                apply: Rc::new(|_| {}),
+                key: None,
+            },
+        );
+        assert!(runtime.pending_completion_frames().is_empty());
+        assert!(
+            !old.node
+                .queue_completion(Rc::new(|| panic!("old generation")))
+        );
+        assert!(
+            !joined
+                .node
+                .queue_completion(Rc::new(|| panic!("same old generation")))
+        );
+        let current = delivered.clone();
+        assert!(replacement.queue_completion(Rc::new(move || current.set(current.get() + 10))));
+        let current_frame = runtime.pending_completion_frames().pop().unwrap();
+        let stale = completion_event(&runtime, &old_frame);
+        runtime.query(stale.clone());
+        assert!(stale.default_action_enabled());
+        assert_eq!(delivered.get(), 0);
+        let current = completion_event(&runtime, &current_frame);
+        runtime.query(current.clone());
+        assert!(!current.default_action_enabled());
+        assert_eq!(delivered.get(), 10);
     }
     fn key_value(runtime: &RuntimeHandle, sequence: u64, phase: &str) -> serde_json::Value {
         serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"key","phase":phase,"key":"Enter",

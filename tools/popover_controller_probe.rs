@@ -96,10 +96,11 @@ enum FocusMode {
     AnchorFocusNoTrap,
     TriggerOthers,
     TriggerOthersTopology,
+    CompletionFrame,
 }
 
 impl FocusMode {
-    const ALL: [Self; 31] = [
+    const ALL: [Self; 32] = [
         Self::Default,
         Self::Priority,
         Self::HeaderOnly,
@@ -131,6 +132,7 @@ impl FocusMode {
         Self::AnchorFocusNoTrap,
         Self::TriggerOthers,
         Self::TriggerOthersTopology,
+        Self::CompletionFrame,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -165,6 +167,7 @@ impl FocusMode {
             Self::AnchorFocusNoTrap => "anchor-focus-no-trap",
             Self::TriggerOthers => "trigger-others",
             Self::TriggerOthersTopology => "trigger-others-topology",
+            Self::CompletionFrame => "completion-frame",
         }
     }
     fn from_key(value: &str) -> Self {
@@ -244,7 +247,7 @@ fn Probe() -> Element {
             button { id: "popover-topology-hover", onclick: move |_| { nested_child_host.set(true); hover_parent.set(true); focus_mode.set(FocusMode::Default); generation += 1; }, "Fresh hover parent trigger" }
             input { id: "popover-topology", r#type: "hidden", oninput: move |event| { let value = event.value(); nested_child_host.set(value != "sibling"); hover_parent.set(value == "hover"); focus_mode.set(FocusMode::Default); generation += 1; } }
             div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
-                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor() && !mode.is_trigger_others()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
+                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor() && !mode.is_trigger_others() && *mode != FocusMode::CompletionFrame) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
             }
             input { id: "popover-focus-mode", r#type: "hidden", oninput: move |event| { focus_mode.set(FocusMode::from_key(&event.value())); nested_child_host.set(true); hover_parent.set(false); generation += 1; } }
             button { id: "popover-before", "Before opening focus target" }
@@ -257,6 +260,7 @@ fn Probe() -> Element {
             div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
                 for mode in FocusMode::ALL.into_iter().filter(|mode| mode.is_trigger_others()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh actual trigger: {}", mode.key())} } }
             }
+            button { id: "popover-focus-mode-completion-frame", onclick: move |_| { focus_mode.set(FocusMode::CompletionFrame); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, "Fresh completion frame" }
         }
     } }
 }
@@ -351,6 +355,7 @@ fn Fixture(
             Panel { index: 3 }
             if focus_mode.is_anchor() { AnchorProbe { mode: focus_mode } }
             if focus_mode.is_trigger_others() { TriggerOthersProbe { topology: focus_mode == FocusMode::TriggerOthersTopology } }
+            if focus_mode == FocusMode::CompletionFrame { CompletionFrameProbe {} }
             pre { id: "popover-controller-log", style: "white-space:pre-wrap;overflow-wrap:anywhere", "{logs}" }
         }
     }
@@ -577,6 +582,123 @@ const ANCHOR_POSITIONS: [(&str, i32, i32); 7] = [
     ("corner", 190, -20),
     ("outside", -120, 60),
 ];
+
+#[derive(Clone, Copy)]
+struct CompletionFrameContext {
+    dropdown: DropdownHandle,
+    surface_visible: Signal<bool>,
+    surface_epoch: Signal<usize>,
+    handler_version: Signal<usize>,
+    reentrant: Signal<bool>,
+    reentrant_step: Signal<usize>,
+}
+
+#[component]
+fn CompletionFrameProbe() -> Element {
+    let ProbeContext { rows, .. } = use_context::<ProbeContext>();
+    let dropdown = use_dropdown();
+    let mut surface_visible = use_signal(|| true);
+    let mut surface_epoch = use_signal(|| 0_usize);
+    let mut handler_version = use_signal(|| 0_usize);
+    let mut reentrant = use_signal(|| false);
+    let reentrant_step = use_signal(|| 0_usize);
+    let mut returned = use_signal(|| 0_usize);
+    use_context_provider(|| CompletionFrameContext {
+        dropdown,
+        surface_visible,
+        surface_epoch,
+        handler_version,
+        reentrant,
+        reentrant_step,
+    });
+    rsx! {
+        section { id: "completion-frame-probe", "data-open": dropdown.is_open().to_string(), "data-surface-visible": surface_visible().to_string(), "data-surface-epoch": surface_epoch().to_string(), "data-handler-version": handler_version().to_string(), "data-reentrant-step": reentrant_step().to_string(), "data-returned": returned().to_string(),
+            input { id: "completion-frame-command", r#type: "hidden", oninput: move |event| {
+                let action = event.value();
+                record(rows, "completion-command", "completion", json!({"action":action,"open":dropdown.is_open(),"epoch":surface_epoch(),"handler":handler_version()}));
+                match action.as_str() {
+                    "open" => dropdown.open(),
+                    "close" => dropdown.close(false),
+                    "toggle" => dropdown.toggle(),
+                    "burst" => { dropdown.open(); dropdown.close(false); dropdown.open(); },
+                    "reentrant-open" => { reentrant.set(true); dropdown.open(); },
+                    "open-replace-handler" => { dropdown.open(); handler_version.set(1); },
+                    "open-drop" => { dropdown.open(); surface_visible.set(false); },
+                    "remount" => surface_visible.set(true),
+                    "open-replace-surface" => { dropdown.open(); surface_epoch += 1; handler_version.set(1); },
+                    _ => {},
+                }
+                record(rows, "completion-public-return", "completion", json!({"action":action,"open":dropdown.is_open(),"epoch":surface_epoch(),"handler":handler_version(),"surfaceVisible":surface_visible()}));
+                returned += 1;
+            } }
+            div { id: "completion-frame-trigger-slot", DropdownTrigger { dropdown, aria_label: "Completion actual trigger", "Completion actual trigger" } }
+            if surface_visible() {
+                for epoch in [surface_epoch()] { CompletionFrameSurface { key: "{epoch}", epoch, handler: handler_version() } }
+            }
+            div { style: "display:flex;gap:4px;flex-wrap:wrap;margin:8px 0",
+                for action in ["open", "close", "toggle", "burst", "reentrant-open", "open-replace-handler", "open-drop", "remount", "open-replace-surface"] {
+                    button { id: "completion-frame-control-{action}", tabindex: "-1", onmousedown: move |event| event.prevent_default(), onclick: move |event| {
+                        event.stop_propagation();
+                        #[cfg(feature = "web")]
+                        { let data = event.data(); if let Some(native) = data.downcast::<web_sys::MouseEvent>() { native.stop_propagation(); } }
+                        record(rows, "completion-command", "completion", json!({"action":action,"origin":"visible-Rust-control","open":dropdown.is_open(),"epoch":surface_epoch(),"handler":handler_version()}));
+                        match action {
+                            "open" => dropdown.open(), "close" => dropdown.close(false), "toggle" => dropdown.toggle(),
+                            "burst" => { dropdown.open(); dropdown.close(false); dropdown.open(); },
+                            "reentrant-open" => { reentrant.set(true); dropdown.open(); },
+                            "open-replace-handler" => { dropdown.open(); handler_version.set(1); },
+                            "open-drop" => { dropdown.open(); surface_visible.set(false); },
+                            "remount" => surface_visible.set(true),
+                            _ => { dropdown.open(); surface_epoch += 1; handler_version.set(1); },
+                        }
+                        record(rows, "completion-public-return", "completion", json!({"action":action,"open":dropdown.is_open(),"epoch":surface_epoch(),"handler":handler_version(),"surfaceVisible":surface_visible()}));
+                        returned += 1;
+                    }, "{action}" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CompletionFrameSurface(epoch: usize, handler: usize) -> Element {
+    let ProbeContext { rows, .. } = use_context::<ProbeContext>();
+    let CompletionFrameContext {
+        dropdown,
+        surface_visible,
+        surface_epoch,
+        handler_version,
+        reentrant,
+        mut reentrant_step,
+    } = use_context::<CompletionFrameContext>();
+    use_drop(move || {
+        record(
+            rows,
+            "completion-surface-drop",
+            "completion",
+            json!({"epoch":epoch,"handler":handler,"currentOpen":dropdown.is_open()}),
+        )
+    });
+    rsx! {
+        div { id: "completion-frame-surface", "data-epoch": epoch.to_string(), "data-handler": handler.to_string(),
+            onmounted: move |_| record(rows, "completion-surface-mounted", "completion", json!({"epoch":epoch,"handler":handler})),
+            Dropdown { controller: dropdown, label: "Completion frame native surface", enable_top_layer: true, disable_focus_trap: true, suppress_automatic_placement: true, suppress_trigger_visibility_check: true,
+                onbeforechange: move |event: DropdownChangeEvent| record(rows, "completion-request", "completion", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented(),"epoch":epoch,"handler":handler})),
+                onchange: move |open| {
+                    record(rows, "completion-event", "completion", json!({"open":open,"currentOpen":dropdown.is_open(),"epoch":epoch,"handler":handler,"currentEpoch":surface_epoch(),"currentHandler":handler_version(),"surfaceVisible":surface_visible(),"reentrantStep":reentrant_step()}));
+                    let step = reentrant_step();
+                    if reentrant() && step < 2 && ((step == 0 && open) || (step == 1 && !open)) {
+                        reentrant_step.set(step + 1);
+                        record(rows, "completion-reentrant-action", "completion", json!({"fromPayload":open,"action":if open {"close"} else {"open"},"step":step + 1}));
+                        if open { dropdown.close(false); } else { dropdown.open(); }
+                        record(rows, "completion-reentrant-return", "completion", json!({"open":dropdown.is_open(),"step":step + 1}));
+                    }
+                },
+                button { id: "completion-frame-action", "Completion ordinary native action" }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct TriggerOthersContext {
@@ -971,8 +1093,8 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[],triggerOthersCases=[];
-let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null,activeTriggerOthers=null,readFailureTriggerOthers=()=>null;
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[],triggerOthersCases=[],completionFrameCases=[];
+let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null,activeTriggerOthers=null,readFailureTriggerOthers=()=>null,activeCompletionFrame=null,readFailureCompletionFrame=()=>null;
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -1409,6 +1531,29 @@ try {
  await triggerOthersRun({sourceCase:102,publicOnly:true});
  await triggerOthersRun({sourceCase:103,preprevent:true});
  assert(triggerOthersCases.length===7,'all seven actual-trigger/public-handle policy diagnostics complete matched public setup');
- return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,activeTriggerOthers,failureTriggerOthers:readFailureTriggerOthers(),activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
+ const completionRun=async(sourceCase)=>{
+  const labels={104:'same Rust handler public open close open',105:'three same-native-turn actual registered trigger clicks',106:'bounded actual completion callback public close then open',107:'actual callback prop replacement before queued completion',108:'surface drop and remount with stable Rust controller',109:'surface keyed replacement with stable public wrapper ID'};await freshFocus('completion-frame','source'+sourceCase+' '+labels[sourceCase]);
+  const nodes=()=>{const owner=get('completion-frame-probe'),wrapper=get('completion-frame-surface'),host=wrapper?.querySelector('[data-ix-overlay-host]'),root=host?.closest('[data-ix-overlay-root]'),trigger=get('completion-frame-trigger-slot')?.querySelector('[data-ix-overlay-trigger]');return{owner,wrapper,host,root,trigger,action:get('completion-frame-action')};};
+  const bound=()=>{const n=nodes(),input=n.root?.querySelector('input[data-ix-overlay-transport][data-ix-overlay-native="true"]');return n.owner&&n.host&&n.trigger&&n.root?.dataset.ixOverlayOwner&&/^\d+$/.test(n.root?.dataset.ixOverlayGeneration??'')&&input;};await wait(bound,'actual completion fixture public controller/native registration');await settle();
+  const initial=nodes(),start=logs().length,timeline=[],frames=[],listeners=new AbortController();let frameSequence=0;
+  const element=node=>node?{...describe(node),connected:node.isConnected,attributes:Object.fromEntries(Array.from(node.attributes).filter(a=>a.name.startsWith('data-')||['popover','hidden','inert'].includes(a.name)).map(a=>[a.name,a.value])),nativeOpen:node.hasAttribute('popover')?node.matches(':popover-open'):null,geometry:geometry(node)}:null;
+  const facts=()=>{const n=nodes();return{owner:n.owner?{...n.owner.dataset}:null,elements:Object.fromEntries(Object.entries(n).map(([key,node])=>[key,element(node)])),originalElements:Object.fromEntries(Object.entries(initial).map(([key,node])=>[key,{element:element(node),sameCurrentObject:n[key]===node,sameCurrentPublicId:node?.id?get(node.id)===node:null}])),active:describe(document.activeElement),callbacks:logs().slice(start),lastObservedNativeFrame:frames.at(-1)||null};};
+  const phase=(name,extra={})=>{const row={phase:name,time:performance.now(),facts:facts(),...extra};timeline.push(row);return row;};activeCompletionFrame={sourceCase,timeline};readFailureCompletionFrame=facts;
+  const frame=label=>new Promise(resolve=>requestAnimationFrame(time=>{const marker={sequence:++frameSequence,label,frameTime:time};frames.push(marker);resolve(phase('unmodified-native-RAF-observer',{marker}));}));
+  const command=async(action)=>{const previous=Number(nodes().owner.dataset.returned),before=frame('queued-before-public-command-'+action);driverJournal.push({scenario,kind:'actual-Rust-public-completion-command',action,adapter:'Rust handle typed requests/opening focus differ from source public show property'});phase('before-public-command-native-dispatch',{action});input('completion-frame-command',action);phase('native-command-dispatch-return',{action,IPC:'Native input dispatch return does not mean desktop Rust handler ran'});queueMicrotask(()=>phase('queued-driver-microtask',{action}));const after=frame('queued-after-public-command-'+action);await wait(()=>Number(nodes().owner?.dataset.returned)>previous,'actual Rust command return publication '+action);phase('actual-Rust-command-return-published',{action,IPC:'Callback log publication is not the callback execution timestamp'});await Promise.all([before,after]);};
+  try{
+   for(const type of ['beforetoggle','toggle'])initial.host.addEventListener(type,event=>phase('original-native-'+type,{oldState:event.oldState,newState:event.newState,target:describe(event.target)}),{passive:true,signal:listeners.signal});
+   for(const type of ['focusin','focusout'])document.addEventListener(type,event=>phase('native-'+type,{target:describe(event.target),relatedTarget:describe(event.relatedTarget)}),{capture:true,passive:true,signal:listeners.signal});
+   phase('initial-native-controller-and-handler');
+   if(sourceCase===105){const trigger=initial.trigger;trigger.focus();await settle();assert(document.activeElement===trigger,'actual retained completion trigger focus before three clicks');const before=frame('queued-before-three-actual-clicks');phase('before-three-same-turn-actual-trigger-clicks');for(let index=0;index<3;index++){const event=new MouseEvent('click',{bubbles:true,cancelable:true,composed:true,button:0});driverJournal.push({scenario,kind:'three-same-native-turn-registered-trigger-click',index,target:describe(trigger),trusted:event.isTrusted});trigger.dispatchEvent(event);phase('actual-trigger-click-dispatch-return',{index,defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,IPC:'Three native inputs are one JavaScript turn; desktop Rust handlers may process through separate IPC deliveries'});}await Promise.all([before,frame('queued-after-three-actual-clicks')]);}
+   else if(sourceCase===108){await command('open-drop');await wait(()=>!initial.host.isConnected&&!nodes().host,'actual old native surface unmounted before stable-controller remount');phase('old-native-surface-actually-disconnected');await command('remount');await wait(bound,'actual remounted native surface registration');assert(nodes().trigger===initial.trigger&&nodes().host!==initial.host,'surface-only lifecycle retains actual trigger but creates a new native surface');phase('actual-remount-with-new-native-generation');}
+   else if(sourceCase===109){await command('open-replace-surface');await wait(()=>bound()&&nodes().host!==initial.host&&!initial.host.isConnected,'actual old surface disconnected and keyed replacement registered');assert(nodes().wrapper.id===initial.wrapper.id&&nodes().wrapper!==initial.wrapper,'replacement retains public wrapper ID with a distinct actual node');phase('actual-keyed-replacement-with-same-public-wrapper-ID');}
+   else await command(sourceCase===104?'burst':sourceCase===106?'reentrant-open':'open-replace-handler');
+   await settle();await frame('settled-observer-one');await frame('settled-observer-two');const settled=phase('settled-completion-history');const entry={sourceCase,label:scenario,input:{operation:labels[sourceCase],sourcePropertyVsRustHandleAdapter:sourceCase!==105,surfaceLifecycleAdapter:[108,109].includes(sourceCase),applicationCallbackPolicy:'Rust owned bounded two reentrant actions only for106'},timeline,frames,settled,callbacks:logs().slice(start),classification:'raw per-change payload/public return/handler/lifetime observations; no immediate completion or full native frame timing parity asserted',limits:['Desktop native input dispatch and rendered callback publication do not timestamp Rust handler execution','Unmodified native RAF observers record actual brackets without wrapping or controlling production scheduling','Rust public handle requests/opening focus differ from source public show-property watcher','Rust conditional/keyed surface remount creates new native nodes/registration generation; source108 same actual host reconnection is explicitly differential','Queued source detached-host listener delivery versus Rust scoped-callback cancellation is an owner-lifetime adaptation, not a forced parity assertion']};completionFrameCases.push(entry);save({phase:'raw-completion-frame-history',completionFrame:entry});activeCompletionFrame=null;
+  }finally{listeners.abort();}
+ };
+ for(const sourceCase of [104,105,106,107,108,109])await completionRun(sourceCase);
+ assert(completionFrameCases.length===6,'all six paired completion-frame public/native/lifecycle histories complete actual fixture setup');
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,activeCompletionFrame,failureCompletionFrame:readFailureCompletionFrame(),activeTriggerOthers,failureTriggerOthers:readFailureTriggerOthers(),activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
 "#;

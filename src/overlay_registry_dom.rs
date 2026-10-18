@@ -430,7 +430,10 @@ function scheduleNativeFocus(){
   if(nativeFocusFrame||!nativeFocusCommands.length)return;
   nativeFocusFrame=requestAnimationFrame(()=>{
     nativeFocusFrame=0;if(!alive)return;
-    while(nativeFocusCommands.length){
+    // Only commands admitted before this frame belong to its batch. A Rust
+    // completion callback can enqueue a new transition for a later frame.
+    let remaining=nativeFocusCommands.length;
+    while(nativeFocusCommands.length&&remaining--){
       const job=nativeFocusCommands[0],command=job.command;
       if(job.kind==='trigger'&&job.root?.isConnected&&job.root.getAttribute('data-ix-overlay-owner')===owner&&job.root.getAttribute('data-ix-overlay-root')===command.root&&Number(job.root.getAttribute('data-ix-overlay-generation'))===command.generation&&
         Number(job.root.getAttribute('data-ix-overlay-focus-version')||'0')<command.focus_version)break;
@@ -438,7 +441,10 @@ function scheduleNativeFocus(){
       // overtake an earlier cleanup. Rust's channel supplies causal order.
       nativeFocusCommands.shift();syncExecution();
       const input=transport();if(!input)continue;
-      if(job.kind==='trigger'){
+      if(job.kind==='completion'){
+        input.value=JSON.stringify({owner,sequence:0,completion_sequence:command.sequence,completion_root:command.root,completion_generation:command.generation});
+        input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+      }else if(job.kind==='trigger'){
         input.value=JSON.stringify({owner,sequence:0,trigger_restore_sequence:command.sequence,trigger_restore_root:command.root,trigger_restore_generation:command.generation});
         const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})),root=job.root;
         if(allowed&&root?.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===command.root&&Number(root.getAttribute('data-ix-overlay-generation'))===command.generation){
@@ -457,6 +463,7 @@ try{
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
     if(command?.restore_trigger)queueTriggerRestore(command.restore_trigger);
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
+    if(command?.completion_frame){nativeFocusCommands.push({kind:'completion',command:command.completion_frame});scheduleNativeFocus();}
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);

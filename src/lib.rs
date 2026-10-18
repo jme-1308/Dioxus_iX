@@ -55,6 +55,7 @@ pub mod icons;
 pub mod layout;
 mod menu_hover_dom;
 pub mod notifications;
+mod overlay_completion;
 mod overlay_domain;
 mod overlay_focus_pending;
 mod overlay_registry;

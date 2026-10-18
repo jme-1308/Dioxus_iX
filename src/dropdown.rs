@@ -7,7 +7,7 @@ use crate::overlay_runtime::{self, Callbacks, Change, KeyDecision, KeyFacts, Nod
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -99,8 +99,6 @@ struct FocusRequest {
     last: bool,
     allow_checked: bool,
 }
-type ChangeNotification = (EventHandler<bool>, bool);
-type ChangeNotifications = Rc<RefCell<VecDeque<ChangeNotification>>>;
 struct MenuState {
     alive: bool,
     surface: bool,
@@ -129,8 +127,6 @@ struct DropdownContext {
     entries: Rc<RefCell<BTreeMap<usize, MenuEntry>>>,
     node: Rc<RefCell<Option<NodeHandle>>>,
     trigger: Rc<RefCell<Option<Rc<MountedData>>>>,
-    notifications: ChangeNotifications,
-    notifying: Rc<Cell<bool>>,
     focus_task: Rc<RefCell<Option<dioxus::core::Task>>>,
 }
 impl DropdownContext {
@@ -253,7 +249,7 @@ impl DropdownContext {
         if let Some(task) = task {
             task.cancel();
         }
-        let (changed, restore, trigger_cleanup) = {
+        let (changed, generation, trigger_cleanup) = {
             let mut state = self.state.borrow_mut();
             if !state.alive || !state.surface {
                 return;
@@ -280,7 +276,7 @@ impl DropdownContext {
                         | Reason::TriggerOther
                 ))
             .then_some(state.focus_epoch);
-            (changed, state.settings.changed, trigger_cleanup)
+            (changed, state.generation, trigger_cleanup)
         };
         let mut open = self.open;
         let Ok(mut current) = open.try_write() else {
@@ -297,27 +293,26 @@ impl DropdownContext {
             self.state.borrow_mut().focus_target = "none".into();
         }
         self.notify();
-        // All state is normalized before callbacks; no post-callback write may
-        // overwrite a nested controller command or a teardown.
-        if changed {
-            self.notifications
-                .borrow_mut()
-                .push_back((restore, change.open));
-            if self.notifying.replace(true) {
-                return;
-            }
-            loop {
-                let notification = self.notifications.borrow_mut().pop_front();
-                let Some((handler, value)) = notification else {
-                    break;
+        let completion_node = if changed {
+            self.node.borrow().clone()
+        } else {
+            None
+        };
+        if let Some(node) = completion_node {
+            let context = self.clone();
+            // Every changed value owns a native-frame notification, even when
+            // a later same-owner command changes visibility again. Resolve the
+            // current callback at delivery, like listeners on the source host.
+            node.queue_completion(Rc::new(move || {
+                let handler = {
+                    let state = context.state.borrow();
+                    if !state.alive || !state.surface || state.generation != generation {
+                        return;
+                    }
+                    state.settings.changed
                 };
-                if !self.state.borrow().alive {
-                    self.notifications.borrow_mut().clear();
-                    break;
-                }
-                handler.call(value);
-            }
-            self.notifying.set(false);
+                handler.call(change.open);
+            }));
         }
     }
     fn publish_item(&self, target: usize, focus: bool) {
@@ -703,8 +698,6 @@ pub fn use_dropdown() -> DropdownHandle {
         entries: use_hook(|| Rc::new(RefCell::new(BTreeMap::new()))),
         node: use_hook(|| Rc::new(RefCell::new(None))),
         trigger: use_hook(|| Rc::new(RefCell::new(None))),
-        notifications: use_hook(|| Rc::new(RefCell::new(VecDeque::new()))),
-        notifying: use_hook(|| Rc::new(Cell::new(false))),
         focus_task: use_hook(|| Rc::new(RefCell::new(None))),
     };
     let dropped = context.clone();
@@ -1589,6 +1582,8 @@ mod tests {
         close_after_open: bool,
         requests: Vec<(bool, bool)>,
         changed: Vec<bool>,
+        listener_revision: usize,
+        deliveries: Vec<(usize, bool, bool)>,
         item_requests: usize,
         item_veto: bool,
         standalone_requests: usize,
@@ -1622,6 +1617,8 @@ mod tests {
                 close_after_open: false,
                 requests: vec![],
                 changed: vec![],
+                listener_revision: 0,
+                deliveries: vec![],
                 item_requests: 0,
                 item_veto: false,
                 standalone_requests: 0,
@@ -1682,7 +1679,7 @@ mod tests {
             if settings.visible {
             Dropdown {label:"Menu",navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
                 onbeforechange:move |event:DropdownChangeEvent|{let veto={let mut state=before.borrow_mut();state.requests.push((event.open,event.previous));if event.open{state.veto_open}else{state.veto_close}};if veto{event.prevent_default();}},
-                onchange:move |open:bool|{let (close,capture)={let mut state=changed.borrow_mut();state.changed.push(open);(state.close_after_open&&open,state.context.clone())};let context=capture.borrow().clone();if close{if let Some(context)=context{context.request(false,Reason::Trigger,false);}}},
+                onchange:move |open:bool|{let (close,capture)={let mut state=changed.borrow_mut();state.changed.push(open);(state.close_after_open&&open,state.context.clone())};let context=capture.borrow().clone();if let Some(context)=context{changed.borrow_mut().deliveries.push((settings.listener_revision,open,*context.open.peek()));if close{context.request(false,Reason::Trigger,false);}}},
                 Stateful {config:config.clone()}
                 DropdownItem {label:"Alpha",onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|click.borrow_mut().native_clicks+=1}
                 DropdownItem {label:"Disabled",disabled:true}
@@ -1755,10 +1752,48 @@ mod tests {
                 }
             }
         }
-        fn settle(&mut self) {
+        fn render_now(&mut self) {
             for _ in 0..4 {
                 let edits = self.dom.render_immediate_to_vec();
                 self.collect(edits);
+            }
+        }
+        /// A synthetic frame ACK exercises the real registered transport. The
+        /// snapshot excludes work admitted by a callback in this frame.
+        fn completion_frame(&mut self) -> usize {
+            let node = self.context().node.borrow().clone();
+            let Some(runtime) = node.and_then(|node| node.runtime()) else {
+                return 0;
+            };
+            let frames = runtime.pending_completion_frames();
+            let transport = self
+                .attrs
+                .iter()
+                .find(|(_, attrs)| {
+                    attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
+                })
+                .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+                .unwrap();
+            let count = frames.len();
+            for (sequence, root, generation) in frames {
+                dispatch(
+                    &self.dom,
+                    "change",
+                    transport,
+                    serde_json::json!({
+                        "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
+                        "completion_root":root,"completion_generation":generation
+                    })
+                    .to_string(),
+                );
+            }
+            self.render_now();
+            count
+        }
+        fn settle(&mut self) {
+            for _ in 0..4 {
+                self.render_now();
+                self.completion_frame();
             }
         }
         fn update(&mut self) {
@@ -2253,6 +2288,109 @@ mod tests {
             !h.html().contains("aria-activedescendant"),
             "roving has no focus proxy aria attribute"
         );
+    }
+
+    #[test]
+    fn completion_payloads_wait_for_frame_keep_each_write_and_use_current_listener() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        let context = h.context();
+        h.dom.in_runtime(|| {
+            for value in [true, false, true] {
+                assert!(context.request(value, Reason::Trigger, false));
+            }
+        });
+        h.render_now();
+        assert!(*context.open.peek());
+        assert!(
+            h.config.borrow().changed.is_empty(),
+            "rendering is not a native frame"
+        );
+        h.config.borrow_mut().listener_revision = 7;
+        h.config.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert!(h.config.borrow().changed.is_empty());
+        assert_eq!(h.completion_frame(), 3);
+        assert_eq!(h.config.borrow().changed, [true, false, true]);
+        assert_eq!(
+            h.config.borrow().deliveries,
+            [(7, true, true), (7, false, true), (7, true, true)]
+        );
+        assert_eq!(h.completion_frame(), 0);
+    }
+
+    #[test]
+    fn completion_callback_reentrant_write_waits_for_another_frame_ack() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            close_after_open: true,
+            ..Default::default()
+        });
+        let context = h.context();
+        h.dom
+            .in_runtime(|| assert!(context.request(true, Reason::Trigger, false)));
+        h.render_now();
+        assert!(h.config.borrow().changed.is_empty());
+        assert_eq!(h.completion_frame(), 1);
+        assert_eq!(h.config.borrow().changed, [true]);
+        assert!(
+            !*context.open.peek(),
+            "the callback's close applies immediately"
+        );
+        assert_eq!(h.config.borrow().requests, [(true, false), (false, true)]);
+        assert_eq!(h.completion_frame(), 1);
+        assert_eq!(h.config.borrow().changed, [true, false]);
+        assert_eq!(
+            h.config.borrow().deliveries,
+            [(0, true, true), (0, false, false)]
+        );
+        assert_eq!(h.completion_frame(), 0);
+    }
+
+    #[test]
+    fn dropped_component_completion_cannot_call_the_replacement_listener() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        let old = h.context();
+        let runtime = old.node.borrow().clone().unwrap().runtime().unwrap();
+        h.dom
+            .in_runtime(|| assert!(old.request(true, Reason::Trigger, false)));
+        h.render_now();
+        let pending = runtime.pending_completion_frames();
+        assert_eq!(pending.len(), 1);
+        h.config.borrow_mut().visible = false;
+        h.update();
+        assert!(runtime.pending_completion_frames().is_empty());
+        assert!(h.config.borrow().changed.is_empty());
+        h.config.borrow_mut().visible = true;
+        h.config.borrow_mut().listener_revision = 9;
+        h.update();
+        let current = h.context();
+        assert_ne!(current.id, old.id, "a new component has a new owner");
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        let (sequence, root, generation) = &pending[0];
+        let result = dispatch(
+            &h.dom,
+            "change",
+            transport,
+            serde_json::json!({
+                "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
+                "completion_root":root,"completion_generation":generation
+            })
+            .to_string(),
+        );
+        assert!(!result.0, "an old frame has no permission to notify");
+        assert!(h.config.borrow().changed.is_empty());
+        h.dom
+            .in_runtime(|| assert!(current.request(true, Reason::Trigger, false)));
+        h.render_now();
+        assert_eq!(h.completion_frame(), 1);
+        assert_eq!(h.config.borrow().deliveries, [(9, true, true)]);
     }
 
     #[test]
