@@ -471,7 +471,7 @@ impl DropdownContext {
         };
         if let Some(node) = completion_node {
             let context = self.clone();
-            // Every changed value owns a native-frame notification, even when
+            // Every changed value owns a Dioxus effect notification, even when
             // a later same-owner command changes visibility again. Resolve the
             // current callback at delivery, like listeners on the source host.
             node.queue_completion(Rc::new(move || {
@@ -2214,37 +2214,9 @@ mod tests {
                 self.collect(edits);
             }
         }
-        /// A synthetic frame ACK exercises the real registered transport. The
-        /// snapshot excludes work admitted by a callback in this frame.
-        fn completion_frame(&mut self) -> usize {
-            let node = self.context().node.borrow().clone();
-            let Some(runtime) = node.and_then(|node| node.runtime()) else {
-                return 0;
-            };
-            let frames = runtime.pending_completion_frames();
-            let transport = self
-                .attrs
-                .iter()
-                .find(|(_, attrs)| {
-                    attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
-                })
-                .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-                .unwrap();
-            let count = frames.len();
-            for (sequence, root, generation) in frames {
-                dispatch(
-                    &self.dom,
-                    "change",
-                    transport,
-                    serde_json::json!({
-                        "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
-                        "completion_root":root,"completion_generation":generation
-                    })
-                    .to_string(),
-                );
-            }
+        /// Run the real framework effects after rendering component updates.
+        fn completion_effects(&mut self) {
             self.render_now();
-            count
         }
         fn item_frames(&mut self) -> usize {
             let Some(runtime) = self
@@ -2286,7 +2258,7 @@ mod tests {
         fn settle(&mut self) {
             for _ in 0..4 {
                 self.render_now();
-                self.completion_frame();
+                self.completion_effects();
                 self.item_frames();
             }
         }
@@ -3218,7 +3190,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_payloads_wait_for_frame_keep_each_write_and_use_current_listener() {
+    fn completion_effects_keep_each_payload_and_use_current_committed_listener() {
         let _guard = crate::test_event_converter_guard();
         let mut h = Harness::new();
         let context = h.context();
@@ -3227,27 +3199,25 @@ mod tests {
                 assert!(context.request(value, Reason::Trigger, false));
             }
         });
-        h.render_now();
-        assert!(*context.open.peek());
         assert!(
             h.config.borrow().changed.is_empty(),
-            "rendering is not a native frame"
+            "request admission is synchronous, completion is not"
         );
         h.config.borrow_mut().listener_revision = 7;
         h.config.borrow().update.clone().unwrap()();
-        h.render_now();
-        assert!(h.config.borrow().changed.is_empty());
-        assert_eq!(h.completion_frame(), 3);
+        h.completion_effects();
+        assert!(*context.open.peek());
         assert_eq!(h.config.borrow().changed, [true, false, true]);
         assert_eq!(
             h.config.borrow().deliveries,
             [(7, true, true), (7, false, true), (7, true, true)]
         );
-        assert_eq!(h.completion_frame(), 0);
+        h.completion_effects();
+        assert_eq!(h.config.borrow().changed.len(), 3, "effects deliver once");
     }
 
     #[test]
-    fn completion_callback_reentrant_write_waits_for_another_frame_ack() {
+    fn completion_effect_allows_reentrant_state_change_without_borrow_conflict() {
         let _guard = crate::test_event_converter_guard();
         let mut h = Harness::with_settings(Fixture {
             close_after_open: true,
@@ -3256,67 +3226,40 @@ mod tests {
         let context = h.context();
         h.dom
             .in_runtime(|| assert!(context.request(true, Reason::Trigger, false)));
-        h.render_now();
         assert!(h.config.borrow().changed.is_empty());
-        assert_eq!(h.completion_frame(), 1);
-        assert_eq!(h.config.borrow().changed, [true]);
-        assert!(
-            !*context.open.peek(),
-            "the callback's close applies immediately"
-        );
-        assert_eq!(h.config.borrow().requests, [(true, false), (false, true)]);
-        assert_eq!(h.completion_frame(), 1);
+        h.settle();
         assert_eq!(h.config.borrow().changed, [true, false]);
+        assert!(!*context.open.peek());
+        assert_eq!(h.config.borrow().requests, [(true, false), (false, true)]);
         assert_eq!(
             h.config.borrow().deliveries,
             [(0, true, true), (0, false, false)]
         );
-        assert_eq!(h.completion_frame(), 0);
     }
 
     #[test]
-    fn dropped_component_completion_cannot_call_the_replacement_listener() {
+    fn dropped_component_effect_cannot_call_the_replacement_listener() {
         let _guard = crate::test_event_converter_guard();
         let mut h = Harness::new();
         let old = h.context();
         let runtime = old.node.borrow().clone().unwrap().runtime().unwrap();
         h.dom
             .in_runtime(|| assert!(old.request(true, Reason::Trigger, false)));
-        h.render_now();
-        let pending = runtime.pending_completion_frames();
-        assert_eq!(pending.len(), 1);
+        assert_eq!(runtime.pending_completions(), 1);
         h.config.borrow_mut().visible = false;
         h.update();
-        assert!(runtime.pending_completion_frames().is_empty());
+        assert_eq!(runtime.pending_completions(), 0);
         assert!(h.config.borrow().changed.is_empty());
         h.config.borrow_mut().visible = true;
         h.config.borrow_mut().listener_revision = 9;
         h.update();
         let current = h.context();
         assert_ne!(current.id, old.id, "a new component has a new owner");
-        let transport = h
-            .attrs
-            .iter()
-            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-            .unwrap();
-        let (sequence, root, generation) = &pending[0];
-        let result = dispatch(
-            &h.dom,
-            "change",
-            transport,
-            serde_json::json!({
-                "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
-                "completion_root":root,"completion_generation":generation
-            })
-            .to_string(),
-        );
-        assert!(!result.0, "an old frame has no permission to notify");
-        assert!(h.config.borrow().changed.is_empty());
+        assert!(!old.request(true, Reason::Trigger, false));
         h.dom
             .in_runtime(|| assert!(current.request(true, Reason::Trigger, false)));
-        h.render_now();
-        assert_eq!(h.completion_frame(), 1);
+        assert!(h.config.borrow().changed.is_empty());
+        h.settle();
         assert_eq!(h.config.borrow().deliveries, [(9, true, true)]);
     }
 

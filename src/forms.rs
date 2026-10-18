@@ -1846,7 +1846,7 @@ fn select_next_active(enabled: &[usize], active: usize, backwards: bool) -> Opti
     })
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(serde::Serialize)]
 struct ChipMeasurements {
     values: Vec<String>,
     widths: Vec<f64>,
@@ -1856,46 +1856,128 @@ struct ChipMeasurements {
     chips_width: f64,
 }
 
-// Native layout only. Chip partitioning, selection and focus remain in Rust.
-const SELECT_MEASURE: &str = r#"
-const id = await dioxus.recv();
-const root = document.getElementById(id);
-if (!root) return;
-let frame = 0, previous = '', done = () => {};
-const measure = () => {
-  frame = 0;
-  if (!root.isConnected) { cleanup(); return; }
-  const chipsContainer = root.querySelector('.ix-select-chips');
-  const rail = root.querySelector('.ix-select-measure');
-  const reservation = root.querySelector('.ix-select-trigger-size');
-  if (!chipsContainer?.clientWidth) return;
-  // Percent chip caps must resolve against the current container on this very
-  // measurement, including its first mount and resize before Rust's next commit.
-  if (rail && rail.style.width !== `${chipsContainer.clientWidth}px`) rail.style.width = `${chipsContainer.clientWidth}px`;
-  const width = node => { const style = getComputedStyle(node); return node.offsetWidth + Math.ceil((parseFloat(style.marginLeft)||0) + (parseFloat(style.marginRight)||0)); };
-  const chips = [...(rail?.querySelectorAll('[data-measure-value]') || [])];
-  const clear = root.querySelector('.ix-select-clear-host');
-  const payload = {
-    values: chips.map(n => n.dataset.measureValue), widths: chips.map(width),
-    badges: [...(rail?.querySelectorAll('[data-measure-badge]') || [])].map(width),
-    available: Math.max(0, chipsContainer.clientWidth - (reservation?.getBoundingClientRect().width || 0) - (clear?.offsetWidth || 0)),
-    gap: 0, chips_width: chipsContainer.clientWidth
-  };
-  const json = JSON.stringify(payload);
-  if (json !== previous) { previous = json; dioxus.send(payload); }
-};
-const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
-const resize = new ResizeObserver(schedule);
-const observe = () => { resize.disconnect(); resize.observe(root); root.querySelectorAll('.ix-select-chips,.ix-select-trigger-size,.ix-select-clear-host,.ix-select-measure > *').forEach(n => resize.observe(n)); schedule(); };
-const changes = new MutationObserver(observe);
-changes.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
-const removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
-function cleanup() { resize.disconnect(); changes.disconnect(); removal.disconnect(); cancelAnimationFrame(frame); document.fonts?.removeEventListener('loadingdone', schedule); done(); }
-removal.observe(document.documentElement, { childList: true, subtree: true });
-document.fonts?.addEventListener('loadingdone', schedule);
-await new Promise(resolve => { done = resolve; observe(); });
-return null;
-"#;
+// Dioxus owns every measuring element and resize subscription. Adjacent
+// positions include the real CSS margins without computed-style DOM queries.
+// A zero-width final marker also includes the final chip's trailing margin.
+#[component]
+fn SelectChipMeasurementRail(
+    chips: Vec<(String, String)>,
+    disabled: bool,
+    width: f64,
+    available: f64,
+    remove_label: String,
+    onmeasure: EventHandler<ChipMeasurements>,
+) -> Element {
+    let mut nodes = use_signal(std::collections::BTreeMap::<String, Rc<MountedData>>::new);
+    let mut end = use_signal(|| None::<Rc<MountedData>>);
+    let generation = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
+    let alive = use_hook(|| Rc::new(std::cell::Cell::new(true)));
+    let drop_alive = alive.clone();
+    use_drop(move || drop_alive.set(false));
+    let measure_chips = chips.clone();
+    let measure = use_callback(move |()| {
+        generation.set(generation.get().wrapping_add(1));
+        let revision = generation.get();
+        let generation = generation.clone();
+        let alive = alive.clone();
+        let values: Vec<_> = measure_chips
+            .iter()
+            .map(|(value, _)| value.clone())
+            .collect();
+        let keys = values
+            .iter()
+            .map(|value| format!("chip:{value}"))
+            .chain((1..=values.len()).map(|count| format!("badge:{count}")));
+        let handles: Option<Vec<_>> = keys.map(|key| nodes.peek().get(&key).cloned()).collect();
+        let marker = end.peek().clone();
+        spawn(async move {
+            let (Some(handles), Some(marker)) = (handles, marker) else {
+                return;
+            };
+            let mut positions = Vec::with_capacity(handles.len() + 1);
+            for node in handles {
+                let Ok(bounds) = node.get_client_rect().await else {
+                    return;
+                };
+                positions.push(bounds.origin.x);
+            }
+            let Ok(bounds) = marker.get_client_rect().await else {
+                return;
+            };
+            positions.push(bounds.origin.x);
+            if !alive.get() || generation.get() != revision {
+                return;
+            }
+            let extents: Vec<_> = positions
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).max(0.0))
+                .collect();
+            let (widths, badges) = extents.split_at(values.len());
+            onmeasure.call(ChipMeasurements {
+                values,
+                widths: widths.to_vec(),
+                badges: badges.to_vec(),
+                available,
+                gap: 0.0,
+                chips_width: width,
+            });
+        });
+    });
+    use_effect(use_reactive!(|chips, disabled, width, available| {
+        let live: std::collections::BTreeSet<_> = chips
+            .iter()
+            .map(|(value, _)| format!("chip:{value}"))
+            .chain((1..=chips.len()).map(|count| format!("badge:{count}")))
+            .collect();
+        nodes.write().retain(|key, _| live.contains(key));
+        let _ = (disabled, width, available);
+        measure.call(());
+    }));
+    let count = chips.len();
+    rsx! {
+        div { class: "ix-select-measure", style: "width:{width}px", "aria-hidden": "true", inert: true,
+            onresize: move |_| measure.call(()),
+            for (value, text) in chips {
+                {
+                    let node_key = format!("chip:{value}");
+                    rsx! { SelectChipPresentation { key: "{value}", text: text.clone(), disabled,
+                        measure_value: Some(value),
+                        onmounted: move |event: MountedEvent| { nodes.write().insert(node_key.clone(), event.data()); measure.call(()); },
+                        onresize: move |_| measure.call(()),
+                        close: rsx! { crate::IconButton { icon: "close-small", label: select_remove_label(&remove_label, &text),
+                            variant: crate::ButtonVariant::Tertiary, size: crate::ButtonIconSize::Sixteen, oval: true, class: "ix-select-chip-remove", tabindex: -1 } }
+                    } }
+                }
+            }
+            for count in 1..=count {
+                button { key: "badge:{count}", r#type: "button", class: "ix-select-chip ix-select-overflow ix-select-chip-overflow",
+                    "data-chip-disabled": disabled.to_string(), "data-hide-close": "true", "data-measure-badge": count.to_string(), tabindex: "-1",
+                    onmounted: move |event| { nodes.write().insert(format!("badge:{count}"), event.data()); measure.call(()); },
+                    onresize: move |_| measure.call(()),
+                    span { class: "ix-select-chip-label", "+{count}" }
+                }
+            }
+            span { style: "display:block;flex:0 0 0px;width:0;height:0;margin-left:var(--ix-select-chip-horizontal-margin)", onmounted: move |event| { end.set(Some(event.data())); measure.call(()); } }
+        }
+    }
+}
+
+#[component]
+fn SelectChipPresentation(
+    text: String,
+    disabled: bool,
+    measure_value: Option<String>,
+    close: Element,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
+    #[props(default)] onresize: EventHandler<ResizeEvent>,
+) -> Element {
+    rsx! { span { class: "ix-select-chip", "data-chip-disabled": disabled.to_string(),
+        "data-hide-close": disabled.to_string(), "data-measure-value": measure_value,
+        onmounted, onresize,
+        span { class: "ix-select-chip-label", title: text.clone(), "{text}" }
+        if !disabled { span { class: "ix-select-chip-close-host", {close} } }
+    } }
+}
 
 fn select_visual_chip(
     text: String,
@@ -1903,11 +1985,7 @@ fn select_visual_chip(
     measure_value: Option<String>,
     close: Element,
 ) -> Element {
-    rsx! { span { class: "ix-select-chip", "data-chip-disabled": disabled.to_string(),
-        "data-hide-close": disabled.to_string(), "data-measure-value": measure_value,
-        span { class: "ix-select-chip-label", title: text.clone(), "{text}" }
-        if !disabled { span { class: "ix-select-chip-close-host", {close} } }
-    } }
+    rsx! { SelectChipPresentation { text, disabled, measure_value, close } }
 }
 
 // Every keyed option owns its mounted handle. Dioxus disposes it when a
@@ -2061,6 +2139,11 @@ pub fn Select(
     let mut open = use_signal(|| false);
     let mut focused = use_signal(|| false);
     let mut measured_width = use_signal(|| 0.0_f64);
+    let mut measured_available = use_signal(|| 0.0_f64);
+    let mut chips_ref = use_signal(|| None::<Rc<MountedData>>);
+    let mut reservation_ref = use_signal(|| None::<Rc<MountedData>>);
+    let mut clear_ref = use_signal(|| None::<Rc<MountedData>>);
+    let layout_generation = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
     let mut measured_revision = use_signal(|| 0_u64);
     let mut measured_facts = use_signal(String::new);
     let mut query = use_signal(String::new);
@@ -2220,9 +2303,7 @@ pub fn Select(
         .cloned()
         .collect();
     let measurement_chips = selected_chips.clone();
-    let measurement_count = selected.len();
     let root_id = format!("{id}-select-root");
-    let mount_id = root_id.clone();
     let blur_root_id = root_id.clone();
     let validation_id = id.clone();
     let overflow_id = format!("{id}-overflow");
@@ -2276,7 +2357,76 @@ pub fn Select(
         warning_text,
     );
     let focus_outline = focused() && active_index == usize::MAX;
-    let measure_style = format!("width:{}px", measured_width());
+    let has_clear = allow_clear && (!selected.is_empty() || !query_text.is_empty()) && !read_only;
+    let layout_alive = alive.clone();
+    let measure_layout = use_callback(move |()| {
+        layout_generation.set(layout_generation.get().wrapping_add(1));
+        let revision = layout_generation.get();
+        let generation = layout_generation.clone();
+        let alive = layout_alive.clone();
+        let chips = chips_ref.peek().clone();
+        let reservation = reservation_ref.peek().clone();
+        let clear = has_clear.then(|| clear_ref.peek().clone()).flatten();
+        spawn(async move {
+            let (Some(chips), Some(reservation)) = (chips, reservation) else {
+                return;
+            };
+            let (Ok(chips), Ok(reservation)) = (
+                chips.get_client_rect().await,
+                reservation.get_client_rect().await,
+            ) else {
+                return;
+            };
+            let clear_width = if let Some(clear) = clear {
+                let Ok(bounds) = clear.get_client_rect().await else {
+                    return;
+                };
+                bounds.size.width
+            } else {
+                0.0
+            };
+            if !alive.get() || generation.get() != revision {
+                return;
+            }
+            let width = chips.size.width;
+            let available = (width - reservation.size.width - clear_width).max(0.0);
+            if *measured_width.peek() != width {
+                measured_width.set(width);
+            }
+            if *measured_available.peek() != available {
+                measured_available.set(available);
+            }
+        });
+    });
+    use_effect(use_reactive!(|has_clear, read_only, multiple| {
+        let _ = (read_only, multiple);
+        if !has_clear {
+            clear_ref.set(None);
+        }
+        measure_layout.call(());
+    }));
+    let measurement_values = selected.clone();
+    let accept_measurement = use_callback(move |measured: ChipMeasurements| {
+        if measured.values != measurement_values {
+            return;
+        }
+        let facts = serde_json::to_string(&measured).expect("Dioxus layout serialization");
+        if *measured_facts.peek() == facts {
+            return;
+        }
+        let count = fitting_chips(
+            &measured.widths,
+            &measured.badges,
+            measured.available,
+            measured.gap,
+        );
+        let hidden = measured.values.into_iter().skip(count).collect::<Vec<_>>();
+        if *hidden_values.peek() != hidden {
+            hidden_values.set(hidden);
+        }
+        measured_facts.set(facts);
+        measured_revision += 1;
+    });
     rsx! {
         div { id: root_id, class: "ix-select ix-select-visual ix-text-field-native {state.class()} {class}",
             class: if focus_outline { "show-focus-outline" },
@@ -2299,21 +2449,6 @@ pub fn Select(
                     if task.send(id).is_ok() && matches!(task.join::<bool>().await, Ok(false)) {
                         open.set(false); overflow_open.set(false);
                         query.set(String::new()); query_dirty.set(false); active.set(usize::MAX);
-                    }
-                });
-            },
-            onmounted: move |_| {
-                let id = mount_id.clone();
-                spawn(async move {
-                    let mut task = dioxus::document::eval(SELECT_MEASURE);
-                    if task.send(id).is_err() { return; }
-                    while let Ok(measured) = task.recv::<ChipMeasurements>().await {
-                        measured_facts.set(serde_json::to_string(&measured).expect("native layout serialization"));
-                        let count = fitting_chips(&measured.widths, &measured.badges, measured.available, measured.gap);
-                        let hidden = measured.values.into_iter().skip(count).collect::<Vec<_>>();
-                        if *hidden_values.peek() != hidden { hidden_values.set(hidden); }
-                        if *measured_width.peek() != measured.chips_width { measured_width.set(measured.chips_width); }
-                        measured_revision += 1;
                     }
                 });
             },
@@ -2355,6 +2490,8 @@ pub fn Select(
             div { id: control_id.clone(), class: "ix-select-control", "data-readonly": readonly.to_string(), "data-disabled": disabled.to_string(), "data-open": open().to_string(),
                 div { class: "ix-select-input-container",
                     div { class: "ix-select-values ix-select-chips",
+                        onmounted: move |event| { chips_ref.set(Some(event.data())); measure_layout.call(()); },
+                        onresize: move |_| measure_layout.call(()),
                       if multiple && !selected.is_empty() {
                         if collapsed_all {
                             {select_visual_chip(format!("{all_selected_text} ({})", selected.len()), read_only, None, rsx! {
@@ -2425,6 +2562,8 @@ pub fn Select(
                 }
                 if allow_clear && (!clear_selected.is_empty() || !query_text.is_empty()) && !read_only {
                     span { class: "ix-select-action-host ix-select-clear-host",
+                        onmounted: move |event| { clear_ref.set(Some(event.data())); measure_layout.call(()); },
+                        onresize: move |_| measure_layout.call(()),
                     crate::IconButton { icon: "clear", label: aria_label_clear, class: "ix-select-clear", variant: crate::ButtonVariant::SubtleTertiary, size: crate::ButtonIconSize::Sixteen, oval: true,
                         onmousedown: move |event: MouseEvent| event.prevent_default(),
                         onkeydown: move |event: KeyboardEvent| if matches!(event.key(), Key::Enter | Key::Character(_)) { event.stop_propagation(); },
@@ -2441,20 +2580,16 @@ pub fn Select(
                     } }
                 }
                 } } }
-                span { class: "ix-select-trigger-size", "aria-hidden": "true" }
+                span { class: "ix-select-trigger-size", "aria-hidden": "true",
+                    onmounted: move |event| { reservation_ref.set(Some(event.data())); measure_layout.call(()); },
+                    onresize: move |_| measure_layout.call(()),
+                }
             }
             }
             if multiple && !selected.is_empty() {
-                div { class: "ix-select-measure", style: measure_style, "aria-hidden": "true", inert: true,
-                    for (value, text) in measurement_chips {
-                        {select_visual_chip(text.clone(), read_only, Some(value), rsx! {
-                            crate::IconButton { icon: "close-small", label: select_remove_label(&remove_selected_item_text, &text),
-                                variant: crate::ButtonVariant::Tertiary, size: crate::ButtonIconSize::Sixteen, oval: true, class: "ix-select-chip-remove", tabindex: -1 }
-                        })}
-                    }
-                    for count in 1..=measurement_count {
-                        button { r#type: "button", class: "ix-select-chip ix-select-overflow ix-select-chip-overflow", "data-chip-disabled": read_only.to_string(), "data-hide-close": "true", "data-measure-badge": count.to_string(), tabindex: "-1", span { class: "ix-select-chip-label", "+{count}" } }
-                    }
+                SelectChipMeasurementRail { chips: measurement_chips, disabled: read_only,
+                    width: measured_width(), available: measured_available(),
+                    remove_label: remove_selected_item_text.clone(), onmeasure: accept_measurement,
                 }
             }
             if overflow_open() && !hidden_chips.is_empty() && !read_only {

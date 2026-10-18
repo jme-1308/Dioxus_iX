@@ -2246,7 +2246,7 @@ pub enum MenuOverlayKind {
 
 /// Rust request adapter for the Header's private overflow presentation.
 /// Requests run synchronously; veto prevents the change and its notification.
-/// Each changed value is reported by `onoverflowchange` on a native frame,
+/// Each changed value is reported by `onoverflowchange` through a Dioxus effect,
 /// using its captured boolean and the current handler. Newer state may differ;
 /// dropping the scope cancels pending delivery. This typed request adapter is
 /// not the source bubbling CustomEvent stream or its event-count contract.
@@ -3006,7 +3006,7 @@ pub fn ApplicationHeader(
     /// Veto prevents the change and creates no completion notification.
     #[props(default)]
     onbeforeoverflowchange: EventHandler<HeaderOverflowEvent>,
-    /// Each changed value, delivered on a native frame to the current handler.
+    /// Each changed value, delivered after rendering to the current handler.
     /// The boolean is captured at the change and may differ from newer state.
     /// Dropping this scope cancels pending delivery; source bubbling event
     /// counts are not part of this typed callback contract.
@@ -8159,31 +8159,17 @@ mod tests {
                 self.collect(mutations);
             }
         }
-        /// A frame snapshot uses the real registered transport. Jobs admitted
-        /// reentrantly by a callback are delivered in a later snapshot.
-        fn completion_frame(&mut self) -> usize {
+        /// Flush the component's actual Dioxus effects; no native ACK exists.
+        fn completion_effects(&mut self) -> usize {
             let runtime = self.settings.borrow().overlay_runtime.clone().unwrap();
-            let frames = runtime.pending_completion_frames();
-            let count = frames.len();
-            for (sequence, root, generation) in frames {
-                menu_dispatch(
-                    &self.dom,
-                    "change",
-                    self.overlay_input.unwrap(),
-                    serde_json::json!({
-                        "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
-                        "completion_root":root,"completion_generation":generation
-                    })
-                    .to_string(),
-                );
-            }
+            let count = runtime.pending_completions();
             self.render_now();
             count
         }
         fn settle(&mut self) {
             for _ in 0..5 {
                 self.render_now();
-                self.completion_frame();
+                self.completion_effects();
             }
         }
         fn navigation(&self) -> AppSwitchNavigation {
@@ -8310,8 +8296,8 @@ mod tests {
             menu_dispatch(&self.dom,"input",self.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe","nodes":nodes}).to_string());
             first
         }
-        fn header_peer_frame(&mut self) -> usize {
-            self.completion_frame()
+        fn header_peer_effects(&mut self) -> usize {
+            self.completion_effects()
         }
         fn seed_header_peers(&mut self) -> HeaderPeerCapture {
             let peers = self.settings.borrow().overflow_peers.clone().unwrap();
@@ -8324,8 +8310,7 @@ mod tests {
                     handle.open();
                 }
             });
-            self.render_now();
-            assert_eq!(self.header_peer_frame(), 4);
+            assert_eq!(self.header_peer_effects(), 4);
             assert!(handles.into_iter().all(crate::DropdownHandle::is_open));
             peers.0.borrow_mut().requests.clear();
             peers.0.borrow_mut().completions.clear();
@@ -8694,7 +8679,7 @@ mod tests {
 
     #[test]
     fn header_completion_keeps_each_payload_and_resolves_current_committed_listener() {
-        let _event_converter_guard = crate::test_event_converter_guard();
+        let _guard = crate::test_event_converter_guard();
         let mut h = AppSwitchHarness::new(None, false);
         h.header_raw(
             h.header_message(1, "presence", serde_json::json!({})),
@@ -8706,21 +8691,17 @@ mod tests {
                 false,
             );
         }
-        h.render_now();
         assert_eq!(
             h.settings.borrow().overflow_requests,
             [(false, true), (true, false), (false, true)]
         );
-        assert_eq!(h.header_root_attrs()["data-open"], "true");
         assert!(
             h.settings.borrow().overflow_changes.is_empty(),
-            "request return and render are not a native frame"
+            "request admission never calls the completion listener"
         );
         h.settings.borrow_mut().overflow_listener_revision = 7;
         h.settings.borrow().update.clone().unwrap()();
-        h.render_now();
-        assert!(h.settings.borrow().overflow_deliveries.is_empty());
-        assert_eq!(h.completion_frame(), 3);
+        assert_eq!(h.completion_effects(), 3);
         assert_eq!(h.settings.borrow().overflow_changes, [true, false, true]);
         assert_eq!(
             h.settings.borrow().overflow_deliveries,
@@ -8731,12 +8712,12 @@ mod tests {
             "true",
             "captured false payload does not rewrite current state"
         );
-        assert_eq!(h.completion_frame(), 0);
+        assert_eq!(h.completion_effects(), 0);
     }
 
     #[test]
-    fn header_completion_reentrant_observer_writes_wait_for_separate_frame_snapshots() {
-        let _event_converter_guard = crate::test_event_converter_guard();
+    fn header_completion_allows_reentrant_observer_state_changes() {
+        let _guard = crate::test_event_converter_guard();
         let mut h = AppSwitchHarness::new(None, false);
         h.header_raw(
             h.header_message(1, "presence", serde_json::json!({})),
@@ -8771,28 +8752,21 @@ mod tests {
             h.header_message(2, "click", serde_json::json!({"more":true})),
             false,
         );
-        h.render_now();
         assert!(h.settings.borrow().overflow_changes.is_empty());
-        assert_eq!(h.completion_frame(), 1);
-        assert_eq!(h.settings.borrow().overflow_changes, [true]);
-        assert_eq!(observed_step.get(), 1);
-        assert_eq!(h.header_root_attrs()["data-open"], "false");
-        assert_eq!(h.completion_frame(), 1);
-        assert_eq!(h.settings.borrow().overflow_changes, [true, false]);
+        h.settle();
+        assert_eq!(h.settings.borrow().overflow_changes, [true, false, true]);
         assert_eq!(observed_step.get(), 2);
         assert_eq!(h.header_root_attrs()["data-open"], "true");
-        assert_eq!(h.completion_frame(), 1);
-        assert_eq!(h.settings.borrow().overflow_changes, [true, false, true]);
         assert_eq!(
             h.settings.borrow().overflow_requests,
             [(false, true), (true, false), (false, true)]
         );
-        assert_eq!(h.completion_frame(), 0);
+        assert_eq!(h.completion_effects(), 0);
     }
 
     #[test]
-    fn header_completion_survives_mode_generations_and_captured_configuration_close() {
-        let _event_converter_guard = crate::test_event_converter_guard();
+    fn header_completion_survives_mode_changes_and_reports_configuration_close() {
+        let _guard = crate::test_event_converter_guard();
         let mut h = AppSwitchHarness::new(None, false);
         h.header_raw(
             h.header_message(1, "presence", serde_json::json!({})),
@@ -8802,59 +8776,41 @@ mod tests {
             h.header_message(2, "click", serde_json::json!({"more":true})),
             false,
         );
-        h.render_now();
         let registration = h.header_rendered_root_attribute("data-ix-overlay-generation");
         let private = h.header_root_attrs()["data-generation"].clone();
-        h.settings.borrow_mut().breakpoint = ApplicationBreakpoint::Small;
-        h.settings.borrow().update.clone().unwrap()();
-        h.render_now();
-        assert_ne!(h.header_root_attrs()["data-generation"], private);
-        assert_eq!(
-            h.header_root_attrs()["data-open"],
-            "true",
-            "breakpoint alone retains admitted visibility"
-        );
-        assert_eq!(
-            h.header_rendered_root_attribute("data-ix-overlay-generation"),
-            registration
-        );
-        h.settings.borrow_mut().slot_top_layer = true;
-        h.settings.borrow().update.clone().unwrap()();
-        h.render_now();
-        assert_eq!(
-            h.header_root_attrs()["data-open"],
-            "false",
-            "top-layer reconciliation remains its explicit configuration adapter"
-        );
         {
             let mut settings = h.settings.borrow_mut();
-            settings.breakpoint = ApplicationBreakpoint::Large;
+            settings.breakpoint = ApplicationBreakpoint::Small;
             settings.overflow_listener_revision = 3;
         }
         h.settings.borrow().update.clone().unwrap()();
         h.render_now();
+        assert_ne!(h.header_root_attrs()["data-generation"], private);
+        assert_eq!(h.header_root_attrs()["data-open"], "true");
         assert_eq!(
             h.header_rendered_root_attribute("data-ix-overlay-generation"),
             registration
         );
-        assert!(h.settings.borrow().overflow_changes.is_empty());
+        assert_eq!(h.settings.borrow().overflow_deliveries, [(3, true)]);
+        h.settings.borrow_mut().slot_top_layer = true;
+        h.settings.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert_eq!(h.header_root_attrs()["data-open"], "false");
         assert_eq!(
             h.settings.borrow().overflow_requests,
             [(false, true)],
             "configuration does not invent a user request"
         );
-        assert_eq!(h.completion_frame(), 2);
         assert_eq!(
             h.settings.borrow().overflow_deliveries,
-            [(3, true), (3, false)],
-            "private focus generations cannot revoke registration-owned payloads"
+            [(3, true), (3, false)]
         );
-        assert_eq!(h.completion_frame(), 0);
+        assert_eq!(h.completion_effects(), 0);
     }
 
     #[test]
     fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
-        let _event_converter_guard = crate::test_event_converter_guard();
+        let _guard = crate::test_event_converter_guard();
         let mut h = AppSwitchHarness::new(None, false);
         h.header_raw(
             h.header_message(1, "presence", serde_json::json!({})),
@@ -8864,15 +8820,13 @@ mod tests {
             h.header_message(2, "click", serde_json::json!({"more":true})),
             false,
         );
-        h.render_now();
         let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
         let old_root = h.header_root_attrs()["id"].clone();
-        let pending = runtime.pending_completion_frames();
-        assert_eq!(pending.len(), 1);
+        assert_eq!(runtime.pending_completions(), 1);
         h.settings.borrow_mut().visible = false;
         h.settings.borrow().update.clone().unwrap()();
         h.render_now();
-        assert!(runtime.pending_completion_frames().is_empty());
+        assert_eq!(runtime.pending_completions(), 0);
         assert!(h.settings.borrow().overflow_changes.is_empty());
         {
             let mut settings = h.settings.borrow_mut();
@@ -8890,11 +8844,7 @@ mod tests {
             old_root,
             "rendered observer owner: {rendered_owner:?}"
         );
-        assert_eq!(
-            rendered_owner,
-            Some(h.header_root_attrs()["id"].as_str()),
-            "cached observer attributes must describe the current rendered node"
-        );
+        assert_eq!(rendered_owner, Some(h.header_root_attrs()["id"].as_str()));
         h.header_raw(
             h.header_message(1, "presence", serde_json::json!({})),
             false,
@@ -8903,28 +8853,10 @@ mod tests {
             h.header_message(2, "click", serde_json::json!({"more":true})),
             false,
         );
-        h.render_now();
-        let (sequence, root, generation) = &pending[0];
-        assert_eq!(
-            menu_dispatch(
-                &h.dom,
-                "change",
-                h.overlay_input.unwrap(),
-                serde_json::json!({
-                    "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
-                    "completion_root":root,"completion_generation":generation
-                })
-                .to_string()
-            ),
-            (false, false)
-        );
-        assert!(
-            h.settings.borrow().overflow_changes.is_empty(),
-            "late old token cannot consume or invoke a new owner"
-        );
-        assert_eq!(h.completion_frame(), 1);
+        assert!(h.settings.borrow().overflow_changes.is_empty());
+        assert_eq!(h.completion_effects(), 1);
         assert_eq!(h.settings.borrow().overflow_deliveries, [(9, true)]);
-        assert_eq!(h.completion_frame(), 0);
+        assert_eq!(h.completion_effects(), 0);
     }
 
     #[test]
@@ -8969,7 +8901,7 @@ mod tests {
             );
             assert!(
                 peers.0.borrow().completions.is_empty(),
-                "generic Dropdown completion still waits for frame ACK"
+                "Dropdown completion is deferred until Dioxus effects run"
             );
             assert_eq!(
                 h.header_raw(message, true),
@@ -8981,27 +8913,22 @@ mod tests {
                 [(0, false), (1, false)],
                 "query cannot run the post-phase twice"
             );
-            h.render_now();
+            assert_eq!(h.header_peer_effects(), if veto { 2 } else { 3 });
             assert_eq!(
                 h.header_root_attrs()["data-open"],
                 (if veto { previous } else { !previous }).to_string()
-            );
-            assert!(
-                h.settings.borrow().overflow_changes.is_empty(),
-                "Header completion also waits for the native frame"
             );
             let handles = peers.0.borrow().handles.unwrap();
             assert_eq!(
                 handles.map(crate::DropdownHandle::is_open),
                 [false, false, true, true]
             );
-            assert_eq!(h.header_peer_frame(), if veto { 2 } else { 3 });
             assert_eq!(
                 h.settings.borrow().overflow_changes,
                 if veto { vec![] } else { vec![!previous] }
             );
             assert_eq!(peers.0.borrow().completions, [(0, false), (1, false)]);
-            assert_eq!(h.header_peer_frame(), 0);
+            assert_eq!(h.header_peer_effects(), 0);
         }
     }
 
@@ -9035,9 +8962,12 @@ mod tests {
             );
             assert_eq!(h.header_raw(message, true), (false, false));
             assert_eq!(peers.0.borrow().requests.len(), 2);
-            h.render_now();
+            assert_eq!(h.header_peer_effects(), if veto { 2 } else { 3 });
             assert_eq!(h.header_root_attrs()["data-open"], (!veto).to_string());
-            assert!(h.settings.borrow().overflow_changes.is_empty());
+            assert_eq!(
+                h.settings.borrow().overflow_changes,
+                if veto { vec![] } else { vec![true] }
+            );
             assert_eq!(
                 peers
                     .0
@@ -9047,7 +8977,7 @@ mod tests {
                     .map(crate::DropdownHandle::is_open),
                 [false, false, true, true]
             );
-            assert_eq!(h.header_peer_frame(), if veto { 2 } else { 3 });
+            assert_eq!(h.header_peer_effects(), 0);
         }
     }
 
@@ -9124,7 +9054,7 @@ mod tests {
                     .all(crate::DropdownHandle::is_open),
                 "{case}"
             );
-            assert_eq!(h.header_peer_frame(), 0, "{case}");
+            assert_eq!(h.header_peer_effects(), 0, "{case}");
         }
     }
 

@@ -148,7 +148,9 @@ fn phase(runtime: &RuntimeHandle, job: &ItemFocusJob, phase: &str) -> serde_json
 #[test]
 fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work() {
     let runtime = RuntimeHandle::new();
-    let owner = owner(&runtime, 1);
+    let mut dom = VirtualDom::new(|| rsx! { div {} });
+    dom.rebuild_in_place();
+    let owner = dom.runtime().in_scope(ScopeId::ROOT, || owner(&runtime, 1));
     let mut a = host("a", "actual-a", ItemKind::Select);
     a.parts.push(HostPartFacts {
         kind: HostPartKind::SelectOption,
@@ -185,7 +187,7 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
             .node
             .queue_item_host_focus(&b, Rc::new(move || focus.set(focus.get() + 1)))
     );
-    let frames = runtime.pending_completion_frames();
+    let frames = runtime.pending_completions();
     let jobs = runtime.pending_item_focus_jobs();
     let reads = owner.reads.get();
     let callbacks = owner.callbacks.get();
@@ -231,7 +233,7 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
     );
     assert!(after_observe_reads >= reads);
     assert_eq!(owner.callbacks.get(), callbacks);
-    assert_eq!(runtime.pending_completion_frames(), frames);
+    assert_eq!(runtime.pending_completions(), frames);
     assert_eq!(runtime.pending_item_focus_jobs(), jobs);
     assert_eq!(delivered.get(), 0);
     focusin(&runtime, 4, &hosts, &category);

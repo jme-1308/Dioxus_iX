@@ -1,4 +1,4 @@
-//! Excluded preview of the R02 Dioxus-owned focus, scrolling and resize paths.
+//! Excluded preview of R02 framework focus, resize and post-render notifications.
 use dioxus::prelude::*;
 use dioxus_ix::*;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
@@ -35,6 +35,14 @@ fn Preview() -> Element {
     let mut manual = use_signal(|| false);
     let mut tab = use_signal(|| 0_usize);
     let mut dark = use_signal(|| false);
+    let mut chip_wide = use_signal(|| false);
+    let mut chip_disabled = use_signal(|| false);
+    let mut chip_readonly = use_signal(|| false);
+    let mut collapse = use_signal(|| false);
+    let mut long_labels = use_signal(|| false);
+    let mut veto = use_signal(|| false);
+    let mut dropdown_changes = use_signal(Vec::<bool>::new);
+    let mut header_changes = use_signal(Vec::<bool>::new);
     let selected_group = multi().join(", ");
     let mut options = vec![
         SelectOption::new("alpha", "Alpha"),
@@ -46,6 +54,11 @@ fn Preview() -> Element {
             SelectOption::new(format!("item-{index}"), format!("Equipment {index:02}"))
         }),
     );
+    if long_labels() {
+        for option in &mut options {
+            option.label = format!("{} extended label", option.label);
+        }
+    }
     let mut tabs: Vec<_> = [
         "Overview",
         "Diagnostics",
@@ -70,7 +83,7 @@ fn Preview() -> Element {
         });
     });
     rsx! {
-        style { {"body{margin:0}.r02-preview{padding:24px;min-height:100vh;box-sizing:border-box}.r02-preview h1{font-size:28px}.r02-preview h2{font-size:20px;margin:0 0 16px}.r02-section{max-width:850px;margin:32px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.r02-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.r02-preview output{display:block;margin-top:16px}.r02-controls{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}@media(max-width:600px){.r02-preview{padding:16px}.r02-columns{grid-template-columns:1fr}}"} }
+        style { {"body{margin:0}.r02-preview{padding:24px;min-height:100vh;box-sizing:border-box}.r02-preview h1{font-size:28px}.r02-preview h2{font-size:20px;margin:0 0 16px}.r02-section{max-width:850px;margin:32px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.r02-preview #r02-chip-frame > .ix-select{width:calc(100% - 10px)}.r02-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.r02-preview output{display:block;margin-top:16px}.r02-controls{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}@media(max-width:600px){.r02-preview{padding:16px}.r02-columns{grid-template-columns:1fr}}"} }
         IxTheme { scheme: if dark(){ColorScheme::Dark}else{ColorScheme::Light}, class: "r02-preview",
             h1 { "Dioxus-owned interactions" }
             p { "Select, Tabs and Dropdown use framework focus, scrolling and event handling where available." }
@@ -90,7 +103,18 @@ fn Preview() -> Element {
                 h2 { "Selection and focus" }
                 div { class:"r02-columns",
                     Select { id:"r02-select", options:options.clone(), value:selected(), onvaluechange:move |value|selected.set(value), allow_clear:true, label:"Equipment" }
-                    Select { id:"r02-multiple", options, multiple:true, values:multi(), onvalueschange:move |values|multi.set(values), allow_clear:true, label:"Equipment group" }
+                    div { id:"r02-chip-frame", style:if chip_wide(){"grid-column:1 / -1;width:780px;max-width:100%"}else{"grid-column:1 / -1;width:240px;max-width:100%"},
+                        Select { id:"r02-multiple", options, multiple:true, values:multi(), onvalueschange:move |values|multi.set(values), allow_clear:true, label:"Equipment group", disabled:chip_disabled(), readonly:chip_readonly(), collapse_multiple_selection:collapse() }
+                    }
+                }
+                div { class:"r02-controls",
+                    Button { onclick:move |_|multi.set(["alpha","beta","item-1","item-2","item-3"].into_iter().map(str::to_string).collect()), "Select sample group" }
+                    Button { onclick:move |_|multi.set(["alpha".into(),"beta".into(),"blocked".into()].into_iter().chain((1..=24).map(|index|format!("item-{index}"))).collect()), "Select every option" }
+                    Button { onclick:move |_|chip_wide.set(!chip_wide()), "Resize chip field" }
+                    Checkbox { label:"Disable group", checked:chip_disabled(), oncheckedchange:move |v|chip_disabled.set(v) }
+                    Checkbox { label:"Read-only group", checked:chip_readonly(), oncheckedchange:move |v|chip_readonly.set(v) }
+                    Checkbox { label:"Collapse group", checked:collapse(), oncheckedchange:move |v|collapse.set(v) }
+                    Checkbox { label:"Longer labels", checked:long_labels(), oncheckedchange:move |v|long_labels.set(v) }
                 }
                 Input { id:"r02-outside", label:"Outside destination", value:"Independent control" }
                 output { id:"r02-selected", "Selected: {selected()}; group: {selected_group}" }
@@ -108,7 +132,10 @@ fn Preview() -> Element {
             }
             section { class:"r02-section",
                 h2 { "Dropdown focus and keyed changes" }
+                Checkbox { label:"Veto opening", checked:veto(), oncheckedchange:move |value|veto.set(value) }
                 Dropdown { label:"Equipment actions", navigation_mode:DropdownNavigationMode::RovingTabindex,
+                    onbeforechange:move |event:DropdownChangeEvent|if event.open && veto(){event.prevent_default();},
+                    onchange:move |value|dropdown_changes.write().push(value),
                     for label in if reversed(){vec!["Move this item", "Inspect", "Unavailable"]}else{vec!["Inspect", "Move this item", "Unavailable"]} {
                         DropdownItem { key:"{label}", label, disabled:label=="Unavailable", keep_open:label=="Move this item",
                             onclick:move |_|{action.set(label.into());if label=="Move this item"{reversed.set(!reversed());}}
@@ -116,6 +143,16 @@ fn Preview() -> Element {
                     }
                 }
                 output { id:"r02-action", "Action: {action()}" }
+                output { id:"r02-dropdown-changes", "Changes: {dropdown_changes():?}" }
+            }
+            section { class:"r02-section",
+                h2 { "Header overflow notifications" }
+                ApplicationHeader { name:"Equipment", aria_label_more_menu_icon_button:"Header actions",
+                    overflow:rsx! { Button { "Header action" } },
+                    onbeforeoverflowchange:move |event:HeaderOverflowEvent|if event.open && veto(){event.prevent_default();},
+                    onoverflowchange:move |value|header_changes.write().push(value),
+                }
+                output { id:"r02-header-changes", "Changes: {header_changes():?}" }
             }
         }
     }
@@ -154,5 +191,17 @@ const retained=document.activeElement===moving;
 if(!retained)throw new Error('Focused keyed item was lost');
 moving.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
 await wait('dropdown dismissal',()=>trigger.getAttribute('aria-expanded')==='false'&&document.activeElement===trigger);
-return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true};
+await wait('dropdown callbacks',()=>document.querySelector('#r02-dropdown-changes').textContent==='Changes: [true, false]');
+const button=label=>[...root().querySelectorAll('button')].find(n=>n.textContent===label);
+button('Select sample group').click();
+const chips=()=>document.getElementById('r02-multiple-select-root');
+await wait('narrow chip overflow',()=>chips().querySelector('.ix-select-chips .ix-select-overflow')?.textContent==='+4');
+const narrow=chips().querySelector('.ix-select-chips .ix-select-overflow').textContent;
+button('Resize chip field').click();
+await wait('wide chips',()=>!chips().querySelector('.ix-select-chips .ix-select-overflow')&&chips().querySelectorAll('.ix-select-chips > .ix-select-chip').length===5);
+const header=root().querySelector('[aria-label="Header actions"]');header.click();
+await wait('header callback open',()=>document.querySelector('#r02-header-changes').textContent==='Changes: [true]');
+header.click();
+await wait('header callback close',()=>document.querySelector('#r02-header-changes').textContent==='Changes: [true, false]');
+return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true,dropdownChanges:document.querySelector('#r02-dropdown-changes').textContent,narrowChips:narrow,wideChips:5,headerChanges:document.querySelector('#r02-header-changes').textContent};
 "#;

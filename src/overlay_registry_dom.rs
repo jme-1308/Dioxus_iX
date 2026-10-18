@@ -1016,8 +1016,7 @@ function scheduleNativeFocus(){
   if(nativeFocusFrame||!nativeFocusCommands.length)return;
   nativeFocusFrame=requestAnimationFrame(()=>{
     nativeFocusFrame=0;if(!alive)return;
-    // Only commands admitted before this frame belong to its batch. A Rust
-    // completion callback can enqueue a new transition for a later frame.
+    // Only native focus commands admitted before this frame belong to its batch.
     let remaining=nativeFocusCommands.length;
     while(nativeFocusCommands.length&&remaining--){
       const job=nativeFocusCommands[0],command=job.command;
@@ -1036,10 +1035,7 @@ function scheduleNativeFocus(){
       }
       nativeFocusCommands.shift();
       const input=transport();if(!input)continue;
-      if(job.kind==='completion'){
-        input.value=JSON.stringify({owner,sequence:0,completion_sequence:command.sequence,completion_root:command.root,completion_generation:command.generation});
-        input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-      }else if(job.kind==='descendant'){
+      if(job.kind==='descendant'){
         executeDescendantFocus(job);
       }else if(job.kind==='item'){
         executeItemFocus(job);
@@ -1064,7 +1060,6 @@ try{
     if(command?.navigation_config)configureNavigation(command.navigation_config);
     if(command?.restore_trigger)queueTriggerRestore(command.restore_trigger);
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
-    if(command?.completion_frame){nativeFocusCommands.push({kind:'completion',command:command.completion_frame});scheduleNativeFocus();}
     if(command?.item_focus)queueItemFocus(command.item_focus);
     if(command?.descendant_focus)queueDescendantFocus(command.descendant_focus);
     if(command?.item_cues)syncItemCues(null,true);

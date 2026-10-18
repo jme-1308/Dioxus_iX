@@ -161,7 +161,11 @@ fn navigation_input_retains_old_actual_listener_and_cannot_retarget_from_new_fac
 #[test]
 fn navigation_reconfiguration_revokes_only_listener_and_keeps_independent_jobs() {
     let runtime = RuntimeHandle::new();
-    let fixture = registered(&runtime, 1);
+    let mut dom = VirtualDom::new(|| rsx! { div {} });
+    dom.rebuild_in_place();
+    let fixture = dom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || registered(&runtime, 1));
     assert!(fixture.node.configure_navigation("active-descendant", true));
     input(
         &runtime,
@@ -174,7 +178,7 @@ fn navigation_reconfiguration_revokes_only_listener_and_keeps_independent_jobs()
             .node
             .queue_completion(Rc::new(move || delivery.set(delivery.get() + 1)))
     );
-    let frames = runtime.pending_completion_frames();
+    let frames = runtime.pending_completions();
     assert!(fixture.node.clear_navigation());
     assert!(!input(
         &runtime,
@@ -207,7 +211,7 @@ fn navigation_reconfiguration_revokes_only_listener_and_keeps_independent_jobs()
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].navigation_mode.as_deref(), Some("roving-tabindex"));
     drop(calls);
-    assert_eq!(runtime.pending_completion_frames(), frames);
+    assert_eq!(runtime.pending_completions(), frames);
     assert_eq!(completed.get(), 0);
     assert!(fixture.open.get());
 }
