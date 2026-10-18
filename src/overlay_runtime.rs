@@ -3853,6 +3853,295 @@ mod tests {
                 {"item":"actual-b","kind":"menu","target":"b","capture":"actual-b","registration_key":"key-b","tabindex_attribute":"4"}
             ],"navigation_order":["actual-a","actual-b"],"query_order":["actual-a","actual-b"]})).unwrap()
     }
+    #[derive(Clone, Default)]
+    struct PublicationFixture {
+        runtime: Rc<RefCell<Option<RuntimeHandle>>>,
+        visible: Rc<Cell<Option<Signal<bool>>>>,
+    }
+    impl PartialEq for PublicationFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.runtime, &other.runtime)
+        }
+    }
+    fn publication_root(fixture: PublicationFixture) -> Element {
+        let runtime = use_overlay_runtime();
+        *fixture.runtime.borrow_mut() = Some(runtime.clone());
+        let visible = use_signal(|| true);
+        fixture.visible.set(Some(visible));
+        rsx! {
+            if visible() {
+                crate::Dropdown { label: "Publication", suppress_trigger_visibility_check: true,
+                    crate::DropdownItem { id: "publication-dropdown", label: "Dropdown" }
+                    crate::SelectItem { id: "publication-select", value: "select", label: "Select" }
+                    crate::MenuItem { id: "publication-menu", label: "Menu" }
+                    crate::MenuCategory { id: "publication-category", label: "Category", span { "Child" } }
+                }
+            }
+            OverlayTransport { runtime }
+        }
+    }
+    struct PublicationConverter;
+    macro_rules! publication_converter {
+        (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
+            impl dioxus::html::HtmlEventConverter for PublicationConverter {
+                $(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data {let _=event;publication_converter!(@data $group,event)})*
+            }
+        };
+        (@data Form,$event:ident)=>{dioxus::html::FormData::new(RawForm($event.downcast::<String>().unwrap().clone()))};
+        (@data $other:ident,$event:ident)=>{panic!("Unexpected publication test event")};
+    }
+    dioxus::html::with_html_event_groups!(publication_converter);
+    fn publication_dispatch(
+        dom: &VirtualDom,
+        transport: dioxus::core::ElementId,
+        name: &str,
+        value: serde_json::Value,
+    ) -> bool {
+        let data: Rc<dyn std::any::Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+            value.to_string(),
+        )));
+        let original = Event::new(data, true);
+        dom.runtime()
+            .handle_event(name, original.clone(), transport);
+        !original.default_action_enabled()
+    }
+    fn publication_attr(tag: &str, name: &str) -> Option<String> {
+        let rest = tag.split_once(&format!(" {name}="))?.1;
+        if let Some(quoted) = rest.strip_prefix('"') {
+            Some(quoted.split('"').next()?.to_string())
+        } else {
+            Some(rest.split([' ', '>']).next()?.to_string())
+        }
+    }
+    fn publication_tag<'a>(html: &'a str, id: &str) -> &'a str {
+        html.split('>')
+            .find(|tag| publication_attr(tag, "id").as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("Missing rendered source host {id}"))
+    }
+    fn publication_cues(html: &str, expected: Option<&str>) {
+        for id in [
+            "publication-dropdown",
+            "publication-select",
+            "publication-menu",
+        ] {
+            assert_eq!(
+                publication_attr(publication_tag(html, id), "data-active").as_deref(),
+                Some(if expected == Some(id) {
+                    "true"
+                } else {
+                    "false"
+                }),
+                "rendered cue on {id}, expected {expected:?}"
+            );
+        }
+        assert_eq!(
+            publication_attr(publication_tag(html, "publication-category"), "data-active"),
+            None,
+            "Category's outer host never gains the private parent's marker"
+        );
+        let select_inner = html
+            .split('>')
+            .find(|tag| {
+                publication_attr(tag, "class")
+                    .is_some_and(|class| class.contains("ix-select-item-option"))
+            })
+            .unwrap();
+        assert_eq!(
+            publication_attr(select_inner, "data-active").as_deref(),
+            Some(if expected == Some("publication-select") {
+                "true"
+            } else {
+                "false"
+            }),
+            "Select's generated inner cue follows its source host"
+        );
+        let root = html
+            .split('>')
+            .find(|tag| {
+                publication_attr(tag, "aria-label").as_deref() == Some("Publication")
+                    && publication_attr(tag, "data-ix-overlay-root").is_some()
+            })
+            .unwrap();
+        assert_eq!(
+            publication_attr(root, "aria-activedescendant").as_deref(),
+            expected
+        );
+    }
+    fn publication_focus(
+        dom: &VirtualDom,
+        transport: dioxus::core::ElementId,
+        runtime: &RuntimeHandle,
+        job: &ItemFocusJob,
+    ) {
+        for phase in ["arm", "focus"] {
+            assert!(publication_dispatch(
+                dom,
+                transport,
+                "change",
+                serde_json::json!({
+                    "owner":runtime.owner_id(),"sequence":0,"item_focus_sequence":job.sequence,
+                    "item_focus_root":job.root,"item_focus_generation":job.generation,
+                    "item_focus_target":job.target,"item_focus_capture":job.capture,"item_focus_phase":phase
+                })
+            ));
+        }
+    }
+    #[test]
+    fn actual_vdom_focus_ack_publishes_mixed_host_cues_without_another_input() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(PublicationConverter));
+        let fixture = PublicationFixture::default();
+        let mut dom = VirtualDom::new_with_props(publication_root, fixture.clone());
+        let edits = dom.rebuild_to_vec();
+        let runtime = fixture.runtime.borrow().clone().unwrap();
+        assert!(
+            runtime.0.borrow().item_visual_signal.is_some(),
+            "real VDOM signal path"
+        );
+        let mut current = dioxus::core::ElementId::ROOT;
+        let mut transport = None;
+        for edit in edits.edits {
+            match edit {
+                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
+                    current = id
+                }
+                dioxus::core::Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(value),
+                    ..
+                } if name == "data-ix-overlay-transport" && value == runtime.owner_id() => {
+                    transport = Some(current)
+                }
+                _ => {}
+            }
+        }
+        let transport = transport.expect("actual rendered overlay transport");
+        let initial = dioxus_ssr::render(&dom);
+        let root_tag = initial
+            .split('>')
+            .find(|tag| {
+                publication_attr(tag, "aria-label").as_deref() == Some("Publication")
+                    && publication_attr(tag, "data-ix-overlay-root").is_some()
+            })
+            .unwrap();
+        let root = publication_attr(root_tag, "data-ix-overlay-root").unwrap();
+        let generation: u64 = publication_attr(root_tag, "data-ix-overlay-generation")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let node = NodeHandle {
+            runtime: Rc::downgrade(&runtime.0),
+            id: root.clone(),
+            generation,
+        };
+        dom.in_runtime(|| assert!(node.request(true, Reason::Trigger, false)));
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        let html = dioxus_ssr::render(&dom);
+        let hosts = [
+            ("publication-dropdown", "dropdown"),
+            ("publication-select", "select"),
+            ("publication-menu", "menu"),
+            ("publication-category", "category"),
+        ].into_iter().map(|(id,kind)| {
+            let tag = publication_tag(&html,id);
+            serde_json::json!({"item":format!("actual-{id}"),"capture":format!("actual-{id}"),
+                "kind":kind,"target":id,"registration_key":publication_attr(tag,"data-ix-item-key").unwrap(),
+                "source_focusable":true})
+        }).collect::<Vec<_>>();
+        publication_cues(&html, None);
+        let order = hosts
+            .iter()
+            .map(|host| host["item"].clone())
+            .collect::<Vec<_>>();
+        let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
+            "kind":"key","phase":"bubble","key":"Home","hosts":[root],"triggers":[root],
+            "nodes":[{"id":root,"generation":generation,"connected":true,"discovery_ready":true,
+                "mode":"active-descendant","inside":true,"on_trigger":true,
+                "inventory":{"items_host":"actual-publication-items","hosts":hosts,
+                    "navigation_order":order,"query_order":order}}]});
+        assert!(publication_dispatch(&dom, transport, "input", report));
+        // Admit independent A/B operations before either first stage. Their
+        // first ACKs must each publish without a later original native input.
+        let first = runtime
+            .pending_item_focus_jobs()
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_eq!(first.target, "publication-dropdown");
+        let second_facts: HostFacts = serde_json::from_value(hosts[1].clone()).unwrap();
+        dom.in_runtime(|| assert!(node.queue_item_host_focus(&second_facts, Rc::new(|| {}))));
+        let second = runtime
+            .pending_item_focus_jobs()
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_ne!(first.sequence, second.sequence);
+        publication_focus(&dom, transport, &runtime, &first);
+        assert_eq!(
+            runtime.item_visual_target().as_deref(),
+            Some("publication-dropdown")
+        );
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        publication_cues(&dioxus_ssr::render(&dom), Some("publication-dropdown"));
+        publication_focus(&dom, transport, &runtime, &second);
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        publication_cues(&dioxus_ssr::render(&dom), Some("publication-select"));
+        // No source focusin is synthesized: a nonfocusable host must publish
+        // from its frame callback alone. All remaining subscribers use the
+        // same registered queue, without forced parent notification.
+        for id in ["publication-menu", "publication-category"] {
+            let facts: HostFacts = serde_json::from_value(
+                hosts
+                    .iter()
+                    .find(|host| host["target"] == id)
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+            dom.in_runtime(|| assert!(node.queue_item_host_focus(&facts, Rc::new(|| {}))));
+            let job = runtime
+                .pending_item_focus_jobs()
+                .into_iter()
+                .last()
+                .unwrap();
+            publication_focus(&dom, transport, &runtime, &job);
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            publication_cues(
+                &dioxus_ssr::render(&dom),
+                (id != "publication-category").then_some(id),
+            );
+        }
+        let facts: HostFacts = serde_json::from_value(hosts[0].clone()).unwrap();
+        dom.in_runtime(|| assert!(node.queue_item_host_focus(&facts, Rc::new(|| {}))));
+        let dropped = runtime
+            .pending_item_focus_jobs()
+            .into_iter()
+            .last()
+            .unwrap();
+        dom.in_runtime(|| fixture.visible.get().unwrap().set(false));
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert!(!publication_dispatch(
+            &dom,
+            transport,
+            "change",
+            serde_json::json!({
+                "owner":runtime.owner_id(),"sequence":0,"item_focus_sequence":dropped.sequence,
+                "item_focus_root":dropped.root,"item_focus_generation":dropped.generation,
+                "item_focus_target":dropped.target,"item_focus_capture":dropped.capture,"item_focus_phase":"focus"
+            })
+        ));
+        assert!(!dioxus_ssr::render(&dom).contains("publication-dropdown"));
+    }
     fn roving_event(
         runtime: &RuntimeHandle,
         sequence: u64,
