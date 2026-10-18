@@ -673,6 +673,62 @@ fn TriggerOthersProbe(topology: bool) -> Element {
                     }
                 }
             }
+            TriggerOthersNativeJournal {}
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+const TRIGGER_OTHERS_NATIVE_JOURNAL: &str = r#"
+const abort=new AbortController(),owner=document.getElementById('trigger-others-probe'),events=new WeakMap(),originals=new WeakMap(),objects=new WeakMap();let active=true,eventSequence=0,objectSequence=0,rowSequence=0;
+const alive=()=>active&&!abort.signal.aborted&&owner?.isConnected&&document.getElementById('trigger-others-probe')===owner;
+const oid=node=>{if(!node)return null;if(!objects.has(node))objects.set(node,++objectSequence);return objects.get(node);};
+const identity=node=>node?{id:node.id||'',tag:node.nodeName,object:oid(node),connected:node.isConnected,label:node.getAttribute?.('aria-label')||null}:null;
+const rect=node=>{if(!(node instanceof Element))return null;const r=node.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height};};
+const hit=(x,y)=>Number.isFinite(x)&&Number.isFinite(y)?{x,y,first:identity(document.elementFromPoint(x,y)),stack:document.elementsFromPoint(x,y).slice(0,5).map(identity)}:null;
+const element=node=>{if(!(node instanceof HTMLElement))return identity(node);const css=getComputedStyle(node);return{...identity(node),rect:rect(node),hidden:node.hidden,inert:node.inert,display:css.display,visibility:css.visibility,tabIndex:node.tabIndex,trigger:node.getAttribute('data-ix-overlay-trigger'),surface:node.getAttribute('data-ix-overlay-host')};};
+const facts=()=>{const surfaces={};for(const wrapper of owner.querySelectorAll('[id^="trigger-others-surface-"]')){const role=wrapper.id.slice('trigger-others-surface-'.length),host=wrapper.querySelector('[data-ix-overlay-host]'),root=host?.closest('[data-ix-overlay-root]'),id=root?.getAttribute('data-ix-overlay-root'),trigger=Array.from(document.querySelectorAll('[data-ix-overlay-trigger]')).find(node=>node.getAttribute('data-ix-overlay-trigger')===id),r=trigger?.getBoundingClientRect();surfaces[role]={signalIndex:wrapper.dataset.signalIndex,policy:wrapper.dataset.closeBehavior,root:root?{...identity(root),id:root.id,registration:id,owner:root.dataset.ixOverlayOwner,generation:root.dataset.ixOverlayGeneration,registryOpen:root.dataset.ixOverlayOpen}:null,host:element(host),nativeOpen:host?.hasAttribute('popover')?host.matches(':popover-open'):null,trigger:element(trigger),triggerCenterHit:r?hit(r.x+r.width/2,r.y+r.height/2):null,action:element(document.getElementById('trigger-others-action-'+role))};}let callbacks=[];try{callbacks=JSON.parse(document.getElementById('popover-controller-log')?.textContent||'[]');}catch{}return{owner:identity(owner),topology:owner.dataset.topology,state:JSON.parse(owner.dataset.state||'{}'),vetoOpen:JSON.parse(owner.dataset.vetoOpen||'[]'),vetoClose:JSON.parse(owner.dataset.vetoClose||'[]'),surfaces,active:element(document.activeElement),callbackCount:callbacks.length,lastCallback:callbacks.at(-1)||null,viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY}};};
+const send=(phase,event,extra={})=>{if(!alive())return;if(!events.has(event)){events.set(event,++eventSequence);originals.set(event,{target:event.target,path:event.composedPath().slice(0,10)});}const original=originals.get(event),pointer='clientX'in event;dioxus.send({row:++rowSequence,event:events.get(event),phase,time:performance.now(),eventTime:event.timeStamp,type:event.type,trusted:event.isTrusted,key:event.key||null,code:event.code||null,repeat:event.repeat||false,shift:!!event.shiftKey,alt:!!event.altKey,ctrl:!!event.ctrlKey,meta:!!event.metaKey,button:event.button??null,buttons:event.buttons??null,detail:event.detail??null,pointerId:event.pointerId??null,pointerType:event.pointerType??null,defaultPrevented:event.defaultPrevented,cancelBubble:event.cancelBubble,target:element(original.target),relatedTarget:identity(event.relatedTarget),path:original.path.map(identity),pointer:pointer?{clientX:event.clientX,clientY:event.clientY,pageX:event.pageX,pageY:event.pageY,hit:hit(event.clientX,event.clientY),hitTiming:'current observed phase at original event coordinates'}:null,facts:facts(),...extra});};
+for(const type of ['keydown','keyup','pointerdown','pointerup','mousedown','mouseup','click','focusin','focusout']){
+ document.addEventListener(type,event=>{if(!alive())return;send('document-capture',event);const target=event.composedPath()[0];if(target instanceof EventTarget)target.addEventListener(type,actual=>{if(actual===event)send('actual-target-bubble',event);},{once:true,passive:true,signal:abort.signal});queueMicrotask(()=>send('queued-capture-microtask',event));setTimeout(()=>send('next-native-task',event),0);requestAnimationFrame(time=>{send('next-native-frame',event,{frameTime:time});requestAnimationFrame(next=>send('second-native-frame',event,{frameTime:next}));});},{capture:true,passive:true,signal:abort.signal});
+ document.addEventListener(type,event=>send('document-bubble',event),{passive:true,signal:abort.signal});
+ window.addEventListener(type,event=>send('window-bubble',event),{passive:true,signal:abort.signal});
+}
+dioxus.send({phase:'ready',readOnly:true,time:performance.now(),owner:identity(owner),ringCap:160});try{await dioxus.recv();}finally{active=false;abort.abort();}
+"#;
+
+#[component]
+fn TriggerOthersNativeJournal() -> Element {
+    #[cfg(not(feature = "web"))]
+    {
+        rsx! {}
+    }
+    #[cfg(feature = "web")]
+    {
+        let mut rows = use_signal(Vec::<Value>::new);
+        let channel = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
+        let cleanup = channel.clone();
+        use_drop(move || {
+            if let Some(eval) = cleanup.borrow_mut().take() {
+                let _ = eval.send("finish");
+            }
+        });
+        let text = serde_json::to_string(&*rows.read()).unwrap();
+        let last_row = rows
+            .read()
+            .last()
+            .and_then(|row| row["row"].as_u64())
+            .unwrap_or(0);
+        rsx! {
+            details { id: "trigger-others-native-journal", "data-read-only": "true", "data-ring-cap": "160", "data-last-row": last_row.to_string(),
+                onmounted: move |_| {
+                    let mut eval = dioxus::document::eval(TRIGGER_OTHERS_NATIVE_JOURNAL);
+                    *channel.borrow_mut() = Some(eval);
+                    spawn(async move { while let Ok(value) = eval.recv::<Value>().await { let mut current = rows.write(); current.push(value); if current.len() > 160 { current.remove(0); } } });
+                },
+                summary { "Read-only native keyboard and pointer journal" }
+                pre { id: "trigger-others-native-log", style: "white-space:pre-wrap;overflow-wrap:anywhere", "{text}" }
+            }
         }
     }
 }

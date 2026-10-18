@@ -471,11 +471,15 @@ impl DropdownContext {
                 }
             } else if no_trap {
                 self.request(false, Reason::Keyboard, false);
-            } else if facts.focus_count > 0
-                && (facts.focused_index.is_none()
-                    || (!facts.shift && facts.focused_index == Some(facts.focus_count - 1))
-                    || (facts.shift && facts.focused_index == Some(0)))
+            } else if facts.inside
+                && facts.focused_index.is_some_and(|index| {
+                    index < facts.focus_count
+                        && ((!facts.shift && index == facts.focus_count - 1)
+                            || (facts.shift && index == 0))
+                })
             {
+                // The source trap listens on the content host and only wraps
+                // a current candidate. An external trigger keeps native Tab.
                 result.prevent = true;
                 result.stop = true;
                 let mut state = self.state.borrow_mut();
@@ -2249,6 +2253,65 @@ mod tests {
             !h.html().contains("aria-activedescendant"),
             "roving has no focus proxy aria attribute"
         );
+    }
+
+    #[test]
+    fn native_ordinary_tab_wraps_only_current_content_candidates() {
+        let _guard = crate::test_event_converter_guard();
+        for (inside, on_trigger, count, index, shift, expected) in [
+            (false, true, 1, None, false, "none"),
+            (false, true, 1, None, true, "none"),
+            (false, true, 1, Some(0), false, "none"),
+            (true, false, 1, None, false, "none"),
+            (true, false, 1, Some(1), false, "none"),
+            (true, false, 0, None, false, "none"),
+            (true, false, 3, Some(1), false, "none"),
+            (true, false, 3, Some(0), false, "none"),
+            (true, false, 3, Some(2), false, "first-native"),
+            (true, false, 3, Some(0), true, "last-native"),
+            // A custom trigger within the content can itself be a candidate.
+            (true, true, 1, Some(0), false, "first-native"),
+        ] {
+            let mut h = Harness::new();
+            h.click("Menu");
+            let context = h.context();
+            let node = context.node.borrow().clone().unwrap();
+            let runtime = node.runtime().unwrap();
+            let transport = h
+                .attrs
+                .iter()
+                .find(|(_, attrs)| {
+                    attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
+                })
+                .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+                .unwrap();
+            let before = h.config.borrow().requests.clone();
+            let report = serde_json::json!({
+                "owner":runtime.owner_id(),"sequence":1,"kind":"key","phase":"bubble",
+                "key":"Tab","shift":shift,
+                "hosts":if inside {vec![node.id()]} else {vec![]},
+                "triggers":if on_trigger {vec![node.id()]} else {vec![]},
+                "nodes":[{
+                    "id":node.id(),"generation":node.generation(),"connected":true,
+                    "discovery_ready":true,"mode":"active-descendant","open":true,
+                    "on_trigger":on_trigger,"inside":inside,
+                    "focus_count":count,"focused_index":index
+                }]
+            });
+            let (prevented, propagates) = dispatch(&h.dom, "input", transport, report.to_string());
+            h.settle();
+            assert_eq!(prevented, expected != "none", "{report}");
+            assert!(
+                !propagates,
+                "transport stays private; native stop uses the acknowledgement channel"
+            );
+            assert_eq!(context.state.borrow().focus_target, expected, "{report}");
+            assert!(
+                *context.open.peek(),
+                "ordinary Tab leaves visibility unchanged"
+            );
+            assert_eq!(h.config.borrow().requests, before, "no visibility request");
+        }
     }
 
     #[test]
