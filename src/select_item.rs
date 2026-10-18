@@ -29,6 +29,7 @@ pub fn SelectItem(
     let mounted_host = binding.clone();
     let mounted_id = host_id.clone();
     let active = binding.active();
+    let roving_tabindex = binding.tabindex();
     let checked_attribute =
         serde_json::to_string(&checked_content_attribute(&attributes)).unwrap_or_default();
     let aria_label = attributes
@@ -61,6 +62,10 @@ pub fn SelectItem(
     }));
     let inner_value = value.clone();
     let key_value = value.clone();
+    let attributes = attributes
+        .into_iter()
+        .filter(|attribute| roving_tabindex.is_none() || attribute.name != "tabindex")
+        .collect::<Vec<_>>();
     rsx! {
         div {
             id: host_id,
@@ -71,6 +76,7 @@ pub fn SelectItem(
             "data-ix-item-focusable": "true", "data-active": active.to_string(),
             "value": value, "label": label, "disabled": disabled,
             "data-ix-reflect-checked": checked_attribute,
+            tabindex: roving_tabindex,
             onmounted: move |event| mounted_host.mount(&mounted_id,event.data()),
             onclick: move |event| onclick.call(event),
             ..attributes,

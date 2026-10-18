@@ -28,11 +28,14 @@ fn main() {
 }
 
 #[component]
-fn CustomDropdownAction() -> Element {
-    let mounted = use_dropdown_item_mount("r02-mixed-custom");
+fn CustomDropdownAction(onmodechange: EventHandler<()>) -> Element {
+    let item = use_dropdown_item("r02-mixed-custom");
+    let mut authored_index = use_signal(|| 3);
     rsx! { button {
         id:"r02-mixed-custom", r#type:"button", "data-ix-roving-item":"",
-        onmounted:mounted, "Custom control"
+        onmounted:item.onmounted, tabindex:item.tabindex.or(Some(authored_index())),
+        onkeydown:move |event:KeyboardEvent|match event.key(){Key::F2=>authored_index.set(7),Key::F3=>onmodechange.call(()),_=>{}},
+        "Custom control"
     } }
 }
 
@@ -77,6 +80,7 @@ fn Preview() -> Element {
     let mut veto = use_signal(|| false);
     let mut dropdown_changes = use_signal(Vec::<bool>::new);
     let mut header_changes = use_signal(Vec::<bool>::new);
+    let mut mixed_roving = use_signal(|| true);
     let selected_group = multi().join(", ");
     let mut options = vec![
         SelectOption::new("alpha", "Alpha"),
@@ -212,14 +216,16 @@ fn Preview() -> Element {
             }
             section { class:"r02-section",
                 h2 { "Mixed item focus and scrolling" }
-                Dropdown { label:"Mixed item navigation", class:"r02-mixed", navigation_mode:DropdownNavigationMode::RovingTabindex, enable_top_layer:true,
+                Dropdown { label:"Mixed item navigation", class:"r02-mixed", navigation_mode:if mixed_roving(){DropdownNavigationMode::RovingTabindex}else{DropdownNavigationMode::ActiveDescendant}, enable_top_layer:true,
                     DropdownItem { id:"r02-mixed-first", label:"First action" }
+                    DropdownItem { id:"r02-mixed-disabled", label:"Unavailable mixed action", disabled:true }
                     SelectItem { id:"r02-mixed-select", value:"mixed", label:"Selectable row" }
                     MenuItem { id:"r02-mixed-menu", label:"Navigation row", close_on_select:false }
-                    CustomDropdownAction {}
+                    CustomDropdownAction { onmodechange:move |_|mixed_roving.set(!mixed_roving()) }
                     for index in 1..=18 { DropdownItem { key:"{index}", label:format!("Extra action {index:02}") } }
                     MenuCategory { id:"r02-mixed-category", label:"Grouped row", MenuItem { label:"Grouped action" } }
                 }
+                Button { onclick:move |_|mixed_roving.set(!mixed_roving()), "Switch mixed navigation mode" }
             }
             section { class:"r02-section",
                 h2 { "Header overflow notifications" }
@@ -283,15 +289,25 @@ const mixed=root().querySelector('.r02-mixed'),mixedMenu=mixed.querySelector('.i
 mixed.scrollIntoView({block:'center'});mixed.click();
 await wait('mixed open',()=>mixed.getAttribute('aria-expanded')==='true');
 const mixedKey=key=>document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+const mixedControls=()=>[...mixedMenu.querySelectorAll('[data-ix-item-kind],[data-ix-roving-item]')].filter(n=>n.getClientRects().length>0&&!n.hasAttribute('disabled')&&n.dataset.ixItemFocusable!=='false').map(n=>n.matches('[data-ix-item-kind="menu"],[data-ix-item-kind="category"]')?n.querySelector('[data-ix-item-control]'):n);
+const rovingAt=control=>mixedControls().every(n=>n?.getAttribute('tabindex')===(n===control?'0':'-1'));
 mixedMenu.focus();mixedKey('Home');
-await wait('owned dropdown focus',()=>document.activeElement.id==='r02-mixed-first');
-mixedKey('ArrowDown');await wait('owned select focus',()=>document.activeElement.id==='r02-mixed-select');
-mixedKey('ArrowDown');await wait('owned menu focus',()=>document.activeElement.id==='r02-mixed-menu-control');
-mixedKey('ArrowDown');await wait('custom mounted focus',()=>document.activeElement.id==='r02-mixed-custom');
+await wait('owned dropdown focus and tab order',()=>document.activeElement.id==='r02-mixed-first'&&rovingAt(document.activeElement));
+mixedKey('ArrowDown');await wait('disabled skip and select tab order',()=>document.activeElement.id==='r02-mixed-select'&&rovingAt(document.activeElement));
+mixedKey('ArrowDown');await wait('owned menu focus and tab order',()=>document.activeElement.id==='r02-mixed-menu-control'&&rovingAt(document.activeElement)&&!document.querySelector('#r02-mixed-menu').hasAttribute('tabindex'));
+mixedKey('ArrowDown');await wait('custom mounted focus and tab order',()=>document.activeElement.id==='r02-mixed-custom'&&rovingAt(document.activeElement));
+mixedKey('F2');
 mixedKey('End');await wait('owned category focus',()=>document.activeElement===document.querySelector('#r02-mixed-category [data-ix-item-control]'));
+await wait('category physical tab order',()=>rovingAt(document.activeElement)&&!document.querySelector('#r02-mixed-category').hasAttribute('tabindex'));
 await wait('owned nearest scroll',()=>mixedMenu.scrollTop>0);
 const mixedScroll=mixedMenu.scrollTop;
 mixedKey('Escape');await wait('mixed dismissal',()=>mixed.getAttribute('aria-expanded')==='false');
+await wait('current authored tab order restored',()=>document.querySelector('#r02-mixed-custom').getAttribute('tabindex')==='7'&&!document.querySelector('#r02-mixed-first').hasAttribute('tabindex')&&!document.querySelector('#r02-mixed-select').hasAttribute('tabindex'));
+mixed.click();await wait('mixed reopened',()=>mixed.getAttribute('aria-expanded')==='true');
+mixedMenu.focus();mixedKey('Home');await wait('mixed first after reopen',()=>document.activeElement.id==='r02-mixed-first'&&rovingAt(document.activeElement));
+for(const id of ['r02-mixed-select','r02-mixed-menu-control','r02-mixed-custom']){mixedKey('ArrowDown');await wait('mode setup '+id,()=>document.activeElement.id===id);}
+mixedKey('F3');await wait('live mode clears tab order',()=>mixed.getAttribute('aria-expanded')==='true'&&document.activeElement===mixed&&document.querySelector('#r02-mixed-custom').getAttribute('tabindex')==='7'&&!document.querySelector('#r02-mixed-first').hasAttribute('tabindex'));
+mixedKey('Escape');await wait('mode-changed dismissal',()=>mixed.getAttribute('aria-expanded')==='false');
 const adorned=document.getElementById('r02-adorned'),wrap=adorned.closest('.ix-input-wrap');
 await wait('adornment mount',()=>wrap.dataset.paddingReady==='true'&&+wrap.dataset.paddingStart>0&&+wrap.dataset.paddingEnd>0);
 const firstStart=+wrap.dataset.paddingStart,firstEnd=+wrap.dataset.paddingEnd;
@@ -313,5 +329,5 @@ native.dispatchEvent(new KeyboardEvent('keydown',{key:'F2',bubbles:true,cancelab
 await wait('native width update',()=>Math.abs(nativePanel.getBoundingClientRect().width-300)<2);
 const nativeOption=[...nativePanel.querySelectorAll('[role=option]')].find(n=>n.textContent.trim()==='Beta');nativeOption.click();
 await wait('native select commit',()=>document.querySelector('#r02-native-value').textContent==='Native selected: beta'&&native.getAttribute('aria-expanded')==='false');
-return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true,dropdownChanges:document.querySelector('#r02-dropdown-changes').textContent,narrowChips:narrow,wideChips:5,mixedOwnedKinds:4,customMounted:true,mixedScroll,adornments:{firstStart,firstEnd,grownStart},nativeFollowsScroll:true,nativeSelection:document.querySelector('#r02-native-value').textContent,headerChanges:document.querySelector('#r02-header-changes').textContent};
+return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true,dropdownChanges:document.querySelector('#r02-dropdown-changes').textContent,narrowChips:narrow,wideChips:5,mixedOwnedKinds:4,customMounted:true,renderedTabOrder:true,disabledSkipped:true,authoredIndexRestored:7,liveModeRestored:true,mixedScroll,adornments:{firstStart,firstEnd,grownStart},nativeFollowsScroll:true,nativeSelection:document.querySelector('#r02-native-value').textContent,headerChanges:document.querySelector('#r02-header-changes').textContent};
 "#;

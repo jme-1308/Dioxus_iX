@@ -1,7 +1,7 @@
-//! Source-host inventory and exact roving attribute baselines.
+//! Source-host inventory, navigation and activation.
 //!
 //! DOM plumbing supplies the two source query orders and actual-object tokens.
-//! Rust owns selector eligibility, navigation, activation and attribute writes.
+//! Rust owns selector eligibility, navigation and activation.
 //! Descriptive registration and current inventory membership are independent:
 //! no nearest-overlay or provider-ownership filter belongs in this module.
 
@@ -151,7 +151,6 @@ pub(crate) enum Activation {
 
 pub(crate) struct Inventory {
     mode: InventoryMode,
-    pub(crate) items_host: ItemRef,
     hosts: BTreeMap<ItemRef, HostFacts>,
     navigation_order: Vec<ItemRef>,
     query_order: Vec<ItemRef>,
@@ -232,7 +231,6 @@ impl Inventory {
         }
         Self {
             mode,
-            items_host: facts.items_host,
             hosts,
             navigation_order,
             query_order,
@@ -341,129 +339,6 @@ impl Inventory {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct AttributeWrite {
-    pub(crate) item: ItemRef,
-    pub(crate) tabindex: Option<String>,
-}
-
-#[derive(Default)]
-pub(crate) struct RovingState {
-    // Preserve Map insertion order as well as each exact first attribute value.
-    // One actual itemsHost shares a baseline even when multiple roots use it.
-    hosts: Vec<(ItemRef, Vec<AttributeWrite>)>,
-}
-
-impl RovingState {
-    pub(crate) fn retains_token(&self, token: &str) -> bool {
-        self.hosts.iter().any(|(host, writes)| {
-            host.0 == token || writes.iter().any(|write| write.item.0 == token)
-        })
-    }
-    fn remember(&mut self, host: &ItemRef, candidates: &[&HostFacts]) {
-        let index = self.hosts.iter().position(|(item, _)| item == host);
-        let baseline = if let Some(index) = index {
-            &mut self.hosts[index].1
-        } else {
-            self.hosts.push((host.clone(), Vec::new()));
-            &mut self.hosts.last_mut().unwrap().1
-        };
-        for candidate in candidates {
-            if !baseline.iter().any(|write| write.item == candidate.item) {
-                baseline.push(AttributeWrite {
-                    item: candidate.item.clone(),
-                    tabindex: candidate.tabindex_attribute.clone(),
-                });
-            }
-        }
-    }
-
-    pub(crate) fn select(
-        &mut self,
-        host: &ItemRef,
-        query_candidates: &[HostFacts],
-        target: &ItemRef,
-    ) -> Vec<AttributeWrite> {
-        let candidates = query_candidates
-            .iter()
-            .filter(|candidate| candidate.eligible(InventoryMode::RovingTabindex))
-            .collect::<Vec<_>>();
-        self.remember(host, &candidates);
-        let mut writes = candidates
-            .iter()
-            .filter(|candidate| candidate.item != *target)
-            .map(|candidate| AttributeWrite {
-                item: candidate.item.clone(),
-                tabindex: Some("-1".into()),
-            })
-            .collect::<Vec<_>>();
-        // Source writes target=0 even if it disappeared from the re-queried
-        // current candidates. It is not added to the remembered baseline then.
-        writes.push(AttributeWrite {
-            item: target.clone(),
-            tabindex: Some("0".into()),
-        });
-        writes
-    }
-
-    pub(crate) fn init(
-        &mut self,
-        host: &ItemRef,
-        query_candidates: &[HostFacts],
-        last: bool,
-        focus_checked: bool,
-    ) -> Option<(ItemRef, Vec<AttributeWrite>)> {
-        let candidates = query_candidates
-            .iter()
-            .filter(|candidate| candidate.eligible(InventoryMode::RovingTabindex))
-            .collect::<Vec<_>>();
-        let edge = if last {
-            candidates.last()
-        } else {
-            candidates.first()
-        }?;
-        let target = if focus_checked {
-            candidates
-                .iter()
-                .find(|candidate| candidate.checked_attribute)
-                .unwrap_or(edge)
-        } else {
-            edge
-        }
-        .item
-        .clone();
-        self.remember(host, &candidates);
-        let mut writes = candidates
-            .iter()
-            .map(|candidate| AttributeWrite {
-                item: candidate.item.clone(),
-                tabindex: Some("-1".into()),
-            })
-            .collect::<Vec<_>>();
-        writes.push(AttributeWrite {
-            item: target.clone(),
-            tabindex: Some("0".into()),
-        });
-        Some((target, writes))
-    }
-
-    pub(crate) fn clear(&mut self, host: &ItemRef) -> Vec<AttributeWrite> {
-        let Some(index) = self.hosts.iter().position(|(item, _)| item == host) else {
-            return Vec::new();
-        };
-        self.hosts.remove(index).1
-    }
-
-    /// Global renderer teardown only. A closing root should clear its tracked
-    /// itemsHosts individually, rather than clearing unrelated shared hosts.
-    pub(crate) fn clear_all(&mut self) -> Vec<AttributeWrite> {
-        std::mem::take(&mut self.hosts)
-            .into_iter()
-            .flat_map(|(_, writes)| writes)
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,12 +378,6 @@ mod tests {
                 slots: None,
             },
         )
-    }
-    fn write(id: &str, value: Option<&str>) -> AttributeWrite {
-        AttributeWrite {
-            item: ItemRef(id.into()),
-            tabindex: value.map(str::to_string),
-        }
     }
 
     #[test]
@@ -558,7 +427,6 @@ mod tests {
             &["slot", "direct", "slot", "unknown"],
             &["direct", "slot"],
         );
-        assert_eq!(inventory.items_host, ItemRef("actual-host".into()));
         assert_eq!(inventory.active(), Some(ItemRef("direct".into())));
         assert_eq!(
             inventory.navigation_order(),
@@ -681,105 +549,6 @@ mod tests {
             empty.activation("Enter", &keys, None),
             Activation::SyntheticHost { item: None }
         );
-    }
-
-    #[test]
-    fn roving_init_preserves_query_order_checks_and_exact_original_attributes() {
-        let host = ItemRef("shared-host".into());
-        let a = item("a", ItemKind::Dropdown, None);
-        let mut b = item("b", ItemKind::Select, Some("4"));
-        b.checked_attribute = true;
-        let c = item("c", ItemKind::Menu, Some("-8"));
-        let mut state = RovingState::default();
-        let (target, writes) = state.init(&host, &[a, b, c], true, true).unwrap();
-        assert_eq!(target, ItemRef("b".into()));
-        assert_eq!(
-            writes,
-            [
-                write("a", Some("-1")),
-                write("b", Some("-1")),
-                write("c", Some("-1")),
-                write("b", Some("0"))
-            ]
-        );
-        assert_eq!(
-            state.clear(&host),
-            [
-                write("a", None),
-                write("b", Some("4")),
-                write("c", Some("-8"))
-            ]
-        );
-        assert!(state.clear(&host).is_empty());
-        assert!(state.init(&host, &[], false, false).is_none());
-    }
-
-    #[test]
-    fn roving_select_restores_first_values_after_consumer_edits_insertion_and_same_id_replacement()
-    {
-        let host = ItemRef("shared-host".into());
-        let mut state = RovingState::default();
-        let a = item("actual-a", ItemKind::Dropdown, None);
-        let b = item("actual-b", ItemKind::Menu, Some("3"));
-        assert_eq!(
-            state.select(&host, &[a.clone(), b], &a.item),
-            [write("actual-b", Some("-1")), write("actual-a", Some("0"))]
-        );
-        let mut edited_a = a.clone();
-        edited_a.tabindex_attribute = Some("19".into());
-        let mut replacement = item("new-actual-b", ItemKind::Menu, Some("-7"));
-        replacement.target = "public-actual-b".into();
-        let inserted = item("inserted", ItemKind::NativeOptIn, Some("5"));
-        state.select(
-            &host,
-            &[edited_a, replacement.clone(), inserted],
-            &replacement.item,
-        );
-        assert_eq!(
-            state.clear(&host),
-            [
-                write("actual-a", None),
-                write("actual-b", Some("3")),
-                write("new-actual-b", Some("-7")),
-                write("inserted", Some("5"))
-            ]
-        );
-    }
-
-    #[test]
-    fn requery_can_remove_selected_target_without_remembering_or_retargeting_it() {
-        let host = ItemRef("actual-host".into());
-        let a = item("a", ItemKind::Dropdown, None);
-        let target = ItemRef("already-selected-removed-object".into());
-        let mut state = RovingState::default();
-        assert_eq!(
-            state.select(&host, &[a], &target),
-            [
-                write("a", Some("-1")),
-                write("already-selected-removed-object", Some("0"))
-            ]
-        );
-        assert_eq!(state.clear(&host), [write("a", None)]);
-    }
-
-    #[test]
-    fn shared_items_host_keeps_one_first_baseline_and_other_hosts_clear_independently() {
-        let first = ItemRef("host-one".into());
-        let second = ItemRef("host-two".into());
-        let mut state = RovingState::default();
-        let a = item("a", ItemKind::Dropdown, Some("2"));
-        let mut later_a = a.clone();
-        later_a.tabindex_attribute = Some("0".into());
-        state.select(&first, &[a.clone(), a], &ItemRef("a".into()));
-        state.select(
-            &second,
-            &[item("b", ItemKind::Menu, None)],
-            &ItemRef("b".into()),
-        );
-        state.select(&first, &[later_a], &ItemRef("a".into()));
-        assert_eq!(state.clear(&first), [write("a", Some("2"))]);
-        assert_eq!(state.clear_all(), [write("b", None)]);
-        assert!(state.clear_all().is_empty());
     }
 
     #[test]
@@ -1018,33 +787,5 @@ mod tests {
                 Some(ItemRef("r".into()))
             );
         }
-    }
-
-    #[test]
-    fn active_only_slot_child_does_not_enter_the_base_roving_originals() {
-        let inventory = Inventory::new(
-            InventoryMode::RovingTabindex,
-            assigned_active_child(InventoryMode::RovingTabindex),
-        );
-        let active = inventory.active();
-        assert_eq!(active, Some(ItemRef("child".into())));
-        let next = inventory.navigate("ArrowDown", active.as_ref()).unwrap();
-        let mut state = RovingState::default();
-        assert_eq!(
-            state.select(&inventory.items_host, &inventory.query_hosts(), &next),
-            [
-                write("before", Some("-1")),
-                write("after", Some("-1")),
-                write("root", Some("0")),
-            ]
-        );
-        assert_eq!(
-            state.clear(&inventory.items_host),
-            [
-                write("before", None),
-                write("root", Some("-1")),
-                write("after", None),
-            ]
-        );
     }
 }

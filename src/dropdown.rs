@@ -37,6 +37,9 @@ impl ItemHostBinding {
     pub(crate) fn active(&self) -> bool {
         self.runtime.item_visual_key().as_deref() == Some(self.key.as_str())
     }
+    pub(crate) fn tabindex(&self) -> Option<i32> {
+        self.runtime.item_tabindex(&self.key)
+    }
 }
 pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
     let runtime = overlay_runtime::use_overlay_runtime();
@@ -68,12 +71,22 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
     }
 }
 
-/// Register the mounted element of a custom item in a roving Dropdown.
+/// Dioxus-owned focus registration and tab order for a custom Dropdown item.
+#[derive(Clone, Copy)]
+pub struct DropdownItemBinding {
+    /// Attach to the same stable element that carries the item's `id`.
+    pub onmounted: EventHandler<MountedEvent>,
+    /// Apply to that element's `tabindex`. `None` preserves its natural tab order.
+    pub tabindex: Option<i32>,
+}
+
+/// Bind a custom Dioxus control to Dropdown keyboard navigation.
 ///
-/// Attach the returned handler to the element's `onmounted`, give it the same
-/// stable `id`, and mark it with `data-ix-roving-item`. Dioxus then owns its
-/// focus, scrolling and cleanup. Unregistered DOM elements have no JavaScript
-/// focus fallback. Use a different component key when replacing the element.
+/// Apply both returned fields, give the control the same stable `id`, and mark
+/// it with `data-ix-roving-item`. Dioxus owns focus, scrolling, tab order and
+/// cleanup. There is no JavaScript fallback for unregistered controls. Use a
+/// different component key when replacing the element. If the control has an
+/// authored tab index, use `item.tabindex.or(Some(authored_index))`.
 ///
 /// ```rust,no_run
 /// use dioxus::prelude::*;
@@ -81,21 +94,33 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
 ///
 /// #[component]
 /// fn CustomAction() -> Element {
-///     let mounted = use_dropdown_item_mount("custom-action");
+///     let item = use_dropdown_item("custom-action");
 ///     rsx! {
 ///         button {
 ///             id: "custom-action",
 ///             "data-ix-roving-item": "",
-///             onmounted: mounted,
+///             onmounted: item.onmounted,
+///             tabindex: item.tabindex,
 ///             "Custom action"
 ///         }
 ///     }
 /// }
 /// ```
-pub fn use_dropdown_item_mount(id: impl Into<String>) -> EventHandler<MountedEvent> {
+pub fn use_dropdown_item(id: impl Into<String>) -> DropdownItemBinding {
     let binding = use_item_host("native-opt-in");
+    let tabindex = binding.tabindex();
     let target = id.into();
-    use_callback(move |event: MountedEvent| binding.mount(&target, event.data()))
+    let onmounted = use_callback(move |event: MountedEvent| binding.mount(&target, event.data()));
+    DropdownItemBinding {
+        onmounted,
+        tabindex,
+    }
+}
+
+/// Register focus and scrolling only. Use [`use_dropdown_item`] and apply both
+/// fields when the Dropdown should also manage the control's roving tab order.
+pub fn use_dropdown_item_mount(id: impl Into<String>) -> EventHandler<MountedEvent> {
+    use_dropdown_item(id).onmounted
 }
 /// Preserve own checked content attributes where the interpreter otherwise
 /// writes only a native property. The marker carries Rust's literal value;
@@ -1750,6 +1775,7 @@ pub fn DropdownItem(
     let key_context = context.clone();
     let click_label = label.clone();
     let key_label = label.clone();
+    let tabindex = host_binding.tabindex();
     let mut attributes = attributes;
     let consumer_style = attributes.iter().rev().find_map(|attribute| {
         if attribute.name == "style" {
@@ -1759,7 +1785,9 @@ pub fn DropdownItem(
         }
         None
     });
-    attributes.retain(|attribute| attribute.name != "style");
+    attributes.retain(|attribute| {
+        attribute.name != "style" && (tabindex.is_none() || attribute.name != "tabindex")
+    });
     let host_style = match (consumer_style, linked.as_ref()) {
         (Some(style), Some(child)) => Some(format!(
             "{style};anchor-name:--ix-dropdown-anchor-{}",
@@ -1777,6 +1805,7 @@ pub fn DropdownItem(
         "data-ix-reflect-checked":serde_json::to_string(&checked.then_some("")).unwrap_or_default(),
         style:host_style,"data-ix-overlay-trigger":trigger_marker,
         "data-active":active.to_string(),"aria-disabled":blocked.to_string(),"disabled":blocked,
+        tabindex,
         "aria-label":compact.then_some(label.clone()),title:compact.then_some(label.clone()),
         "aria-haspopup":dropdown.map(|_|"menu"),"aria-expanded":dropdown.map(|_|linked_open.to_string()),
         "aria-controls":linked.as_ref().map(DropdownContext::host_id),
@@ -3021,7 +3050,7 @@ mod tests {
         assert!(runtime.pending_item_focus_count() == 0);
     }
     #[test]
-    fn registered_roving_inventory_projects_pending_writes_without_coalescing_hosts() {
+    fn registered_roving_inventory_projects_logical_tab_order_before_render() {
         let _guard = crate::test_event_converter_guard();
         let mut h = Harness::with_settings(Fixture {
             mode: DropdownNavigationMode::RovingTabindex,
@@ -3038,7 +3067,7 @@ mod tests {
         assert_eq!(runtime.pending_item_focus_count(), 1);
         assert!(
             !registered_inventory_key(&h, 4, "Enter", &facts),
-            "the pending logical tabindex selects native opt-in before its DOM write; native Enter passes through"
+            "logical tabindex selects the custom control before rendering; native Enter passes through"
         );
         h.settle();
         assert_eq!(focuses.borrow().as_slice(), ["mixed-native"]);

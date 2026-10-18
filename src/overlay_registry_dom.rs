@@ -460,29 +460,6 @@ function collectFacts(kind,event,phase=''){
     })():null
   };
 }
-function applyRovingWrite(element,value){
-  if(!(element instanceof HTMLElement))return;
-  if(value===null)element.removeAttribute('tabindex');else element.setAttribute('tabindex',value);
-}
-function drainRovingWrites(report){
-  const pending=transport();if(!pending)return;
-  pending.value=JSON.stringify({owner,sequence:report.sequence,roving_pending:report.sequence});
-  if(pending.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))return;
-  const tokens=[...new Set(report.nodes.flatMap(node=>node.inventory?.query_order||[]))];
-  for(const token of itemCaptureNodes.keys())if(!tokens.includes(token))tokens.push(token);
-  let progress;
-  do{
-    progress=false;
-    for(const value of ['-1','0'])for(const item of tokens){
-      const input=transport();if(!input)return;
-      input.value=JSON.stringify({owner,sequence:report.sequence,roving_write:true,
-        roving_event_sequence:report.sequence,roving_item:item,roving_tabindex:value});
-      if(!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
-        applyRovingWrite(itemCaptureNodes.get(item)?.element,value);progress=true;
-      }
-    }
-  }while(progress);
-}
 function send(report,event){
   const input=transport();
   if(!alive||!input)return;
@@ -496,7 +473,6 @@ function send(report,event){
   const value=JSON.stringify(report);
   input.value=value;
   const prevent=!input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
-  if(report.kind==='key')drainRovingWrites(report);
   const ackInput=transport();if(!ackInput)return;
   ackInput.value=value;
   const stop=!ackInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
@@ -945,15 +921,6 @@ function executeCapturedTab(command){
   const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
   if(allowed&&el?.isConnected)el.focus();
 }
-function executeRovingAttributes(command){
-  for(const write of command.writes||[]){
-    const input=transport();if(!input)return;
-    input.value=JSON.stringify({owner,sequence:0,roving_write:true,roving_sequence:command.sequence,
-      roving_root:command.root,roving_generation:command.generation,roving_item:write.item,roving_tabindex:write.tabindex});
-    if(!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))applyRovingWrite(itemCaptureNodes.get(write.item)?.element,write.tabindex);
-  }
-  pruneItemCaptures();
-}
 const inventoryReader=(id,generation)=>{
   const root=Array.from(registryElements('[data-ix-overlay-root]')).find(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id&&Number(root.getAttribute('data-ix-overlay-generation'))===generation);
   if(!alive||!root)return null;
@@ -1010,7 +977,6 @@ try{
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
     if(command?.descendant_focus)queueDescendantFocus(command.descendant_focus);
     if(command?.item_cues)syncItemCues(null,true);
-    if(command?.roving_attributes)executeRovingAttributes(command.roving_attributes);
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);

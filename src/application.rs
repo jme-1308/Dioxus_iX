@@ -3362,6 +3362,7 @@ pub fn MenuItem(
 ) -> Element {
     let item_host = crate::dropdown::use_item_host("menu");
     let generic = item_host.generic;
+    let roving_tabindex = if generic { item_host.tabindex() } else { None };
     let (id, context) = navigation_item();
     let nested = context.as_ref().and_then(|context| context.nested.clone());
     if let Some(nested) = &nested {
@@ -3524,7 +3525,7 @@ pub fn MenuItem(
             a { id:control_id, class, hidden:control_hidden,style:control_style,role:menu_role,href: if disabled { None } else { Some(href) }, target: target.clone(),"disabled":!generic&&disabled,
                 rel: if target == "_blank" { Some("noopener noreferrer") } else { None },
                 title, "aria-label": label, "aria-current": if active { Some("page") } else { None },
-                "aria-disabled": disabled.to_string(), tabindex: if disabled{-1}else{tabindex}, "data-home": home.to_string(),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
+                "aria-disabled": disabled.to_string(), tabindex: roving_tabindex.unwrap_or(if disabled{-1}else{tabindex}), "data-home": home.to_string(),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
                 "data-ix-item-control":generic.then_some(""),
                 onmounted: onmount, onfocus:onfocus,onkeydown:onkey, onclick: onactivate,
@@ -3532,7 +3533,7 @@ pub fn MenuItem(
                 {content}
             }
         } else {
-            button { id:control_id, class, hidden:control_hidden,style:control_style,role:menu_role,r#type: "button", disabled:native_disabled, title, "aria-label": label,"aria-disabled":disabled.to_string(),tabindex:if native_disabled{-1}else{tabindex},"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
+            button { id:control_id, class, hidden:control_hidden,style:control_style,role:menu_role,r#type: "button", disabled:native_disabled, title, "aria-label": label,"aria-disabled":disabled.to_string(),tabindex:roving_tabindex.unwrap_or(if native_disabled{-1}else{tabindex}),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-current": if active { Some("page") } else { None }, "data-home": home.to_string(),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
                 "data-ix-item-control":generic.then_some(""),
@@ -3544,14 +3545,13 @@ pub fn MenuItem(
     };
     if generic {
         let source_active = item_host.active();
-        let attributes = if nested.is_some() {
-            attributes
-                .into_iter()
-                .filter(|attribute| attribute.name != "hidden")
-                .collect::<Vec<_>>()
-        } else {
-            attributes
-        };
+        let attributes = attributes
+            .into_iter()
+            .filter(|attribute| {
+                !(nested.is_some() && attribute.name == "hidden"
+                    || roving_tabindex.is_some() && attribute.name == "tabindex")
+            })
+            .collect::<Vec<_>>();
         rsx! {div {id:host_id,class:if source_active{"ix-source-menu-item ix-focused"}else{"ix-source-menu-item"},style,hidden:source_hidden,
             "data-ix-item-kind":"menu","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":(!disabled).to_string(),"data-active":source_active.to_string(),
             // Host click is the source activation target. It does not invoke
@@ -3599,6 +3599,11 @@ pub fn MenuCategory(
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
     let item_host = crate::dropdown::use_item_host("category");
+    let roving_tabindex = if item_host.generic {
+        item_host.tabindex()
+    } else {
+        None
+    };
     let (id, context) = navigation_item();
     let root_roving = context
         .as_ref()
@@ -3832,7 +3837,9 @@ pub fn MenuCategory(
         .join(";");
     let attributes = attributes
         .into_iter()
-        .filter(|attribute| attribute.name != "style")
+        .filter(|attribute| {
+            attribute.name != "style" && (roving_tabindex.is_none() || attribute.name != "tabindex")
+        })
         .collect::<Vec<_>>();
     let host_style = format!("{style};{consumer_style};anchor-name:--ix-menu-category-anchor-{id}");
     let flyout_style = format!("position-anchor:--ix-menu-category-anchor-{id}");
@@ -3866,7 +3873,7 @@ pub fn MenuCategory(
             button {id:parent_id.clone(),class:if active||nested_active{"ix-menu-item ix-menu-item-active"}else{"ix-menu-item"},r#type:"button",title:(!disable_tooltip).then(||label.clone()),
                 "data-ix-item-control":"",
                 "data-ix-item-part":"category-parent","data-ix-descendant-kind":"menu","data-ix-item-focusable":"true",
-                role:"menuitem",tabindex,"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
+                role:"menuitem",tabindex:roving_tabindex.unwrap_or(tabindex),"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-label":label.clone(),"aria-expanded":is_open.to_string(),"aria-controls":format!("{content_id} {popup_id}"),
                 onmounted:move |event|{
                     mounted_host.mount(&mounted_id,event.data());

@@ -1,8 +1,6 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
-use crate::dropdown_inventory::{
-    AttributeWrite, HostFacts, InventoryFacts, ItemKind, ItemRef, RovingState,
-};
+use crate::dropdown_inventory::{HostFacts, InventoryFacts, ItemKind, ItemRef};
 use crate::overlay_completion::CompletionQueue;
 use crate::overlay_descendant_focus::{
     DescendantHide, DescendantJob, DescendantPurpose, DescendantQueue,
@@ -14,7 +12,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     rc::{Rc, Weak},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -194,11 +192,9 @@ struct Runtime {
     submenu_marks: BTreeMap<String, (String, u64)>,
     submenu_own: BTreeMap<String, (u64, InventoryFacts)>,
     inventories: BTreeMap<String, (u64, InventoryFacts)>,
-    roving: RovingState,
-    roving_hosts: BTreeMap<(String, u64), Vec<ItemRef>>,
-    pending_roving_hosts: Vec<RovingEnrollment>,
-    roving_sequence: u64,
-    roving_writes: VecDeque<RovingBatch>,
+    item_tabindices: BTreeMap<(String, u64), BTreeMap<String, ItemTabindex>>,
+    item_tabindex_revision: u64,
+    item_tabindex_signal: Option<Signal<u64>>,
     item_visual: Option<String>,
     item_visual_target: Option<String>,
     item_visual_known: bool,
@@ -288,19 +284,10 @@ struct RootCueOffer {
     field: RootCueField,
     value: Option<String>,
 }
-struct RovingEnrollment {
-    root: String,
-    generation: u64,
-    query_root: String,
-    query_generation: u64,
-}
-struct RovingBatch {
-    sequence: u64,
-    event_sequence: u64,
-    root: String,
-    generation: u64,
-    writes: VecDeque<AttributeWrite>,
-    sent: bool,
+#[derive(Clone, Copy)]
+struct ItemTabindex {
+    revision: u64,
+    value: i32,
 }
 type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 
@@ -311,10 +298,6 @@ impl Drop for Runtime {
         self.completions.clear();
 
         self.inventories.clear();
-        self.roving.clear_all();
-        self.roving_hosts.clear();
-        self.pending_roving_hosts.clear();
-        self.roving_writes.clear();
         if let Some(domain) = &self.domain {
             domain.remove_owner(&self.owner);
         }
@@ -362,11 +345,10 @@ impl RuntimeHandle {
             submenu_marks: BTreeMap::new(),
             submenu_own: BTreeMap::new(),
             inventories: BTreeMap::new(),
-            roving: RovingState::default(),
-            roving_hosts: BTreeMap::new(),
-            pending_roving_hosts: Vec::new(),
-            roving_sequence: 0,
-            roving_writes: VecDeque::new(),
+            item_tabindices: BTreeMap::new(),
+            item_tabindex_revision: 0,
+            item_tabindex_signal: dioxus::core::Runtime::try_current()
+                .map(|_| Signal::new_in_scope(0, ScopeId::ROOT)),
             item_visual: None,
             item_visual_target: None,
             item_visual_known: false,
@@ -436,6 +418,18 @@ impl RuntimeHandle {
             .collect();
         for root in roots {
             self.cancel_owned_item_focus(&root);
+        }
+        let changed = {
+            let mut state = self.0.borrow_mut();
+            let mut changed = false;
+            state.item_tabindices.retain(|_, values| {
+                changed |= values.remove(key).is_some();
+                !values.is_empty()
+            });
+            changed
+        };
+        if changed {
+            self.notify_item_tabindex();
         }
     }
     fn cancel_owned_item_focus(&self, root: &str) {
@@ -646,17 +640,91 @@ impl RuntimeHandle {
         self.0.borrow_mut().item_cue_hosts.observe(host);
         self.set_item_visual(key, target, Some(host.clone()));
     }
+    fn mounted_item_key(state: &Runtime, host: &HostFacts) -> Option<String> {
+        if state.item_mounts.contains_key(&host.registration_key) {
+            return Some(host.registration_key.clone());
+        }
+        state
+            .item_mounts
+            .iter()
+            .find(|(_, mount)| mount.target == host.target)
+            .map(|(key, _)| key.clone())
+    }
+    fn current_item_tabindex(state: &Runtime, key: &str) -> Option<i32> {
+        state
+            .item_tabindices
+            .values()
+            .filter_map(|values| values.get(key))
+            .max_by_key(|value| value.revision)
+            .map(|value| value.value)
+    }
+    pub(crate) fn item_tabindex(&self, key: &str) -> Option<i32> {
+        let signal = self.0.borrow().item_tabindex_signal;
+        let _revision = signal.and_then(|signal| signal.try_read().ok().map(|value| *value));
+        Self::current_item_tabindex(&self.0.borrow(), key)
+    }
+    fn notify_item_tabindex(&self) {
+        let (signal, revision) = {
+            let mut state = self.0.borrow_mut();
+            state.item_tabindex_revision = state.item_tabindex_revision.wrapping_add(1).max(1);
+            (state.item_tabindex_signal, state.item_tabindex_revision)
+        };
+        if let Some(mut signal) = signal
+            && let Ok(mut value) = signal.try_write()
+        {
+            *value = revision;
+        }
+    }
+    fn clear_item_tabindices(&self, root: &str, generation: u64) {
+        let removed = self
+            .0
+            .borrow_mut()
+            .item_tabindices
+            .remove(&(root.into(), generation))
+            .is_some();
+        if removed {
+            self.notify_item_tabindex();
+        }
+    }
+    fn set_roving_target(
+        &self,
+        root: &str,
+        generation: u64,
+        candidates: &[HostFacts],
+        target: &ItemRef,
+    ) -> bool {
+        let mut state = self.0.borrow_mut();
+        let target_key = candidates
+            .iter()
+            .find(|host| host.item == *target)
+            .and_then(|host| Self::mounted_item_key(&state, host));
+        let Some(target_key) = target_key else {
+            return false;
+        };
+        let revision = state.item_tabindex_revision.wrapping_add(1).max(1);
+        let values = candidates
+            .iter()
+            .filter_map(|host| {
+                Self::mounted_item_key(&state, host).map(|key| {
+                    let value = if key == target_key { 0 } else { -1 };
+                    (key, ItemTabindex { revision, value })
+                })
+            })
+            .collect();
+        state
+            .item_tabindices
+            .insert((root.into(), generation), values);
+        drop(state);
+        self.notify_item_tabindex();
+        true
+    }
     fn projected_inventory(&self, mut facts: InventoryFacts) -> InventoryFacts {
         let state = self.0.borrow();
         for host in &mut facts.hosts {
-            if let Some(write) = state
-                .roving_writes
-                .iter()
-                .rev()
-                .flat_map(|batch| batch.writes.iter().rev())
-                .find(|write| write.item == host.item)
+            if let Some(value) = Self::mounted_item_key(&state, host)
+                .and_then(|key| Self::current_item_tabindex(&state, &key))
             {
-                host.tabindex_attribute = write.tabindex.clone();
+                host.tabindex_attribute = Some(value.to_string());
             }
             if state.item_visual_known {
                 let key = if host.registration_key.is_empty() {
@@ -670,65 +738,6 @@ impl RuntimeHandle {
             }
         }
         facts
-    }
-    fn queue_roving_writes(&self, root: &str, generation: u64, writes: Vec<AttributeWrite>) {
-        if writes.is_empty() {
-            return;
-        }
-        {
-            let mut state = self.0.borrow_mut();
-            loop {
-                state.roving_sequence = state.roving_sequence.wrapping_add(1).max(1);
-                if !state
-                    .roving_writes
-                    .iter()
-                    .any(|batch| batch.sequence == state.roving_sequence)
-                {
-                    break;
-                }
-            }
-            let sequence = state.roving_sequence;
-            let event_sequence = state.sequence;
-            state.roving_writes.push_back(RovingBatch {
-                sequence,
-                event_sequence,
-                root: root.into(),
-                generation,
-                writes: writes.into(),
-                sent: false,
-            });
-        }
-        self.flush_roving_writes();
-    }
-    fn flush_roving_writes(&self) {
-        let commands = {
-            let state = self.0.borrow();
-            state.roving_writes.iter().filter(|batch| !batch.sent).map(|batch| {
-                (batch.sequence, serde_json::json!({"roving_attributes":{
-                    "sequence":batch.sequence,"root":batch.root,"generation":batch.generation,"writes":batch.writes
-                }}))
-            }).collect::<Vec<_>>()
-        };
-        for (sequence, command) in commands {
-            if !self
-                .0
-                .borrow()
-                .bridge
-                .as_ref()
-                .is_some_and(|bridge| bridge.send(command).is_ok())
-            {
-                break;
-            }
-            if let Some(batch) = self
-                .0
-                .borrow_mut()
-                .roving_writes
-                .iter_mut()
-                .find(|batch| batch.sequence == sequence)
-            {
-                batch.sent = true;
-            }
-        }
     }
     pub(crate) fn keyboard_mode(&self) -> bool {
         self.document_keyboard_mode()
@@ -752,6 +761,9 @@ impl RuntimeHandle {
             .is_some_and(|entry| entry.generation < generation)
         {
             self.cancel_owned_item_focus(&id);
+            if let Some(old) = self.entry(&id) {
+                self.clear_item_tabindices(&id, old.generation);
+            }
         }
         let mut runtime = self.0.borrow_mut();
         if !runtime
@@ -777,17 +789,6 @@ impl RuntimeHandle {
 
                 runtime.item_root_captures.remove(&id);
                 runtime.inventories.remove(&id);
-                runtime.pending_roving_hosts.retain(|admission| {
-                    admission.root != id || admission.generation != old_generation
-                });
-                if let Some(hosts) = runtime.roving_hosts.remove(&(id.clone(), old_generation)) {
-                    for host in hosts {
-                        runtime.roving.clear(&host);
-                    }
-                }
-                runtime
-                    .roving_writes
-                    .retain(|batch| batch.root != id || batch.generation != old_generation);
             }
             let revision = runtime
                 .nodes
@@ -909,6 +910,15 @@ impl RuntimeHandle {
         }
         let domain = Domain::join(document);
         if !self.0.borrow().document.is_empty() {
+            let changed = {
+                let mut state = self.0.borrow_mut();
+                let changed = !state.item_tabindices.is_empty();
+                state.item_tabindices.clear();
+                changed
+            };
+            if changed {
+                self.notify_item_tabindex();
+            }
             let roots: Vec<_> = self.0.borrow().owned_item_focus.keys().cloned().collect();
             for root in roots {
                 self.cancel_owned_item_focus(&root);
@@ -933,10 +943,6 @@ impl RuntimeHandle {
                 state.item_visual_target = None;
                 state.item_visual_known = false;
                 state.item_cues_dirty = false;
-                state.roving.clear_all();
-                state.roving_hosts.clear();
-                state.pending_roving_hosts.clear();
-                state.roving_writes.clear();
                 for entry in state.nodes.values_mut() {
                     if let Some(configuration) = &mut entry.navigation {
                         configuration.version = configuration.version.wrapping_add(1).max(1);
@@ -1324,6 +1330,7 @@ impl RuntimeHandle {
         (snapshot.callbacks.apply)(applied);
         if !change.open && self.read_current(id, &current) == Some(false) {
             self.cancel_owned_item_focus(id);
+            self.clear_item_tabindices(id, generation);
         }
         if !self.current(id, generation, operation) {
             return false;
@@ -1516,6 +1523,9 @@ impl RuntimeHandle {
         entry.revision = entry.revision.wrapping_add(1);
         runtime.registry.set_presence(id, open);
         drop(runtime);
+        if !open {
+            self.clear_item_tabindices(id, generation);
+        }
         self.sync_domain_open(id, generation, open);
     }
     fn unregister(&self, id: &str, generation: u64) {
@@ -1527,6 +1537,7 @@ impl RuntimeHandle {
         }
         self.close_children(id, Reason::Drop);
         self.cancel_owned_item_focus(id);
+        self.clear_item_tabindices(id, generation);
         let mut runtime = self.0.borrow_mut();
         if runtime
             .nodes
@@ -1548,17 +1559,6 @@ impl RuntimeHandle {
 
             runtime.item_root_captures.remove(id);
             runtime.inventories.remove(id);
-            runtime
-                .pending_roving_hosts
-                .retain(|admission| admission.root != id || admission.generation != generation);
-            if let Some(hosts) = runtime.roving_hosts.remove(&(id.into(), generation)) {
-                for host in hosts {
-                    runtime.roving.clear(&host);
-                }
-            }
-            runtime
-                .roving_writes
-                .retain(|batch| batch.root != id || batch.generation != generation);
             runtime.nodes.remove(id);
             runtime.order.retain(|candidate| candidate != id);
             runtime.registry.unregister(id, generation);
@@ -1590,7 +1590,6 @@ impl RuntimeHandle {
         );
         self.0.borrow_mut().bridge = Some(bridge);
         self.flush_navigation_configurations();
-        self.flush_roving_writes();
         self.flush_descendant_focus();
     }
     fn configure_navigation(&self, id: &str, generation: u64, mode: &str, enabled: bool) -> bool {
@@ -1603,18 +1602,15 @@ impl RuntimeHandle {
         else {
             return false;
         };
-        let roving_root = if enabled && mode == "roving-tabindex" {
-            let root = self.with_owner(id, generation, || {
-                entry
-                    .submenu
-                    .as_ref()
-                    .and_then(|access| (access.query_root)())
-                    .unwrap_or_else(|| id.into())
-            });
-            root.and_then(|root| self.entry(&root).map(|entry| (root, entry.generation)))
-        } else {
-            None
-        };
+        if !enabled
+            || mode != "roving-tabindex"
+            || entry
+                .navigation
+                .as_ref()
+                .is_some_and(|configuration| configuration.mode != mode)
+        {
+            self.clear_item_tabindices(id, generation);
+        }
         {
             let mut state = self.0.borrow_mut();
             let Some(entry) = state.nodes.get_mut(id).filter(|entry| {
@@ -1632,53 +1628,9 @@ impl RuntimeHandle {
                 capture: None,
                 sent: false,
             });
-            if let Some((query_root, query_generation)) = roving_root {
-                state.pending_roving_hosts.push(RovingEnrollment {
-                    root: id.into(),
-                    generation,
-                    query_root,
-                    query_generation,
-                });
-            }
         }
-        self.enroll_configured_roving_hosts();
         self.flush_navigation_configurations();
         true
-    }
-    fn enroll_configured_roving_hosts(&self) {
-        let mut state = self.0.borrow_mut();
-        let pending = std::mem::take(&mut state.pending_roving_hosts);
-        for admission in pending {
-            if !state
-                .nodes
-                .get(&admission.root)
-                .is_some_and(|entry| entry.generation == admission.generation)
-                || !state
-                    .nodes
-                    .get(&admission.query_root)
-                    .is_some_and(|entry| entry.generation == admission.query_generation)
-            {
-                continue;
-            }
-            let host = state
-                .submenu_own
-                .get(&admission.query_root)
-                .filter(|(version, facts)| {
-                    *version == admission.query_generation && !facts.items_host.0.is_empty()
-                })
-                .map(|(_, facts)| facts.items_host.clone());
-            let Some(host) = host else {
-                state.pending_roving_hosts.push(admission);
-                continue;
-            };
-            let hosts = state
-                .roving_hosts
-                .entry((admission.root, admission.generation))
-                .or_default();
-            if !hosts.contains(&host) {
-                hosts.push(host);
-            }
-        }
     }
     fn flush_navigation_configurations(&self) {
         let commands =
@@ -1832,7 +1784,6 @@ impl RuntimeHandle {
                 }
             }
         }
-        self.enroll_configured_roving_hosts();
         self.flush_navigation_configurations();
         // Native open attributes may lag the Rust callback during an original
         // click. Reconcile with read(), never overwrite current state from DOM.
@@ -2865,105 +2816,13 @@ impl RuntimeHandle {
             }
             return;
         }
-        if let Some(sequence) = query.roving_pending {
-            if self
-                .0
-                .borrow()
-                .roving_writes
-                .iter()
-                .any(|batch| batch.event_sequence == sequence)
-            {
-                event.prevent_default();
-            }
-            return;
-        }
-        if query.roving_write {
-            let Some(item) = query.roving_item else {
-                return;
-            };
-            let candidate = {
-                let state = self.0.borrow();
-                state
-                    .roving_writes
-                    .front()
-                    .filter(|batch| {
-                        if let Some(sequence) = query.roving_sequence {
-                            batch.sequence == sequence
-                                && query.roving_root.as_deref() == Some(batch.root.as_str())
-                                && query.roving_generation == Some(batch.generation)
-                        } else {
-                            query.roving_event_sequence == Some(batch.event_sequence)
-                        }
-                    })
-                    .and_then(|batch| {
-                        batch
-                            .writes
-                            .front()
-                            .filter(|write| {
-                                write.item.0 == item && write.tabindex == query.roving_tabindex
-                            })
-                            .map(|_| (batch.sequence, batch.root.clone(), batch.generation))
-                    })
-            };
-            let Some((sequence, root, generation)) = candidate else {
-                return;
-            };
-            let live = self
-                .with_owner(&root, generation, || {
-                    let entry = self.entry(&root)?;
-                    let value = self.read_current(&root, &entry)?;
-                    self.entry(&root)
-                        .filter(|entry| entry.generation == generation)
-                        .map(|_| value)
-                })
-                .flatten()
-                .is_some();
-            let consumed = {
-                let mut state = self.0.borrow_mut();
-                let Some(index) = state
-                    .roving_writes
-                    .iter()
-                    .position(|batch| batch.sequence == sequence)
-                else {
-                    return;
-                };
-                if index != 0 {
-                    return;
-                }
-                let batch = &mut state.roving_writes[index];
-                if !batch.writes.front().is_some_and(|write| {
-                    write.item.0 == item && write.tabindex == query.roving_tabindex
-                }) {
-                    return;
-                }
-                batch.writes.pop_front();
-                if batch.writes.is_empty() {
-                    state.roving_writes.remove(index);
-                }
-                true
-            };
-            if live && consumed {
-                event.prevent_default();
-            }
-            return;
-        }
         if let Some(capture) = query.capture_retained {
             let state = self.0.borrow();
             let retained = state.descendant_focus.retains_token(&capture)
                 || state.submenu_marks.contains_key(&capture)
                 || state.item_visual_host.as_ref().is_some_and(|host| {
                     host.capture == capture || host.parts.iter().any(|part| part.capture == capture)
-                })
-                || state
-                    .roving_hosts
-                    .values()
-                    .flatten()
-                    .any(|host| host.0 == capture)
-                || state.roving.retains_token(&capture)
-                || state
-                    .roving_writes
-                    .iter()
-                    .any(|batch| batch.writes.iter().any(|write| write.item.0 == capture));
+                });
             if retained {
                 event.prevent_default();
             }
@@ -3225,27 +3084,19 @@ impl NodeHandle {
         };
         runtime
             .with_owner(&self.id, self.generation, || {
-                let Some(entry) = runtime.entry(&self.id) else {
-                    return false;
-                };
-                if runtime.read_current(&self.id, &entry).is_none() {
+                if !runtime.item_owner_open(&self.id, self.generation) {
                     return false;
                 }
-                let facts = runtime.projected_inventory(facts.clone());
                 let inventory = crate::dropdown_inventory::Inventory::new(
                     crate::dropdown_inventory::InventoryMode::RovingTabindex,
-                    facts.clone(),
+                    runtime.projected_inventory(facts.clone()),
                 );
-                let writes = {
-                    let mut state = runtime.0.borrow_mut();
-                    // Ordinary movement remembers baselines, but only source
-                    // configure/initialize enroll hosts for this owner's cleanup.
-                    state
-                        .roving
-                        .select(&inventory.items_host, &inventory.query_hosts(), target)
-                };
-                runtime.queue_roving_writes(&self.id, self.generation, writes);
-                true
+                runtime.set_roving_target(
+                    &self.id,
+                    self.generation,
+                    &inventory.query_hosts(),
+                    target,
+                )
             })
             .unwrap_or(false)
     }
@@ -3258,31 +3109,37 @@ impl NodeHandle {
         let runtime = self.runtime()?;
         runtime
             .with_owner(&self.id, self.generation, || {
-                let entry = runtime.entry(&self.id)?;
-                runtime.read_current(&self.id, &entry)?;
-                let facts = runtime.projected_inventory(facts.clone());
+                if !runtime.item_owner_open(&self.id, self.generation) {
+                    return None;
+                }
                 let inventory = crate::dropdown_inventory::Inventory::new(
                     crate::dropdown_inventory::InventoryMode::RovingTabindex,
-                    facts,
+                    runtime.projected_inventory(facts.clone()),
                 );
-                let (target, writes) = {
-                    let mut state = runtime.0.borrow_mut();
-                    let hosts = state
-                        .roving_hosts
-                        .entry((self.id.clone(), self.generation))
-                        .or_default();
-                    if !hosts.contains(&inventory.items_host) {
-                        hosts.push(inventory.items_host.clone());
-                    }
-                    state.roving.init(
-                        &inventory.items_host,
-                        &inventory.query_hosts(),
-                        last,
-                        focus_checked,
-                    )?
+                let candidates = {
+                    let state = runtime.0.borrow();
+                    inventory
+                        .query_hosts()
+                        .into_iter()
+                        .filter(|host| RuntimeHandle::mounted_item_key(&state, host).is_some())
+                        .collect::<Vec<_>>()
                 };
-                runtime.queue_roving_writes(&self.id, self.generation, writes);
-                inventory.host(&target).cloned()
+                let edge = if last {
+                    candidates.last()
+                } else {
+                    candidates.first()
+                }?;
+                let target = if focus_checked {
+                    candidates
+                        .iter()
+                        .find(|host| host.checked_attribute)
+                        .unwrap_or(edge)
+                } else {
+                    edge
+                };
+                runtime
+                    .set_roving_target(&self.id, self.generation, &candidates, &target.item)
+                    .then(|| target.clone())
             })
             .flatten()
     }
@@ -3290,27 +3147,12 @@ impl NodeHandle {
         let Some(runtime) = self.runtime() else {
             return;
         };
-        if !runtime
+        if runtime
             .entry(&self.id)
             .is_some_and(|entry| entry.generation == self.generation)
         {
-            return;
+            runtime.clear_item_tabindices(&self.id, self.generation);
         }
-        let writes = {
-            let mut state = runtime.0.borrow_mut();
-            state.pending_roving_hosts.retain(|admission| {
-                admission.root != self.id || admission.generation != self.generation
-            });
-            let hosts = state
-                .roving_hosts
-                .remove(&(self.id.clone(), self.generation))
-                .unwrap_or_default();
-            hosts
-                .iter()
-                .flat_map(|host| state.roving.clear(host))
-                .collect()
-        };
-        runtime.queue_roving_writes(&self.id, self.generation, writes);
     }
     pub(crate) fn queue_item_host_focus(&self, host: &HostFacts, callback: Rc<dyn Fn()>) -> bool {
         self.queue_mounted_item_focus(host.target.clone(), true, callback, Some(host.clone()))
@@ -3968,22 +3810,6 @@ struct Query {
     item_cue: Option<crate::item_visual::CueOffer>,
     #[serde(default)]
     item_root_cue: Option<RootCueOffer>,
-    #[serde(default)]
-    roving_pending: Option<u64>,
-    #[serde(default)]
-    roving_write: bool,
-    #[serde(default)]
-    roving_sequence: Option<u64>,
-    #[serde(default)]
-    roving_event_sequence: Option<u64>,
-    #[serde(default)]
-    roving_root: Option<String>,
-    #[serde(default)]
-    roving_generation: Option<u64>,
-    #[serde(default)]
-    roving_item: Option<String>,
-    #[serde(default)]
-    roving_tabindex: Option<String>,
     #[serde(default)]
     activate_target: Option<String>,
     #[serde(default)]
@@ -4947,21 +4773,8 @@ mod tests {
         assert!(runtime.0.borrow().owned_item_focus.is_empty());
         assert!(!dioxus_ssr::render(&dom).contains("publication-dropdown"));
     }
-    fn roving_event(
-        runtime: &RuntimeHandle,
-        sequence: u64,
-        item: &str,
-        value: Option<&str>,
-    ) -> FormEvent {
-        event(
-            serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,
-            "roving_write":true,"roving_event_sequence":sequence,"roving_item":item,"roving_tabindex":value}),
-        )
-    }
-
     #[test]
-    fn registered_mixed_inventory_keeps_logical_roving_writes_until_exact_fifo_ack_and_restores_raw_attrs()
-     {
+    fn registered_mixed_inventory_uses_latest_roving_state_before_a_render_commit() {
         let runtime = RuntimeHandle::new();
         let root = model(
             &runtime,
@@ -4995,6 +4808,9 @@ mod tests {
             }
         }));
         let raw = mixed_inventory_facts();
+        for host in &raw.hosts {
+            install_item_mock(&runtime, host, ItemMountMock::default());
+        }
         for (sequence, key) in [(1, "End"), (2, "ArrowUp")] {
             let input = event(
                 serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"key","phase":"capture","key":key,
@@ -5004,71 +4820,19 @@ mod tests {
             runtime.input(input.clone());
             assert!(!input.default_action_enabled());
         }
+        assert_eq!(runtime.item_tabindex("key-a"), Some(0));
+        assert_eq!(runtime.item_tabindex("key-b"), Some(-1));
         let logical = root.node.inventory().unwrap();
         assert_eq!(logical.hosts[0].tabindex_attribute.as_deref(), Some("0"));
         assert_eq!(logical.hosts[1].tabindex_attribute.as_deref(), Some("-1"));
         assert_eq!(
             raw.hosts[0].tabindex_attribute, None,
-            "raw diagnostics are not rewritten"
+            "raw observation remains diagnostic input"
         );
-        let overtaking = roving_event(&runtime, 2, "actual-b", Some("-1"));
-        runtime.query(overtaking.clone());
-        assert!(
-            overtaking.default_action_enabled(),
-            "later event cannot overtake an earlier batch"
-        );
-        for (sequence, item, value) in [
-            (1, "actual-a", "-1"),
-            (1, "actual-b", "0"),
-            (2, "actual-b", "-1"),
-            (2, "actual-a", "0"),
-        ] {
-            let wrong = roving_event(&runtime, sequence, item, Some("wrong"));
-            runtime.query(wrong.clone());
-            assert!(wrong.default_action_enabled());
-            let ack = roving_event(&runtime, sequence, item, Some(value));
-            runtime.query(ack.clone());
-            assert!(!ack.default_action_enabled());
-        }
-        assert!(runtime.0.borrow().roving_writes.is_empty());
-        root.node.clear_roving();
-        let (sequence, writes) = {
-            let state = runtime.0.borrow();
-            let batch = state.roving_writes.front().unwrap();
-            (
-                batch.sequence,
-                batch.writes.iter().cloned().collect::<Vec<_>>(),
-            )
-        };
-        assert_eq!(
-            writes,
-            [
-                AttributeWrite {
-                    item: ItemRef("actual-a".into()),
-                    tabindex: None
-                },
-                AttributeWrite {
-                    item: ItemRef("actual-b".into()),
-                    tabindex: Some("4".into())
-                }
-            ]
-        );
+        assert_eq!(raw.hosts[1].tabindex_attribute.as_deref(), Some("4"));
         assert!(root.node.request(false, Reason::Trigger, false));
-        for write in writes {
-            let value = serde_json::json!({"owner":runtime.owner_id(),"sequence":0,"roving_write":true,
-                "roving_sequence":sequence,"roving_root":"mixed-root","roving_generation":1,
-                "roving_item":write.item,"roving_tabindex":write.tabindex});
-            let ack = event(value.clone());
-            runtime.query(ack.clone());
-            assert!(
-                !ack.default_action_enabled(),
-                "accepted hide does not erase admitted restore writes"
-            );
-            let replay = event(value);
-            runtime.query(replay.clone());
-            assert!(replay.default_action_enabled());
-        }
-        assert!(runtime.0.borrow().roving_writes.is_empty());
+        assert_eq!(runtime.item_tabindex("key-a"), None);
+        assert_eq!(runtime.item_tabindex("key-b"), None);
     }
 
     #[test]
@@ -5892,280 +5656,180 @@ mod tests {
         drop(runtime);
         assert!(weak.upgrade().is_none() && node.runtime().is_none());
     }
-    // Insert into overlay_runtime.rs's existing #[cfg(test)] tests module.
-    // Uses the real FormEvent input/query handlers; no native DOM/frame claim.
-    fn configured_roving_observe(runtime: &RuntimeHandle, sequence: u64, nodes: serde_json::Value) {
-        runtime.input(event(serde_json::json!({
-            "owner":runtime.owner_id(),"sequence":sequence,"kind":"observe","nodes":nodes
-        })));
+    #[derive(Clone, Default)]
+    struct RovingView(Rc<RovingViewState>);
+    #[derive(Default)]
+    struct RovingViewState {
+        runtime: RefCell<Option<RuntimeHandle>>,
+        node: RefCell<Option<NodeHandle>>,
+        authored: Cell<Option<Signal<i32>>>,
+        open: Cell<bool>,
     }
-    fn configured_roving_empty(host: &str) -> InventoryFacts {
-        serde_json::from_value(serde_json::json!({"items_host":host,"hosts":[],
-        "navigation_order":[],"query_order":[]}))
-        .unwrap()
-    }
-    fn configured_roving_retained(runtime: &RuntimeHandle, capture: &str) -> bool {
-        let query = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-        "capture_retained":capture}));
-        runtime.query(query.clone());
-        !query.default_action_enabled()
-    }
-    fn configured_roving_drain(
-        runtime: &RuntimeHandle,
-        attributes: &mut BTreeMap<ItemRef, Option<String>>,
-    ) {
-        loop {
-            let next = {
-                let state = runtime.0.borrow();
-                state.roving_writes.front().map(|batch| {
-                    (
-                        batch.sequence,
-                        batch.root.clone(),
-                        batch.generation,
-                        batch.writes.front().unwrap().clone(),
-                    )
-                })
-            };
-            let Some((sequence, root, generation, write)) = next else {
-                break;
-            };
-            let query = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-            "roving_write":true,"roving_sequence":sequence,"roving_root":root,
-            "roving_generation":generation,"roving_item":write.item,
-            "roving_tabindex":write.tabindex}));
-            runtime.query(query.clone());
-            assert!(
-                !query.default_action_enabled(),
-                "exact FIFO captured write must be authorized"
+    fn roving_view(fixture: RovingView) -> Element {
+        let runtime = use_hook(RuntimeHandle::new);
+        let authored = use_signal(|| 7);
+        fixture.0.authored.set(Some(authored));
+        *fixture.0.runtime.borrow_mut() = Some(runtime.clone());
+        let registered = fixture.clone();
+        let registry = runtime.clone();
+        let node = use_hook(move || {
+            registered.0.open.set(true);
+            let read = registered.clone();
+            let apply = registered.clone();
+            let node = registry.register(
+                "reactive-roving".into(),
+                1,
+                OverlayKind::Dropdown,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(move || Some(read.0.open.get())),
+                    before: Rc::new(|_| true),
+                    apply: Rc::new(move |change| apply.0.open.set(change.open)),
+                    key: None,
+                },
             );
-            attributes.insert(write.item, write.tabindex);
-        }
+            for host in &mixed_inventory_facts().hosts {
+                install_item_mock(&registry, host, ItemMountMock::default());
+            }
+            *registered.0.node.borrow_mut() = Some(node.clone());
+            node
+        });
+        let cleanup = runtime.clone();
+        use_drop(move || {
+            node.unregister();
+            cleanup.unregister_item_cue("key-a");
+            cleanup.unregister_item_cue("key-b");
+        });
+        let first = runtime.item_tabindex("key-a").unwrap_or(*authored.read());
+        let second = runtime.item_tabindex("key-b").unwrap_or(4);
+        rsx! { button { id: "a", tabindex: first, "A" } button { id: "b", tabindex: second, "B" } }
     }
-
+    fn roving_rendered_tabindex(dom: &VirtualDom, id: &str) -> String {
+        let html = dioxus_ssr::render(dom);
+        publication_attr(publication_tag(&html, id), "tabindex").unwrap()
+    }
     #[test]
-    fn configured_roving_empty_host_is_retained_without_remembering_any_attributes() {
+    fn roving_revision_renders_overrides_then_restores_current_authored_props() {
+        let fixture = RovingView::default();
+        let mut dom = VirtualDom::new_with_props(roving_view, fixture.clone());
+        dom.rebuild_in_place();
+        let runtime = fixture.0.runtime.borrow().clone().unwrap();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let raw = mixed_inventory_facts();
+        assert_eq!(roving_rendered_tabindex(&dom, "a"), "7");
+        assert_eq!(roving_rendered_tabindex(&dom, "b"), "4");
+        assert_eq!(node.init_roving(&raw, true, false).unwrap().target, "b");
+        assert_eq!(runtime.item_tabindex("key-b"), Some(0));
+        assert_eq!(
+            roving_rendered_tabindex(&dom, "b"),
+            "4",
+            "logical state precedes the Dioxus commit"
+        );
+        settle_item_effects(&mut dom);
+        assert_eq!(roving_rendered_tabindex(&dom, "a"), "-1");
+        assert_eq!(roving_rendered_tabindex(&dom, "b"), "0");
+        dom.in_scope(ScopeId::APP, || fixture.0.authored.get().unwrap().set(9));
+        settle_item_effects(&mut dom);
+        assert_eq!(roving_rendered_tabindex(&dom, "a"), "-1");
+        node.clear_roving();
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            roving_rendered_tabindex(&dom, "a"),
+            "9",
+            "clear uses the current authored prop rather than a raw baseline"
+        );
+        assert_eq!(roving_rendered_tabindex(&dom, "b"), "4");
+        assert!(node.select_roving(&raw, &ItemRef("actual-a".into())));
+        assert!(node.request(false, Reason::Trigger, false));
+        settle_item_effects(&mut dom);
+        assert_eq!(roving_rendered_tabindex(&dom, "a"), "9");
+        assert_eq!(runtime.item_tabindex("key-b"), None);
+    }
+    #[test]
+    fn roving_initialization_skips_disabled_and_unregistered_items_and_supports_custom_mounts() {
         let runtime = RuntimeHandle::new();
         let root = model(
             &runtime,
-            "empty-roving",
+            "roving-root",
             OverlayKind::Dropdown,
             Rc::new(RefCell::new(Vec::new())),
         );
-        let facts = configured_roving_empty("actual-empty-host");
-        configured_roving_observe(
-            &runtime,
-            1,
-            serde_json::json!([
-                {"id":"empty-roving","generation":1,"connected":true,"discovery_ready":true,
-                    "root_capture":"actual-empty-root","inventory":facts}
-            ]),
-        );
-        assert!(root.node.request(true, Reason::Trigger, false));
-        assert!(root.node.configure_navigation("roving-tabindex", true));
-        assert!(configured_roving_retained(&runtime, "actual-empty-host"));
-        assert!(!configured_roving_retained(&runtime, "copied-empty-host"));
-        assert!(
-            !runtime.0.borrow().roving.retains_token("actual-empty-host"),
-            "configuration enrolls the host but does not snapshot original item attributes"
-        );
-        assert!(runtime.0.borrow().roving_writes.is_empty());
-        root.node.clear_roving();
-        assert!(!configured_roving_retained(&runtime, "actual-empty-host"));
-        assert!(runtime.0.borrow().roving_writes.is_empty());
-    }
-
-    #[test]
-    fn pending_roving_configuration_survives_newer_modes_but_not_owner_replacement_or_clear() {
-        let runtime = RuntimeHandle::new();
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let root = model(
-            &runtime,
-            "pending-roving",
-            OverlayKind::Dropdown,
-            log.clone(),
-        );
-        assert!(root.node.configure_navigation("roving-tabindex", true));
-        assert!(root.node.configure_navigation("active-descendant", false));
-        configured_roving_observe(
-            &runtime,
-            1,
-            serde_json::json!([
-                {"id":"pending-roving","generation":1,"connected":true,"discovery_ready":true,
-                    "inventory":configured_roving_empty("first-config-host")}
-            ]),
-        );
-        assert!(
-            configured_roving_retained(&runtime, "first-config-host"),
-            "later mode configuration does not erase an earlier source cleanup enrollment"
-        );
-        root.node.clear_roving();
-        assert!(!configured_roving_retained(&runtime, "first-config-host"));
-
-        let replaced = model(
-            &runtime,
-            "replaced-roving",
-            OverlayKind::Dropdown,
-            log.clone(),
-        );
-        assert!(replaced.node.configure_navigation("roving-tabindex", true));
-        let callbacks = runtime.entry("replaced-roving").unwrap().callbacks;
-        let replacement = runtime.register(
-            "replaced-roving".into(),
-            2,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-            callbacks,
-        );
-        configured_roving_observe(
-            &runtime,
-            2,
-            serde_json::json!([
-                {"id":"replaced-roving","generation":1,"connected":true,"discovery_ready":true,
-                    "inventory":configured_roving_empty("stale-generation-host")}
-            ]),
-        );
-        configured_roving_observe(
-            &runtime,
-            3,
-            serde_json::json!([
-                {"id":"replaced-roving","generation":2,"connected":true,"discovery_ready":true,
-                    "inventory":configured_roving_empty("replacement-host")}
-            ]),
-        );
-        assert!(!configured_roving_retained(
-            &runtime,
-            "stale-generation-host"
-        ));
-        assert!(
-            !configured_roving_retained(&runtime, "replacement-host"),
-            "a replacement must not inherit old pending configuration"
-        );
-        assert!(!replaced.node.configure_navigation("roving-tabindex", true));
-        assert!(replacement.configure_navigation("roving-tabindex", true));
-        assert!(configured_roving_retained(&runtime, "replacement-host"));
-        replacement.unregister();
-        assert!(!configured_roving_retained(&runtime, "replacement-host"));
-
-        let cleared = model(&runtime, "cleared-pending", OverlayKind::Dropdown, log);
-        assert!(cleared.node.configure_navigation("roving-tabindex", true));
-        cleared.node.clear_roving();
-        configured_roving_observe(
-            &runtime,
-            4,
-            serde_json::json!([
-                {"id":"cleared-pending","generation":1,"connected":true,"discovery_ready":true,
-                    "inventory":configured_roving_empty("after-clear-host")}
-            ]),
-        );
-        assert!(
-            !configured_roving_retained(&runtime, "after-clear-host"),
-            "an unfulfilled enrollment cannot reappear after actual cleanup"
-        );
-    }
-
-    fn configured_roving_forwarded_cleanup(initialize: bool) {
-        let runtime = RuntimeHandle::new();
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let parent = model(&runtime, "header", OverlayKind::Dropdown, log.clone());
-        let child = model(&runtime, "child", OverlayKind::Dropdown, log.clone());
-        let parent_facts = configured_roving_empty("parent-direct-host");
-        let mut child_facts = mixed_inventory_facts();
-        let originals = child_facts
-            .hosts
-            .iter()
-            .map(|host| (host.item.clone(), host.tabindex_attribute.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let mut attributes = originals.clone();
-        configured_roving_observe(
-            &runtime,
-            1,
-            serde_json::json!([
-                {"id":"header","generation":1,"connected":true,"discovery_ready":true,
-                    "inventory":parent_facts},
-                {"id":"child","generation":1,"connected":true,"discovery_ready":true,
-                    "trigger_ancestors":["header"],"inventory":child_facts}
-            ]),
-        );
-        assert!(parent.node.request(true, Reason::Trigger, false));
-        assert!(parent.node.configure_navigation("roving-tabindex", true));
-        assert!(child.node.request(true, Reason::Trigger, false));
-        assert!(child.node.configure_navigation("roving-tabindex", true));
-        assert_eq!(
-            runtime.0.borrow().registry.cached_children("header"),
-            ["child"]
-        );
-        // The component's apply hook clears its enrolled set only on accepted hide.
-        // Preserve the model callback so actual requests/cascades remain observable.
-        let accepted = parent.node.clone();
-        let original_apply = runtime.entry("header").unwrap().callbacks.apply;
-        runtime
-            .0
-            .borrow_mut()
-            .nodes
-            .get_mut("header")
-            .unwrap()
-            .callbacks
-            .apply = Rc::new(move |change| {
-            if !change.open {
-                accepted.clear_roving();
-            }
-            original_apply(change);
-        });
-        let selected = parent.node.clone();
-        runtime
-            .0
-            .borrow_mut()
-            .nodes
-            .get_mut("header")
-            .unwrap()
-            .callbacks
-            .key = Some(Rc::new(move |facts| {
-            let raw = facts.inventory.as_ref().unwrap();
-            if initialize {
-                assert_eq!(selected.init_roving(raw, true, false).unwrap().target, "b");
-            } else {
-                assert!(selected.select_roving(raw, &ItemRef("actual-b".into())));
-            }
-            KeyDecision {
-                prevent: true,
-                ..KeyDecision::default()
-            }
-        }));
-        // Parent's existing listener now queries Child's forwarded direct host;
-        // its own direct host and the physical receiver remain separate raw facts.
-        let key = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
-        "kind":"key","phase":"capture","key":"End","hosts":["header"],
-        "nodes":[
-            {"id":"header","generation":1,"connected":true,"discovery_ready":true,
-                "mode":"roving-tabindex","inside":true,"inventory":child_facts,
-                "own_inventory":parent_facts},
-            {"id":"child","generation":1,"connected":true,"discovery_ready":true,
-                "mode":"roving-tabindex","trigger_ancestors":["header"],"inventory":child_facts}
-        ]}));
-        runtime.input(key.clone());
-        assert!(!key.default_action_enabled());
-        configured_roving_drain(&runtime, &mut attributes);
-        assert_eq!(
-            attributes.get(&ItemRef("actual-a".into())),
-            Some(&Some("-1".into()))
-        );
-        assert_eq!(
-            attributes.get(&ItemRef("actual-b".into())),
-            Some(&Some("0".into()))
-        );
-        for host in &mut child_facts.hosts {
-            host.tabindex_attribute = attributes[&host.item].clone();
+        root.open.set(true);
+        let mut raw = mixed_inventory_facts();
+        for host in &raw.hosts {
+            install_item_mock(&runtime, host, ItemMountMock::default());
         }
-        configured_roving_observe(
-            &runtime,
-            3,
-            serde_json::json!([
-                {"id":"header","generation":1,"connected":true,"discovery_ready":true,
-                    "inventory":child_facts,"own_inventory":parent_facts},
-                {"id":"child","generation":1,"connected":true,"discovery_ready":true,
-                    "trigger_ancestors":["header"],"inventory":child_facts}
-            ]),
+        let mut disabled = raw.hosts[0].clone();
+        disabled.item = ItemRef("disabled".into());
+        disabled.capture = "disabled".into();
+        disabled.target = "disabled".into();
+        disabled.registration_key = "disabled-key".into();
+        disabled.disabled_attribute = true;
+        install_item_mock(&runtime, &disabled, ItemMountMock::default());
+        let mut custom = disabled.clone();
+        custom.item = ItemRef("custom".into());
+        custom.capture = "custom".into();
+        custom.target = "custom".into();
+        custom.registration_key.clear();
+        custom.kind = ItemKind::NativeOptIn;
+        custom.disabled_attribute = false;
+        custom.roving_opt_in = true;
+        custom.checked_attribute = true;
+        runtime.register_item_mount(
+            "custom-key",
+            "custom",
+            Rc::new(MountedData::new(ItemMountMock::default())),
         );
+        let mut unregistered = custom.clone();
+        unregistered.item = ItemRef("unregistered".into());
+        unregistered.target = "unregistered".into();
+        unregistered.capture = "unregistered".into();
+        raw.hosts.extend([disabled, custom, unregistered]);
+        raw.query_order = raw.hosts.iter().map(|host| host.item.clone()).collect();
+        raw.navigation_order = raw.query_order.clone();
+        assert_eq!(
+            root.node.init_roving(&raw, false, true).unwrap().target,
+            "custom"
+        );
+        assert_eq!(runtime.item_tabindex("custom-key"), Some(0));
+        assert_eq!(runtime.item_tabindex("key-a"), Some(-1));
+        assert_eq!(runtime.item_tabindex("disabled-key"), None);
+        assert!(!root.node.select_roving(&raw, &ItemRef("disabled".into())));
+        assert!(
+            !root
+                .node
+                .select_roving(&raw, &ItemRef("unregistered".into()))
+        );
+        assert_eq!(runtime.item_tabindex("custom-key"), Some(0));
+    }
+    #[test]
+    fn roving_owner_layers_survive_other_owner_clear_and_vetoed_nested_close() {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let parent = model(
+            &runtime,
+            "parent-roving",
+            OverlayKind::Dropdown,
+            log.clone(),
+        );
+        let child = model(&runtime, "child-roving", OverlayKind::Dropdown, log.clone());
+        let raw = mixed_inventory_facts();
+        for host in &raw.hosts {
+            install_item_mock(&runtime, host, ItemMountMock::default());
+        }
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
+            {"id":"parent-roving","generation":1,"connected":true,"discovery_ready":true,"inventory":raw},
+            {"id":"child-roving","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":["parent-roving"],"inventory":raw}]})));
+        assert!(parent.node.request(true, Reason::Trigger, false));
+        assert!(child.node.request(true, Reason::Trigger, false));
+        assert_eq!(
+            runtime.0.borrow().registry.cached_children("parent-roving"),
+            ["child-roving"],
+            "the fixture must establish trigger discovery before exercising the vetoed nested close"
+        );
+        assert!(child.node.select_roving(&raw, &ItemRef("actual-a".into())));
+        assert!(parent.node.select_roving(&raw, &ItemRef("actual-b".into())));
+        assert_eq!(runtime.item_tabindex("key-a"), Some(-1));
         child.veto.set(true);
         log.borrow_mut().clear();
         assert!(parent.node.request(false, Reason::Trigger, false));
@@ -6173,44 +5837,72 @@ mod tests {
         assert_eq!(
             *log.borrow(),
             [
-                "before:header:false",
-                "before:child:false",
-                "apply:header:false"
+                "before:parent-roving:false",
+                "before:child-roving:false",
+                "apply:parent-roving:false"
             ]
         );
-        configured_roving_drain(&runtime, &mut attributes);
-        if initialize {
-            assert_eq!(
-                attributes, originals,
-                "explicit initialization enrolled the forwarded host and restores exact None/4 originals"
-            );
-        } else {
-            assert_eq!(
-                attributes.get(&ItemRef("actual-a".into())),
-                Some(&Some("-1".into()))
-            );
-            assert_eq!(
-                attributes.get(&ItemRef("actual-b".into())),
-                Some(&Some("0".into())),
-                "ordinary selection did not enroll Child in Parent's cleanup set"
-            );
-            child.node.clear_roving();
-            configured_roving_drain(&runtime, &mut attributes);
-            assert_eq!(
-                attributes, originals,
-                "Child still owns the exact shared baseline after its veto"
-            );
+        assert_eq!(
+            runtime.item_tabindex("key-a"),
+            Some(0),
+            "clearing the parent reveals the still-open child's own state"
+        );
+        assert_eq!(runtime.item_tabindex("key-b"), Some(-1));
+        child.node.clear_roving();
+        assert_eq!(runtime.item_tabindex("key-a"), None);
+        assert_eq!(runtime.item_tabindex("key-b"), None);
+    }
+    #[test]
+    fn roving_mode_generation_mount_replacement_and_drop_release_owned_overrides() {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "owned-roving",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        root.open.set(true);
+        let raw = mixed_inventory_facts();
+        for host in &raw.hosts {
+            install_item_mock(&runtime, host, ItemMountMock::default());
         }
-    }
-
-    #[test]
-    fn ordinary_forwarded_roving_selection_preserves_vetoed_child_attributes_on_parent_hide() {
-        configured_roving_forwarded_cleanup(false);
-    }
-
-    #[test]
-    fn explicit_roving_initialization_enrolls_forwarded_host_for_parent_cleanup() {
-        configured_roving_forwarded_cleanup(true);
+        assert!(root.node.configure_navigation("roving-tabindex", true));
+        assert!(root.node.init_roving(&raw, false, false).is_some());
+        assert!(root.node.configure_navigation("active-descendant", true));
+        assert_eq!(runtime.item_tabindex("key-a"), None);
+        assert!(root.node.configure_navigation("roving-tabindex", true));
+        assert!(root.node.select_roving(&raw, &ItemRef("actual-a".into())));
+        install_item_mock(&runtime, &raw.hosts[0], ItemMountMock::default());
+        assert_eq!(
+            runtime.item_tabindex("key-a"),
+            None,
+            "a replacement mount cannot inherit the previous handle's override"
+        );
+        assert_eq!(runtime.item_tabindex("key-b"), Some(-1));
+        runtime.unregister_item_cue("key-b");
+        assert_eq!(runtime.item_tabindex("key-b"), None);
+        install_item_mock(&runtime, &raw.hosts[1], ItemMountMock::default());
+        assert!(root.node.init_roving(&raw, false, false).is_some());
+        let callbacks = runtime.entry("owned-roving").unwrap().callbacks;
+        let replacement = runtime.register(
+            "owned-roving".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        assert_eq!(runtime.item_tabindex("key-a"), None);
+        assert!(replacement.init_roving(&raw, true, false).is_some());
+        root.node.clear_roving();
+        assert_eq!(
+            runtime.item_tabindex("key-b"),
+            Some(0),
+            "the stale generation cannot clear its replacement"
+        );
+        replacement.unregister();
+        assert_eq!(runtime.item_tabindex("key-a"), None);
+        assert_eq!(runtime.item_tabindex("key-b"), None);
+        assert!(runtime.0.borrow().item_tabindices.is_empty());
     }
 }
 
