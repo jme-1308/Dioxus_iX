@@ -1,0 +1,468 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="ix-icons:path" content="http://127.0.0.1:8089/www/node_modules/@siemens/ix-icons/svg"><title>Pinned Upload presentation matrix</title><link rel="stylesheet" href="http://127.0.0.1:8089/keyboard-foundation.css"><script type="module" src="http://127.0.0.1:8089/www/build/siemens-ix.esm.js"></script><script nomodule src="http://127.0.0.1:8089/www/build/siemens-ix.js"></script><style>body{margin:0;background:#f4f6f8;color:#202932;font:16px/1.5 system-ui,sans-serif}main{max-width:96rem;margin:auto;padding:24px}h1{font-size:28px;margin:0 0 16px}h2{font-size:20px;margin:24px 0 8px}button,select{font:inherit;min-height:36px}button:focus-visible,select:focus-visible{outline:2px solid #075c9d;outline-offset:3px}::selection{background:#bddcf2;color:#102c42}.controls{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.upload-matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.specimen{padding:16px;min-width:0;border:1px solid #bdc6ce;background:white}.scope-title{color:#202932;background:#eef2f5;font:600 14px/20px system-ui,sans-serif;padding:4px;margin:0 0 16px}.sample-parent{display:flex;max-width:100%}.specimen[data-ix-color-schema=dark]{background:#202932}#upload-pointer-park{position:fixed;right:0;top:0;width:112px;height:72px;background:#eef2f5;color:#384b5b;z-index:20;font:12px/18px system-ui,sans-serif}pre[hidden]{display:none!important}@media(max-width:720px){.upload-matrix{grid-template-columns:1fr}main{padding:16px}}</style></head><body data-ix-theme="brand"><div id="upload-pointer-park">Pointer parking area</div><main id="upload-review"><h1>Pinned Upload presentation matrix</h1><p>Actual pinned Upload, Button, Icon and Spinner under diagnostic system tokens. Native file selection and genuine input remain separate observations.</p><p id="upload-status" role="status" data-ready="false" data-run="idle">Loading pinned Upload…</p><div class="controls"><button id="upload-baseline" disabled>Baseline tokens</button><button id="upload-revised" disabled>Revise tokens and live props</button><button id="upload-run" disabled>Run 48 observations</button></div><button id="upload-outside">Outside keyboard seed</button><fieldset id="upload-pointer-target"><legend>Actual pointer diagnostic</legend><label>State <select id="upload-pointer-case"></select></label><button id="upload-pointer-arm">Arm pointer capture</button><p id="upload-pointer-status" role="status">Loading pointer target</p><div id="upload-pointer-mount"></div><pre id="upload-pointer-result" hidden aria-hidden="true">{}</pre></fieldset><div id="upload-matrix" class="upload-matrix"></div><h2>Accepting file consumer</h2><div class="controls"><button id="upload-consumer-reset">Reset files</button><button id="upload-consumer-loading">Set loading</button><button id="upload-consumer-success">Set success</button><button id="upload-consumer-failed">Set failed</button><button id="upload-consumer-disable">Disable upload</button><button id="upload-consumer-enable">Enable upload</button></div><form id="upload-consumer-form"><button id="upload-consumer-before" type="button">Before upload</button><div id="upload-consumer-mount"></div><button id="upload-consumer-after" type="button">After upload</button></form><p id="upload-consumer-state" role="status">No files selected.</p><pre id="upload-result" hidden aria-hidden="true">{}</pre></main><script type="module">
+const spec={
+  "revision": "8bf599bc68365d7752e12832e71b625883b93d7a",
+  "fixture": "Developer-authored system-token Upload adapter; system fonts; not full Brand metrics",
+  "revisions": [
+    {
+      "id": "baseline",
+      "revision": 0
+    },
+    {
+      "id": "revised",
+      "revision": 1
+    }
+  ],
+  "cases": [
+    {
+      "key": "upload-s0-select",
+      "id": "upload-upload-s0-select",
+      "scopeIndex": 0,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s0-loading",
+      "id": "upload-upload-s0-loading",
+      "scopeIndex": 0,
+      "state": "loading",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s0-failed",
+      "id": "upload-upload-s0-failed",
+      "scopeIndex": 0,
+      "state": "failed",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s0-success",
+      "id": "upload-upload-s0-success",
+      "scopeIndex": 0,
+      "state": "success",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s1-select",
+      "id": "upload-upload-s1-select",
+      "scopeIndex": 1,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s1-loading",
+      "id": "upload-upload-s1-loading",
+      "scopeIndex": 1,
+      "state": "loading",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s1-failed",
+      "id": "upload-upload-s1-failed",
+      "scopeIndex": 1,
+      "state": "failed",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s1-success",
+      "id": "upload-upload-s1-success",
+      "scopeIndex": 1,
+      "state": "success",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s2-select",
+      "id": "upload-upload-s2-select",
+      "scopeIndex": 2,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s2-loading",
+      "id": "upload-upload-s2-loading",
+      "scopeIndex": 2,
+      "state": "loading",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s2-failed",
+      "id": "upload-upload-s2-failed",
+      "scopeIndex": 2,
+      "state": "failed",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s2-success",
+      "id": "upload-upload-s2-success",
+      "scopeIndex": 2,
+      "state": "success",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s3-select",
+      "id": "upload-upload-s3-select",
+      "scopeIndex": 3,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s3-loading",
+      "id": "upload-upload-s3-loading",
+      "scopeIndex": 3,
+      "state": "loading",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s3-failed",
+      "id": "upload-upload-s3-failed",
+      "scopeIndex": 3,
+      "state": "failed",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-s3-success",
+      "id": "upload-upload-s3-success",
+      "scopeIndex": 3,
+      "state": "success",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-disabled-select",
+      "id": "upload-upload-disabled-select",
+      "scopeIndex": 0,
+      "state": "select",
+      "disabled": true,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-disabled-loading",
+      "id": "upload-upload-disabled-loading",
+      "scopeIndex": 1,
+      "state": "loading",
+      "disabled": true,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-directory",
+      "id": "upload-upload-directory",
+      "scopeIndex": 2,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": true,
+      "multiline": false,
+      "width": 520
+    },
+    {
+      "key": "upload-multiple",
+      "id": "upload-upload-multiple",
+      "scopeIndex": 3,
+      "state": "select",
+      "disabled": false,
+      "multiple": true,
+      "directory": false,
+      "multiline": false,
+      "width": 520,
+      "accept": ".txt,text/plain"
+    },
+    {
+      "key": "upload-multiline",
+      "id": "upload-upload-multiline",
+      "scopeIndex": 0,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": true,
+      "width": 520,
+      "selectFileText": "Drop the selected engineering records here to review the complete document set before uploading."
+    },
+    {
+      "key": "upload-narrow",
+      "id": "upload-upload-narrow",
+      "scopeIndex": 1,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 260,
+      "selectFileText": "Drop the selected engineering records here to review the complete document set before uploading."
+    },
+    {
+      "key": "upload-override",
+      "id": "upload-upload-override",
+      "scopeIndex": 2,
+      "state": "success",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520,
+      "override": true
+    },
+    {
+      "key": "upload-live-props",
+      "id": "upload-upload-live-props",
+      "scopeIndex": 3,
+      "state": "select",
+      "disabled": false,
+      "multiple": false,
+      "directory": false,
+      "multiline": false,
+      "width": 520,
+      "live": true,
+      "selectFileText": "Initial review files",
+      "i18nUploadFile": "Choose records\u2026"
+    }
+  ],
+  "colorTokens": [
+    "text-primary",
+    "text-disabled",
+    "text-danger",
+    "text-success",
+    "border-3",
+    "border-accent-hover",
+    "border-accent",
+    "border-accent-active",
+    "background-accent-secondary",
+    "background-accent-secondary-hover",
+    "background-accent-secondary-active",
+    "text-accent",
+    "text-accent-hover",
+    "text-accent-active",
+    "effects-focus",
+    "border-2",
+    "border-4"
+  ],
+  "aliases": [
+    "--ix-upload-error-icon--color",
+    "--ix-upload-success-icon--color",
+    "--ix-upload--border-color",
+    "--ix-upload--border-color--dragover",
+    "--ix-upload-text--color",
+    "--ix-upload-text--color--checking",
+    "--ix-upload-text--color--disabled",
+    "--ix-upload--border-radius",
+    "--ix-upload--min-height",
+    "--ix-upload--height",
+    "--ix-upload-file-upload-area--padding",
+    "--ix-upload-file-upload-area--margin-inline-start",
+    "--ix-upload-loader--margin",
+    "--ix-upload-loader--width",
+    "--ix-upload-loader--height",
+    "--ix-upload-filename--margin-bottom",
+    "--ix-upload-state--margin-inline-end",
+    "--ix-upload-icon--icon-size",
+    "--ix-upload-icon--margin-inline-end",
+    "--ix-upload-file-upload-area--border-width",
+    "--ix-upload-glyph--margin-block-start",
+    "--ix-upload-loader--font-size",
+    "--ix-upload-loader--animation-duration"
+  ],
+  "buttonAliases": [
+    "--ix-button--height",
+    "--ix-button--min-width",
+    "--ix-button--padding",
+    "--ix-button--border-width",
+    "--ix-button--border-radius",
+    "--ix-button--outline-width--focus",
+    "--ix-button--outline-color--focus",
+    "--ix-button--focus--outline-offset",
+    "--ix-button-secondary--background",
+    "--ix-button-secondary--background--hover",
+    "--ix-button-secondary--background--active",
+    "--ix-button-secondary--background--disabled",
+    "--ix-button-secondary--border-color",
+    "--ix-button-secondary--border-color--hover",
+    "--ix-button-secondary--border-color--active",
+    "--ix-button-secondary--border-color--disabled",
+    "--ix-button-secondary--color",
+    "--ix-button-secondary--color--hover",
+    "--ix-button-secondary--color--active",
+    "--ix-button-secondary--color--disabled"
+  ],
+  "parts": [
+    "host",
+    "parent",
+    "area",
+    "state",
+    "text",
+    "actions",
+    "input",
+    "buttonHost",
+    "button",
+    "buttonLabel",
+    "icon",
+    "spinnerHost",
+    "spinner",
+    "spinnerBefore",
+    "spinnerAfter"
+  ],
+  "computedSchema": [
+    "display",
+    "boxSizing",
+    "position",
+    "width",
+    "height",
+    "minWidth",
+    "minHeight",
+    "padding",
+    "margin",
+    "borderTopWidth",
+    "borderTopStyle",
+    "borderTopColor",
+    "borderRadius",
+    "color",
+    "backgroundColor",
+    "font",
+    "letterSpacing",
+    "lineHeight",
+    "overflow",
+    "whiteSpace",
+    "textOverflow",
+    "alignItems",
+    "justifyContent",
+    "flexShrink",
+    "outline",
+    "outlineOffset",
+    "pointerEvents"
+  ],
+  "consumer": {
+    "key": "consumer",
+    "id": "upload-consumer",
+    "scopeIndex": 0,
+    "state": "select",
+    "disabled": false,
+    "multiple": true,
+    "directory": false,
+    "multiline": false,
+    "width": 520,
+    "accept": ".txt,text/plain"
+  },
+  "pointerCases": [
+    {
+      "id": "enabled",
+      "state": "select",
+      "disabled": false
+    },
+    {
+      "id": "loading",
+      "state": "loading",
+      "disabled": false
+    },
+    {
+      "id": "disabled",
+      "state": "select",
+      "disabled": true
+    }
+  ],
+  "api": {
+    "readiness": "#upload-status[data-ready=true]",
+    "output": "#upload-result",
+    "run": "#upload-run",
+    "source": "window.ixUploadReview",
+    "schema": "phases[{id,revision,rows:[{id,key,scopeIndex,revision,props,...parts,resolvedAliases,buttonAliases,nativeFacts,textContent,buttonText}]}]"
+  }
+};
+
+const byId=id=>document.getElementById('upload-'+id),items=[],journal=[],errors=[],objects=new WeakMap(),eventObjects=new WeakMap();let objectSeq=0,eventSeq=0,seq=0,revision=0,ready=false,busy=false,consumerItem,pointerItem,pointerCase,consumerFiles=[];const consumerRequests=[],consumerNative=[],pointerRows=[],pendingFiles=[];
+const oid=n=>{if(!objects.has(n))objects.set(n,++objectSeq);return objects.get(n)},eid=e=>{if(!eventObjects.has(e))eventObjects.set(e,++eventSeq);return eventObjects.get(e)},log=(kind,data={})=>journal.push({seq:++seq,kind,time:performance.now(),revision,...data});
+const states={select:'SELECT_FILE',loading:'LOADING',failed:'UPLOAD_FAILED',success:'UPLOAD_SUCCESSED'};
+function tokens(root,s,r){for(const[k,name]of spec.colorTokens.entries())root.style.setProperty('--si-sys-color-'+name,`rgb(${24+(13*k+7*s+3*r)%160}, ${32+(11*k+5*s+7*r)%150}, ${40+(7*k+3*s+11*r)%140})`);const dims={'size-30':8+s+r,'size-40':12+s+r,'size-10':2+s+r,'size-20':4+s+r,'size-50':16+s+r,'size-60':20-4*(s%2)+Math.floor(s/2)+2*r,'size-70':24-4*(s%2)+Math.floor(s/2)+2*r,'size-80':32-8*(s%2)+2*r,'size-100':48+2*s+4*r,'size-110':64+2*s+4*r,'size-120':80+2*s+4*r,'size-130':96+2*s+4*r,'icon-lg':32+s+2*r,'spacing-x-10':2+s+r,'spacing-y-10':1+s+r,'spacing-x-20':4+s+r,'spacing-x-40':10+s+r,'spacing-y-60':14+s+2*r,'spacing-x-60':14+s+2*r,'border-width-default':1+r,'border-width-selected':2+r,'border-width-emphasis':3+r,'border-radius-xs':3+s+r,'border-radius-sm':4+s+r,'focus-ring-offset':3+s+r};for(const[k,v]of Object.entries(dims))root.style.setProperty('--si-sys-sizing-'+k,v+'px');root.style.setProperty('--si-sys-typography-body',`400 ${14+s+r}px/${20+s+r}px system-ui,sans-serif`);root.style.setProperty('--si-sys-typography-body-sbold',`600 ${14+s+r}px/${20+s+r}px system-ui,sans-serif`);root.style.setProperty('--si-ref-typography-letter-spacing-normal',`${.25+.25*r}px`);root.style.font='400 16px/24px system-ui,sans-serif';root.style.color='var(--si-sys-color-text-primary)';root.dataset.ixTheme='brand';root.dataset.ixColorSchema=s>=2?'dark':'light';root.dataset.ixDensity=s%2?'compact':'normal';root.dataset.revision=String(r);}
+function propsFor(d,r){return {...d,...(d.live&&r?{state:'loading',directory:true,multiple:true,disabled:false,loadingText:'Reviewing revised folder…',i18nUploadFile:'Choose revised folder…'}:{})}}
+function expectedText(p){if(p.disabled)return p.i18nUploadDisabled??'File upload currently not possible.';if(p.state==='loading')return p.loadingText??(p.directory?'Checking folder…':'Checking files…');if(p.state==='failed')return p.uploadFailedText??'Upload failed. Please try again.';if(p.state==='success')return p.uploadSuccessText??'Upload successful';return p.selectFileText??(p.directory?'+ Drag folder here or…':'+ Drag files here or…')}
+function buttonText(p){return p.i18nUploadFile??(p.directory?'Upload folder…':'Upload file…')}
+function setProps(item,r){const p=propsFor(item.descriptor,r);item.props=p;tokens(item.sample,p.scopeIndex,r);const h=item.host;h.state=states[p.state];h.disabled=!!p.disabled;h.multiple=!!p.multiple;h.directoryUpload=!!p.directory;h.multiline=!!p.multiline;h.accept=p.accept;for(const k of ['selectFileText','loadingText','i18nUploadFile'])h[k]=p[k];h.uploadFailedText=p.uploadFailedText??'Upload failed. Please try again.';h.uploadSuccessText=p.uploadSuccessText??'Upload successful';h.i18nUploadDisabled=p.i18nUploadDisabled??'File upload currently not possible.';item.parent.style.width=p.width+'px';if(p.override){for(const[k,v]of Object.entries({'--ix-upload--height':(78+4*r)+'px','--ix-upload--min-height':(78+4*r)+'px','--ix-upload-file-upload-area--padding':`${9+r}px ${17+r}px`,'--ix-upload--border-radius':(11+r)+'px','--ix-upload-icon--icon-size':(27+2*r)+'px','--ix-upload-file-upload-area--margin-inline-start':(19+r)+'px','--ix-upload-state--margin-inline-end':(13+r)+'px','--ix-upload-icon--margin-inline-end':(13+r)+'px'}))h.style.setProperty(k,v)}}
+function constructItem(d,mount,title=true){const sample=document.createElement('section');sample.className='specimen';sample.dataset.uploadRow='true';sample.dataset.uploadKey=d.key;if(title){const label=document.createElement('h2');label.className='scope-title';label.textContent=d.key;sample.append(label)}const parent=document.createElement('div');parent.className='sample-parent';const host=document.createElement('ix-upload');host.id=d.id;host.style.width='100%';host.setAttribute('name','records');parent.append(host);sample.append(parent);mount.append(sample);const item={host,sample,parent,descriptor:d,props:d};setProps(item,0);host.addEventListener('filesChanged',e=>{const record={sequence:consumerRequests.length+1,event:eid(e),type:e.type,trusted:e.isTrusted,bubbles:e.bubbles,composed:e.composed,cancelable:e.cancelable,defaultPrevented:e.defaultPrevented,names:e.detail.map(f=>f.name),files:[]};log('source-files-request',{id:host.id,...record});const promise=Promise.all(e.detail.map(async f=>({name:f.name,size:f.size,type:f.type,relativePath:f.webkitRelativePath,text:await f.text()}))).then(files=>{record.files=files;if(item===consumerItem){consumerFiles=files;byId('consumer-state').textContent=files.map(f=>f.name).join(', ')||'No files selected.'}});pendingFiles.push(promise);if(item===consumerItem)consumerRequests.push(record)});return item}
+function native(item){return item.host.shadowRoot?.querySelector('input[type=file]')}
+function nativeButton(item){return item.host.shadowRoot?.querySelector('ix-button')?.shadowRoot?.querySelector('button')}
+function deepActive(){let n=document.activeElement;while(n?.shadowRoot?.activeElement)n=n.shadowRoot.activeElement;return n}
+function metric(n,root,pseudo=null){if(!(n instanceof Element))return null;const cs=getComputedStyle(n,pseudo),r=pseudo?null:n.getBoundingClientRect(),rr=root.getBoundingClientRect();return{object:oid(n),tag:n.tagName,id:n.id,class:n.getAttribute('class'),attrs:Object.fromEntries([...n.attributes].map(a=>[a.name,a.value])),pseudo,nativeLayout:pseudo?null:{width:n.offsetWidth??null,height:n.offsetHeight??null,left:n.offsetLeft??null,top:n.offsetTop??null},animation:{name:cs.animationName,transform:cs.transform},computed:Object.fromEntries(spec.computedSchema.map(k=>[k,cs[k]])),rect:r?{x:r.x,y:r.y,width:r.width,height:r.height,relativeX:r.x-rr.x,relativeY:r.y-rr.y}:null}}
+function capture(item){const h=item.host,sh=h.shadowRoot,area=sh?.querySelector('.file-upload-area'),state=sh?.querySelector('.state'),text=sh?.querySelector('.upload-text'),input=native(item),buttonHost=sh?.querySelector('ix-button'),button=nativeButton(item),label=buttonHost?.shadowRoot?.querySelector('.content'),icon=state?.querySelector('ix-icon'),spinnerHost=state?.querySelector('ix-spinner'),spinner=spinnerHost?.shadowRoot?.querySelector('div');return{id:h.id,key:item.descriptor.key,scopeIndex:item.props.scopeIndex,revision:Number(item.sample.dataset.revision),props:item.props,host:metric(h,h),parent:metric(item.parent,h),area:metric(area,h),state:metric(state,h),text:metric(text,h),actions:metric(area?.querySelector(':scope > div'),h),input:metric(input,h),buttonHost:metric(buttonHost,h),button:metric(button,h),buttonLabel:metric(label,h),icon:metric(icon,h),spinnerHost:metric(spinnerHost,h),spinner:metric(spinner,h),spinnerBefore:metric(spinner,h,'::before'),spinnerAfter:metric(spinner,h,'::after'),resolvedAliases:Object.fromEntries(spec.aliases.map(k=>[k,getComputedStyle(h).getPropertyValue(k)])),buttonAliases:Object.fromEntries(spec.buttonAliases.map(k=>[k,buttonHost?getComputedStyle(buttonHost).getPropertyValue(k):null])),textContent:text?.textContent??null,buttonText:buttonHost?.textContent??null,nativeFacts:{focused:button===deepActive(),focusVisible:button?.matches(':focus-visible'),hover:button?.matches(':hover'),active:button?.matches(':active'),hostHover:h.matches(':hover'),hostActive:h.matches(':active'),activeId:document.activeElement?.id??null,activeTag:document.activeElement?.tagName??null,type:input?.type,disabled:input?.disabled,buttonDisabled:button?.disabled,hostDisabled:h.disabled,hostState:h.state,tabIndex:input?.tabIndex,accept:input?.accept,multiple:input?.multiple,directory:input?.hasAttribute('directory'),webkitdirectory:input?.hasAttribute('webkitdirectory'),ariaLabel:input?.getAttribute('aria-label'),ariaDisabled:input?.getAttribute('aria-disabled'),inputFiles:[...input?.files??[]].map(f=>({name:f.name,size:f.size,type:f.type,relativePath:f.webkitRelativePath})),buttonObject:button?oid(button):null,hostObject:oid(h),inputObject:input?oid(input):null}}}
+async function settle(label){await document.fonts.ready;for(let index=1;index<=2;index++)await new Promise(resolve=>requestAnimationFrame(timestamp=>queueMicrotask(()=>{log('native-frame',{label,index,timestamp});resolve()})))}
+async function receipt(item){for(let frame=0;frame<120;frame++){const p=item.props,b=nativeButton(item),n=native(item),text=item.host.shadowRoot?.querySelector('.upload-text')?.textContent;if(item.host.state===states[p.state]&&n?.disabled===(!!p.disabled||p.state==='loading')&&b?.disabled===(!!p.disabled||p.state==='loading')&&text===expectedText(p)&&item.host.shadowRoot?.querySelector('ix-button')?.textContent===buttonText(p))return;await new Promise(resolve=>requestAnimationFrame(resolve))}throw Error('Public Upload render receipt timed out: '+item.descriptor.key)}
+async function readiness(){for(let round=0;round<4;round++){const nodes=[];function visit(n){if(n instanceof Element){if(typeof n.componentOnReady==='function')nodes.push(n);for(const child of n.children)visit(child);if(n.shadowRoot)for(const child of n.shadowRoot.children)visit(child)}}for(const item of [...items,consumerItem,pointerItem])visit(item.host);await Promise.all(nodes.map(n=>n.componentOnReady()))}}
+async function setRevision(id){revision=spec.revisions.find(r=>r.id===id).revision;byId('outside').focus();for(const item of items)setProps(item,revision);await Promise.all(items.map(receipt));await readiness();await settle('source-public-render-'+id);return revision}
+function consumerState(){return{state:consumerItem.host.state,disabled:consumerItem.host.disabled,files:consumerFiles.slice(),requests:consumerRequests.slice(),nativeEvents:consumerNative.slice(),row:capture(consumerItem)}}
+async function consumerCommand(command){const h=consumerItem.host;if(command==='reset'){h.disabled=false;h.state=states.select;consumerFiles=[];consumerRequests.length=0;consumerNative.length=0;byId('consumer-state').textContent='No files selected.'}else if(command==='disable'||command==='enable')h.disabled=command==='disable';else if(states[command])h.state=states[command];consumerItem.props={...consumerItem.props,state:Object.keys(states).find(k=>states[k]===h.state),disabled:h.disabled};await receipt(consumerItem);await settle('consumer-'+command);await Promise.all(pendingFiles);return consumerState()}
+function pointerOutput(){const value={case:pointerCase,rows:pointerRows.slice(),consumer:consumerState()};byId('pointer-result').textContent=JSON.stringify(value);return value}
+function eventFacts(e){return{event:eid(e),type:e.type,trusted:e.isTrusted,defaultPrevented:e.defaultPrevented,bubbles:e.bubbles,composed:e.composed,cancelable:e.cancelable,key:e.key??null,code:e.code??null,button:e.button??null,buttons:e.buttons??null,pointerType:e.pointerType??null,targetTag:e.target?.tagName,path:e.composedPath().filter(n=>n instanceof Element).map(n=>({tag:n.tagName,id:n.id,object:oid(n)}))}}
+function watchPointer(){for(const type of ['pointerdown','pointerup','keydown','keyup','click','change'])byId('pointer-target').addEventListener(type,e=>{const original=eventFacts(e);const count=(type==='pointerup'||type==='keydown'||type==='keyup')?2:1;let frame=0;function next(){requestAnimationFrame(()=>{frame++;if(frame<count)return next();pointerRows.push({sequence:pointerRows.length+1,phase:type,frame,original:{...original,defaultPreventedAfterDispatch:e.defaultPrevented},row:capture(pointerItem)});pointerOutput()})}next()},{capture:true,passive:true})}
+async function configurePointer(id){pointerCase=spec.pointerCases.find(x=>x.id===id)??spec.pointerCases[0];pointerRows.length=0;byId('outside').focus();pointerItem.descriptor={...spec.cases[0],...pointerCase,key:'pointer-'+pointerCase.id,id:'upload-pointer-control'};setProps(pointerItem,0);await receipt(pointerItem);await readiness();await settle('pointer-'+id);byId('pointer-status').dataset.ready='true';byId('pointer-status').dataset.case=pointerCase.id;byId('pointer-status').textContent='Ready: '+pointerCase.id;return pointerOutput()}
+async function run(){if(!ready||busy)return;busy=true;byId('status').dataset.run='running';const phases=[];try{for(const rev of spec.revisions){await setRevision(rev.id);phases.push({id:rev.id,revision:rev.revision,rows:items.map(capture)})}const result={ok:true,revision:spec.revision,fixture:spec.fixture,phases,controlled:consumerState(),pointer:pointerOutput(),errors:errors.slice(),journal:journal.slice(),limits:['Authored semantic tokens and system fonts only, no full Brand metrics','Source shadow/custom hosts versus Rust native SVG/input APIs retained raw','No automatic picker activation; genuine pointer/key/chooser observations are separate','Independent continuous Spinner animation phases are raw, no motion parity certification','Source setFilesToUpload is excluded']};byId('result').textContent=JSON.stringify(result);byId('status').dataset.run='done';byId('status').textContent='48 source Upload observations';return result}catch(e){errors.push(String(e));const result={ok:false,error:String(e),phases,errors:errors.slice()};byId('result').textContent=JSON.stringify(result);byId('status').dataset.run='done';return result}finally{busy=false}}
+window.addEventListener('error',e=>errors.push(e.message));window.addEventListener('unhandledrejection',e=>errors.push(String(e.reason)));
+window.ixUploadReview={spec,run,setRevision,consumerState,consumerCommand,configurePointer,pointerOutput,capture:()=>items.map(capture),errors};
+byId('run').onclick=run;byId('baseline').onclick=()=>setRevision('baseline');byId('revised').onclick=()=>setRevision('revised');for(const cmd of ['reset','loading','success','failed','disable','enable'])byId('consumer-'+cmd).onclick=()=>consumerCommand(cmd);for(const c of spec.pointerCases){const option=document.createElement('option');option.value=c.id;option.textContent=c.id;byId('pointer-case').append(option)}byId('pointer-arm').onclick=()=>configurePointer(byId('pointer-case').value);
+try{await customElements.whenDefined('ix-upload');for(const d of spec.cases)items.push(constructItem(d,byId('matrix')));consumerItem=constructItem(spec.consumer,byId('consumer-mount'),false);pointerItem=constructItem({...spec.cases[0],key:'pointer-enabled',id:'upload-pointer-control'},byId('pointer-mount'),false);await readiness();await Promise.all([...items,consumerItem,pointerItem].map(receipt));await settle('source-initial');for(const type of ['click','input','change','cancel'])native(consumerItem).addEventListener(type,e=>{consumerNative.push({sequence:consumerNative.length+1,original:eventFacts(e),state:consumerItem.host.state,disabled:native(consumerItem).disabled,files:[...native(consumerItem).files??[]].map(f=>({name:f.name,size:f.size,type:f.type,relativePath:f.webkitRelativePath}))})},{capture:true,passive:true});watchPointer();await configurePointer('enabled');ready=true;byId('status').dataset.ready='true';byId('status').textContent='Ready: 24 source Upload cases';for(const id of ['run','baseline','revised'])byId(id).disabled=false}catch(e){errors.push(String(e));byId('status').textContent='Source initialization failed: '+e}
+
+</script></body></html>

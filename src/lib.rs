@@ -88,6 +88,7 @@ mod toggle_button_styles;
 mod toggle_styles;
 pub mod tooltip;
 pub mod tree;
+mod upload_styles;
 
 pub use actions::*;
 pub use application::*;

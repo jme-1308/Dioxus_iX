@@ -41,6 +41,11 @@ path = "examples/gallery/main.rs"
 required-features = ["launch"]
 
 [[example]]
+name = "upload_visual_probe"
+path = "tools/upload_visual_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "select_visual_probe"
 path = "tools/select_visual_probe.rs"
 required-features = ["launch"]

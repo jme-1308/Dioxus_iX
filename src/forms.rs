@@ -2787,6 +2787,31 @@ async fn prepare_upload(
     }
 }
 
+// Synchronous native picker activation preserves the originating user gesture.
+// All file processing, transfer state and callbacks stay in Rust.
+#[cfg(any(feature = "web", feature = "desktop"))]
+const UPLOAD_PICKER_BRIDGE: &str = r#"
+const id = await dioxus.recv();
+const root = document.getElementById(id);
+if (!root) return null;
+root.__ixUploadCleanup?.();
+const events = new AbortController();
+let disposed = false;
+function cleanup() {
+  if (disposed) return;
+  disposed = true; events.abort(); removal.disconnect(); delete root.__ixUploadCleanup;
+}
+const removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
+root.__ixUploadCleanup = cleanup;
+root.addEventListener('click', event => {
+  const button = event.target instanceof Element ? event.target.closest('button.ix-upload-button') : null;
+  const input = root.querySelector('input.ix-upload-browser');
+  if (button && root.contains(button) && !button.disabled && input instanceof HTMLInputElement && !input.disabled) input.click();
+}, {signal:events.signal});
+removal.observe(document.documentElement, {childList:true,subtree:true});
+return null;
+"#;
+
 /// File/folder picker and drop target. `FileData` keeps content reads portable.
 /// Folder inputs use the host's directory-picker support; `onentrieschanged`
 /// retains browser relative paths and expands native desktop folder selections.
@@ -2795,6 +2820,7 @@ async fn prepare_upload(
 #[component]
 pub fn Upload(
     #[props(default)] name: Option<String>,
+    #[props(default)] class: String,
     #[props(default)] accept: Option<String>,
     #[props(default)] multiple: bool,
     #[props(default)] directory_upload: bool,
@@ -2855,6 +2881,20 @@ pub fn Upload(
         });
     });
     let reset_id = field_id(None);
+    let root_id = format!("{reset_id}-upload");
+    let mounted_id = root_id.clone();
+    let cleanup_id = root_id.clone();
+    use_drop(move || {
+        #[cfg(any(feature = "web", feature = "desktop"))]
+        {
+            let id = serde_json::to_string(&cleanup_id).expect("string serialization");
+            let _ = dioxus::document::eval(&format!(
+                "document.getElementById({id})?.__ixUploadCleanup?.();"
+            ));
+        }
+        #[cfg(not(any(feature = "web", feature = "desktop")))]
+        let _ = cleanup_id;
+    });
     let change_id = reset_id.clone();
     let button_text = button_text.unwrap_or_else(|| {
         if directory_upload {
@@ -2896,18 +2936,49 @@ pub fn Upload(
             UploadState::Failed => failed_text,
         }
     };
-    let class = match state {
+    let state_class = match state {
         UploadState::Failed => "ix-upload ix-upload-failed",
         UploadState::Success => "ix-upload ix-upload-success",
         _ => "ix-upload",
     };
+    let state_name = match state {
+        UploadState::SelectFile => "select",
+        UploadState::Loading => "loading",
+        UploadState::Success => "success",
+        UploadState::Failed => "failed",
+    };
     rsx! {
-        label { class, "aria-busy": (busy || processing()).to_string(), "aria-disabled": blocked.to_string(), "data-disabled": disabled.to_string(), "data-multiline": multiline.to_string(), "data-file-over": (drag_depth() > 0).to_string(),
-            ondragenter: move |event: DragEvent| { if !blocked { event.prevent_default(); drag_depth += 1; } },
-            ondragleave: move |_| drag_depth.set(drag_depth().saturating_sub(1)),
-            ondragover: move |event: DragEvent| { event.prevent_default(); if !blocked { event.data_transfer().set_drop_effect("copy"); } else { event.data_transfer().set_drop_effect("none"); } },
-            ondrop: move |event: DragEvent| { event.prevent_default(); event.stop_propagation(); drag_depth.set(0); if !blocked { choose.call(event.data_transfer().files()); } },
-            input { id: reset_id, r#type: "file", name, accept, multiple: multiple || directory_upload, disabled: blocked, "aria-label": aria_label,
+        div { id: root_id, class: "{state_class} ix-upload-visual {class}",
+            "aria-busy": (busy || processing()).to_string(), "aria-disabled": blocked.to_string(),
+            "data-disabled": disabled.to_string(), "data-state": state_name,
+            "data-multiline": multiline.to_string(), "data-error": failure().is_some().to_string(),
+            onmounted: move |_| {
+                #[cfg(any(feature = "web", feature = "desktop"))]
+                {
+                    let id = mounted_id.clone();
+                    spawn(async move { let task = crate::dom_query::eval(UPLOAD_PICKER_BRIDGE); let _ = task.send(id); let _ = task.await; });
+                }
+                #[cfg(not(any(feature = "web", feature = "desktop")))]
+                let _ = &mounted_id;
+            },
+            div { class: "ix-upload-area", "data-disabled": disabled.to_string(), "data-checking": busy.to_string(),
+                "data-file-over": (drag_depth() > 0).to_string(), "data-multiline": multiline.to_string(),
+                ondragenter: move |event: DragEvent| { if !blocked { event.prevent_default(); drag_depth += 1; } },
+                ondragleave: move |_| drag_depth.set(drag_depth().saturating_sub(1)),
+                ondragover: move |event: DragEvent| { event.prevent_default(); if !blocked { event.data_transfer().set_drop_effect("copy"); } else { event.data_transfer().set_drop_effect("none"); } },
+                ondrop: move |event: DragEvent| { event.prevent_default(); event.stop_propagation(); drag_depth.set(0); if !blocked { choose.call(event.data_transfer().files()); } },
+                span { class: "ix-upload-state", role: "status",
+                    if !disabled {
+                        if busy { span { class: "ix-upload-spinner-host", crate::Spinner { size: crate::SpinnerSize::Md, variant: crate::SpinnerVariant::Primary } } }
+                        else if matches!(state, UploadState::Failed | UploadState::Success) {
+                            crate::Icon { name: if state == UploadState::Failed { "error" } else { "success" }, size: 24,
+                                class: if state == UploadState::Failed { "ix-upload-status-icon icon-error" } else { "ix-upload-status-icon icon-success" } }
+                        }
+                    }
+                    span { class: "ix-upload-text", "{text}" }
+                }
+                div { class: "ix-upload-actions",
+            input { id: reset_id, class: "ix-upload-browser", r#type: "file", name, accept, multiple: multiple || directory_upload, disabled: blocked, tabindex: "-1", "aria-label": aria_label, "aria-disabled": blocked.to_string(),
                 "webkitdirectory": directory_upload.then_some("true"), "directory": directory_upload.then_some("true"),
                 onchange: move |event| {
                     if blocked { return; }
@@ -2920,16 +2991,20 @@ pub fn Upload(
                     });
                 },
             }
-            span { class: "ix-upload-state", role: "status",
-                if state == UploadState::Loading { crate::Spinner { size: crate::SpinnerSize::Sm, variant: crate::SpinnerVariant::Primary } }
-                else if matches!(state, UploadState::Failed | UploadState::Success) { crate::Icon { name: (if state == UploadState::Failed { "error" } else { "check" }).to_string(), size: 24 } }
-                span { "{text}" }
+                span { class: "ix-upload-button-host", "data-disabled": blocked.to_string(),
+                    crate::Button { variant: crate::ButtonVariant::Secondary, disabled: blocked,
+                        class: "ix-upload-button", "{button_text}" }
+                }
+                }
             }
-            if !disabled && !busy { span { class: "ix-upload-button", "{button_text}" } }
             if let Some(error) = failure() { span { class: "ix-upload-error", role: "alert", "{error}" } }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "upload_visual_tests.rs"]
+mod upload_visual_tests;
 
 #[cfg(test)]
 #[path = "checkbox_token_tests.rs"]
@@ -2968,7 +3043,6 @@ mod group_token_tests;
 mod toggle_token_tests;
 
 pub(crate) const STYLES: &str = r#"
-.ix-theme .ix-upload-state{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ix-theme .ix-upload[data-multiline=true] .ix-upload-state>span{white-space:normal;overflow-wrap:anywhere}.ix-theme .ix-upload-button{flex:none;white-space:nowrap}.ix-theme .ix-upload[data-file-over=true]{border-style:solid;border-color:var(--ix-color-primary)}.ix-theme .ix-upload[aria-busy=true]{border-style:solid}.ix-theme .ix-upload:has(.ix-upload-error){flex-wrap:wrap}.ix-theme .ix-upload-error{flex-basis:100%;color:var(--ix-color-danger-text);overflow-wrap:anywhere}
 .ix-theme .ix-field{display:flex;flex-direction:column;gap:.375rem;min-width:0;width:100%;font:inherit}
 .ix-theme .ix-field-label{display:block;color:var(--ix-color-text);font-size:.875rem;line-height:1.5rem;margin:0;padding:0;font-weight:400}
 .ix-theme .ix-field-bottom{display:flex;justify-content:space-between;gap:.5rem;align-items:flex-start}.ix-theme .ix-field-bottom>.ix-helper{flex:1;min-width:0}.ix-theme .ix-field-counter{flex:none;margin-inline-start:auto;font-size:.75rem;line-height:1.125rem;color:var(--ix-color-text-secondary);font-variant-numeric:tabular-nums}.ix-theme .ix-password-toggle{display:flex;align-items:center;justify-content:center;flex:none;width:2rem;min-height:2rem;margin-inline-end:.25rem;border:0;background:transparent;color:var(--ix-color-text-secondary);cursor:pointer}.ix-theme .ix-password-toggle:hover{color:var(--ix-color-primary)}.ix-theme .ix-password-toggle:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
@@ -3006,10 +3080,9 @@ pub(crate) const STYLES: &str = r#"
 
 
 .ix-theme .ix-range-field{display:flex;align-items:end;gap:2.5rem;position:relative;min-width:0;width:100%}.ix-theme .ix-range-field>.ix-temporal-field,.ix-theme .ix-range-field>.ix-field,.ix-theme .ix-range-field>.ix-select{flex:1;min-width:0}.ix-theme .ix-range-field:before{content:'';position:absolute;left:calc(50% - .5rem);bottom:1.25rem;width:1rem;border-top:1px solid var(--ix-color-text-secondary)}.ix-theme .ix-range-field:after{content:'';position:absolute;left:calc(50% + .125rem);bottom:1.075rem;width:.35rem;height:.35rem;border-top:1px solid var(--ix-color-text-secondary);border-right:1px solid var(--ix-color-text-secondary);transform:rotate(45deg)}.ix-theme .ix-range-no-arrow:before,.ix-theme .ix-range-no-arrow:after{display:none}.ix-theme .ix-range-no-arrow{gap:.75rem}
-.ix-theme .ix-field-info{--ix-slider-accent:var(--ix-color-info);--ix-check-accent:var(--ix-color-info)}.ix-theme .ix-field-warning{--ix-slider-accent:var(--ix-color-warning);--ix-check-accent:var(--ix-color-warning)}.ix-theme .ix-field-invalid{--ix-slider-accent:var(--ix-color-danger);--ix-check-accent:var(--ix-color-danger)}.ix-theme .ix-field-valid{--ix-slider-accent:var(--ix-color-primary);--ix-check-accent:var(--ix-color-primary)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid) .ix-check-shape{border-color:var(--ix-check-accent)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)[data-checked=true] .ix-check-shape,.ix-theme .ix-radio:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)>input:checked+.ix-check-shape{background:var(--ix-check-accent)}.ix-theme .ix-upload-state{display:flex;align-items:center;gap:.5rem;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-upload-button{flex:none}.ix-theme .ix-field-info>.ix-input,.ix-theme .ix-field-info .ix-select-control{border-color:var(--ix-color-info-text)}.ix-theme .ix-field-valid>.ix-input,.ix-theme .ix-field-valid .ix-select-control{border-color:var(--ix-color-success)}.ix-theme .ix-field-warning .ix-select-control{border-color:var(--ix-color-warning-text)}
+.ix-theme .ix-field-info{--ix-slider-accent:var(--ix-color-info);--ix-check-accent:var(--ix-color-info)}.ix-theme .ix-field-warning{--ix-slider-accent:var(--ix-color-warning);--ix-check-accent:var(--ix-color-warning)}.ix-theme .ix-field-invalid{--ix-slider-accent:var(--ix-color-danger);--ix-check-accent:var(--ix-color-danger)}.ix-theme .ix-field-valid{--ix-slider-accent:var(--ix-color-primary);--ix-check-accent:var(--ix-color-primary)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid) .ix-check-shape{border-color:var(--ix-check-accent)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)[data-checked=true] .ix-check-shape,.ix-theme .ix-radio:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)>input:checked+.ix-check-shape{background:var(--ix-check-accent)}.ix-theme .ix-field-info>.ix-input,.ix-theme .ix-field-info .ix-select-control{border-color:var(--ix-color-info-text)}.ix-theme .ix-field-valid>.ix-input,.ix-theme .ix-field-valid .ix-select-control{border-color:var(--ix-color-success)}.ix-theme .ix-field-warning .ix-select-control{border-color:var(--ix-color-warning-text)}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-toggle-track:before{transition:none}}
 .ix-theme .ix-select-native{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;inset-inline-start:0;bottom:1rem}.ix-theme .ix-select-backdrop{position:fixed;inset:0;border:0;background:transparent;z-index:90;cursor:default}
-.ix-theme .ix-upload{display:flex;align-items:center;justify-content:space-between;flex-direction:row;gap:1rem;position:relative;min-height:4rem;padding:1rem;box-sizing:border-box;border:1px dashed var(--ix-color-border);color:var(--ix-color-text-secondary);font-size:.875rem;cursor:pointer;background:var(--ix-color-surface-1)}.ix-theme .ix-upload:hover{border-color:var(--ix-color-primary)}.ix-theme .ix-upload>input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:inherit}.ix-theme .ix-upload:has(:focus-visible){outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-theme .ix-upload-button{padding:.5rem 1rem;color:var(--ix-color-primary);border:1px solid var(--ix-color-primary);border-radius:var(--ix-radius)}.ix-theme .ix-upload-success{border-color:var(--ix-color-success)}.ix-theme .ix-upload-failed{border-color:var(--ix-color-danger-text);color:var(--ix-color-danger-text)}.ix-theme .ix-upload[data-disabled=true]{cursor:not-allowed;opacity:.45}
 "#;
 
 #[cfg(test)]
