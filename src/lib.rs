@@ -68,7 +68,6 @@ pub mod notifications;
 mod number_input_styles;
 mod overlay_completion;
 mod overlay_domain;
-mod overlay_focus_pending;
 mod overlay_registry;
 mod overlay_registry_dom;
 mod overlay_runtime;

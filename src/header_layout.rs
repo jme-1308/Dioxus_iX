@@ -614,6 +614,7 @@ pub(crate) fn HeaderLayout(
     let small_id = format!("{owner}-small");
     let large_id = format!("{owner}-large");
     drop(state);
+    let more_mount = crate::dropdown::use_focus_mount(more_id.clone());
     let runtime_owner = runtime.owner_id();
     rsx! {
         div { id:owner.clone(), class:"ix-header-layout",
@@ -652,6 +653,7 @@ pub(crate) fn HeaderLayout(
                 }
             }
             button {id:more_id,r#type:"button",class:"ix-app-icon-button ix-header-more-button",
+                onmounted:more_mount,
                 "data-ix-overlay-trigger":owner.clone(),
                 "data-header-more-button":owner.clone(),"data-testid":"show-more",hidden:!visible,
                 "aria-label":more_label,"aria-expanded":open.to_string(),"aria-controls":if active=="small" {small_id} else {large_id},

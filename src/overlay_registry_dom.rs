@@ -23,7 +23,6 @@ const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),clickTargets=new Map(),triggerKeyTargets=new Map(),navigationTargets=new Map(),handledBubbleKeys=new WeakSet();
 const navigationBindings=new Map();
-const immediateTabFrames=new Set();
 const anchorObservers=new Map();
 const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map();let itemObjectSequence=0;
 const itemInventoryLeases=new Map();
@@ -257,14 +256,10 @@ function nearestPopover(element){
   for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.getAttribute('data-ix-overlay-native-surface')==='popover')return n;
   return null;
 }
-function popoverAncestors(element){
-  const result=[];
-  for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.getAttribute('data-ix-overlay-native-surface')==='popover'){
-    const id=n.getAttribute('data-ix-overlay-host');if(id&&!result.includes(id))result.push(id);
-  }
-  return result;
-}
 function popoverTabFacts(panel,active){
+  // Pinned dioxus-html 0.8 alpha MountedData has focus/scroll methods but no
+  // document tab-order enumeration. Observe candidates only; Dropdown exits
+  // execute through registered mounted handles in Rust, with no JS fallback.
   if(!panel)return [];
   const raw=Array.from(panel.querySelectorAll(focusableSelector)).filter(element=>{
     if(!(element instanceof HTMLElement)||element.matches('[tabindex^="-"],[hidden],[disabled],:disabled')||nearestPopover(element)!==panel)return false;
@@ -467,7 +462,7 @@ function send(report,event){
   if(!alive||!input)return;
   // Keep the actual observed objects through Rust callbacks. A replacement
   // with the same public ID must not inherit this event's focus permission.
-  const focusExecution=new Map([...report.tab_order,...report.focus_targets,...report.nodes.map(node=>node.trigger_id)].filter(Boolean).map(id=>{
+  const focusExecution=new Map([...report.focus_targets,...report.nodes.map(node=>node.trigger_id)].filter(Boolean).map(id=>{
     const element=findElement(id),panel=element?nearestPopover(element):null;
     return [id,{element,panel,generation:panel?.getAttribute('data-surface-generation')}];
   }));
@@ -488,24 +483,6 @@ function send(report,event){
   if(report.kind==='key'){
     for(const [id,facts]of focusExecution){
       const el=facts.element;
-      if(report.key==='Tab'&&['capture','bubble','fallback'].includes(report.phase)){
-        const scheduleInput=transport();if(!scheduleInput)return;
-        scheduleInput.value=JSON.stringify({owner,sequence:report.sequence,schedule_focus_target:id});
-        if(!scheduleInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
-          scheduleInput.value=JSON.stringify({owner,sequence:report.sequence,dispatch_focus_target:id});
-          if(!scheduleInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
-            const frame=requestAnimationFrame(()=>{
-              immediateTabFrames.delete(frame);if(!alive)return;
-              const input=transport();if(!input)return;
-              input.value=JSON.stringify({owner,sequence:report.sequence,pending_focus_target:id,focus_hosts:popoverAncestors(el)});
-              const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-              if(allowed&&el?.isConnected)el.focus();
-            });
-            immediateTabFrames.add(frame);
-          }
-          break;
-        }
-      }
       const valid=()=>el?.isConnected&&(!facts.panel||(facts.panel.isConnected&&facts.panel.matches(':popover-open')&&facts.panel.getAttribute('data-surface-generation')===facts.generation));
       if(!valid())continue;
       const focusInput=transport();if(!focusInput)return;
@@ -918,7 +895,6 @@ try{
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);
   if(nativeDocument.focusReaders.get(owner)===reportItemFocus)nativeDocument.focusReaders.delete(owner);
-  for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   registryScopes.clear();
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');

@@ -8,7 +8,7 @@
 //! module never retains a domain globally, or borrows it across a callback.
 
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
-use crate::overlay_runtime::{Change, Reason};
+use crate::overlay_runtime::{Change, MountedFocusTarget, Reason};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -39,6 +39,7 @@ struct Entry {
 }
 
 type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
+type FocusReader = Rc<dyn Fn(&str) -> Option<MountedFocusTarget>>;
 
 #[derive(Clone)]
 struct CategoryEntry {
@@ -62,6 +63,7 @@ struct State {
     keyboard: Option<bool>,
     categories: BTreeMap<usize, CategoryEntry>,
     category_order: Vec<usize>,
+    focus_readers: BTreeMap<String, FocusReader>,
 }
 
 impl State {
@@ -91,6 +93,19 @@ impl State {
 pub(crate) struct Domain(Rc<RefCell<State>>);
 
 impl Domain {
+    pub(crate) fn register_focus_reader(&self, owner: String, reader: FocusReader) {
+        self.0.borrow_mut().focus_readers.insert(owner, reader);
+    }
+    pub(crate) fn focus_target(&self, id: &str) -> Option<MountedFocusTarget> {
+        let readers = self
+            .0
+            .borrow()
+            .focus_readers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        readers.into_iter().find_map(|reader| reader(id))
+    }
     pub(crate) fn join(document: &str) -> Self {
         DOCUMENTS.with(|documents| {
             let mut documents = documents.borrow_mut();
@@ -237,6 +252,7 @@ impl Domain {
         }
         let mut state = self.0.borrow_mut();
         state.categories.retain(|_, entry| entry.owner != owner);
+        state.focus_readers.remove(owner);
         let remaining = state.categories.keys().copied().collect::<BTreeSet<_>>();
         state.category_order.retain(|id| remaining.contains(id));
     }

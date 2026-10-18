@@ -152,6 +152,19 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
     }
 }
 
+/// Register a custom Dioxus control as a programmatic focus destination.
+///
+/// Give the control this stable DOM `id` and attach the returned handler to its
+/// `onmounted` event. Registration is released with the calling component's
+/// scope, so call the hook in a component that unmounts with the control. Use a
+/// new component key when replacing it. Unregistered DOM controls are not
+/// resolved through JavaScript.
+pub fn use_focus_mount(id: impl Into<String>) -> EventHandler<MountedEvent> {
+    let binding = use_item_host("native-opt-in");
+    let id = id.into();
+    use_callback(move |event: MountedEvent| binding.mount(&id, event.data()))
+}
+
 /// Dioxus-owned focus registration and tab order for a custom Dropdown item.
 #[derive(Clone, Copy)]
 pub struct DropdownItemBinding {
@@ -1503,12 +1516,14 @@ impl PartialEq for DropdownContext {
 /// component key when replacing the trigger or its controller. ID-only triggers
 /// remain usable for discovery but do not receive programmatic trigger focus.
 pub fn use_dropdown_trigger_mount(dropdown: DropdownHandle) -> EventHandler<MountedEvent> {
-    use_trigger_mount(dropdown.try_context(), false)
+    use_trigger_mount(dropdown.try_context(), false, None)
 }
 fn use_trigger_mount(
     context: Option<DropdownContext>,
     disabled: bool,
+    focus_id: Option<String>,
 ) -> EventHandler<MountedEvent> {
+    let focus_binding = use_item_host("native-opt-in");
     let blocked = use_hook(|| Rc::new(Cell::new(disabled)));
     blocked.set(disabled);
     let owned = use_hook(|| Rc::new(RefCell::new(None::<(DropdownContext, Rc<MountedData>)>)));
@@ -1544,6 +1559,16 @@ fn use_trigger_mount(
             }
         }
         if let Some(context) = &context {
+            let target = focus_id.clone().unwrap_or_else(|| {
+                context
+                    .state
+                    .borrow()
+                    .declaration
+                    .value
+                    .clone()
+                    .unwrap_or_else(|| context.trigger_id())
+            });
+            focus_binding.mount(&target, node.clone());
             context.mount_trigger(node.clone(), blocked.clone());
             *owned.borrow_mut() = Some((context.clone(), node));
         }
@@ -1565,7 +1590,7 @@ pub fn DropdownTrigger(
     let context = dropdown.context();
     let _ = (context.revision)();
     let blocked = disabled || loading || (context.blocked)();
-    let mount = use_trigger_mount(Some(context.clone()), blocked);
+    let mount = use_trigger_mount(Some(context.clone()), blocked, Some(context.trigger_id()));
     let click = context.clone();
     let key = context.clone();
     let id = context.node_id();
@@ -1880,7 +1905,11 @@ fn DropdownSurface(
     let aria_name = aria_label.unwrap_or_else(|| label.clone());
     let mount_context = context.clone();
     let mounted_node = node.clone();
-    let mount_trigger = use_trigger_mount((!external).then(|| context.clone()), blocked);
+    let mount_trigger = use_trigger_mount(
+        (!external).then(|| context.clone()),
+        blocked,
+        Some(trigger_id.clone()),
+    );
     let click_context = context.clone();
     let key_context = context.clone();
     let runtime_owner = runtime.owner_id();
@@ -2095,7 +2124,7 @@ pub fn DropdownItem(
     let mount_context = context.clone();
     let mounted_host = host_binding.clone();
     let mounted_id = host_id.clone();
-    let linked_mount = use_trigger_mount(linked.clone(), blocked);
+    let linked_mount = use_trigger_mount(linked.clone(), blocked, Some(host_id.clone()));
     let key_context = context.clone();
     let navigation_host = host_binding.clone();
     let click_label = label.clone();
@@ -4266,6 +4295,11 @@ mod tests {
         let first = mount_trigger_mock(&mut h, "first");
         let second = mount_trigger_mock(&mut h, "second");
         let context = fixture.0.dropdown.get().unwrap().context();
+        let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
+        assert!(
+            runtime.mounted_focus_target("second").is_some(),
+            "the custom trigger hook also registers outside-Tab focus"
+        );
         let previous_binding = {
             let state = context.state.borrow();
             (state.declaration.version, state.declaration.dispose_version)
@@ -4331,6 +4365,10 @@ mod tests {
         });
         h.settle();
         assert!(context.trigger.borrow().is_none());
+        assert!(
+            runtime.mounted_focus_target("second").is_none(),
+            "removing the trigger component releases its Tab destination"
+        );
         assert_eq!(
             context.state.borrow().declaration.version,
             replacement_binding.0

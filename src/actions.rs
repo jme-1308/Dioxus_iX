@@ -137,6 +137,7 @@ pub fn Button(
     #[props(default)] button_type: ButtonType,
     #[props(default)] alignment: ButtonAlignment,
     #[props(default)] icon_size: ButtonIconSize,
+    #[props(default)] id: Option<String>,
     icon: Option<String>,
     icon_right: Option<String>,
     href: Option<String>,
@@ -146,8 +147,23 @@ pub fn Button(
     aria_label: Option<String>,
     aria_describedby: Option<String>,
     #[props(default)] class: String,
+    #[props(default)] onmounted: Option<EventHandler<MountedEvent>>,
     onclick: Option<EventHandler<MouseEvent>>,
 ) -> Element {
+    let binding = crate::dropdown::use_item_host("native-opt-in");
+    let actual_id = id
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| binding.host_id.clone());
+    let is_anchor = href.is_some();
+    let mounted = use_hook(|| Rc::new(RefCell::new(None::<(bool, Rc<MountedData>)>)));
+    let previous_mount = mounted.borrow().clone();
+    if let Some((mounted_anchor, node)) = previous_mount {
+        if mounted_anchor == is_anchor {
+            binding.mount(&actual_id, node);
+        } else {
+            *mounted.borrow_mut() = None;
+        }
+    }
     let blocked = disabled || loading;
     let class = format!(
         "ix-button ix-button-standard ix-button-tokenized ix-button-{} ix-align-{} {}",
@@ -169,20 +185,41 @@ pub fn Button(
         span { class: "ix-button-content", {children} }
         if let Some(name) = icon_right.filter(|name| !name.is_empty()) { span { class: "ix-button-icon-end", crate::Icon { name, size: icon_size.pixels() } } }
     };
+    let mount_id = actual_id.clone();
+    let mount_binding = binding.clone();
+    let mount_handle = mounted;
     if let Some(href) = href {
         rsx! { a {
+            id: actual_id,
             class, role: "button", href: if blocked { None } else { Some(href) },
             target, rel: rel.unwrap_or_else(|| "noopener noreferrer".into()),
             aria_label, aria_describedby, aria_disabled: blocked, aria_busy: loading,
             tabindex: if blocked { -1 } else { 0 },
+            onmounted: move |event| {
+                let node = event.data();
+                *mount_handle.borrow_mut() = Some((true, node.clone()));
+                mount_binding.mount(&mount_id, node);
+                if let Some(handler) = onmounted {
+                    handler.call(event);
+                }
+            },
             onclick: move |event| { if blocked { event.prevent_default(); event.stop_propagation(); } else if let Some(handler) = onclick { handler.call(event); } },
             {content}
         } }
     } else {
         rsx! { button {
+            id: actual_id,
             class, r#type: button_type.as_str(), form, disabled: blocked,
             tabindex: if blocked { -1 } else { 0 },
             aria_label, aria_describedby, aria_disabled: blocked, aria_busy: loading,
+            onmounted: move |event| {
+                let node = event.data();
+                *mount_handle.borrow_mut() = Some((false, node.clone()));
+                mount_binding.mount(&mount_id, node);
+                if let Some(handler) = onmounted {
+                    handler.call(event);
+                }
+            },
             onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
             {content}
         } }
@@ -200,6 +237,7 @@ pub fn Button(
 pub fn IconButton(
     icon: String,
     label: String,
+    #[props(default)] id: Option<String>,
     icon_color: Option<String>,
     #[props(default = ButtonVariant::SubtlePrimary)] variant: ButtonVariant,
     #[props(default)] size: ButtonIconSize,
@@ -217,6 +255,14 @@ pub fn IconButton(
     onmounted: Option<EventHandler<MountedEvent>>,
     aria_hidden: Option<bool>,
 ) -> Element {
+    let binding = crate::dropdown::use_item_host("native-opt-in");
+    let actual_id = id
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| binding.host_id.clone());
+    let mounted = use_hook(|| Rc::new(RefCell::new(None::<Rc<MountedData>>)));
+    if let Some(node) = mounted.borrow().clone() {
+        binding.mount(&actual_id, node);
+    }
     let blocked = disabled || loading;
     let loading_size = match (!icon.is_empty(), size) {
         (true, ButtonIconSize::Twelve) => SpinnerSize::Xxs,
@@ -240,20 +286,24 @@ pub fn IconButton(
             false,
         ));
     }
-    if let Some(handler) = onmounted {
-        native_events.push(Attribute::new(
-            "onmounted",
-            dioxus::html::EventHandlerValue::into_platform_listener(handler),
-            None,
-            false,
-        ));
-    }
+    let mount_id = actual_id.clone();
+    let mount_binding = binding.clone();
+    let mount_handle = mounted;
     rsx! { button {
+        id: actual_id,
         class: "ix-button ix-icon-button ix-button-tokenized ix-icon-button-native ix-button-{variant.as_str()} ix-icon-size-{size.as_str()} {class}",
         class: if oval { "ix-oval" }, r#type: button_type.as_str(),
         style: icon_color.map(|name| format!("--ix-icon-button-color:var({name})")),
         disabled: blocked, tabindex: if blocked { -1 } else { tabindex.unwrap_or(0) },
         aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked, aria_pressed, aria_expanded, aria_hidden,
+        onmounted: move |event| {
+            let node = event.data();
+            *mount_handle.borrow_mut() = Some(node.clone());
+            mount_binding.mount(&mount_id, node);
+            if let Some(handler) = onmounted {
+                handler.call(event);
+            }
+        },
         onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
         ..native_events,
         if loading { Spinner { size: loading_size, hide_track: true } }
@@ -940,6 +990,7 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     #[test]
     fn badge_counter_matches_upstream_numeric_rules() {
         for (input, expected) in [
@@ -1076,6 +1127,289 @@ mod tests {
         assert!(html.contains("style=\"text-decoration:underline\""));
         assert!(html.contains("ix-type-code-sm"));
         assert!(html.contains("style=\"text-decoration:line-through\""));
+    }
+
+    #[derive(Clone, Default)]
+    struct ActionFocusMount {
+        label: String,
+        focuses: Rc<RefCell<Vec<String>>>,
+    }
+    impl dioxus::html::RenderedElementBacking for ActionFocusMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            self.focuses.borrow_mut().push(self.label.clone());
+            Box::pin(async { Ok(()) })
+        }
+    }
+    struct ActionConverter;
+    macro_rules! action_converter {
+        (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
+            impl dioxus::html::HtmlEventConverter for ActionConverter {
+                $(fn $convert(&self, event: &dioxus::html::PlatformEventData) -> dioxus::html::$data {
+                    let _ = event;
+                    action_converter!(@data $group, event)
+                })*
+            }
+        };
+        (@data Mounted, $event:ident) => {
+            if let Some(mock) = $event.downcast::<ActionFocusMount>() {
+                MountedData::new(mock.clone())
+            } else {
+                MountedData::new(())
+            }
+        };
+        (@data $other:ident, $event:ident) => {
+            panic!("Unexpected action test event")
+        };
+    }
+    dioxus::html::with_html_event_groups!(action_converter);
+
+    type ActionUpdate = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+    #[derive(Clone, Default)]
+    struct ActionMountState {
+        node: Rc<RefCell<Option<crate::overlay_runtime::NodeHandle>>>,
+        update: Rc<RefCell<Option<ActionUpdate>>>,
+        visible: Rc<Cell<bool>>,
+        button_id: Rc<RefCell<Option<String>>>,
+        button_href: Rc<RefCell<Option<String>>>,
+        icon_button_id: Rc<RefCell<Option<String>>>,
+        button_mounts: Rc<Cell<usize>>,
+        icon_button_mounts: Rc<Cell<usize>>,
+    }
+    impl PartialEq for ActionMountState {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.node, &other.node)
+        }
+    }
+    fn action_mount_fixture(state: ActionMountState) -> Element {
+        *state.update.borrow_mut() = Some(dioxus::core::schedule_update());
+        let runtime = crate::overlay_runtime::use_overlay_runtime();
+        let node = use_hook(|| {
+            runtime.register(
+                "actions-mount-test-owner".into(),
+                1,
+                crate::overlay_registry::OverlayKind::Dropdown,
+                crate::overlay_registry::CloseBehavior::Both,
+                crate::overlay_runtime::Callbacks {
+                    read: Rc::new(|| Some(true)),
+                    before: Rc::new(|_| true),
+                    apply: Rc::new(|_| {}),
+                    key: None,
+                },
+            )
+        });
+        *state.node.borrow_mut() = Some(node);
+        let button_mounts = state.button_mounts.clone();
+        let icon_button_mounts = state.icon_button_mounts.clone();
+        rsx! {
+            div {
+                if state.visible.get() {
+                    Button {
+                        id: state.button_id.borrow().clone(),
+                        href: state.button_href.borrow().clone(),
+                        aria_label: "ActionButton",
+                        onmounted: move |_| button_mounts.set(button_mounts.get() + 1),
+                        "Action"
+                    }
+                    IconButton {
+                        id: state.icon_button_id.borrow().clone(),
+                        icon: "star",
+                        label: "ActionIconButton",
+                        onmounted: move |_| icon_button_mounts.set(icon_button_mounts.get() + 1),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn button_and_icon_button_render_default_and_custom_ids_across_button_and_anchor_modes() {
+        let mut dom = VirtualDom::new(|| {
+            rsx! {
+                Button { aria_label: "DefaultBtn", "Default" }
+                Button { id: "", aria_label: "EmptyIdBtn", "Empty" }
+                Button { id: "explicit-btn", aria_label: "ExplicitBtn", "Explicit" }
+                Button { href: "https://example.com", aria_label: "DefaultAnchor", "Anchor" }
+                Button { id: "explicit-anchor", href: "https://example.com", disabled: true, aria_label: "DisabledAnchor", "DisabledAnchor" }
+                IconButton { icon: "star", label: "DefaultIcon" }
+                IconButton { id: "", icon: "star", label: "EmptyIdIcon" }
+                IconButton { id: "explicit-icon", icon: "star", label: "ExplicitIcon" }
+            }
+        });
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.contains("id=\"explicit-btn\""));
+        assert!(html.contains("id=\"explicit-anchor\""));
+        assert!(html.contains("id=\"explicit-icon\""));
+        let generated_ids: Vec<_> = html
+            .split("id=\"")
+            .skip(1)
+            .map(|part| part.split('"').next().unwrap())
+            .filter(|id| id.starts_with("ix-source-native-opt-in-"))
+            .collect();
+        assert_eq!(
+            generated_ids.len(),
+            5,
+            "omitted and empty IDs fall back to unique native-opt-in host IDs"
+        );
+    }
+
+    #[test]
+    fn button_and_icon_button_register_mounted_handles_update_ids_forward_onmounted_once_and_clean_up_on_drop()
+     {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(ActionConverter));
+        let state = ActionMountState {
+            visible: Rc::new(Cell::new(true)),
+            ..Default::default()
+        };
+        let mut dom = VirtualDom::new_with_props(action_mount_fixture, state.clone());
+        let mut attrs: BTreeMap<usize, BTreeMap<String, String>> = BTreeMap::new();
+        let collect =
+            |mutations: dioxus::core::Mutations,
+             attrs: &mut BTreeMap<usize, BTreeMap<String, String>>| {
+                let mut current = dioxus::core::ElementId::ROOT;
+                for edit in mutations.edits {
+                    match edit {
+                        dioxus::core::Mutation::SetId { id }
+                        | dioxus::core::Mutation::PushId { id } => current = id,
+                        dioxus::core::Mutation::SetAttribute {
+                            name,
+                            value: dioxus::core::AttributeValue::Text(text),
+                            ..
+                        } => {
+                            attrs.entry(current.raw()).or_default().insert(name, text);
+                        }
+                        dioxus::core::Mutation::Remove => {
+                            attrs.remove(&current.raw());
+                        }
+                        _ => {}
+                    }
+                }
+            };
+        collect(dom.rebuild_to_vec(), &mut attrs);
+        let settle = |dom: &mut VirtualDom,
+                      attrs: &mut BTreeMap<usize, BTreeMap<String, String>>| {
+            for _ in 0..4 {
+                let edits = dom.render_immediate_to_vec();
+                collect(edits, attrs);
+            }
+        };
+        let find_by_label =
+            |attrs: &BTreeMap<usize, BTreeMap<String, String>>, label: &str| -> (usize, String) {
+                attrs
+                    .iter()
+                    .find_map(|(raw, map)| {
+                        (map.get("aria-label").map(String::as_str) == Some(label))
+                            .then(|| (*raw, map.get("id").cloned().unwrap_or_default()))
+                    })
+                    .unwrap_or_else(|| panic!("missing element for {label}"))
+            };
+        let (btn_raw, initial_btn_id) = find_by_label(&attrs, "ActionButton");
+        let (icon_raw, initial_icon_id) = find_by_label(&attrs, "ActionIconButton");
+        assert!(initial_btn_id.starts_with("ix-source-native-opt-in-"));
+        assert!(initial_icon_id.starts_with("ix-source-native-opt-in-"));
+
+        let focuses = Rc::new(RefCell::new(Vec::<String>::new()));
+        let dispatch_mount = |dom: &VirtualDom, raw: usize, label: &str| {
+            let payload = ActionFocusMount {
+                label: label.into(),
+                focuses: focuses.clone(),
+            };
+            let data: Rc<dyn std::any::Any> =
+                Rc::new(dioxus::html::PlatformEventData::new(Box::new(payload)));
+            let event = Event::new(data, false);
+            dom.runtime()
+                .handle_event("mounted", event, dioxus::core::ElementId::from_raw(raw));
+        };
+        dispatch_mount(&dom, btn_raw, "button-node");
+        dispatch_mount(&dom, icon_raw, "icon-button-node");
+        settle(&mut dom, &mut attrs);
+
+        assert_eq!(state.button_mounts.get(), 1);
+        assert_eq!(
+            state.icon_button_mounts.get(),
+            1,
+            "IconButton consumer onmounted must fire exactly once"
+        );
+
+        let node = state.node.borrow().clone().unwrap();
+        let focus_target = |dom: &mut VirtualDom,
+                            attrs: &mut BTreeMap<usize, BTreeMap<String, String>>,
+                            target: &str|
+         -> bool {
+            let queued =
+                dom.in_runtime(|| node.queue_item_focus(target.to_string(), true, Rc::new(|| {})));
+            settle(dom, attrs);
+            queued
+        };
+        assert!(focus_target(&mut dom, &mut attrs, &initial_btn_id));
+        assert!(focus_target(&mut dom, &mut attrs, &initial_icon_id));
+        assert_eq!(
+            focuses.borrow().as_slice(),
+            ["button-node", "icon-button-node"]
+        );
+
+        *state.button_id.borrow_mut() = Some("updated-btn-id".into());
+        *state.icon_button_id.borrow_mut() = Some("updated-icon-id".into());
+        state.update.borrow().as_ref().unwrap()();
+        settle(&mut dom, &mut attrs);
+
+        assert_eq!(state.button_mounts.get(), 1);
+        assert_eq!(state.icon_button_mounts.get(), 1);
+        assert!(
+            !focus_target(&mut dom, &mut attrs, &initial_btn_id),
+            "previous Button ID is superseded after prop update"
+        );
+        assert!(
+            !focus_target(&mut dom, &mut attrs, &initial_icon_id),
+            "previous IconButton ID is superseded after prop update"
+        );
+        assert!(focus_target(&mut dom, &mut attrs, "updated-btn-id"));
+        assert!(focus_target(&mut dom, &mut attrs, "updated-icon-id"));
+        assert_eq!(
+            focuses.borrow().as_slice(),
+            [
+                "button-node",
+                "icon-button-node",
+                "button-node",
+                "icon-button-node"
+            ]
+        );
+
+        *state.button_href.borrow_mut() = Some("https://example.com".into());
+        state.update.borrow().as_ref().unwrap()();
+        settle(&mut dom, &mut attrs);
+        let (anchor_raw, anchor_id) = find_by_label(&attrs, "ActionButton");
+        assert_eq!(anchor_id, "updated-btn-id");
+        dispatch_mount(&dom, anchor_raw, "anchor-node");
+        settle(&mut dom, &mut attrs);
+        assert_eq!(state.button_mounts.get(), 2);
+        assert!(focus_target(&mut dom, &mut attrs, "updated-btn-id"));
+        assert_eq!(
+            focuses.borrow().last().map(String::as_str),
+            Some("anchor-node")
+        );
+
+        state.visible.set(false);
+        state.update.borrow().as_ref().unwrap()();
+        settle(&mut dom, &mut attrs);
+        assert!(
+            !focus_target(&mut dom, &mut attrs, "updated-btn-id"),
+            "Button use_drop unregisters its item mount"
+        );
+        assert!(
+            !focus_target(&mut dom, &mut attrs, "updated-icon-id"),
+            "IconButton use_drop unregisters its item mount"
+        );
     }
 }
 

@@ -8,6 +8,8 @@ mod descendant_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
+#[path = "dioxus_first_probe/tab_exit_review.rs"]
+mod tab_exit_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
 mod trigger_review;
 
@@ -64,6 +66,9 @@ fn Preview() -> Element {
     }
     if scope == "?triggers" {
         return rsx! { trigger_review::TriggerPreview {} };
+    }
+    if scope == "?exits" {
+        return rsx! { tab_exit_review::TabExitPreview {} };
     }
     if scope == "?charts" {
         return rsx! { chart_review::ChartsPreview {} };

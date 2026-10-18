@@ -3,7 +3,6 @@
 use crate::dropdown_inventory::{HostFacts, InventoryFacts, ItemKind, ItemRef};
 use crate::overlay_completion::CompletionQueue;
 use crate::overlay_domain::{Domain, DomainCallbacks};
-use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -179,7 +178,6 @@ struct Runtime {
     keyboard: bool,
     capture_block: Vec<(String, u64)>,
     ack: Ack,
-    pending_focus: PendingFocusQueue,
     completions: CompletionQueue,
     item_mounts: BTreeMap<String, ItemMount>,
     owned_item_focus: BTreeMap<String, OwnedItemFocus>,
@@ -208,6 +206,39 @@ struct ItemMount {
     target: String,
     focus_id: String,
     node: Rc<MountedData>,
+    renderer: Option<Weak<dioxus::core::Runtime>>,
+}
+/// A captured Dioxus destination retains no element or renderer ownership.
+/// Replacing/unmounting its registration or changing documents invalidates it.
+#[derive(Clone)]
+pub(crate) struct MountedFocusTarget {
+    runtime: Weak<RefCell<Runtime>>,
+    key: String,
+    logical_target: String,
+    focus_id: String,
+    node: Weak<MountedData>,
+    document: String,
+    renderer: Option<Weak<dioxus::core::Runtime>>,
+}
+impl MountedFocusTarget {
+    fn live_node(&self) -> Option<Rc<MountedData>> {
+        // Component cleanup unregisters its handle. Also reject a retained
+        // registry after the renderer VirtualDom itself has been dropped.
+        let _renderer = match &self.renderer {
+            Some(owner) => Some(owner.upgrade()?),
+            None => None,
+        };
+        let runtime = self.runtime.upgrade()?;
+        let node = self.node.upgrade()?;
+        let state = runtime.borrow();
+        (state.document == self.document
+            && state.item_mounts.get(&self.key).is_some_and(|mount| {
+                mount.target == self.logical_target
+                    && mount.focus_id == self.focus_id
+                    && Rc::ptr_eq(&mount.node, &node)
+            }))
+        .then_some(node)
+    }
 }
 struct OwnedItemFocus {
     sequence: u64,
@@ -216,6 +247,8 @@ struct OwnedItemFocus {
     callback: Option<Rc<dyn Fn()>>,
     visual: Option<HostFacts>,
     focus_native: bool,
+    exit_target: Option<MountedFocusTarget>,
+    destination_popovers: Vec<String>,
     task: Option<(Weak<dioxus::core::Runtime>, dioxus::core::Task)>,
 }
 
@@ -267,7 +300,6 @@ type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        self.pending_focus.clear();
         self.completions.clear();
 
         self.inventories.clear();
@@ -307,7 +339,6 @@ impl RuntimeHandle {
             keyboard: false,
             capture_block: Vec::new(),
             ack: Ack::default(),
-            pending_focus: PendingFocusQueue::default(),
             completions: CompletionQueue::default(),
             item_mounts: BTreeMap::new(),
             owned_item_focus: BTreeMap::new(),
@@ -356,6 +387,25 @@ impl RuntimeHandle {
     pub(crate) fn register_item_mount(&self, key: &str, target: &str, node: Rc<MountedData>) {
         self.register_item_control_mount(key, target, target, node);
     }
+    pub(crate) fn mounted_focus_target(&self, id: &str) -> Option<MountedFocusTarget> {
+        if id.is_empty() {
+            return None;
+        }
+        let state = self.0.borrow();
+        let (key, mount) = state
+            .item_mounts
+            .iter()
+            .find(|(_, mount)| mount.focus_id == id)?;
+        Some(MountedFocusTarget {
+            runtime: Rc::downgrade(&self.0),
+            key: key.clone(),
+            logical_target: mount.target.clone(),
+            focus_id: id.into(),
+            node: Rc::downgrade(&mount.node),
+            document: state.document.clone(),
+            renderer: mount.renderer.clone(),
+        })
+    }
     pub(crate) fn register_item_control_mount(
         &self,
         key: &str,
@@ -363,6 +413,7 @@ impl RuntimeHandle {
         focus_id: &str,
         node: Rc<MountedData>,
     ) {
+        let renderer = dioxus::core::Runtime::try_current().map(|owner| Rc::downgrade(&owner));
         let changed = self.0.borrow().item_mounts.get(key).is_some_and(|old| {
             old.target != target || old.focus_id != focus_id || !Rc::ptr_eq(&old.node, &node)
         });
@@ -375,6 +426,7 @@ impl RuntimeHandle {
                 target: target.into(),
                 focus_id: focus_id.into(),
                 node,
+                renderer,
             },
         );
     }
@@ -439,6 +491,90 @@ impl RuntimeHandle {
         .flatten()
         .is_some()
     }
+    fn focus_owner_registered(&self, root: &str, generation: u64) -> bool {
+        self.with_owner(root, generation, || {
+            let entry = self.entry(root)?;
+            (self.read_current(root, &entry).is_some()
+                && self
+                    .entry(root)
+                    .is_some_and(|entry| entry.generation == generation))
+            .then_some(())
+        })
+        .flatten()
+        .is_some()
+    }
+    fn destination_popovers_visible(&self, popovers: &[String]) -> bool {
+        self.domain().map_or_else(
+            || {
+                popovers.iter().all(|id| {
+                    self.entry(id).is_some_and(|entry| {
+                        entry.kind == OverlayKind::Popover
+                            && self.read_current(id, &entry) == Some(true)
+                    })
+                })
+            },
+            |domain| domain.focus_destinations_visible(popovers),
+        )
+    }
+    fn queue_exit_focus(
+        &self,
+        root: &str,
+        generation: u64,
+        target: MountedFocusTarget,
+        destination_popovers: Vec<String>,
+    ) -> bool {
+        self.with_owner(root, generation, || {
+            if !self.focus_owner_registered(root, generation)
+                || target.live_node().is_none()
+                || !self.destination_popovers_visible(&destination_popovers)
+            {
+                return false;
+            }
+            if self
+                .entry(root)
+                .is_none_or(|entry| entry.generation != generation || entry.scope.is_none())
+                || target.live_node().is_none()
+            {
+                return false;
+            }
+            self.cancel_owned_item_focus(root);
+            let sequence = {
+                let mut state = self.0.borrow_mut();
+                state.item_focus_sequence = state.item_focus_sequence.wrapping_add(1).max(1);
+                let sequence = state.item_focus_sequence;
+                state.owned_item_focus.insert(
+                    root.into(),
+                    OwnedItemFocus {
+                        sequence,
+                        generation,
+                        key: target.key.clone(),
+                        callback: None,
+                        visual: None,
+                        focus_native: true,
+                        exit_target: Some(target),
+                        destination_popovers,
+                        task: None,
+                    },
+                );
+                sequence
+            };
+            let weak = Rc::downgrade(&self.0);
+            let owned_root = root.to_string();
+            dioxus::core::queue_effect(move || {
+                if let Some(state) = weak.upgrade() {
+                    let runtime = RuntimeHandle(state);
+                    runtime.with_owner(&owned_root, generation, || {
+                        runtime.start_owned_item_focus(owned_root.clone(), generation, sequence)
+                    });
+                }
+            });
+            // A raw native report need not modify component state. Wake the
+            // owner now so the framework runs this post-render focus effect.
+            dioxus::core::needs_update();
+            true
+        })
+        .unwrap_or(false)
+    }
     fn owned_item_live(
         &self,
         root: &str,
@@ -446,19 +582,42 @@ impl RuntimeHandle {
         sequence: u64,
         node: &Rc<MountedData>,
     ) -> bool {
-        if !self.item_owner_open(root, generation) {
+        let Some((exiting, popovers)) = self
+            .0
+            .borrow()
+            .owned_item_focus
+            .get(root)
+            .map(|job| (job.exit_target.is_some(), job.destination_popovers.clone()))
+        else {
+            return false;
+        };
+        let owner_live = if exiting {
+            self.focus_owner_registered(root, generation)
+        } else {
+            self.item_owner_open(root, generation)
+        };
+        if !owner_live || !self.destination_popovers_visible(&popovers) {
             return false;
         }
+        // Presence readers can run consumer code. Recheck identity only after
+        // those callbacks, without holding a registry borrow across them.
         let state = self.0.borrow();
         state.owned_item_focus.get(root).is_some_and(|job| {
             job.sequence == sequence
                 && job.generation == generation
-                && state
-                    .item_mounts
-                    .get(&job.key)
-                    .is_some_and(|mount| Rc::ptr_eq(&mount.node, node))
+                && if let Some(target) = &job.exit_target {
+                    target
+                        .live_node()
+                        .is_some_and(|current| Rc::ptr_eq(&current, node))
+                } else {
+                    state
+                        .item_mounts
+                        .get(&job.key)
+                        .is_some_and(|mount| Rc::ptr_eq(&mount.node, node))
+                }
         })
     }
+
     fn start_owned_item_focus(&self, root: String, generation: u64, sequence: u64) {
         let selected = {
             let state = self.0.borrow();
@@ -467,13 +626,19 @@ impl RuntimeHandle {
                 .get(&root)
                 .filter(|job| job.sequence == sequence)
                 .and_then(|job| {
-                    state
-                        .item_mounts
-                        .get(&job.key)
-                        .map(|mount| (mount.node.clone(), job.focus_native))
+                    let node = if let Some(target) = &job.exit_target {
+                        target.live_node()
+                    } else {
+                        state
+                            .item_mounts
+                            .get(&job.key)
+                            .map(|mount| mount.node.clone())
+                    }?;
+                    Some((node, job.focus_native, job.exit_target.is_some()))
                 })
         };
-        let Some((node, focus_native)) = selected else {
+        let Some((node, focus_native, exiting)) = selected else {
+            self.retire_owned_item_focus(&root, sequence);
             return;
         };
         if !self.owned_item_live(&root, generation, sequence, &node) {
@@ -514,6 +679,10 @@ impl RuntimeHandle {
             // Cues and nearest scrolling follow a live attempt in either case.
             if focus_native {
                 let _ = node.set_focus(true).await;
+            }
+            if exiting {
+                finish();
+                return;
             }
             let Some(runtime) = live() else {
                 finish();
@@ -751,7 +920,6 @@ impl RuntimeHandle {
             if let Some(old_generation) = runtime.nodes.get(&id).map(|entry| entry.generation)
                 && old_generation != generation
             {
-                runtime.pending_focus.remove_root(&id, old_generation);
                 runtime.completions.remove_root(&id, old_generation);
 
                 runtime
@@ -897,7 +1065,6 @@ impl RuntimeHandle {
         }
         let (ids, categories) = {
             let mut state = self.0.borrow_mut();
-            state.pending_focus.clear();
             // Adopting another document cancels old-document native work.
             if !state.document.is_empty() {
                 state.submenu_marks.clear();
@@ -923,6 +1090,13 @@ impl RuntimeHandle {
             state.domain = Some(domain);
             (state.order.clone(), state.categories.clone())
         };
+        if let Some(domain) = self.domain() {
+            let weak = Rc::downgrade(&self.0);
+            domain.register_focus_reader(
+                self.owner_id(),
+                Rc::new(move |id| RuntimeHandle(weak.upgrade()?).mounted_focus_target(id)),
+            );
+        }
         for id in ids {
             self.join_node(&id);
         }
@@ -1531,7 +1705,6 @@ impl RuntimeHandle {
             .get(id)
             .is_some_and(|entry| entry.generation == generation)
         {
-            runtime.pending_focus.remove_root(id, generation);
             runtime.completions.remove_root(id, generation);
 
             runtime
@@ -2351,7 +2524,31 @@ impl RuntimeHandle {
                                 })
                         })
                 }?;
-                Some((root, entry.generation, target))
+                let mounted = self
+                    .mounted_focus_target(&target)
+                    .or_else(|| self.domain()?.focus_target(&target))?;
+                let mut popovers = Vec::new();
+                for candidate in report
+                    .document_tab_candidates
+                    .iter()
+                    .flatten()
+                    .chain(
+                        report
+                            .nodes
+                            .iter()
+                            .flat_map(|node| node.tab_candidates.iter()),
+                    )
+                    .filter(|candidate| candidate.target == target)
+                {
+                    for host in &candidate.hosts {
+                        if !popovers.contains(host)
+                            && self.reported_kind(report, host) == Some(OverlayKind::Popover)
+                        {
+                            popovers.push(host.clone());
+                        }
+                    }
+                }
+                Some((root, entry.generation, mounted, popovers))
             })
         } else {
             None
@@ -2362,26 +2559,11 @@ impl RuntimeHandle {
             self.with_owner(&owner.id, entry.generation, || callback(&facts))
                 .unwrap_or_default()
         };
-        if let Some((root, generation, target)) = tab_release.filter(|_| decision.release_focus) {
-            if self
-                .entry(&root)
-                .filter(|entry| entry.generation == generation)
-                .and_then(|entry| self.read_current(&root, &entry))
-                .is_some()
-            {
-                // Each source exit queues its precomputed target, including
-                // veto and reentrant events. Later ACKs/visibility do not revoke
-                // this work; only the owning registration's lifetime does.
-                if self.0.borrow_mut().pending_focus.admit(PendingFocus {
-                    sequence: report.sequence,
-                    target: target.clone(),
-                    root,
-                    generation,
-                }) {
-                    decision.prevent = true;
-                    decision.focus = Some(target);
-                }
-            }
+        if let Some((root, generation, target, popovers)) =
+            tab_release.filter(|_| decision.release_focus)
+            && self.queue_exit_focus(&root, generation, target, popovers)
+        {
+            decision.prevent = true;
         }
         decision
     }
@@ -2785,57 +2967,6 @@ impl RuntimeHandle {
             }
             return;
         }
-        if let Some(target) = query.schedule_focus_target {
-            let armed = self
-                .0
-                .borrow_mut()
-                .pending_focus
-                .schedule(query.sequence, &target);
-            if armed {
-                event.prevent_default();
-            }
-            return;
-        }
-        if let Some(target) = query.dispatch_focus_target {
-            let routed = self
-                .0
-                .borrow_mut()
-                .pending_focus
-                .route(query.sequence, &target);
-            if routed {
-                event.prevent_default();
-            }
-            return;
-        }
-        if let Some(target) = query.pending_focus_target {
-            let pending = self
-                .0
-                .borrow_mut()
-                .pending_focus
-                .take(query.sequence, &target);
-            if let Some(pending) = pending {
-                // Destination reads can enter another owner. Validate the
-                // authorizing registration only after those callbacks finish.
-                let destination_visible = query.focus_hosts.is_empty()
-                    || self.domain().is_some_and(|domain| {
-                        domain.focus_destinations_visible(&query.focus_hosts)
-                    });
-                let live = self
-                    .with_owner(&pending.root, pending.generation, || {
-                        let entry = self.entry(&pending.root)?;
-                        pending
-                            .matches_owner(&pending.root, entry.generation)
-                            .then(|| self.read_current(&pending.root, &entry))
-                            .flatten()
-                    })
-                    .flatten()
-                    .is_some();
-                if live && destination_visible {
-                    event.prevent_default();
-                }
-            }
-            return;
-        }
         let authorization = {
             let mut runtime = self.0.borrow_mut();
             if query.owner != runtime.owner || query.sequence != runtime.ack.sequence {
@@ -3198,6 +3329,8 @@ impl NodeHandle {
                             callback: Some(callback),
                             visual,
                             focus_native,
+                            exit_target: None,
+                            destination_popovers: Vec::new(),
                             task: None,
                         },
                     );
@@ -3680,15 +3813,6 @@ struct Query {
     focus_target: Option<String>,
     #[serde(default)]
     immediate_stop: bool,
-    #[serde(default)]
-    schedule_focus_target: Option<String>,
-    #[serde(default)]
-    dispatch_focus_target: Option<String>,
-    #[serde(default)]
-    pending_focus_target: Option<String>,
-    /// Current Popover ancestors of the captured native destination object.
-    #[serde(default)]
-    focus_hosts: Vec<String>,
 }
 
 #[cfg(test)]
@@ -5652,75 +5776,60 @@ mod tests {
     }
 
     #[test]
-    fn roving_tab_authorizes_current_adjacent_focus_once_and_weak_nodes_release_root() {
-        let runtime = RuntimeHandle::new();
-        let open = Rc::new(Cell::new(true));
-        let pending = Rc::new(RefCell::new(None::<NodeHandle>));
-        let read = open.clone();
-        let apply = open.clone();
-        let close = pending.clone();
-        let node = runtime.register(
-            "child".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-            Callbacks {
-                read: Rc::new(move || Some(read.get())),
-                before: Rc::new(|_| true),
-                apply: Rc::new(move |change| apply.set(change.open)),
-                key: Some(Rc::new(move |_| {
-                    let node = close.borrow().clone().unwrap();
-                    node.runtime()
-                        .unwrap()
-                        .dismiss_root(node.id(), Reason::Keyboard, false);
-                    KeyDecision {
-                        release_focus: true,
-                        ..KeyDecision::default()
-                    }
-                })),
-            },
+    fn outside_tab_mounted_exit_runs_after_close_without_item_scroll_or_cue() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        let destination = ItemMountMock::default();
+        runtime.register_item_mount(
+            "outside-after",
+            "after",
+            Rc::new(MountedData::new(destination.clone())),
         );
-        *pending.borrow_mut() = Some(node.clone());
-        let mut key = key_value(&runtime, 1, "capture");
-        key["key"] = "Tab".into();
-        key["tab_order"] = serde_json::json!(["before", "trigger", "after"]);
-        key["nodes"][0]["mode"] = "roving-tabindex".into();
-        key["nodes"][0]["trigger_id"] = "trigger".into();
-        let input = event(key);
-        runtime.input(input.clone());
-        assert!(!input.default_action_enabled() && !open.get());
-        let early = event(
-            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"focus_target":"after"}),
-        );
-        runtime.query(early.clone());
-        assert!(
-            early.default_action_enabled(),
-            "release is not an immediate focus ACK"
-        );
-        let schedule = event(
-            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"schedule_focus_target":"after"}),
-        );
-        runtime.query(schedule.clone());
-        assert!(!schedule.default_action_enabled());
-        let dispatch_value = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"dispatch_focus_target":"after"});
-        let dispatch = event(dispatch_value.clone());
-        runtime.query(dispatch.clone());
-        assert!(!dispatch.default_action_enabled());
-        let repeat_dispatch = event(dispatch_value);
-        runtime.query(repeat_dispatch.clone());
-        assert!(repeat_dispatch.default_action_enabled());
-        let value = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"pending_focus_target":"after"});
-        let first = event(value.clone());
-        runtime.query(first.clone());
-        assert!(!first.default_action_enabled());
-        let repeat = event(value);
-        runtime.query(repeat.clone());
-        assert!(repeat.default_action_enabled());
+        let snapshot = runtime.mounted_focus_target("after").unwrap();
+        assert!(node.request(false, Reason::Keyboard, false));
+        assert!(runtime.queue_exit_focus(node.id(), node.generation, snapshot, Vec::new()));
+        assert!(destination.events.borrow().is_empty());
+        settle_item_effects(&mut dom);
+        assert_eq!(*destination.events.borrow(), [("focus", owner)]);
+        assert_eq!(runtime.item_visual_key(), None);
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+        assert!(runtime.mounted_focus_target("unregistered").is_none());
         node.unregister();
         assert!(runtime.0.borrow().nodes.is_empty());
-        let weak = Rc::downgrade(&runtime.0);
-        drop(runtime);
-        assert!(weak.upgrade().is_none() && node.runtime().is_none());
+    }
+    #[test]
+    fn outside_tab_capture_cannot_follow_a_replacement_or_retain_unmounted_destination() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let old = Rc::new(MountedData::new(ItemMountMock::default()));
+        let weak_old = Rc::downgrade(&old);
+        runtime.register_item_mount("outside-after", "after", old);
+        let snapshot = runtime.mounted_focus_target("after").unwrap();
+        assert!(node.request(false, Reason::Keyboard, false));
+        let replacement = ItemMountMock::default();
+        runtime.register_item_mount(
+            "outside-after",
+            "after",
+            Rc::new(MountedData::new(replacement.clone())),
+        );
+        assert!(
+            weak_old.upgrade().is_none(),
+            "the captured destination is weak"
+        );
+        assert!(!runtime.queue_exit_focus(node.id(), node.generation, snapshot, Vec::new()));
+        let current = runtime.mounted_focus_target("after").unwrap();
+        assert!(runtime.queue_exit_focus(node.id(), node.generation, current, Vec::new()));
+        runtime.unregister_item_cue("outside-after");
+        settle_item_effects(&mut dom);
+        assert!(replacement.events.borrow().is_empty());
+        assert_eq!(runtime.pending_item_focus_count(), 0);
     }
     #[derive(Clone, Default)]
     struct RovingView(Rc<RovingViewState>);
