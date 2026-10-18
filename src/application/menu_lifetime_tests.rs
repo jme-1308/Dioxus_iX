@@ -43,8 +43,17 @@ fn open_category_disconnect_closes_via_controller_state_without_changing_top_men
         ),
         (true, true)
     );
-    let jobs = h.category_item_jobs("Category");
-    assert_eq!(jobs.len(), 1);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
+    let runtime = category
+        .0
+        .overlay
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .runtime()
+        .unwrap();
+    assert!(runtime.pending_item_focus_count() == 0);
+    let focused = h.focuses.borrow().clone();
     assert!(category.0.model.borrow().root_claim.is_some());
 
     assert_eq!(
@@ -90,10 +99,11 @@ fn open_category_disconnect_closes_via_controller_state_without_changing_top_men
     assert_eq!(category.0.model.borrow().children.len(), 3);
     assert_eq!(category.0.model.borrow().observed, children);
     assert!(category.0.model.borrow().root_claim.is_none());
+    assert!(runtime.pending_item_focus_count() == 0);
     assert_eq!(
-        h.category_item_jobs("Category"),
-        jobs,
-        "controller disconnect does not cancel independent item focus jobs"
+        *h.focuses.borrow(),
+        focused,
+        "disconnect does not refocus hidden children"
     );
 }
 

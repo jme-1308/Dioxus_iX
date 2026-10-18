@@ -26,6 +26,15 @@ fn main() {
 }
 
 #[component]
+fn CustomDropdownAction() -> Element {
+    let mounted = use_dropdown_item_mount("r02-mixed-custom");
+    rsx! { button {
+        id:"r02-mixed-custom", r#type:"button", "data-ix-roving-item":"",
+        onmounted:mounted, "Custom control"
+    } }
+}
+
+#[component]
 fn Preview() -> Element {
     let mut selected = use_signal(String::new);
     let mut multi = use_signal(Vec::<String>::new);
@@ -91,7 +100,7 @@ fn Preview() -> Element {
         });
     });
     rsx! {
-        style { {"body{margin:0}.r02-preview{padding:24px;min-height:100vh;box-sizing:border-box}.r02-preview h1{font-size:28px}.r02-preview h2{font-size:20px;margin:0 0 16px}.r02-section{max-width:850px;margin:32px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.r02-preview #r02-chip-frame > .ix-select{width:calc(100% - 10px)}.r02-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.r02-preview output{display:block;margin-top:16px}.r02-controls{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}@media(max-width:600px){.r02-preview{padding:16px}.r02-columns{grid-template-columns:1fr}}"} }
+        style { {"body{margin:0}.r02-preview{padding:24px;min-height:100vh;box-sizing:border-box}.r02-preview h1{font-size:28px}.r02-preview h2{font-size:20px;margin:0 0 16px}.r02-section{max-width:850px;margin:32px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.r02-preview #r02-chip-frame > .ix-select{width:calc(100% - 10px)}.r02-mixed .ix-dropdown-root-menu{max-height:220px;overflow-y:auto}.r02-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.r02-preview output{display:block;margin-top:16px}.r02-controls{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}@media(max-width:600px){.r02-preview{padding:16px}.r02-columns{grid-template-columns:1fr}}"} }
         IxTheme { scheme: if dark(){ColorScheme::Dark}else{ColorScheme::Light}, class: "r02-preview",
             h1 { "Dioxus-owned interactions" }
             p { "Select, Tabs and Dropdown use framework focus, scrolling and event handling where available." }
@@ -185,6 +194,17 @@ fn Preview() -> Element {
                 output { id:"r02-dropdown-changes", "Changes: {dropdown_changes():?}" }
             }
             section { class:"r02-section",
+                h2 { "Mixed item focus and scrolling" }
+                Dropdown { label:"Mixed item navigation", class:"r02-mixed", navigation_mode:DropdownNavigationMode::RovingTabindex, enable_top_layer:true,
+                    DropdownItem { id:"r02-mixed-first", label:"First action" }
+                    SelectItem { id:"r02-mixed-select", value:"mixed", label:"Selectable row" }
+                    MenuItem { id:"r02-mixed-menu", label:"Navigation row", close_on_select:false }
+                    CustomDropdownAction {}
+                    for index in 1..=18 { DropdownItem { key:"{index}", label:format!("Extra action {index:02}") } }
+                    MenuCategory { id:"r02-mixed-category", label:"Grouped row", MenuItem { label:"Grouped action" } }
+                }
+            }
+            section { class:"r02-section",
                 h2 { "Header overflow notifications" }
                 ApplicationHeader { name:"Equipment", aria_label_more_menu_icon_button:"Header actions",
                     overflow:rsx! { Button { "Header action" } },
@@ -242,6 +262,19 @@ const header=root().querySelector('[aria-label="Header actions"]');header.click(
 await wait('header callback open',()=>document.querySelector('#r02-header-changes').textContent==='Changes: [true]');
 header.click();
 await wait('header callback close',()=>document.querySelector('#r02-header-changes').textContent==='Changes: [true, false]');
+const mixed=root().querySelector('.r02-mixed'),mixedMenu=mixed.querySelector('.ix-dropdown-root-menu');
+mixed.scrollIntoView({block:'center'});mixed.click();
+await wait('mixed open',()=>mixed.getAttribute('aria-expanded')==='true');
+const mixedKey=key=>document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+mixedMenu.focus();mixedKey('Home');
+await wait('owned dropdown focus',()=>document.activeElement.id==='r02-mixed-first');
+mixedKey('ArrowDown');await wait('owned select focus',()=>document.activeElement.id==='r02-mixed-select');
+mixedKey('ArrowDown');await wait('owned menu focus',()=>document.activeElement.id==='r02-mixed-menu-control');
+mixedKey('ArrowDown');await wait('custom mounted focus',()=>document.activeElement.id==='r02-mixed-custom');
+mixedKey('End');await wait('owned category focus',()=>document.activeElement===document.querySelector('#r02-mixed-category [data-ix-item-control]'));
+await wait('owned nearest scroll',()=>mixedMenu.scrollTop>0);
+const mixedScroll=mixedMenu.scrollTop;
+mixedKey('Escape');await wait('mixed dismissal',()=>mixed.getAttribute('aria-expanded')==='false');
 const adorned=document.getElementById('r02-adorned'),wrap=adorned.closest('.ix-input-wrap');
 await wait('adornment mount',()=>wrap.dataset.paddingReady==='true'&&+wrap.dataset.paddingStart>0&&+wrap.dataset.paddingEnd>0);
 const firstStart=+wrap.dataset.paddingStart,firstEnd=+wrap.dataset.paddingEnd;
@@ -263,5 +296,5 @@ native.dispatchEvent(new KeyboardEvent('keydown',{key:'F2',bubbles:true,cancelab
 await wait('native width update',()=>Math.abs(nativePanel.getBoundingClientRect().width-300)<2);
 const nativeOption=[...nativePanel.querySelectorAll('[role=option]')].find(n=>n.textContent.trim()==='Beta');nativeOption.click();
 await wait('native select commit',()=>document.querySelector('#r02-native-value').textContent==='Native selected: beta'&&native.getAttribute('aria-expanded')==='false');
-return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true,dropdownChanges:document.querySelector('#r02-dropdown-changes').textContent,narrowChips:narrow,wideChips:5,adornments:{firstStart,firstEnd,grownStart},nativeFollowsScroll:true,nativeSelection:document.querySelector('#r02-native-value').textContent,headerChanges:document.querySelector('#r02-header-changes').textContent};
+return {ok:true,selection:document.querySelector('#r02-selected').textContent,tab:document.querySelector('#r02-tab').textContent,overflow:root().querySelector('.ix-tabs-shell').dataset.overflow,keyedFocusRetained:retained,dropdownClosed:true,dropdownChanges:document.querySelector('#r02-dropdown-changes').textContent,narrowChips:narrow,wideChips:5,mixedOwnedKinds:4,customMounted:true,mixedScroll,adornments:{firstStart,firstEnd,grownStart},nativeFollowsScroll:true,nativeSelection:document.querySelector('#r02-native-value').textContent,headerChanges:document.querySelector('#r02-header-changes').textContent};
 "#;

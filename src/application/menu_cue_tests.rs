@@ -74,7 +74,7 @@ fn category_hidden(h: &mut MenuHarness, category: &CategoryNavigation, sequence:
 }
 
 #[test]
-fn native_hidden_after_disconnect_clears_cue_without_cancelling_jobs_or_inventories() {
+fn native_hidden_after_disconnect_clears_cue_and_preserves_completed_focus_and_inventories() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
@@ -100,8 +100,9 @@ fn native_hidden_after_disconnect_clears_cue_without_cancelling_jobs_or_inventor
         children.clone(),
     );
     assert!(category.is_open());
-    let jobs = h.category_item_jobs("Category");
-    assert_eq!(jobs.len(), 1);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
+    assert!(runtime.pending_item_focus_count() == 0);
+    let focused = h.focuses.borrow().clone();
     let tabs = h.tabs();
     let cue = mark_rendered_child(&h, &runtime, "Child");
 
@@ -120,7 +121,12 @@ fn native_hidden_after_disconnect_clears_cue_without_cancelling_jobs_or_inventor
     assert_eq!(h.context.model.borrow().observed, direct);
     assert_eq!(category.0.model.borrow().observed, children);
     assert_eq!(h.tabs(), tabs);
-    assert_eq!(h.category_item_jobs("Category"), jobs);
+    assert!(runtime.pending_item_focus_count() == 0);
+    assert_eq!(
+        *h.focuses.borrow(),
+        focused,
+        "closing the flyout cannot refocus its hidden children"
+    );
     assert!(category.0.model.borrow().alive);
     assert!(
         category
@@ -173,7 +179,7 @@ fn closed_disconnect_and_inline_panel_close_preserve_the_current_cue() {
 }
 
 #[test]
-fn native_hidden_after_same_menu_ownership_loss_clears_cue_but_retains_jobs() {
+fn native_hidden_after_same_menu_ownership_loss_clears_cue_without_stealing_focus() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
@@ -199,8 +205,9 @@ fn native_hidden_after_same_menu_ownership_loss_clears_cue_but_retains_jobs() {
         2,
         children.clone(),
     );
-    let jobs = h.category_item_jobs("Category");
-    assert_eq!(jobs.len(), 1);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
+    assert!(runtime.pending_item_focus_count() == 0);
+    let focused = h.focuses.borrow().clone();
     let cue = mark_rendered_child(&h, &runtime, "Child");
     let tabs = h.tabs();
     let other_node = other.0.overlay.borrow().as_ref().unwrap().clone();
@@ -223,7 +230,12 @@ fn native_hidden_after_same_menu_ownership_loss_clears_cue_but_retains_jobs() {
     assert_eq!(h.context.model.borrow().observed, direct);
     assert_eq!(category.0.model.borrow().observed, children);
     assert_eq!(h.tabs(), tabs);
-    assert_eq!(h.category_item_jobs("Category"), jobs);
+    assert!(runtime.pending_item_focus_count() == 0);
+    assert_eq!(
+        *h.focuses.borrow(),
+        focused,
+        "closing the flyout cannot refocus its hidden children"
+    );
     assert!(category.0.model.borrow().alive);
     assert!(
         category
@@ -268,16 +280,22 @@ fn native_hidden_clears_a_new_focus_cue_published_after_logical_return_close() {
     );
     assert!(!category.is_open());
     assert!(runtime.item_visual_matches(&before_return));
-    // A native focus attempt after the logical close can publish a new cue.
-    // Committed native-hide cleanup clears the current cue, not a close-time
-    // snapshot, including a cue from a no-op attempt on a now-hidden item.
+    // A separately reported focus cue can arrive after logical close.
+    // Native-hide cleanup clears the current cue while queued item focus
+    // remains cancelled for the closed owner.
     let after_return = mark_rendered_child(&h, &runtime, "Two");
     assert_ne!(before_return.capture, after_return.capture);
-    let jobs = h.category_item_jobs("Category");
+    assert!(runtime.pending_item_focus_count() == 0);
+    let focused = h.focuses.borrow().clone();
     category_hidden(&mut h, &category, 3);
     assert_eq!(runtime.item_visual_key(), None);
     assert_eq!(runtime.item_visual_target(), None);
-    assert_eq!(h.category_item_jobs("Category"), jobs);
+    assert!(runtime.pending_item_focus_count() == 0);
+    assert_eq!(
+        *h.focuses.borrow(),
+        focused,
+        "closing the flyout cannot refocus its hidden children"
+    );
 
     let unrelated = mark_rendered_child(&h, &runtime, "Child");
     category_hidden(&mut h, &category, 4);

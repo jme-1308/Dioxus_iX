@@ -25,7 +25,7 @@ const keyTargets=new Map(),clickTargets=new Map(),triggerKeyTargets=new Map(),na
 const navigationBindings=new Map();
 const tabFocusCaptures=new Map(),nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
 const anchorObservers=new Map();
-const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map(),itemScrollFrames=new Set();let itemObjectSequence=0;
+const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map();let itemObjectSequence=0;
 const itemInventoryLeases=new Map();
 let reconcilingItemCues=false,itemCueReconcileQueued=false,itemCueRetainedRequested=false,itemCueForcedRequested=false;
 const itemCueCapturedPending=new Set();
@@ -40,7 +40,7 @@ function pruneItemCaptures(){
   for(const [capture,binding]of itemCaptureNodes){
     if(binding.current||Array.from(itemInventoryLeases.values()).some(lease=>lease.tokens.has(capture)))continue;
     const input=transport();if(!input)continue;
-    input.value=JSON.stringify({owner,sequence:0,item_focus_phase:'retain',item_focus_capture:capture});
+    input.value=JSON.stringify({owner,sequence:0,capture_retained:capture});
     if(input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))itemCaptureNodes.delete(capture);
   }
 }
@@ -424,7 +424,6 @@ function collectFacts(kind,event,phase=''){
     const on_trigger=!!trigger&&(event?target===trigger:active===trigger);
     const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
     const tab_candidates=event?.key==='Tab'&&root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
-    const item_focus_captures=ro===owner?[...new Set([...itemsWithEl.map(item=>item.el),...focusables])].map(captureItem).filter(Boolean):[];
     const inventory=inventoryFacts(itemsHost),own_inventory=itemsHost===host?null:inventoryFacts(host);
     for(const item of inventory?.hosts||[])if(item.target)addCand(findElement(item.target));
     nodes.push({
@@ -434,7 +433,6 @@ function collectFacts(kind,event,phase=''){
       assignment_ancestors:trigger?triggerAncestors(trigger,id):[],
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
-      item_focus_captures,
       inventory,own_inventory,trigger_on_path:!!trigger&&path.includes(trigger),
       assignment_emissions:triggerBinding?.assignments??null,
       trigger_listener_capture:captureItem(installedTrigger)?.capture??null,
@@ -947,54 +945,6 @@ function executeCapturedTab(command){
   const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
   if(allowed&&el?.isConnected)el.focus();
 }
-function itemFocusQuery(command,capture,phase,element=null){
-  const input=transport();if(!input)return false;
-  input.value=JSON.stringify({owner,sequence:0,item_focus_sequence:command.sequence,
-    item_focus_root:command.root,item_focus_generation:command.generation,
-    item_focus_target:command.target,item_focus_capture:capture,item_focus_phase:phase,
-    item_focus_host:(phase==='focus'||phase==='visual')&&element instanceof HTMLElement?itemHostFacts(element):undefined});
-  return !input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-}
-function queueItemFocus(command){
-  const discard=()=>{
-    const input=transport();if(input){input.value=JSON.stringify({owner,sequence:0,item_focus_phase:'discard',
-      item_focus_sequence:command.sequence,item_focus_root:command.root,item_focus_generation:command.generation,
-      item_focus_target:command.target,item_focus_capture:command.capture});input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));}
-  };
-  let capture=command.capture,element=capture?itemCaptureNodes.get(capture)?.element:null;
-  // Only a pre-bootstrap/async admission without a capture may bind late. An
-  // existing object token never falls back to a replacement's public ID.
-  if(!capture){
-    element=findElement(command.target);
-    const binding=captureItem(element);capture=binding?.capture;
-  }
-  if(!(element instanceof HTMLElement)){
-    discard();return;
-  }
-  if(!capture||!itemFocusQuery(command,capture,'arm')){discard();return;}
-  nativeFocusCommands.push({kind:'item',command,capture,element});scheduleNativeFocus();
-}
-function executeItemFocus(job){
-  const {command,capture}=job;
-  // Source captures a Category host at admission, then resolves its current
-  // shadow parent in frame one. Frame two retains that resolved object.
-  const markedKind=job.element?.getAttribute('data-ix-item-kind');
-  const control=['menu','category'].includes(markedKind)?Array.from(job.element.querySelectorAll('[data-ix-item-control]')).find(control=>control.closest('[data-ix-item-kind]')===job.element):null;
-  const element=control||(job.element?.matches('ix-menu-category')?job.element.shadowRoot?.querySelector('.category-parent'):job.element);
-  if(!itemFocusQuery(command,capture,'focus',job.element))return;
-  if(element instanceof HTMLElement&&command.focus_native)try{element.focus();reportItemFocus(element);}catch{}
-  // Reentrant focusin may change Rust's current cue. Source patches publish
-  // the attempted host after original focus, even when native focus is a no-op.
-  itemFocusQuery(command,capture,'visual',job.element);
-  syncItemCues(job.element);
-  const frame=requestAnimationFrame(()=>{
-    itemScrollFrames.delete(frame);if(!alive)return;
-    const allowed=itemFocusQuery(command,capture,'scroll');
-    if(allowed&&element instanceof HTMLElement)try{element.scrollIntoView({block:'nearest'});}catch{}
-    pruneItemCaptures();
-  });
-  itemScrollFrames.add(frame);
-}
 function executeRovingAttributes(command){
   for(const write of command.writes||[]){
     const input=transport();if(!input)return;
@@ -1037,8 +987,6 @@ function scheduleNativeFocus(){
       const input=transport();if(!input)continue;
       if(job.kind==='descendant'){
         executeDescendantFocus(job);
-      }else if(job.kind==='item'){
-        executeItemFocus(job);
       }else if(job.kind==='trigger'){
         input.value=JSON.stringify({owner,sequence:0,trigger_restore_sequence:command.sequence,trigger_restore_root:command.root,trigger_restore_generation:command.generation});
         const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})),root=job.root;
@@ -1060,7 +1008,6 @@ try{
     if(command?.navigation_config)configureNavigation(command.navigation_config);
     if(command?.restore_trigger)queueTriggerRestore(command.restore_trigger);
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
-    if(command?.item_focus)queueItemFocus(command.item_focus);
     if(command?.descendant_focus)queueDescendantFocus(command.descendant_focus);
     if(command?.item_cues)syncItemCues(null,true);
     if(command?.roving_attributes)executeRovingAttributes(command.roving_attributes);
@@ -1069,7 +1016,7 @@ try{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;tabFocusCaptures.clear();
-  for(const frame of itemScrollFrames)cancelAnimationFrame(frame);itemScrollFrames.clear();itemCaptureNodes.clear();
+  itemCaptureNodes.clear();
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);
   if(nativeDocument.focusReaders.get(owner)===reportItemFocus)nativeDocument.focusReaders.delete(owner);

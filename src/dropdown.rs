@@ -31,6 +31,9 @@ pub(crate) struct ItemHostBinding {
     pub(crate) runtime: overlay_runtime::RuntimeHandle,
 }
 impl ItemHostBinding {
+    pub(crate) fn mount(&self, target: &str, node: Rc<MountedData>) {
+        self.runtime.register_item_mount(&self.key, target, node);
+    }
     pub(crate) fn active(&self) -> bool {
         self.runtime.item_visual_key().as_deref() == Some(self.key.as_str())
     }
@@ -48,6 +51,7 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
             "select" => ItemKind::Select,
             "menu" => ItemKind::Menu,
             "category" => ItemKind::Category,
+            "native-opt-in" => ItemKind::NativeOptIn,
             _ => unreachable!("typed source item kind"),
         };
         registry.register_item_cue(key.clone(), kind);
@@ -62,6 +66,36 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         generic: try_use_context::<DropdownContext>().is_some(),
         runtime,
     }
+}
+
+/// Register the mounted element of a custom item in a roving Dropdown.
+///
+/// Attach the returned handler to the element's `onmounted`, give it the same
+/// stable `id`, and mark it with `data-ix-roving-item`. Dioxus then owns its
+/// focus, scrolling and cleanup. Unregistered DOM elements have no JavaScript
+/// focus fallback. Use a different component key when replacing the element.
+///
+/// ```rust,no_run
+/// use dioxus::prelude::*;
+/// use dioxus_ix::*;
+///
+/// #[component]
+/// fn CustomAction() -> Element {
+///     let mounted = use_dropdown_item_mount("custom-action");
+///     rsx! {
+///         button {
+///             id: "custom-action",
+///             "data-ix-roving-item": "",
+///             onmounted: mounted,
+///             "Custom action"
+///         }
+///     }
+/// }
+/// ```
+pub fn use_dropdown_item_mount(id: impl Into<String>) -> EventHandler<MountedEvent> {
+    let binding = use_item_host("native-opt-in");
+    let target = id.into();
+    use_callback(move |event: MountedEvent| binding.mount(&target, event.data()))
 }
 /// Preserve own checked content attributes where the interpreter otherwise
 /// writes only a native property. The marker carries Rust's literal value;
@@ -492,8 +526,8 @@ impl DropdownContext {
             if !state.alive || !*self.open.peek() {
                 return;
             }
-            // Roving tabindex changes synchronously in the source. The default
-            // active-descendant marker changes when its first RAF runs.
+            // Roving tabindex follows the current key immediately. The active-
+            // descendant marker is committed by the owned focus attempt.
             if focus || !nearest {
                 state.active = Some(target);
             }
@@ -514,8 +548,8 @@ impl DropdownContext {
                     format!("ix-dropdown-item-{target}"),
                     focus,
                     Rc::new(move || {
-                        // An admitted source focusItem survives later open,
-                        // mode and key changes, but cannot adopt a new item.
+                        // The runtime cancels obsolete work; this callback also
+                        // checks that its component-owned entry still exists.
                         if !context.entries.borrow().contains_key(&target)
                             || !context.state.borrow().alive
                         {
@@ -1710,6 +1744,8 @@ pub fn DropdownItem(
         .map(|linked| (linked.open)())
         .unwrap_or(false);
     let mount_context = context.clone();
+    let mounted_host = host_binding.clone();
+    let mounted_id = host_id.clone();
     let linked_mount = linked.clone();
     let key_context = context.clone();
     let click_label = label.clone();
@@ -1745,7 +1781,7 @@ pub fn DropdownItem(
         "aria-haspopup":dropdown.map(|_|"menu"),"aria-expanded":dropdown.map(|_|linked_open.to_string()),
         "aria-controls":linked.as_ref().map(DropdownContext::host_id),
         "aria-checked":(checked||checkable).then_some(checked.to_string()),
-        onmounted:move |event|{if let Some(context)=&mount_context{if let Some(entry)=context.entries.borrow_mut().get_mut(&id){entry.mounted=Some(event.data());}}
+        onmounted:move |event|{mounted_host.mount(&mounted_id,event.data());if let Some(context)=&mount_context{if let Some(entry)=context.entries.borrow_mut().get_mut(&id){entry.mounted=Some(event.data());}}
             if let Some(linked)=&linked_mount{*linked.trigger.borrow_mut()=Some(event.data());}},
         onclick:move |event:MouseEvent| {
             if disabled||dropdown.and_then(DropdownHandle::try_context).is_some_and(|child|child.state.borrow().blocked){event.prevent_default();return;}
@@ -2218,48 +2254,10 @@ mod tests {
         fn completion_effects(&mut self) {
             self.render_now();
         }
-        fn item_frames(&mut self) -> usize {
-            let Some(runtime) = self
-                .context()
-                .node
-                .borrow()
-                .as_ref()
-                .and_then(NodeHandle::runtime)
-            else {
-                return 0;
-            };
-            let jobs = runtime.pending_item_focus_jobs();
-            let Some(transport) = self
-                .attrs
-                .iter()
-                .find(|(_, attrs)| {
-                    attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
-                })
-                .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-            else {
-                return 0;
-            };
-            // Explicit synthetic protocol phases exercise real registered Rust
-            // handlers. This does not establish native frame/scroll geometry.
-            for phase in ["arm", "focus", "scroll"] {
-                for job in &jobs {
-                    dispatch(&self.dom, "change", transport, serde_json::json!({
-                        "owner":runtime.owner_id(),"sequence":0,
-                        "item_focus_sequence":job.sequence,"item_focus_root":job.root,
-                        "item_focus_generation":job.generation,"item_focus_target":job.target,
-                        "item_focus_capture":job.capture.clone().unwrap_or_else(|| format!("test-object-{}",job.target)),
-                        "item_focus_phase":phase
-                    }).to_string());
-                }
-            }
-            self.render_now();
-            jobs.len()
-        }
         fn settle(&mut self) {
             for _ in 0..4 {
                 self.render_now();
                 self.completion_effects();
-                self.item_frames();
             }
         }
         fn update(&mut self) {
@@ -2467,7 +2465,7 @@ mod tests {
                 "inventory":inventory,"own_inventory":inventory
             }))
             .collect::<Vec<_>>();
-        assert!(runtime.pending_item_focus_jobs().is_empty());
+        assert!(runtime.pending_item_focus_count() == 0);
         dispatch(
             &h.dom,
             "input",
@@ -2494,21 +2492,12 @@ mod tests {
                 "key":key,"hosts":[root_node.id()],"triggers":[child_node.id()],"nodes":nodes
             }).to_string()).0);
         }
-        let jobs = runtime.pending_item_focus_jobs();
-        let grand_hosts = grand_inventory["hosts"].as_array().unwrap();
-        assert_eq!(jobs.len(), 2);
         assert_eq!(
-            jobs[0].target,
-            grand_hosts.first().unwrap()["target"].as_str().unwrap()
+            runtime.pending_item_focus_count(),
+            1,
+            "the receiver retains only the latest mounted focus intent"
         );
-        assert_eq!(
-            jobs[1].target,
-            grand_hosts.last().unwrap()["target"].as_str().unwrap()
-        );
-        assert!(
-            jobs.iter().all(|job| job.root == child_node.id()),
-            "the receiver owns both independently admitted focus jobs"
-        );
+        h.settle();
         assert!(child.state.borrow().native);
         assert!(
             !*grand.open.peek(),
@@ -2926,6 +2915,52 @@ mod tests {
             "query_order":["actual-category","actual-menu","actual-native"]
         })).unwrap()
     }
+    struct InventoryMount {
+        target: String,
+        focuses: Rc<RefCell<Vec<String>>>,
+    }
+    impl dioxus::html::RenderedElementBacking for InventoryMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            self.focuses.borrow_mut().push(self.target.clone());
+            Box::pin(async { Ok(()) })
+        }
+    }
+    fn mount_inventory(h: &Harness, facts: &InventoryFacts) -> Rc<RefCell<Vec<String>>> {
+        let focuses = Rc::new(RefCell::new(Vec::new()));
+        let runtime = h
+            .context()
+            .node
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .runtime()
+            .unwrap();
+        for host in &facts.hosts {
+            let key = if host.registration_key.is_empty() {
+                &host.capture
+            } else {
+                &host.registration_key
+            };
+            runtime.register_item_cue(key.clone(), host.kind);
+            runtime.register_item_mount(
+                key,
+                &host.target,
+                Rc::new(MountedData::new(InventoryMount {
+                    target: host.target.clone(),
+                    focuses: focuses.clone(),
+                })),
+            );
+        }
+        focuses
+    }
     fn registered_inventory_key(
         h: &Harness,
         sequence: u64,
@@ -2961,34 +2996,29 @@ mod tests {
         let legacy = context.entries.borrow().keys().next().copied().unwrap();
         context.state.borrow_mut().active = Some(legacy);
         let facts = mixed_inventory_facts();
+        let focuses = mount_inventory(&h, &facts);
         assert!(registered_inventory_key(&h, 1, "Home", &facts));
         let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
-        let jobs = runtime.pending_item_focus_jobs();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].target, "mixed-category");
-        assert_eq!(jobs[0].capture.as_deref(), Some("actual-category"));
-        assert!(
-            jobs[0].focus_native,
-            "all actual source host kinds invoke captured native focus"
-        );
-        h.item_frames();
+        assert_eq!(runtime.pending_item_focus_count(), 1);
+        h.settle();
+        assert_eq!(focuses.borrow().as_slice(), ["mixed-category"]);
         assert_eq!(
             context.active_dom_id(),
             None,
             "projected parent is not an outer AD marker/ARIA alias"
         );
         assert!(registered_inventory_key(&h, 2, "ArrowDown", &facts));
+        h.settle();
         assert_eq!(
-            runtime.pending_item_focus_jobs()[0].target,
-            "mixed-category",
+            focuses.borrow().as_slice(),
+            ["mixed-category", "mixed-category"],
             "no current host marker means Down selects the first Category again"
         );
-        h.item_frames();
         assert!(
             registered_inventory_key(&h, 3, "Enter", &facts),
             "source activation callback prevents Enter even without any active host"
         );
-        assert!(runtime.pending_item_focus_jobs().is_empty());
+        assert!(runtime.pending_item_focus_count() == 0);
     }
     #[test]
     fn registered_roving_inventory_projects_pending_writes_without_coalescing_hosts() {
@@ -3001,29 +3031,21 @@ mod tests {
         let context = h.context();
         let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
         let facts = mixed_inventory_facts();
+        let focuses = mount_inventory(&h, &facts);
         for (index, key) in ["Home", "ArrowDown", "ArrowDown"].into_iter().enumerate() {
             assert!(registered_inventory_key(&h, index as u64 + 1, key, &facts));
         }
-        let jobs = runtime.pending_item_focus_jobs();
-        assert_eq!(
-            jobs.iter()
-                .map(|job| job.target.as_str())
-                .collect::<Vec<_>>(),
-            ["mixed-category", "mixed-menu", "mixed-native"]
-        );
-        assert!(
-            jobs.iter()
-                .all(|job| job.focus_native && job.capture.is_some())
-        );
+        assert_eq!(runtime.pending_item_focus_count(), 1);
         assert!(
             !registered_inventory_key(&h, 4, "Enter", &facts),
             "the pending logical tabindex selects native opt-in before its DOM write; native Enter passes through"
         );
-        h.item_frames();
-        assert!(runtime.pending_item_focus_jobs().is_empty());
+        h.settle();
+        assert_eq!(focuses.borrow().as_slice(), ["mixed-native"]);
+        assert!(runtime.pending_item_focus_count() == 0);
     }
     #[test]
-    fn registered_rapid_navigation_keeps_each_job_and_source_active_timing() {
+    fn rapid_navigation_commits_the_latest_mounted_target_without_foreign_commands() {
         let _guard = crate::test_event_converter_guard();
         for mode in [
             DropdownNavigationMode::ActiveDescendant,
@@ -3046,80 +3068,29 @@ mod tests {
                 .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
                 .unwrap();
             let order = context.entries.borrow().keys().copied().collect::<Vec<_>>();
-            let initial = context.state.borrow().active;
             for (index, key) in ["End", "Home", "End"].into_iter().enumerate() {
                 let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":index+1,"kind":"key",
-                    "phase":if mode==DropdownNavigationMode::ActiveDescendant {"bubble"} else {"capture"},"key":key,
-                    "hosts":[node.id()],"triggers":if mode==DropdownNavigationMode::ActiveDescendant {vec![node.id()]} else {vec![]},
+                    "phase":if mode==DropdownNavigationMode::ActiveDescendant {"bubble"}else{"capture"},"key":key,
+                    "hosts":[node.id()],"triggers":if mode==DropdownNavigationMode::ActiveDescendant{vec![node.id()]}else{vec![]},
                     "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
                         "mode":mode.as_str(),"items":order,"inside":true,"on_trigger":false}]});
                 assert!(dispatch(&h.dom, "input", transport, report.to_string()).0);
-                if mode == DropdownNavigationMode::ActiveDescendant {
-                    assert_eq!(
-                        context.state.borrow().active,
-                        initial,
-                        "AD marker awaits first frame"
-                    );
-                }
             }
-            let jobs = runtime.pending_item_focus_jobs();
-            assert_eq!(jobs.len(), 3, "rapid calls must not coalesce");
-            assert_eq!(jobs[0].target, jobs[2].target);
-            assert_ne!(jobs[0].target, jobs[1].target);
-            assert!(
-                jobs.windows(2)
-                    .all(|pair| pair[0].sequence < pair[1].sequence)
-            );
-            assert!(jobs.iter().all(|job|job.focus_native==(mode==DropdownNavigationMode::RovingTabindex)));
-            // A first RAF for an earlier roving job must not undo the
-            // tabindex selected synchronously by the last native key.
-            let latest = context.state.borrow().active;
-            let first = &jobs[0];
-            for phase in ["arm", "focus"] {
-                dispatch(&h.dom,"change",transport,serde_json::json!({
-                    "owner":runtime.owner_id(),"sequence":0,"item_focus_sequence":first.sequence,
-                    "item_focus_root":first.root,"item_focus_generation":first.generation,
-                    "item_focus_target":first.target,"item_focus_capture":format!("test-object-{}",first.target),
-                    "item_focus_phase":phase
-                }).to_string());
-            }
-            if mode == DropdownNavigationMode::RovingTabindex {
-                assert_eq!(context.state.borrow().active, latest);
-            }
-            h.item_frames();
+            assert_eq!(runtime.pending_item_focus_count(), 1);
+            h.settle();
             assert_eq!(
-                context.active_dom_id().as_deref(),
-                Some(jobs[2].target.as_str())
+                context.active_dom_id(),
+                Some(format!("ix-dropdown-item-{}", order.last().unwrap()))
             );
-            assert!(runtime.pending_item_focus_jobs().is_empty());
-            for (index, key) in ["Home", "ArrowDown", "ArrowDown"].into_iter().enumerate() {
-                let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":index+4,"kind":"key",
-                    "phase":if mode==DropdownNavigationMode::ActiveDescendant {"bubble"} else {"capture"},"key":key,
-                    "hosts":[node.id()],"triggers":if mode==DropdownNavigationMode::ActiveDescendant {vec![node.id()]} else {vec![]},
-                    "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
-                        "mode":mode.as_str(),"items":order,"inside":true,"on_trigger":false}]});
-                assert!(dispatch(&h.dom, "input", transport, report.to_string()).0);
-                if index == 0 {
-                    h.item_frames();
-                }
-            }
-            let down = runtime.pending_item_focus_jobs();
-            assert_eq!(down.len(), 2);
-            if mode == DropdownNavigationMode::ActiveDescendant {
-                assert_eq!(
-                    down[0].target, down[1].target,
-                    "AD uses unchanged marker before first frame"
-                );
-            } else {
-                assert_ne!(
-                    down[0].target, down[1].target,
-                    "roving uses synchronous tabindex before physical focus"
-                );
-            }
-            h.item_frames();
+            assert!(runtime.pending_item_focus_count() == 0);
+            h.click("Menu");
+            assert!(!*context.open.peek());
+            assert!(
+                runtime.pending_item_focus_count() == 0,
+                "dismissal leaves no stale focus attempt"
+            );
         }
     }
-
     #[test]
     fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
         let _guard = crate::test_event_converter_guard();

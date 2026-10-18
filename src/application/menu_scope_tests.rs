@@ -155,13 +155,23 @@ fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_i
         (true, true)
     );
     assert_eq!(
-        h.queued_category_target("Category"),
+        h.focused_category_target("Category"),
         Some(format!(
             "ix-menu-category-child-{}-{}",
             category.0.id,
             h.id("Child")
         ))
     );
+    let runtime = category
+        .0
+        .overlay
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .runtime()
+        .unwrap();
+    assert!(runtime.pending_item_focus_count() == 0);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
     assert_eq!(h.last(), root_last);
     assert_eq!(h.tabs(), root_tabs);
     assert_eq!(h.context.model.borrow().observed, direct);
@@ -178,6 +188,20 @@ fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_i
         (true, true)
     );
     assert!(!category.is_open());
+    let focused_after_close = h.focuses.borrow().clone();
+    let node = category.0.overlay.borrow().as_ref().unwrap().clone();
+    let child_target = category.0.model.borrow().children[&h.id("Child")]
+        .host_id
+        .clone()
+        .unwrap();
+    assert!(!node.queue_item_focus(
+        child_target,
+        true,
+        Rc::new(|| panic!("closed Category item"))
+    ));
+    h.settle();
+    assert_eq!(*h.focuses.borrow(), focused_after_close);
+    assert!(runtime.pending_item_focus_count() == 0);
     assert_eq!(
         h.raw(serde_json::json!({
             "owner":"foreign-menu","kind":"category-default","key":"Enter",

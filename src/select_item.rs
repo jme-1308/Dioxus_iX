@@ -26,6 +26,8 @@ pub fn SelectItem(
 ) -> Element {
     let binding = use_item_host("select");
     let host_id = item_host_id(&attributes, &binding.host_id);
+    let mounted_host = binding.clone();
+    let mounted_id = host_id.clone();
     let active = binding.active();
     let checked_attribute =
         serde_json::to_string(&checked_content_attribute(&attributes)).unwrap_or_default();
@@ -69,6 +71,7 @@ pub fn SelectItem(
             "data-ix-item-focusable": "true", "data-active": active.to_string(),
             "value": value, "label": label, "disabled": disabled,
             "data-ix-reflect-checked": checked_attribute,
+            onmounted: move |event| mounted_host.mount(&mounted_id,event.data()),
             onclick: move |event| onclick.call(event),
             ..attributes,
             div {

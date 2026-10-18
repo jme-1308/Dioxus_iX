@@ -1,7 +1,6 @@
 //! Focus-cue protocol regressions through the actual runtime form handlers.
 use super::*;
 use crate::dropdown_inventory::{HostPartFacts, HostPartKind, ItemRef};
-use crate::overlay_item_focus::ItemFocusJob;
 use std::cell::Cell;
 
 struct RawForm(String);
@@ -139,11 +138,6 @@ fn cue(runtime: &RuntimeHandle, host: &HostFacts, part: Option<&str>, active: bo
         "item_cue":{"key":host.registration_key,"capture":host.capture,"part":part,"active":active}}),
     )
 }
-fn phase(runtime: &RuntimeHandle, job: &ItemFocusJob, phase: &str) -> serde_json::Value {
-    serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-        "item_focus_sequence":job.sequence,"item_focus_root":job.root,"item_focus_generation":job.generation,
-        "item_focus_target":job.target,"item_focus_capture":job.capture,"item_focus_phase":phase})
-}
 
 #[test]
 fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work() {
@@ -167,6 +161,11 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
     let hosts = [a.clone(), b.clone(), category.clone()];
     for host in &hosts {
         runtime.register_item_cue(host.registration_key.clone(), host.kind);
+        runtime.register_item_mount(
+            &host.registration_key,
+            &host.target,
+            Rc::new(MountedData::new(())),
+        );
     }
     observe(&runtime, 1, 1, &hosts);
     assert!(
@@ -188,7 +187,7 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
             .queue_item_host_focus(&b, Rc::new(move || focus.set(focus.get() + 1)))
     );
     let frames = runtime.pending_completions();
-    let jobs = runtime.pending_item_focus_jobs();
+    let jobs = runtime.pending_item_focus_count();
     let reads = owner.reads.get();
     let callbacks = owner.callbacks.get();
     for _ in 0..3 {
@@ -234,7 +233,7 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
     assert!(after_observe_reads >= reads);
     assert_eq!(owner.callbacks.get(), callbacks);
     assert_eq!(runtime.pending_completions(), frames);
-    assert_eq!(runtime.pending_item_focus_jobs(), jobs);
+    assert_eq!(runtime.pending_item_focus_count(), jobs);
     assert_eq!(delivered.get(), 0);
     focusin(&runtime, 4, &hosts, &category);
     assert!(cue(&runtime, &a, None, false));
@@ -257,15 +256,18 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
 }
 
 #[test]
-fn post_native_visual_delivery_reasserts_attempted_host_once_after_focusin() {
+fn mounted_focus_attempt_publishes_cues_after_await_and_unmount_cancels_the_next_attempt() {
     let runtime = RuntimeHandle::new();
-    let owner = owner(&runtime, 1);
+    let mut dom = VirtualDom::new(|| rsx! { div {} });
+    dom.rebuild_in_place();
+    let owner = dom.runtime().in_scope(ScopeId::ROOT, || owner(&runtime, 1));
     let a = host("a", "actual-a", ItemKind::Dropdown);
     let b = host("b", "actual-b", ItemKind::Menu);
     let hosts = [a.clone(), b.clone()];
-    for host in &hosts {
-        runtime.register_item_cue(host.registration_key.clone(), host.kind);
-    }
+    let mock = super::tests::ItemMountMock::default();
+    mock.pending.set(true);
+    super::tests::install_item_mock(&runtime, &a, mock.clone());
+    runtime.register_item_cue(b.registration_key.clone(), b.kind);
     observe(&runtime, 1, 1, &hosts);
     let callbacks = Rc::new(Cell::new(0));
     let count = callbacks.clone();
@@ -274,65 +276,31 @@ fn post_native_visual_delivery_reasserts_attempted_host_once_after_focusin() {
             .node
             .queue_item_host_focus(&a, Rc::new(move || count.set(count.get() + 1)))
     );
-    let job = runtime.pending_item_focus_jobs().pop().unwrap();
-    assert!(query(&runtime, phase(&runtime, &job, "arm")));
-    let mut first = phase(&runtime, &job, "focus");
-    first["item_focus_host"] = serde_json::to_value(&a).unwrap();
-    assert!(query(&runtime, first));
+    super::tests::settle_item_effects(&mut dom);
     assert_eq!(callbacks.get(), 1);
+    assert_eq!(runtime.pending_item_focus_count(), 1);
     assert!(
-        !cue(&runtime, &a, None, true),
-        "native focus permission does not publish before the attempt"
+        runtime.0.borrow().item_visual_host.is_none(),
+        "focus permission alone does not publish a cue"
     );
-    assert!(
-        !cue(&runtime, &a, None, false),
-        "permission does not invent an early clear either"
-    );
-    assert!(runtime.0.borrow().item_visual_host.is_none());
-    // Native originalFocus may synchronously report another focus target.
     focusin(&runtime, 2, &hosts, &b);
     assert!(cue(&runtime, &b, None, true));
-    for (field, value) in [
-        ("item_focus_capture", serde_json::json!("other-object")),
-        ("item_focus_root", serde_json::json!("other-root")),
-        ("item_focus_generation", serde_json::json!(2)),
-        ("item_focus_target", serde_json::json!("other-id")),
-    ] {
-        let mut wrong = phase(&runtime, &job, "visual");
-        wrong[field] = value;
-        assert!(!query(&runtime, wrong));
-    }
-    let mut wrong_live = phase(&runtime, &job, "visual");
-    wrong_live["item_focus_host"] = serde_json::to_value(&b).unwrap();
-    assert!(!query(&runtime, wrong_live));
-    let mut wrong_scroll = phase(&runtime, &job, "scroll");
-    wrong_scroll["item_focus_capture"] = "other-object".into();
-    assert!(!query(&runtime, wrong_scroll));
-    assert!(
-        cue(&runtime, &b, None, true),
-        "invalid offers do not replay attempted A"
-    );
-    let mut final_visual = phase(&runtime, &job, "visual");
-    final_visual["item_focus_host"] = serde_json::to_value(&a).unwrap();
-    assert!(query(&runtime, final_visual.clone()));
+    mock.pending.set(false);
+    mock.waker.borrow_mut().take().unwrap().wake();
+    super::tests::settle_item_effects(&mut dom);
     assert!(cue(&runtime, &a, None, true));
     assert!(cue(&runtime, &b, None, false));
-    assert!(!query(&runtime, final_visual));
-    assert_eq!(
-        callbacks.get(),
-        1,
-        "visual delivery does not rerun the first-stage callback"
+    assert_eq!(callbacks.get(), 1);
+    assert_eq!(runtime.pending_item_focus_count(), 0);
+    assert!(
+        owner
+            .node
+            .queue_item_host_focus(&a, Rc::new(|| panic!("unregistered owner")))
     );
-    assert!(query(&runtime, phase(&runtime, &job, "scroll")));
-    assert!(!query(&runtime, phase(&runtime, &job, "scroll")));
-    assert!(runtime.pending_item_focus_jobs().is_empty());
-    assert!(owner.node.queue_item_host_focus(&a, Rc::new(|| {})));
-    let dropped = runtime.pending_item_focus_jobs().pop().unwrap();
-    assert!(query(&runtime, phase(&runtime, &dropped, "arm")));
-    assert!(query(&runtime, phase(&runtime, &dropped, "focus")));
     owner.node.unregister();
-    assert!(!query(&runtime, phase(&runtime, &dropped, "visual")));
-    assert!(!query(&runtime, phase(&runtime, &dropped, "scroll")));
+    super::tests::settle_item_effects(&mut dom);
+    assert_eq!(runtime.pending_item_focus_count(), 0);
+    assert_eq!(callbacks.get(), 1);
 }
 
 fn root_offer(

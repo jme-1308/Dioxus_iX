@@ -3431,7 +3431,17 @@ pub fn MenuItem(
     } else {
         "ix-menu-item"
     };
+    let default_id = nested
+        .as_ref()
+        .map(|category| format!("ix-menu-category-child-{}-{id}", category.0.id));
+    let host_id = crate::dropdown::item_host_id(
+        &attributes,
+        default_id.as_deref().unwrap_or(&item_host.host_id),
+    );
+    let mounted_host = item_host.clone();
+    let mounted_id = host_id.clone();
     let onmount = move |event: MountedEvent| {
+        mounted_host.mount(&mounted_id, event.data());
         if let Some(nested) = &nested_mount {
             nested.mount(id, event.data());
         }
@@ -3488,13 +3498,6 @@ pub fn MenuItem(
             onclick.call(event);
         }
     };
-    let default_id = nested
-        .as_ref()
-        .map(|category| format!("ix-menu-category-child-{}-{id}", category.0.id));
-    let host_id = crate::dropdown::item_host_id(
-        &attributes,
-        default_id.as_deref().unwrap_or(&item_host.host_id),
-    );
     if let Some(category) = &nested {
         if let Some(child) = category.0.model.borrow_mut().children.get_mut(&id) {
             child.host_id = Some(host_id.clone());
@@ -3571,10 +3574,10 @@ pub fn MenuItem(
 /// wins while a separately open popup keeps an empty heading/shell. The native
 /// popup host switches between the content host and empty shell, an explicit
 /// renderer adapter rather than literal Stencil shadow-host identity.
-/// Collapsed item navigation retains each admitted native focus, followed by a
-/// separate frame scrolling the same item into view with nearest alignment.
-/// Entry, expanded-panel navigation and return focus use their own focus helpers.
-/// Scope teardown cancels retained item work; a later key or hide does not.
+/// Collapsed item navigation uses Dioxus-mounted focus and nearest scrolling.
+/// A newer navigation intent or dismissal cancels obsolete work; scope teardown
+/// releases its handles. Entry, expanded-panel navigation and return focus retain
+/// their own focus helpers.
 /// Hover leave grace is a Rust-owned 250ms task. Collapsed popups participate in
 /// the shared overlay coordinator, with source category broadcast kept distinct
 /// from global topmost Escape and outside-click arbitration.
@@ -3845,6 +3848,8 @@ pub fn MenuCategory(
     let child_roving = root_roving.clone();
     let popup_key = category.clone();
     let popup_roving = root_roving.clone();
+    let mounted_host = item_host.clone();
+    let mounted_id = host_id.clone();
     rsx! {
         div { id:host_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
             "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
@@ -3864,6 +3869,7 @@ pub fn MenuCategory(
                 role:"menuitem",tabindex,"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-label":label.clone(),"aria-expanded":is_open.to_string(),"aria-controls":format!("{content_id} {popup_id}"),
                 onmounted:move |event|{
+                    mounted_host.mount(&mounted_id,event.data());
                     parent_mount.0.model.borrow_mut().parent=Some(event.data());
                     if let Some(roving)=&mount_roving {roving.mount(id,event.data());}
                     if let Some(context)=&mount_context {let mut order=context.prefix.clone();order.push(id);context.entries.borrow_mut().push(NavigationEntry{id,node:event.data(),enabled:Rc::new(Cell::new(true)),order});}
@@ -5218,20 +5224,17 @@ mod tests {
             self.settle();
             flags
         }
-        fn category_item_jobs(&self, label: &str) -> Vec<crate::overlay_item_focus::ItemFocusJob> {
+        fn focused_category_target(&self, label: &str) -> Option<String> {
+            let focused = self.focuses.borrow().last().copied()?;
             let category = self.category(label);
-            let node = category.0.overlay.borrow().clone().unwrap();
-            node.runtime()
-                .unwrap()
-                .pending_item_focus_jobs()
-                .into_iter()
-                .filter(|job| job.root == node.id())
-                .collect()
-        }
-        fn queued_category_target(&self, label: &str) -> Option<String> {
-            self.category_item_jobs(label)
-                .last()
-                .map(|job| job.target.clone())
+            category
+                .0
+                .model
+                .borrow()
+                .children
+                .get(&focused)?
+                .host_id
+                .clone()
         }
         fn category(&self, label: &str) -> CategoryNavigation {
             CategoryNavigation(
@@ -6766,7 +6769,7 @@ mod tests {
             (true, true)
         );
         assert_eq!(
-            harness.queued_category_target("Category"),
+            harness.focused_category_target("Category"),
             Some(format!(
                 "ix-menu-category-child-{}-{}",
                 first.0.id,
@@ -6775,7 +6778,7 @@ mod tests {
         );
         assert_eq!(harness.key(harness.target("Two"), Key::Home), (true, true));
         assert_eq!(
-            harness.queued_category_target("Category"),
+            harness.focused_category_target("Category"),
             Some(format!(
                 "ix-menu-category-child-{}-{}",
                 first.0.id,
@@ -6784,7 +6787,7 @@ mod tests {
         );
         assert_eq!(harness.key(harness.target("Child"), Key::End), (true, true));
         assert_eq!(
-            harness.queued_category_target("Category"),
+            harness.focused_category_target("Category"),
             Some(format!(
                 "ix-menu-category-child-{}-{}",
                 first.0.id,
@@ -7381,10 +7384,10 @@ mod tests {
             } else {
                 assert!(
                     !delayed_child.started.get(),
-                    "collapsed source item path uses native frame ACKs"
+                    "mounted focus does not require the old geometry/frame barrier"
                 );
                 assert_eq!(
-                    harness.queued_category_target("Category"),
+                    harness.focused_category_target("Category"),
                     Some(format!(
                         "ix-menu-category-child-{}-{}",
                         category.0.id,
@@ -7532,7 +7535,8 @@ mod tests {
     }
 
     #[test]
-    fn menu_category_captured_jobs_survive_later_keys_and_hide_but_cancel_on_scope_drop() {
+    fn menu_category_mounted_navigation_finishes_without_native_jobs_and_stops_after_hide_or_drop()
+    {
         let _event_converter_guard = crate::test_event_converter_guard();
         let mut harness = MenuHarness::new();
         menu_dispatch(&harness.dom, "click", harness.toggle, ());
@@ -7541,7 +7545,11 @@ mod tests {
         let category = harness.category("Category");
         let node = category.0.overlay.borrow().clone().unwrap();
         let runtime = node.runtime().unwrap();
-        for (sequence, child) in [(1, "Two"), (2, "Child"), (3, "Two")] {
+        for (sequence, child, expected) in [
+            (1, "Two", "Child"),
+            (2, "Child", "Two"),
+            (3, "Two", "Child"),
+        ] {
             let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
             harness.category_event(
                 "category-key",
@@ -7551,41 +7559,36 @@ mod tests {
                 sequence,
                 facts,
             );
+            assert_eq!(
+                harness.focuses.borrow().last().copied(),
+                Some(harness.id(expected))
+            );
+            assert!(
+                runtime.pending_item_focus_count() == 0,
+                "mounted controls never enroll a foreign focus command"
+            );
         }
-        let jobs = harness.category_item_jobs("Category");
-        assert_eq!(
-            jobs.len(),
-            3,
-            "each admitted collapsed item focus survives a later key"
+        let target = format!(
+            "ix-menu-category-child-{}-{}",
+            category.0.id,
+            harness.id("Child")
         );
-        assert_eq!(jobs[0].target, jobs[2].target);
-        assert_ne!(jobs[0].target, jobs[1].target);
-
         harness.click("Second category");
         assert!(!category.is_open());
+        assert!(!node.queue_item_focus(target.clone(), true, Rc::new(|| panic!("closed owner"))));
+        let after_hide = harness.focuses.borrow().clone();
+        harness.settle();
         assert_eq!(
-            harness.category_item_jobs("Category"),
-            jobs,
-            "hide is not source focusItem cancellation"
+            *harness.focuses.borrow(),
+            after_hide,
+            "dismissed category does not steal focus back"
         );
         harness.config.borrow_mut().category_present = false;
         harness.update();
         assert!(harness.context.model.borrow().alive);
         assert!(!category.0.model.borrow().alive);
-        assert!(
-            runtime
-                .pending_item_focus_jobs()
-                .iter()
-                .all(|job| job.root != node.id()),
-            "actual scope drop removes old registration jobs"
-        );
-        assert!(!node.queue_item_focus(
-            jobs[0].target.clone(),
-            true,
-            Rc::new(|| panic!("dropped owner"))
-        ));
+        assert!(!node.queue_item_focus(target, true, Rc::new(|| panic!("dropped owner"))));
     }
-
     #[test]
     fn menu_open_veto_preserves_current_overlay_for_open_switch_and_toggle_close() {
         fn probe() -> Element {

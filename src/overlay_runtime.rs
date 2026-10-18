@@ -9,8 +9,6 @@ use crate::overlay_descendant_focus::{
 };
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue, TriggerRestoreQueue};
-use crate::overlay_item_focus::ItemFocusJob;
-use crate::overlay_item_focus::ItemFocusQueue;
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -188,14 +186,13 @@ struct Runtime {
     pending_focus: PendingFocusQueue,
     trigger_restores: TriggerRestoreQueue,
     completions: CompletionQueue,
-    item_focus: ItemFocusQueue,
-    item_focus_callbacks: BTreeMap<u64, ItemFocusCallback>,
-    item_visual_deliveries: BTreeMap<u64, (ItemFocusJob, HostFacts)>,
+    item_mounts: BTreeMap<String, ItemMount>,
+    owned_item_focus: BTreeMap<String, OwnedItemFocus>,
+    item_focus_sequence: u64,
     descendant_focus: DescendantQueue,
     descendant_visual: BTreeMap<u64, (DescendantJob, bool)>,
     submenu_marks: BTreeMap<String, (String, u64)>,
     submenu_own: BTreeMap<String, (u64, InventoryFacts)>,
-    item_captures: BTreeMap<String, (u64, BTreeMap<String, String>)>,
     inventories: BTreeMap<String, (u64, InventoryFacts)>,
     roving: RovingState,
     roving_hosts: BTreeMap<(String, u64), Vec<ItemRef>>,
@@ -215,11 +212,19 @@ struct Runtime {
     document: String,
     categories: BTreeMap<usize, CategoryCallback>,
 }
-struct ItemFocusCallback {
-    root: String,
+#[derive(Clone)]
+struct ItemMount {
+    target: String,
+    node: Rc<MountedData>,
+}
+struct OwnedItemFocus {
+    sequence: u64,
     generation: u64,
-    callback: Rc<dyn Fn()>,
+    key: String,
+    callback: Option<Rc<dyn Fn()>>,
     visual: Option<HostFacts>,
+    focus_native: bool,
+    task: Option<(Weak<dioxus::core::Runtime>, dioxus::core::Task)>,
 }
 type DescendantFocusCallback = Rc<dyn Fn(&InventoryFacts, bool, bool, bool) -> Option<bool>>;
 
@@ -304,9 +309,7 @@ impl Drop for Runtime {
         self.pending_focus.clear();
         self.trigger_restores.clear();
         self.completions.clear();
-        self.item_focus.clear();
-        self.item_focus_callbacks.clear();
-        self.item_captures.clear();
+
         self.inventories.clear();
         self.roving.clear_all();
         self.roving_hosts.clear();
@@ -351,14 +354,13 @@ impl RuntimeHandle {
             pending_focus: PendingFocusQueue::default(),
             trigger_restores: TriggerRestoreQueue::default(),
             completions: CompletionQueue::default(),
-            item_focus: ItemFocusQueue::default(),
-            item_focus_callbacks: BTreeMap::new(),
-            item_visual_deliveries: BTreeMap::new(),
+            item_mounts: BTreeMap::new(),
+            owned_item_focus: BTreeMap::new(),
+            item_focus_sequence: 0,
             descendant_focus: DescendantQueue::default(),
             descendant_visual: BTreeMap::new(),
             submenu_marks: BTreeMap::new(),
             submenu_own: BTreeMap::new(),
-            item_captures: BTreeMap::new(),
             inventories: BTreeMap::new(),
             roving: RovingState::default(),
             roving_hosts: BTreeMap::new(),
@@ -399,8 +401,188 @@ impl RuntimeHandle {
     pub(crate) fn register_item_cue(&self, key: String, kind: ItemKind) {
         self.0.borrow_mut().item_cue_hosts.register(key, kind);
     }
+    pub(crate) fn register_item_mount(&self, key: &str, target: &str, node: Rc<MountedData>) {
+        let changed = self
+            .0
+            .borrow()
+            .item_mounts
+            .get(key)
+            .is_some_and(|old| old.target != target || !Rc::ptr_eq(&old.node, &node));
+        if changed {
+            self.cancel_item_key(key);
+        }
+        self.0.borrow_mut().item_mounts.insert(
+            key.into(),
+            ItemMount {
+                target: target.into(),
+                node,
+            },
+        );
+    }
     pub(crate) fn unregister_item_cue(&self, key: &str) {
-        self.0.borrow_mut().item_cue_hosts.unregister(key);
+        self.cancel_item_key(key);
+        let mut state = self.0.borrow_mut();
+        state.item_mounts.remove(key);
+        state.item_cue_hosts.unregister(key);
+    }
+    fn cancel_item_key(&self, key: &str) {
+        let roots: Vec<_> = self
+            .0
+            .borrow()
+            .owned_item_focus
+            .iter()
+            .filter(|(_, job)| job.key == key)
+            .map(|(root, _)| root.clone())
+            .collect();
+        for root in roots {
+            self.cancel_owned_item_focus(&root);
+        }
+    }
+    fn cancel_owned_item_focus(&self, root: &str) {
+        let job = self.0.borrow_mut().owned_item_focus.remove(root);
+        if let Some((owner, task)) = job.and_then(|job| job.task)
+            && let Some(owner) = owner.upgrade()
+        {
+            owner.in_scope(ScopeId::ROOT, || task.cancel());
+        }
+    }
+    fn retire_owned_item_focus(&self, root: &str, sequence: u64) {
+        let mut state = self.0.borrow_mut();
+        if state
+            .owned_item_focus
+            .get(root)
+            .is_some_and(|job| job.sequence == sequence)
+        {
+            state.owned_item_focus.remove(root);
+        }
+    }
+    fn item_owner_open(&self, root: &str, generation: u64) -> bool {
+        self.with_owner(root, generation, || {
+            let entry = self.entry(root)?;
+            (self.read_current(root, &entry) == Some(true)
+                && self
+                    .entry(root)
+                    .is_some_and(|entry| entry.generation == generation))
+            .then_some(())
+        })
+        .flatten()
+        .is_some()
+    }
+    fn owned_item_live(
+        &self,
+        root: &str,
+        generation: u64,
+        sequence: u64,
+        node: &Rc<MountedData>,
+    ) -> bool {
+        if !self.item_owner_open(root, generation) {
+            return false;
+        }
+        let state = self.0.borrow();
+        state.owned_item_focus.get(root).is_some_and(|job| {
+            job.sequence == sequence
+                && job.generation == generation
+                && state
+                    .item_mounts
+                    .get(&job.key)
+                    .is_some_and(|mount| Rc::ptr_eq(&mount.node, node))
+        })
+    }
+    fn start_owned_item_focus(&self, root: String, generation: u64, sequence: u64) {
+        let selected = {
+            let state = self.0.borrow();
+            state
+                .owned_item_focus
+                .get(&root)
+                .filter(|job| job.sequence == sequence)
+                .and_then(|job| {
+                    state
+                        .item_mounts
+                        .get(&job.key)
+                        .map(|mount| (mount.node.clone(), job.focus_native))
+                })
+        };
+        let Some((node, focus_native)) = selected else {
+            return;
+        };
+        if !self.owned_item_live(&root, generation, sequence, &node) {
+            self.cancel_owned_item_focus(&root);
+            return;
+        }
+        let callback = self
+            .0
+            .borrow_mut()
+            .owned_item_focus
+            .get_mut(&root)
+            .and_then(|job| job.callback.take());
+        if let Some(callback) = callback {
+            callback();
+        }
+        if !self.owned_item_live(&root, generation, sequence, &node) {
+            self.retire_owned_item_focus(&root, sequence);
+            return;
+        }
+        let weak = Rc::downgrade(&self.0);
+        let task_root = root.clone();
+        let task = spawn(async move {
+            let live = || {
+                weak.upgrade().map(RuntimeHandle).filter(|runtime| {
+                    runtime.owned_item_live(&task_root, generation, sequence, &node)
+                })
+            };
+            let finish = || {
+                if let Some(state) = weak.upgrade() {
+                    RuntimeHandle(state).retire_owned_item_focus(&task_root, sequence);
+                }
+            };
+            if live().is_none() {
+                finish();
+                return;
+            }
+            // Desktop alpha can complete focus but report a null decode error.
+            // Cues and nearest scrolling follow a live attempt in either case.
+            if focus_native {
+                let _ = node.set_focus(true).await;
+            }
+            let Some(runtime) = live() else {
+                finish();
+                return;
+            };
+            let visual = runtime
+                .0
+                .borrow()
+                .owned_item_focus
+                .get(&task_root)
+                .and_then(|job| job.visual.clone());
+            if let Some(visual) = visual {
+                runtime.mark_item_visual(&visual);
+            }
+            drop(runtime);
+            if live().is_none() {
+                finish();
+                return;
+            }
+            let _ = node
+                .scroll_to_with_options(dioxus::html::ScrollToOptions {
+                    behavior: dioxus::html::ScrollBehavior::Instant,
+                    vertical: dioxus::html::ScrollLogicalPosition::Nearest,
+                    horizontal: dioxus::html::ScrollLogicalPosition::Nearest,
+                })
+                .await;
+            // Recheck after the await, then retire only this operation. A
+            // newer reentrant intent remains owned by its own effect/task.
+            let _ = live();
+            finish();
+        });
+        if let Some(job) = self
+            .0
+            .borrow_mut()
+            .owned_item_focus
+            .get_mut(&root)
+            .filter(|job| job.sequence == sequence)
+        {
+            job.task = Some((Rc::downgrade(&dioxus::core::Runtime::current()), task));
+        }
     }
     pub(crate) fn item_visual_matches(&self, host: &HostFacts) -> bool {
         let state = self.0.borrow();
@@ -565,6 +747,12 @@ impl RuntimeHandle {
                 .try_current_scope_id()
                 .map(|scope| (Rc::downgrade(&runtime), scope))
         });
+        if self
+            .entry(&id)
+            .is_some_and(|entry| entry.generation < generation)
+        {
+            self.cancel_owned_item_focus(&id);
+        }
         let mut runtime = self.0.borrow_mut();
         if !runtime
             .nodes
@@ -577,7 +765,7 @@ impl RuntimeHandle {
                 runtime.pending_focus.remove_root(&id, old_generation);
                 runtime.trigger_restores.remove_root(&id, old_generation);
                 runtime.completions.remove_root(&id, old_generation);
-                runtime.item_focus.remove_root(&id, old_generation);
+
                 runtime.descendant_focus.remove_root(&id, old_generation);
                 runtime
                     .submenu_marks
@@ -586,13 +774,7 @@ impl RuntimeHandle {
                 runtime
                     .descendant_visual
                     .retain(|_, (job, _)| job.root != id || job.generation != old_generation);
-                runtime
-                    .item_visual_deliveries
-                    .retain(|_, (job, _)| job.root != id || job.generation != old_generation);
-                runtime.item_focus_callbacks.retain(|_, callback| {
-                    callback.root != id || callback.generation != old_generation
-                });
-                runtime.item_captures.remove(&id);
+
                 runtime.item_root_captures.remove(&id);
                 runtime.inventories.remove(&id);
                 runtime.pending_roving_hosts.retain(|admission| {
@@ -726,20 +908,23 @@ impl RuntimeHandle {
             old.remove_owner(&self.owner_id());
         }
         let domain = Domain::join(document);
+        if !self.0.borrow().document.is_empty() {
+            let roots: Vec<_> = self.0.borrow().owned_item_focus.keys().cloned().collect();
+            for root in roots {
+                self.cancel_owned_item_focus(&root);
+            }
+        }
         let (ids, categories) = {
             let mut state = self.0.borrow_mut();
             state.pending_focus.clear();
             state.trigger_restores.clear();
             // Adopting another document cancels old-document native work.
             if !state.document.is_empty() {
-                state.item_focus.clear();
-                state.item_focus_callbacks.clear();
-                state.item_visual_deliveries.clear();
                 state.descendant_focus.clear();
                 state.submenu_marks.clear();
                 state.submenu_own.clear();
                 state.descendant_visual.clear();
-                state.item_captures.clear();
+
                 state.inventories.clear();
                 state.item_cue_hosts.reset_captures();
                 state.item_root_captures.clear();
@@ -1137,6 +1322,9 @@ impl RuntimeHandle {
             }
         }
         (snapshot.callbacks.apply)(applied);
+        if !change.open && self.read_current(id, &current) == Some(false) {
+            self.cancel_owned_item_focus(id);
+        }
         if !self.current(id, generation, operation) {
             return false;
         }
@@ -1338,6 +1526,7 @@ impl RuntimeHandle {
             return;
         }
         self.close_children(id, Reason::Drop);
+        self.cancel_owned_item_focus(id);
         let mut runtime = self.0.borrow_mut();
         if runtime
             .nodes
@@ -1347,7 +1536,7 @@ impl RuntimeHandle {
             runtime.pending_focus.remove_root(id, generation);
             runtime.trigger_restores.remove_root(id, generation);
             runtime.completions.remove_root(id, generation);
-            runtime.item_focus.remove_root(id, generation);
+
             runtime.descendant_focus.remove_root(id, generation);
             runtime
                 .submenu_marks
@@ -1356,13 +1545,7 @@ impl RuntimeHandle {
             runtime
                 .descendant_visual
                 .retain(|_, (job, _)| job.root != id || job.generation != generation);
-            runtime
-                .item_visual_deliveries
-                .retain(|_, (job, _)| job.root != id || job.generation != generation);
-            runtime
-                .item_focus_callbacks
-                .retain(|_, callback| callback.root != id || callback.generation != generation);
-            runtime.item_captures.remove(id);
+
             runtime.item_root_captures.remove(id);
             runtime.inventories.remove(id);
             runtime
@@ -1408,7 +1591,6 @@ impl RuntimeHandle {
         self.0.borrow_mut().bridge = Some(bridge);
         self.flush_navigation_configurations();
         self.flush_roving_writes();
-        self.flush_item_focus();
         self.flush_descendant_focus();
     }
     fn configure_navigation(&self, id: &str, generation: u64, mode: &str, enabled: bool) -> bool {
@@ -1535,22 +1717,6 @@ impl RuntimeHandle {
             }
         }
     }
-    fn flush_item_focus(&self) {
-        let jobs = self.0.borrow().item_focus.unsent();
-        for job in jobs {
-            let sent =
-                self.0.borrow().bridge.as_ref().is_some_and(|bridge| {
-                    bridge.send(serde_json::json!({"item_focus":{
-                    "sequence":job.sequence,"root":job.root,"generation":job.generation,
-                    "target":job.target,"focus_native":job.focus_native,"capture":job.capture
-                }})).is_ok()
-                });
-            if !sent {
-                break;
-            }
-            self.0.borrow_mut().item_focus.mark_sent(&job);
-        }
-    }
     fn flush_descendant_focus(&self) {
         let jobs = self.0.borrow().descendant_focus.unsent();
         for job in jobs {
@@ -1571,8 +1737,8 @@ impl RuntimeHandle {
         }
     }
     #[cfg(test)]
-    pub(crate) fn pending_item_focus_jobs(&self) -> Vec<ItemFocusJob> {
-        self.0.borrow().item_focus.jobs()
+    pub(crate) fn pending_item_focus_count(&self) -> usize {
+        self.0.borrow().owned_item_focus.len()
     }
     #[cfg(test)]
     pub(crate) fn pending_completions(&self) -> usize {
@@ -1635,29 +1801,14 @@ impl RuntimeHandle {
                     } else if captures.1 == node.root_capture {
                         captures.2 = node.trigger_capture.clone();
                     }
-                    let mut captures = node
-                        .item_focus_captures
-                        .iter()
-                        .filter(|capture| !capture.target.is_empty() && !capture.capture.is_empty())
-                        .map(|capture| (capture.target.clone(), capture.capture.clone()))
-                        .collect::<BTreeMap<_, _>>();
                     if let Some(inventory) = &node.inventory {
                         for host in &inventory.hosts {
                             runtime.item_cue_hosts.observe(host);
                         }
-                        captures.extend(
-                            inventory
-                                .hosts
-                                .iter()
-                                .map(|host| (host.target.clone(), host.capture.clone())),
-                        );
                         runtime
                             .inventories
                             .insert(node.id.clone(), (node.generation, inventory.clone()));
                     }
-                    runtime
-                        .item_captures
-                        .insert(node.id.clone(), (node.generation, captures));
                     if let Some(binding) = &node.navigation_binding
                         && !binding.capture.is_empty()
                         && !node.root_capture.is_empty()
@@ -2796,230 +2947,25 @@ impl RuntimeHandle {
             }
             return;
         }
-        if let Some(phase) = query.item_focus_phase {
-            if phase == "retain" {
-                if query.item_focus_capture.as_deref().is_some_and(|capture| {
-                    let state = self.0.borrow();
-                    state.item_focus.retains_token(capture)
-                        || state.descendant_focus.retains_token(capture)
-                        || state.submenu_marks.contains_key(capture)
-                        || state.item_visual_host.as_ref().is_some_and(|host| {
-                            host.capture == capture
-                                || host.parts.iter().any(|part| part.capture == capture)
-                        })
-                        || state
-                            .roving_hosts
-                            .values()
-                            .flatten()
-                            .any(|host| host.0 == capture)
-                        || state.roving.retains_token(capture)
-                        || state
-                            .roving_writes
-                            .iter()
-                            .any(|batch| batch.writes.iter().any(|write| write.item.0 == capture))
-                }) {
-                    event.prevent_default();
-                }
-                return;
-            }
-            if phase == "discard" {
-                let (Some(sequence), Some(root), Some(generation), Some(target)) = (
-                    query.item_focus_sequence,
-                    query.item_focus_root,
-                    query.item_focus_generation,
-                    query.item_focus_target,
-                ) else {
-                    return;
-                };
-                let mut state = self.0.borrow_mut();
-                if state.item_focus.discard(
-                    sequence,
-                    &root,
-                    generation,
-                    &target,
-                    query.item_focus_capture.as_deref(),
-                ) {
-                    state.item_focus_callbacks.remove(&sequence);
-                }
-                return;
-            }
-            let (Some(root), Some(generation), Some(target), Some(capture)) = (
-                query.item_focus_root,
-                query.item_focus_generation,
-                query.item_focus_target,
-                query.item_focus_capture,
-            ) else {
-                return;
-            };
-            let Some(sequence) = query.item_focus_sequence else {
-                return;
-            };
-            if phase == "arm" {
-                let live = self
-                    .with_owner(&root, generation, || {
-                        let entry = self.entry(&root)?;
-                        let current = self.read_current(&root, &entry)?;
-                        self.entry(&root)
-                            .filter(|entry| entry.generation == generation)
-                            .map(|_| current)
-                    })
+        if let Some(capture) = query.capture_retained {
+            let state = self.0.borrow();
+            let retained = state.descendant_focus.retains_token(&capture)
+                || state.submenu_marks.contains_key(&capture)
+                || state.item_visual_host.as_ref().is_some_and(|host| {
+                    host.capture == capture || host.parts.iter().any(|part| part.capture == capture)
+                })
+                || state
+                    .roving_hosts
+                    .values()
                     .flatten()
-                    .is_some();
-                if live
-                    && self
-                        .0
-                        .borrow_mut()
-                        .item_focus
-                        .arm(sequence, &root, generation, &target, &capture)
-                {
-                    event.prevent_default();
-                }
-            } else if phase == "focus" {
-                let native_visual_delivery = query.item_focus_host.is_some();
-                let visual = {
-                    let state = self.0.borrow();
-                    let original = state
-                        .item_focus_callbacks
-                        .get(&sequence)
-                        .and_then(|callback| callback.visual.as_ref());
-                    match (&query.item_focus_host, original) {
-                        (Some(live), Some(original)) => {
-                            if live.capture != capture
-                                || live.registration_key != original.registration_key
-                                || live.kind != original.kind
-                            {
-                                return;
-                            }
-                            Some(live.clone())
-                        }
-                        (_, original) => original.cloned(),
-                    }
-                };
-                let (job, callback) = {
-                    let mut state = self.0.borrow_mut();
-                    let Some(job) = state
-                        .item_focus
-                        .take_focus(sequence, &root, generation, &target, &capture)
-                    else {
-                        return;
-                    };
-                    (job, state.item_focus_callbacks.remove(&sequence))
-                };
-                let live = self
-                    .with_owner(&root, generation, || {
-                        let Some(entry) = self.entry(&root) else {
-                            return false;
-                        };
-                        if self.read_current(&root, &entry).is_none()
-                            || !self
-                                .entry(&root)
-                                .is_some_and(|entry| entry.generation == generation)
-                        {
-                            return false;
-                        }
-                        if let Some(callback) = callback {
-                            // Legacy renderer-only callers have no native
-                            // post-attempt receipt. Actual native calls publish
-                            // only in focusin or their later exact visual phase.
-                            if !native_visual_delivery && let Some(visual) = &visual {
-                                self.mark_item_visual(visual);
-                            }
-                            (callback.callback)();
-                        }
-                        // A first-frame callback can unmount or replace its owner.
-                        // Never grant native execution to the replacement.
-                        self.entry(&root)
-                            .filter(|entry| entry.generation == generation)
-                            .and_then(|entry| self.read_current(&root, &entry))
-                            .is_some()
-                            && self
-                                .entry(&root)
-                                .is_some_and(|entry| entry.generation == generation)
-                    })
-                    .unwrap_or(false);
-                if live {
-                    if let Some(visual) = visual {
-                        self.0
-                            .borrow_mut()
-                            .item_visual_deliveries
-                            .insert(sequence, (job, visual));
-                    }
-                    event.prevent_default();
-                } else {
-                    // No native scroll is enrolled after a denied first frame.
-                    self.0
-                        .borrow_mut()
-                        .item_focus
-                        .take_scroll(sequence, &root, generation, &target, &capture);
-                }
-            } else if phase == "visual" {
-                let original = {
-                    let state = self.0.borrow();
-                    state
-                        .item_visual_deliveries
-                        .get(&sequence)
-                        .filter(|(job, _)| {
-                            job.root == root
-                                && job.generation == generation
-                                && job.target == target
-                                && job.capture.as_deref() == Some(capture.as_str())
-                        })
-                        .map(|(_, facts)| facts.clone())
-                };
-                let Some(original) = original else {
-                    return;
-                };
-                let live = query.item_focus_host.unwrap_or_else(|| original.clone());
-                if live.capture != capture
-                    || live.registration_key != original.registration_key
-                    || live.kind != original.kind
-                {
-                    return;
-                }
-                let accepted = self
-                    .with_owner(&root, generation, || {
-                        let entry = self.entry(&root)?;
-                        let _ = self.read_current(&root, &entry)?;
-                        if !self
-                            .entry(&root)
-                            .is_some_and(|entry| entry.generation == generation)
-                        {
-                            return None;
-                        }
-                        self.0
-                            .borrow_mut()
-                            .item_visual_deliveries
-                            .remove(&sequence)?;
-                        self.mark_item_visual(&live);
-                        Some(())
-                    })
-                    .flatten()
-                    .is_some();
-                if accepted {
-                    event.prevent_default();
-                }
-            } else if phase == "scroll" {
-                let job = self
-                    .0
-                    .borrow_mut()
-                    .item_focus
-                    .take_scroll(sequence, &root, generation, &target, &capture);
-                if job.is_some() {
-                    self.0.borrow_mut().item_visual_deliveries.remove(&sequence);
-                    let live = self
-                        .with_owner(&root, generation, || {
-                            let entry = self.entry(&root)?;
-                            let current = self.read_current(&root, &entry)?;
-                            self.entry(&root)
-                                .filter(|entry| entry.generation == generation)
-                                .map(|_| current)
-                        })
-                        .flatten()
-                        .is_some();
-                    if live {
-                        event.prevent_default();
-                    }
-                }
+                    .any(|host| host.0 == capture)
+                || state.roving.retains_token(&capture)
+                || state
+                    .roving_writes
+                    .iter()
+                    .any(|batch| batch.writes.iter().any(|write| write.item.0 == capture));
+            if retained {
+                event.prevent_default();
             }
             return;
         }
@@ -3248,17 +3194,6 @@ impl NodeHandle {
                 }
                 {
                     let mut state = runtime.0.borrow_mut();
-                    state.item_captures.insert(
-                        self.id.clone(),
-                        (
-                            self.generation,
-                            facts
-                                .hosts
-                                .iter()
-                                .map(|host| (host.target.clone(), host.capture.clone()))
-                                .collect(),
-                        ),
-                    );
                     state
                         .inventories
                         .insert(self.id.clone(), (self.generation, facts.clone()));
@@ -3378,32 +3313,22 @@ impl NodeHandle {
         runtime.queue_roving_writes(&self.id, self.generation, writes);
     }
     pub(crate) fn queue_item_host_focus(&self, host: &HostFacts, callback: Rc<dyn Fn()>) -> bool {
-        if host.capture.is_empty() {
-            return false;
-        }
-        self.queue_item_focus_captured(
-            host.target.clone(),
-            true,
-            Some(host.capture.clone()),
-            callback,
-            Some(host.clone()),
-        )
+        self.queue_mounted_item_focus(host.target.clone(), true, callback, Some(host.clone()))
     }
-    /// Admit one captured item operation. Newer keys, mode changes and accepted
-    /// hides do not revoke its two native frames while this owner remains live.
+    /// Only explicitly registered Dioxus mounted elements can receive item focus.
+    /// Consumers opt in by registering their own mounted control.
     pub(crate) fn queue_item_focus(
         &self,
         target: String,
         focus_native: bool,
         callback: Rc<dyn Fn()>,
     ) -> bool {
-        self.queue_item_focus_captured(target, focus_native, None, callback, None)
+        self.queue_mounted_item_focus(target, focus_native, callback, None)
     }
-    fn queue_item_focus_captured(
+    fn queue_mounted_item_focus(
         &self,
         target: String,
         focus_native: bool,
-        captured: Option<String>,
         callback: Rc<dyn Fn()>,
         visual: Option<HostFacts>,
     ) -> bool {
@@ -3418,41 +3343,73 @@ impl NodeHandle {
                 let Some(entry) = runtime.entry(&self.id) else {
                     return false;
                 };
-                if runtime.read_current(&self.id, &entry).is_none()
+                if entry.scope.is_none()
+                    || runtime.read_current(&self.id, &entry) != Some(true)
                     || !runtime
                         .entry(&self.id)
                         .is_some_and(|entry| entry.generation == self.generation)
                 {
                     return false;
                 }
-                {
+                let visual = visual.or_else(|| {
+                    runtime
+                        .0
+                        .borrow()
+                        .inventories
+                        .get(&self.id)
+                        .filter(|(generation, _)| *generation == self.generation)
+                        .and_then(|(_, inventory)| {
+                            inventory.hosts.iter().find(|host| host.target == target)
+                        })
+                        .cloned()
+                });
+                let key = {
+                    let state = runtime.0.borrow();
+                    visual
+                        .as_ref()
+                        .filter(|host| state.item_mounts.contains_key(&host.registration_key))
+                        .map(|host| host.registration_key.clone())
+                        .or_else(|| {
+                            state
+                                .item_mounts
+                                .iter()
+                                .find(|(_, mount)| mount.target == target)
+                                .map(|(key, _)| key.clone())
+                        })
+                };
+                let Some(key) = key else {
+                    return false;
+                };
+                runtime.cancel_owned_item_focus(&self.id);
+                let sequence = {
                     let mut state = runtime.0.borrow_mut();
-                    let capture = captured.or_else(|| {
-                        state
-                            .item_captures
-                            .get(&self.id)
-                            .filter(|(generation, _)| *generation == self.generation)
-                            .and_then(|(_, captures)| captures.get(&target))
-                            .cloned()
-                    });
-                    let job = state.item_focus.admit(
+                    state.item_focus_sequence = state.item_focus_sequence.wrapping_add(1).max(1);
+                    let sequence = state.item_focus_sequence;
+                    state.owned_item_focus.insert(
                         self.id.clone(),
-                        self.generation,
-                        target,
-                        focus_native,
-                        capture,
-                    );
-                    state.item_focus_callbacks.insert(
-                        job.sequence,
-                        ItemFocusCallback {
-                            root: self.id.clone(),
+                        OwnedItemFocus {
+                            sequence,
                             generation: self.generation,
-                            callback,
+                            key,
+                            callback: Some(callback),
                             visual,
+                            focus_native,
+                            task: None,
                         },
                     );
-                }
-                runtime.flush_item_focus();
+                    sequence
+                };
+                let weak = Rc::downgrade(&runtime.0);
+                let root = self.id.clone();
+                let generation = self.generation;
+                dioxus::core::queue_effect(move || {
+                    if let Some(state) = weak.upgrade() {
+                        let runtime = RuntimeHandle(state);
+                        runtime.with_owner(&root, generation, || {
+                            runtime.start_owned_item_focus(root.clone(), generation, sequence)
+                        });
+                    }
+                });
                 true
             })
             .unwrap_or(false)
@@ -3962,8 +3919,6 @@ struct NodeFacts {
     #[serde(default)]
     items: Vec<usize>,
     #[serde(default)]
-    item_focus_captures: Vec<ItemFocusCapture>,
-    #[serde(default)]
     inventory: Option<InventoryFacts>,
     #[serde(default)]
     own_inventory: Option<InventoryFacts>,
@@ -3987,11 +3942,6 @@ struct NodeFacts {
     tab_candidates: Vec<crate::popover_focus::TabCandidate>,
 }
 #[derive(Deserialize)]
-struct ItemFocusCapture {
-    target: String,
-    capture: String,
-}
-#[derive(Deserialize)]
 struct AnchorVisibility {
     root: String,
     generation: u64,
@@ -4007,6 +3957,8 @@ struct Query {
     #[serde(default)]
     item_cues_pending: bool,
     #[serde(default)]
+    capture_retained: Option<String>,
+    #[serde(default)]
     item_focus_observation: Option<crate::item_visual::FocusObservation>,
     #[serde(default)]
     descendant_focus: Option<DescendantQuery>,
@@ -4016,8 +3968,6 @@ struct Query {
     item_cue: Option<crate::item_visual::CueOffer>,
     #[serde(default)]
     item_root_cue: Option<RootCueOffer>,
-    #[serde(default)]
-    item_focus_host: Option<HostFacts>,
     #[serde(default)]
     roving_pending: Option<u64>,
     #[serde(default)]
@@ -4034,18 +3984,6 @@ struct Query {
     roving_item: Option<String>,
     #[serde(default)]
     roving_tabindex: Option<String>,
-    #[serde(default)]
-    item_focus_sequence: Option<u64>,
-    #[serde(default)]
-    item_focus_root: Option<String>,
-    #[serde(default)]
-    item_focus_generation: Option<u64>,
-    #[serde(default)]
-    item_focus_target: Option<String>,
-    #[serde(default)]
-    item_focus_capture: Option<String>,
-    #[serde(default)]
-    item_focus_phase: Option<String>,
     #[serde(default)]
     activate_target: Option<String>,
     #[serde(default)]
@@ -4764,17 +4702,6 @@ mod tests {
             true,
         )
     }
-    fn item_event(
-        runtime: &RuntimeHandle,
-        job: &ItemFocusJob,
-        phase: &str,
-        capture: &str,
-    ) -> FormEvent {
-        event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-            "item_focus_sequence":job.sequence,"item_focus_root":job.root,
-            "item_focus_generation":job.generation,"item_focus_target":job.target,
-            "item_focus_capture":capture,"item_focus_phase":phase}))
-    }
 
     fn mixed_inventory_facts() -> InventoryFacts {
         serde_json::from_value(serde_json::json!({"items_host":"actual-items-host",
@@ -4897,40 +4824,8 @@ mod tests {
             expected
         );
     }
-    fn publication_focus(
-        dom: &VirtualDom,
-        transport: dioxus::core::ElementId,
-        runtime: &RuntimeHandle,
-        job: &ItemFocusJob,
-    ) {
-        for phase in ["arm", "focus", "visual"] {
-            let host = runtime
-                .0
-                .borrow()
-                .inventories
-                .get(&job.root)
-                .and_then(|(_, facts)| {
-                    facts
-                        .hosts
-                        .iter()
-                        .find(|host| Some(host.capture.as_str()) == job.capture.as_deref())
-                })
-                .cloned();
-            assert!(publication_dispatch(
-                dom,
-                transport,
-                "change",
-                serde_json::json!({
-                    "owner":runtime.owner_id(),"sequence":0,"item_focus_sequence":job.sequence,
-                    "item_focus_root":job.root,"item_focus_generation":job.generation,
-                    "item_focus_target":job.target,"item_focus_capture":job.capture,"item_focus_phase":phase,
-                    "item_focus_host":if phase == "arm" { None } else { host }
-                })
-            ));
-        }
-    }
     #[test]
-    fn actual_vdom_focus_ack_publishes_mixed_host_cues_without_another_input() {
+    fn actual_vdom_item_effect_publishes_mixed_host_cues_without_another_input() {
         let _guard = crate::test_event_converter_guard();
         dioxus::html::set_event_converter(Box::new(PublicationConverter));
         let fixture = PublicationFixture::default();
@@ -4998,6 +4893,10 @@ mod tests {
             .iter()
             .map(|host| host["item"].clone())
             .collect::<Vec<_>>();
+        for host in &hosts {
+            let facts: HostFacts = serde_json::from_value(host.clone()).unwrap();
+            install_item_mock(&runtime, &facts, ItemMountMock::default());
+        }
         let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
             "kind":"key","phase":"bubble","key":"Home","hosts":[root],"triggers":[root],
             "nodes":[{"id":root,"generation":generation,"connected":true,"discovery_ready":true,
@@ -5005,40 +4904,17 @@ mod tests {
                 "inventory":{"items_host":"actual-publication-items","hosts":hosts,
                     "navigation_order":order,"query_order":order}}]});
         assert!(publication_dispatch(&dom, transport, "input", report));
-        // Admit independent A/B operations before either first stage. Their
-        // first ACKs must each publish without a later original native input.
-        let first = runtime
-            .pending_item_focus_jobs()
-            .into_iter()
-            .last()
-            .unwrap();
-        assert_eq!(first.target, "publication-dropdown");
-        let second_facts: HostFacts = serde_json::from_value(hosts[1].clone()).unwrap();
-        dom.in_runtime(|| assert!(node.queue_item_host_focus(&second_facts, Rc::new(|| {}))));
-        let second = runtime
-            .pending_item_focus_jobs()
-            .into_iter()
-            .last()
-            .unwrap();
-        assert_ne!(first.sequence, second.sequence);
-        publication_focus(&dom, transport, &runtime, &first);
-        assert_eq!(
-            runtime.item_visual_target().as_deref(),
-            Some("publication-dropdown")
-        );
-        for _ in 0..4 {
-            dom.render_immediate_to_vec();
-        }
+        assert_eq!(runtime.pending_item_focus_count(), 1);
+        settle_item_effects(&mut dom);
+        assert_eq!(runtime.pending_item_focus_count(), 0);
         publication_cues(&dioxus_ssr::render(&dom), Some("publication-dropdown"));
-        publication_focus(&dom, transport, &runtime, &second);
-        for _ in 0..4 {
-            dom.render_immediate_to_vec();
-        }
-        publication_cues(&dioxus_ssr::render(&dom), Some("publication-select"));
-        // No source focusin is synthesized: a nonfocusable host must publish
-        // from its frame callback alone. All remaining subscribers use the
-        // same registered queue, without forced parent notification.
-        for id in ["publication-menu", "publication-category"] {
+        // Publish through real owner effects and mounted methods, without a
+        // bridge receipt or a later keyboard/focusin event.
+        for id in [
+            "publication-select",
+            "publication-menu",
+            "publication-category",
+        ] {
             let facts: HostFacts = serde_json::from_value(
                 hosts
                     .iter()
@@ -5048,12 +4924,7 @@ mod tests {
             )
             .unwrap();
             dom.in_runtime(|| assert!(node.queue_item_host_focus(&facts, Rc::new(|| {}))));
-            let job = runtime
-                .pending_item_focus_jobs()
-                .into_iter()
-                .last()
-                .unwrap();
-            publication_focus(&dom, transport, &runtime, &job);
+            assert_eq!(runtime.pending_item_focus_count(), 1);
             for _ in 0..4 {
                 dom.render_immediate_to_vec();
             }
@@ -5062,27 +4933,18 @@ mod tests {
                 (id != "publication-category").then_some(id),
             );
         }
-        let facts: HostFacts = serde_json::from_value(hosts[0].clone()).unwrap();
-        dom.in_runtime(|| assert!(node.queue_item_host_focus(&facts, Rc::new(|| {}))));
-        let dropped = runtime
-            .pending_item_focus_jobs()
-            .into_iter()
-            .last()
-            .unwrap();
+        let facts: HostFacts = serde_json::from_value(hosts[1].clone()).unwrap();
+        let called = Rc::new(Cell::new(false));
+        let callback = called.clone();
+        dom.in_runtime(|| {
+            assert!(node.queue_item_host_focus(&facts, Rc::new(move || callback.set(true))))
+        });
         dom.in_runtime(|| fixture.visible.get().unwrap().set(false));
         for _ in 0..4 {
             dom.render_immediate_to_vec();
         }
-        assert!(!publication_dispatch(
-            &dom,
-            transport,
-            "change",
-            serde_json::json!({
-                "owner":runtime.owner_id(),"sequence":0,"item_focus_sequence":dropped.sequence,
-                "item_focus_root":dropped.root,"item_focus_generation":dropped.generation,
-                "item_focus_target":dropped.target,"item_focus_capture":dropped.capture,"item_focus_phase":"focus"
-            })
-        ));
+        assert!(!called.get());
+        assert!(runtime.0.borrow().owned_item_focus.is_empty());
         assert!(!dioxus_ssr::render(&dom).contains("publication-dropdown"));
     }
     fn roving_event(
@@ -5233,34 +5095,24 @@ mod tests {
         runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"document":"mixed-visual-runtime-test","kind":"modality","input_kind":"keydown","key":"Tab"})));
         assert!(runtime.keyboard_mode());
         let host = raw.hosts[0].clone();
-        let observed = runtime.clone();
-        assert!(root.node.queue_item_host_focus(
-            &host,
-            Rc::new(move || {
-                assert_eq!(observed.item_visual_key().as_deref(), Some("key-a"));
-                assert_eq!(observed.item_visual_target().as_deref(), Some("a"));
-            })
+        root.open.set(true);
+        runtime.input(event(
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":3,
+            "document":"mixed-visual-runtime-test","kind":"item-focusin","item_focus_host":host}),
         ));
-        let job = runtime.pending_item_focus_jobs().pop().unwrap();
-        assert_eq!(job.capture.as_deref(), Some("actual-a"));
-        assert!(job.focus_native);
-        for phase in ["arm", "focus", "scroll"] {
-            let ack = item_event(&runtime, &job, phase, "actual-a");
-            runtime.query(ack.clone());
-            assert!(!ack.default_action_enabled());
-        }
+        assert_eq!(runtime.item_visual_key().as_deref(), Some("key-a"));
         let mut category = host.clone();
         category.kind = ItemKind::Category;
         category.registration_key = "outer-category".into();
         runtime.mark_item_visual(&category);
         assert_eq!(runtime.item_visual_key(), None);
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":3,"document":"mixed-visual-runtime-test","kind":"item-focusin","item_focus_host":raw.hosts[1]})));
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":4,"document":"mixed-visual-runtime-test","kind":"item-focusin","item_focus_host":raw.hosts[1]})));
         assert_eq!(runtime.item_visual_key().as_deref(), Some("key-b"));
         let mut disabled_property = raw.hosts[1].clone();
         disabled_property.source_focusable = false;
         runtime.mark_item_visual(&disabled_property);
         assert_eq!(runtime.item_visual_key(), None);
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":4,"document":"mixed-visual-runtime-test","kind":"modality","input_kind":"mousedown"})));
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":5,"document":"mixed-visual-runtime-test","kind":"modality","input_kind":"mousedown"})));
         runtime.mark_item_visual(&host);
         assert_eq!(
             runtime.item_visual_key(),
@@ -5269,8 +5121,81 @@ mod tests {
         );
     }
 
+    #[derive(Clone, Default)]
+    pub(super) struct ItemMountMock {
+        events: Rc<RefCell<Vec<(&'static str, ScopeId)>>>,
+        pub(super) pending: Rc<Cell<bool>>,
+        pub(super) waker: Rc<RefCell<Option<std::task::Waker>>>,
+        fail_focus: bool,
+    }
+    impl dioxus::html::RenderedElementBacking for ItemMountMock {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            let mock = self.clone();
+            Box::pin(async move {
+                mock.events.borrow_mut().push(("focus", current_scope_id()));
+                std::future::poll_fn(|cx| {
+                    if mock.pending.get() {
+                        *mock.waker.borrow_mut() = Some(cx.waker().clone());
+                        std::task::Poll::Pending
+                    } else {
+                        std::task::Poll::Ready(())
+                    }
+                })
+                .await;
+                if mock.fail_focus {
+                    Err(dioxus::html::MountedError::NotSupported)
+                } else {
+                    Ok(())
+                }
+            })
+        }
+        fn scroll_to(
+            &self,
+            options: dioxus::html::ScrollToOptions,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert_eq!(options.behavior, dioxus::html::ScrollBehavior::Instant);
+            assert!(matches!(
+                options.vertical,
+                dioxus::html::ScrollLogicalPosition::Nearest
+            ));
+            assert!(matches!(
+                options.horizontal,
+                dioxus::html::ScrollLogicalPosition::Nearest
+            ));
+            let events = self.events.clone();
+            Box::pin(async move {
+                events.borrow_mut().push(("scroll", current_scope_id()));
+                Ok(())
+            })
+        }
+    }
+    pub(super) fn settle_item_effects(dom: &mut VirtualDom) {
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+    }
+    pub(super) fn install_item_mock(
+        runtime: &RuntimeHandle,
+        host: &HostFacts,
+        mock: ItemMountMock,
+    ) -> Weak<MountedData> {
+        runtime.register_item_cue(host.registration_key.clone(), host.kind);
+        let node = Rc::new(MountedData::new(mock));
+        let weak = Rc::downgrade(&node);
+        runtime.register_item_mount(&host.registration_key, &host.target, node);
+        weak
+    }
     #[test]
-    fn item_frames_restore_owner_keep_each_capture_and_allow_next_focus_before_scroll() {
+    fn mounted_item_effect_uses_latest_intent_owner_focus_and_nearest_scroll_even_on_focus_error() {
         let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
         let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
         dom.rebuild_in_place();
@@ -5278,247 +5203,199 @@ mod tests {
         let runtime = node.runtime().unwrap();
         let owner = fixture.0.owner.get().unwrap();
         let caller = fixture.0.caller.get().unwrap();
-        let raw = event(
-            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
-                "item_focus_captures":[{"target":"a","capture":"actual-a"},{"target":"b","capture":"actual-b"}]}]}),
-        );
-        dom.in_scope(owner, || runtime.input(raw));
-        let delivered = Rc::new(RefCell::new(Vec::new()));
-        let first = delivered.clone();
-        let nested = node.clone();
+        let hosts = mixed_inventory_facts().hosts;
+        let first = ItemMountMock::default();
+        let second = ItemMountMock {
+            fail_focus: true,
+            ..Default::default()
+        };
+        install_item_mock(&runtime, &hosts[0], first.clone());
+        install_item_mock(&runtime, &hosts[1], second.clone());
+        runtime.0.borrow_mut().keyboard = true;
+        let released = Rc::new(());
+        let weak_callback = Rc::downgrade(&released);
         dom.in_scope(caller, || {
-            assert!(node.queue_item_focus(
-                "a".into(),
-                false,
+            assert!(node.queue_item_host_focus(
+                &hosts[0],
+                Rc::new(move || {
+                    let _ = &released;
+                    panic!("superseded");
+                })
+            ));
+            assert!(node.queue_item_host_focus(
+                &hosts[1],
                 Rc::new(move || {
                     assert_eq!(current_scope_id(), owner);
                     assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
-                    first.borrow_mut().push("a");
-                    let later = first.clone();
-                    assert!(nested.queue_item_focus(
-                        "c".into(),
-                        true,
-                        Rc::new(move || later.borrow_mut().push("c"))
-                    ));
-                })
-            ));
-            let second = delivered.clone();
-            assert!(node.queue_item_focus(
-                "b".into(),
-                true,
-                Rc::new(move || {
-                    assert_eq!(current_scope_id(), owner);
-                    second.borrow_mut().push("b");
                 })
             ));
         });
-        assert!(delivered.borrow().is_empty());
-        let jobs = runtime.pending_item_focus_jobs();
-        assert_eq!(jobs.len(), 2);
-        assert_eq!(jobs[0].capture.as_deref(), Some("actual-a"));
-        assert_eq!(jobs[1].capture.as_deref(), Some("actual-b"));
-        assert!(!jobs[0].focus_native && jobs[1].focus_native);
-        dom.in_scope(owner, || runtime.attach_document("item-initial-bootstrap"));
-        assert_eq!(runtime.pending_item_focus_jobs(), jobs);
+        assert!(
+            weak_callback.upgrade().is_none(),
+            "latest intent releases superseded callbacks"
+        );
+        assert_eq!(
+            runtime.pending_item_focus_count(),
+            1,
+            "latest mounted intent is the only pending operation"
+        );
+        assert!(
+            second.events.borrow().is_empty(),
+            "admission is asynchronous"
+        );
         dom.in_scope(ScopeId::APP, || {
-            let mut show = fixture.0.show_caller.get().unwrap();
-            show.set(false);
+            fixture.0.show_caller.get().unwrap().set(false)
         });
-        dom.render_immediate_to_vec();
+        settle_item_effects(&mut dom);
         assert!(fixture.0.caller_dropped.get());
-        fixture.0.open.set(false);
-        for job in &jobs {
-            let arm = item_event(&runtime, job, "arm", job.capture.as_deref().unwrap());
-            dom.in_scope(ScopeId::APP, || runtime.query(arm.clone()));
-            assert!(!arm.default_action_enabled());
-        }
-        // A's second frame is still pending when B's first frame runs. New C
-        // is admitted reentrantly, but is not part of this captured frame batch.
-        for job in &jobs {
-            let focus = item_event(&runtime, job, "focus", job.capture.as_deref().unwrap());
-            runtime.query(focus.clone());
-            assert!(!focus.default_action_enabled());
-        }
-        assert_eq!(*delivered.borrow(), ["a", "b"]);
-        for job in &jobs {
-            let scroll = item_event(&runtime, job, "scroll", job.capture.as_deref().unwrap());
-            runtime.query(scroll.clone());
-            assert!(!scroll.default_action_enabled());
-            let repeat = item_event(&runtime, job, "scroll", job.capture.as_deref().unwrap());
-            runtime.query(repeat.clone());
-            assert!(repeat.default_action_enabled());
-        }
-        let later = runtime.pending_item_focus_jobs();
-        assert_eq!(later.len(), 1);
-        assert_eq!(later[0].target, "c");
-        drop(dom);
-        assert!(runtime.pending_item_focus_jobs().is_empty());
-        assert!(!node.queue_item_focus("d".into(), true, Rc::new(|| panic!("dropped owner"))));
-        assert_eq!(*delivered.borrow(), ["a", "b"]);
+        assert!(first.events.borrow().is_empty());
+        assert_eq!(
+            *second.events.borrow(),
+            [("focus", owner), ("scroll", owner)]
+        );
+        assert_eq!(runtime.item_visual_key().as_deref(), Some("key-b"));
+        assert!(runtime.0.borrow().owned_item_focus.is_empty());
+        assert!(node.queue_item_focus(hosts[0].target.clone(), false, Rc::new(|| {})));
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            *first.events.borrow(),
+            [("scroll", owner)],
+            "active descendant navigation can scroll without native focus"
+        );
     }
-
     #[test]
-    fn item_queries_reject_wrong_identity_and_discard_failed_bootstrap_without_losing_peers() {
-        let runtime = RuntimeHandle::new();
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let owner = model(&runtime, "item-root", OverlayKind::Dropdown, log.clone());
-        let delivered = Rc::new(Cell::new(0));
-        let observed = delivered.clone();
-        assert!(owner.node.queue_item_focus(
-            "item".into(),
-            true,
-            Rc::new(move || observed.set(observed.get() + 1))
-        ));
-        let job = runtime.pending_item_focus_jobs().pop().unwrap();
+    fn mounted_item_unmount_replacement_close_and_generation_cancel_pending_work() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let host = mixed_inventory_facts().hosts[0].clone();
+        let pending = ItemMountMock::default();
+        pending.pending.set(true);
+        let weak_mount = install_item_mock(&runtime, &host, pending.clone());
+        assert!(node.queue_item_host_focus(&host, Rc::new(|| {})));
+        settle_item_effects(&mut dom);
+        assert_eq!(pending.events.borrow().len(), 1);
+        runtime.unregister_item_cue(&host.registration_key);
+        assert!(
+            weak_mount.upgrade().is_none(),
+            "unmount releases the handle and suspended future"
+        );
+        pending.pending.set(false);
+        pending.waker.borrow_mut().take().unwrap().wake();
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            pending.events.borrow().len(),
+            1,
+            "unmounted item never scrolls"
+        );
+        let old = ItemMountMock::default();
+        let weak_old = install_item_mock(&runtime, &host, old.clone());
         let retained = Rc::new(());
         let released = Rc::downgrade(&retained);
-        assert!(owner.node.queue_item_focus(
-            "missing".into(),
-            false,
+        assert!(node.queue_item_host_focus(
+            &host,
             Rc::new(move || {
                 let _ = &retained;
+                panic!("replaced mount");
             })
         ));
-        let missing = runtime.pending_item_focus_jobs().pop().unwrap();
-        let discard = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-            "item_focus_phase":"discard","item_focus_sequence":missing.sequence,
-            "item_focus_root":missing.root,"item_focus_generation":missing.generation,"item_focus_target":missing.target}));
-        runtime.query(discard);
+        let replacement = ItemMountMock::default();
+        install_item_mock(&runtime, &host, replacement.clone());
+        assert!(weak_old.upgrade().is_none());
         assert!(released.upgrade().is_none());
-        assert_eq!(
-            runtime.pending_item_focus_jobs().as_slice(),
-            std::slice::from_ref(&job)
-        );
-        for phase in ["focus", "scroll", "unknown"] {
-            let ack = item_event(&runtime, &job, phase, "actual");
-            runtime.query(ack.clone());
-            assert!(ack.default_action_enabled());
-        }
-        let wrong_owner = event(serde_json::json!({"owner":"wrong-runtime","sequence":0,
-            "item_focus_sequence":job.sequence,"item_focus_root":job.root,
-            "item_focus_generation":job.generation,"item_focus_target":job.target,
-            "item_focus_capture":"actual","item_focus_phase":"arm"}));
-        runtime.query(wrong_owner.clone());
-        assert!(wrong_owner.default_action_enabled());
-        let arm = item_event(&runtime, &job, "arm", "actual");
-        runtime.query(arm.clone());
-        assert!(!arm.default_action_enabled());
-        let wrong_capture = item_event(&runtime, &job, "focus", "replacement-object");
-        runtime.query(wrong_capture.clone());
-        assert!(wrong_capture.default_action_enabled());
-        let joined = model(&runtime, "item-root", OverlayKind::Dropdown, log);
-        let focus = item_event(&runtime, &job, "focus", "actual");
-        runtime.query(focus.clone());
-        assert!(!focus.default_action_enabled());
-        assert_eq!(delivered.get(), 1);
-        let replacement = runtime.register(
-            "item-root".into(),
-            2,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-            Callbacks {
-                read: Rc::new(|| Some(false)),
-                before: Rc::new(|_| true),
-                apply: Rc::new(|_| {}),
-                key: None,
-            },
-        );
-        assert!(runtime.pending_item_focus_jobs().is_empty());
-        let stale = item_event(&runtime, &job, "scroll", "actual");
-        runtime.query(stale.clone());
-        assert!(stale.default_action_enabled());
-        assert!(!joined.node.queue_item_focus(
-            "old".into(),
-            true,
-            Rc::new(|| panic!("old generation"))
-        ));
-        assert!(replacement.queue_item_focus("new".into(), true, Rc::new(|| {})));
-        replacement.unregister();
-        assert!(runtime.pending_item_focus_jobs().is_empty());
-        assert!(runtime.0.borrow().item_focus_callbacks.is_empty());
+        settle_item_effects(&mut dom);
+        assert!(old.events.borrow().is_empty());
+        assert!(replacement.events.borrow().is_empty());
+        assert!(node.queue_item_host_focus(&host, Rc::new(|| panic!("dismissed"))));
+        assert!(node.request(false, Reason::Trigger, false));
+        settle_item_effects(&mut dom);
+        assert!(replacement.events.borrow().is_empty());
+        assert!(!node.queue_item_host_focus(&host, Rc::new(|| panic!("closed"))));
+        fixture.0.open.set(true);
+        assert!(node.queue_item_host_focus(&host, Rc::new(|| panic!("old generation"))));
+        dom.in_scope(fixture.0.owner.get().unwrap(), || {
+            runtime.register(
+                node.id.clone(),
+                2,
+                OverlayKind::Popover,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(|| Some(true)),
+                    before: Rc::new(|_| true),
+                    apply: Rc::new(|_| {}),
+                    key: None,
+                },
+            );
+        });
+        settle_item_effects(&mut dom);
+        assert!(replacement.events.borrow().is_empty());
+        assert!(runtime.0.borrow().owned_item_focus.is_empty());
     }
-
     #[test]
-    fn item_first_frame_reentrant_owner_replacement_revokes_native_execution() {
-        let runtime = RuntimeHandle::new();
-        let owner = model(
-            &runtime,
-            "item-root",
-            OverlayKind::Dropdown,
-            Rc::new(RefCell::new(Vec::new())),
-        );
-        let called = Rc::new(Cell::new(0));
-        let changed = called.clone();
-        let weak = Rc::downgrade(&runtime.0);
-        assert!(owner.node.queue_item_focus(
-            "item".into(),
-            false,
+    fn mounted_item_reentrant_new_intent_cannot_focus_or_publish_the_old_item() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let hosts = mixed_inventory_facts().hosts;
+        let first = ItemMountMock::default();
+        let second = ItemMountMock::default();
+        install_item_mock(&runtime, &hosts[0], first.clone());
+        install_item_mock(&runtime, &hosts[1], second.clone());
+        runtime.0.borrow_mut().keyboard = true;
+        let nested = node.clone();
+        let target = hosts[1].clone();
+        assert!(node.queue_item_host_focus(
+            &hosts[0],
             Rc::new(move || {
-                changed.set(changed.get() + 1);
-                let runtime = RuntimeHandle(weak.upgrade().unwrap());
-                runtime.register(
-                    "item-root".into(),
-                    2,
-                    OverlayKind::Dropdown,
-                    CloseBehavior::Both,
-                    Callbacks {
-                        read: Rc::new(|| Some(false)),
-                        before: Rc::new(|_| true),
-                        apply: Rc::new(|_| {}),
-                        key: None,
-                    },
-                );
+                assert!(nested.queue_item_host_focus(&target, Rc::new(|| {})));
             })
         ));
-        let job = runtime.pending_item_focus_jobs().pop().unwrap();
-        let arm = item_event(&runtime, &job, "arm", "actual");
-        runtime.query(arm.clone());
-        assert!(!arm.default_action_enabled());
-        let focus = item_event(&runtime, &job, "focus", "actual");
-        runtime.query(focus.clone());
-        assert!(
-            focus.default_action_enabled(),
-            "old callback may not authorize the replacement's native focus"
-        );
-        assert_eq!(called.get(), 1);
-        assert!(runtime.pending_item_focus_jobs().is_empty());
-        let repeat = item_event(&runtime, &job, "focus", "actual");
-        runtime.query(repeat.clone());
-        assert!(repeat.default_action_enabled());
-        assert_eq!(called.get(), 1);
-
-        // A component can lose its readable state without a new registration
-        // being installed. Denied native focus must not strand a scroll stage
-        // that native code will never schedule.
-        let available = Rc::new(Cell::new(true));
-        let read = available.clone();
-        let unreadable = runtime.register(
-            "unreadable".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-            Callbacks {
-                read: Rc::new(move || read.get().then_some(false)),
-                before: Rc::new(|_| true),
-                apply: Rc::new(|_| {}),
-                key: None,
-            },
-        );
-        assert!(unreadable.queue_item_focus(
-            "item".into(),
-            false,
-            Rc::new(move || available.set(false))
+        settle_item_effects(&mut dom);
+        assert!(first.events.borrow().is_empty());
+        assert_eq!(second.events.borrow().len(), 2);
+        assert_eq!(runtime.item_visual_key().as_deref(), Some("key-b"));
+    }
+    #[test]
+    fn item_focus_requires_explicit_mount_registration_and_rejection_keeps_the_current_intent() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let released = Rc::new(());
+        let weak = Rc::downgrade(&released);
+        assert!(!node.queue_item_focus(
+            "unregistered".into(),
+            true,
+            Rc::new(move || {
+                let _ = &released;
+                panic!("unregistered");
+            })
         ));
-        let job = runtime.pending_item_focus_jobs().pop().unwrap();
-        let arm = item_event(&runtime, &job, "arm", "readable-object");
-        runtime.query(arm.clone());
-        assert!(!arm.default_action_enabled());
-        let focus = item_event(&runtime, &job, "focus", "readable-object");
-        runtime.query(focus.clone());
-        assert!(focus.default_action_enabled());
-        assert!(runtime.pending_item_focus_jobs().is_empty());
-        assert!(runtime.0.borrow().item_focus_callbacks.is_empty());
+        assert!(weak.upgrade().is_none());
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+        let mock = ItemMountMock::default();
+        let mut host = mixed_inventory_facts().hosts[0].clone();
+        install_item_mock(&runtime, &host, mock.clone());
+        // An explicitly registered consumer control resolves by target even
+        // when the reported native host has no generated registration key.
+        host.registration_key.clear();
+        assert!(node.queue_item_host_focus(&host, Rc::new(|| {})));
+        assert!(!node.queue_item_focus(
+            "unregistered".into(),
+            true,
+            Rc::new(|| panic!("unregistered"))
+        ));
+        assert_eq!(runtime.pending_item_focus_count(), 1);
+        settle_item_effects(&mut dom);
+        assert_eq!(mock.events.borrow().len(), 2);
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+        runtime.unregister_item_cue("key-a");
+        assert!(!node.queue_item_host_focus(&host, Rc::new(|| panic!("unmounted"))));
     }
 
     #[test]
@@ -6029,7 +5906,7 @@ mod tests {
     }
     fn configured_roving_retained(runtime: &RuntimeHandle, capture: &str) -> bool {
         let query = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-        "item_focus_phase":"retain","item_focus_capture":capture}));
+        "capture_retained":capture}));
         runtime.query(query.clone());
         !query.default_action_enabled()
     }
