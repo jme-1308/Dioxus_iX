@@ -43,6 +43,7 @@ pub mod chart_export;
 pub mod chart_toolbox;
 pub mod charts;
 pub mod chat;
+mod checkbox_styles;
 pub mod composition;
 pub mod data_grid;
 pub mod datetime;

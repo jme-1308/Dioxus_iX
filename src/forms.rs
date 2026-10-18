@@ -554,6 +554,11 @@ pub fn Textarea(
 
 /// Controlled checkbox with a native form mirror and accessible three-state button.
 /// Reset `indeterminate` from the parent after a user toggle to leave the mixed state.
+///
+/// Shape, target geometry, validation colors and label typography consume the
+/// source semantic tokens. Checked and indeterminate marks are independent.
+/// The source mutates its checked property before emitting; this Rust API instead
+/// asks the consumer to update `checked` from `oncheckedchange`.
 #[component]
 pub fn Checkbox(
     #[props(default)] checked: bool,
@@ -565,6 +570,8 @@ pub fn Checkbox(
     #[props(default)] indeterminate: bool,
     #[props(default)] invalid: bool,
     #[props(default)] state: FieldState,
+    #[props(default)] class: String,
+    aria_label: Option<String>,
     #[props(default)] oncheckedchange: EventHandler<bool>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
 ) -> Element {
@@ -572,7 +579,9 @@ pub fn Checkbox(
     let mut attempted = use_signal(|| false);
     let invalid = invalid || state == FieldState::Invalid || (attempted() && required && !checked);
     rsx! {
-        span { class: "ix-checkbox-field",
+        span { class: "ix-checkbox-field ix-checkbox-native {state.class()} {class}",
+            "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(),
+            "data-invalid": invalid.to_string(), "data-label-less": label.is_empty().to_string(),
             input { class: "ix-check-native", r#type: "checkbox", name, value, checked, disabled, required,
                 "aria-hidden": "true", tabindex: "-1",
                 oninvalid: move |event| {
@@ -585,14 +594,23 @@ pub fn Checkbox(
                 "data-mixed": indeterminate.to_string(), "data-checked": checked.to_string(),
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
                 "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
-                onmounted: move |event| button.set(Some(event.data())), onclick: move |_| oncheckedchange.call(!checked), onblur,
-                span { class: "ix-check-shape", "aria-hidden": "true",
-                    svg { view_box: "0 0 18 18", width: "18", height: "18",
-                        if indeterminate { path { d: "M3 9h12", fill: "none", stroke: "currentColor", stroke_width: "2" } }
-                        else if checked { path { d: "M3.7 8.2l4.7 4.7 6.2-9", fill: "none", stroke: "currentColor", stroke_width: "2" } }
+                "aria-disabled": disabled.to_string(), aria_label,
+                onmounted: move |event| button.set(Some(event.data())), onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                span { class: "ix-checkbox-button", "aria-hidden": "true",
+                    span { class: "ix-check-shape",
+                        svg { view_box: "0 0 18 18", width: "18", height: "18", fill: "none",
+                            if indeterminate {
+                                rect { width: "18", height: "18", fill: "transparent" }
+                                rect { x: "3", y: "8", width: "12", height: "2", fill: "var(--ix-checkbox-checkmark--color)" }
+                            }
+                            if checked { path { d: "M3.65625 8.15625L8.4375 12.9375L14.625 3.9375", stroke: "var(--ix-checkbox-checkmark--color)", stroke_width: "2" } }
+                        }
                     }
                 }
-                span { "{label}" }
+                crate::Typography { format: crate::TypographyFormat::Body,
+                    text_color: if disabled { crate::TypographyColor::Weak } else { crate::TypographyColor::Std },
+                    class: "ix-checkbox-label", "{label}"
+                }
             }
             if attempted() && required && !checked { span { class: "ix-helper ix-field-invalid", role: "alert", "Please select this option" } }
         }
@@ -2489,6 +2507,10 @@ pub fn Upload(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "checkbox_token_tests.rs"]
+mod checkbox_token_tests;
 
 pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-upload-state{display:flex;align-items:center;gap:12px;flex:1;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ix-theme .ix-upload[data-multiline=true] .ix-upload-state>span{white-space:normal;overflow-wrap:anywhere}.ix-theme .ix-upload-button{flex:none;white-space:nowrap}.ix-theme .ix-upload[data-file-over=true]{border-style:solid;border-color:var(--ix-color-primary)}.ix-theme .ix-upload[aria-busy=true]{border-style:solid}.ix-theme .ix-upload:has(.ix-upload-error){flex-wrap:wrap}.ix-theme .ix-upload-error{flex-basis:100%;color:var(--ix-color-danger-text);overflow-wrap:anywhere}
