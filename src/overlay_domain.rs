@@ -633,11 +633,19 @@ impl Domain {
         accepted
     }
 
-    /// Run only after an actual Dropdown trigger's own toggle attempt. Public
-    /// controller requests do not acquire this independent dismissal phase.
+    /// Source dismissOthers, reached after an actual trigger toggle attempt or
+    /// a host click's fallthrough. Public controller requests do not acquire it.
     /// True means the originating registration was admitted, not that every
     /// eligible target accepted its close request.
     pub(crate) fn dismiss_dropdown_others(&self, id: &str, generation: u64) -> bool {
+        self.dismiss_dropdown_set(id, generation, false)
+    }
+
+    pub(crate) fn dismiss_dropdown_all(&self, id: &str, generation: u64) -> bool {
+        self.dismiss_dropdown_set(id, generation, true)
+    }
+
+    fn dismiss_dropdown_set(&self, id: &str, generation: u64, inside: bool) -> bool {
         let Some(origin) = self
             .entry(id)
             .filter(|entry| entry.generation == generation && entry.kind.is_dropdown())
@@ -651,9 +659,11 @@ impl Domain {
         if !self.current(id, &origin) {
             return false;
         }
-        // Source takes this path once, after the own request has either
-        // committed its cache changes or retained them through a veto.
-        let excluded = self.0.borrow().registry.dropdown_dismiss_exclusions(id);
+        let excluded = if inside {
+            Vec::new()
+        } else {
+            self.0.borrow().registry.dropdown_dismiss_exclusions(id)
+        };
         let mut visited = BTreeSet::new();
         loop {
             let next = {
@@ -670,19 +680,24 @@ impl Domain {
             visited.insert(entry.registration);
             let eligible = entry.kind.is_dropdown()
                 && !excluded.contains(&candidate)
-                && self
-                    .0
-                    .borrow()
-                    .registry
-                    .close_behavior(&candidate)
-                    .is_some_and(CloseBehavior::allows_outside);
+                && (inside && candidate == id
+                    || self
+                        .0
+                        .borrow()
+                        .registry
+                        .close_behavior(&candidate)
+                        .is_some_and(CloseBehavior::allows_outside));
             if eligible && self.read(&candidate, &entry) == Some(true) {
                 self.request(
                     &candidate,
                     Change {
                         open: false,
-                        reason: Reason::TriggerOther,
-                        restore_focus: true,
+                        reason: if inside {
+                            Reason::Inside
+                        } else {
+                            Reason::TriggerOther
+                        },
+                        restore_focus: !inside || self.keyboard_mode().unwrap_or(false),
                     },
                 );
             }

@@ -400,6 +400,10 @@ impl Controller {
         if decision.prevent {
             event.prevent_default();
         }
+        let trigger_others = report.more
+            && decision.request.is_some()
+            && (report.kind == "click"
+                || (report.kind == "key" && !previous && decision.request == Some(true)));
         let accepted = decision
             .request
             .filter(|next| *next != previous)
@@ -426,6 +430,11 @@ impl Controller {
                     model.focus("none".into());
                 }
             }
+        }
+        if trigger_others && let Some(runtime) = self.node.runtime() {
+            // Source More is an ordinary Dropdown trigger: its independent
+            // others pass follows both accepted and vetoed toggle attempts.
+            runtime.dismiss_dropdown_others(self.node.id(), self.node.generation());
         }
         self.notify();
     }
@@ -520,6 +529,7 @@ pub(crate) fn HeaderLayout(
             },
         )
     };
+    node.set_host_click_receivers(enable_top_layer, false);
     *node_slot.borrow_mut() = Some(node.clone());
 
     let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));

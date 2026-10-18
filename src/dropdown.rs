@@ -1004,6 +1004,7 @@ fn DropdownSurface(
     });
     node.set_close_behavior(settings.behavior.into());
     node.set_trigger_visibility_check(!settings.suppress_trigger_visibility_check);
+    node.set_host_click_receivers(enable_top_layer, true);
     use_context_provider(|| context.clone());
     let drop_context = context.clone();
     let drop_node = node.clone();

@@ -125,6 +125,8 @@ struct Entry {
     kind: OverlayKind,
     behavior: CloseBehavior,
     trigger_visibility_check: bool,
+    dialog_click: bool,
+    root_click_without_host: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
     suppress_trigger_restore: bool,
@@ -263,6 +265,8 @@ impl RuntimeHandle {
                     kind,
                     behavior,
                     trigger_visibility_check: kind.is_dropdown(),
+                    dialog_click: false,
+                    root_click_without_host: false,
                     anchor_intersection: None,
                     anchor_shape: None,
                     suppress_trigger_restore,
@@ -470,9 +474,13 @@ impl RuntimeHandle {
         .unwrap_or(false)
     }
 
-    /// Distinct post-actual-trigger phase, including a vetoed own transition.
+    /// Source dismissOthers after an actual trigger or host fallthrough.
     /// Closed origins are valid; a dropped/replaced registration is not.
     pub(crate) fn dismiss_dropdown_others(&self, id: &str, generation: u64) -> bool {
+        self.dismiss_dropdown_set(id, generation, false)
+    }
+
+    fn dismiss_dropdown_set(&self, id: &str, generation: u64, inside: bool) -> bool {
         let admitted = self.with_owner(id, generation, || {
             let entry = self.entry(id)?;
             (entry.kind.is_dropdown() && entry.generation == generation)
@@ -483,7 +491,11 @@ impl RuntimeHandle {
             return false;
         }
         if let Some(domain) = self.domain() {
-            return domain.dismiss_dropdown_others(id, generation);
+            return if inside {
+                domain.dismiss_dropdown_all(id, generation)
+            } else {
+                domain.dismiss_dropdown_others(id, generation)
+            };
         }
         // Reconcile current Rust presence before capturing live ancestry.
         let ids = self.0.borrow().order.clone();
@@ -500,7 +512,11 @@ impl RuntimeHandle {
                 self.0.borrow_mut().registry.set_presence(&candidate, open);
             }
         }
-        let excluded = self.0.borrow().registry.dropdown_dismiss_exclusions(id);
+        let excluded = if inside {
+            Vec::new()
+        } else {
+            self.0.borrow().registry.dropdown_dismiss_exclusions(id)
+        };
         let mut visited = std::collections::BTreeSet::new();
         loop {
             let next = self
@@ -519,7 +535,7 @@ impl RuntimeHandle {
                 let Some(entry) = self.entry(&candidate).filter(|entry| {
                     entry.generation == candidate_generation
                         && entry.kind.is_dropdown()
-                        && entry.behavior.allows_outside()
+                        && (inside && candidate == id || entry.behavior.allows_outside())
                 }) else {
                     return;
                 };
@@ -531,8 +547,12 @@ impl RuntimeHandle {
                         candidate_generation,
                         Change {
                             open: false,
-                            reason: Reason::TriggerOther,
-                            restore_focus: true,
+                            reason: if inside {
+                                Reason::Inside
+                            } else {
+                                Reason::TriggerOther
+                            },
+                            restore_focus: !inside || self.keyboard_mode(),
                         },
                     );
                 }
@@ -1466,6 +1486,57 @@ impl RuntimeHandle {
         });
         KeyDecision::default()
     }
+    fn host_click_sites(&self, report: &Report) -> KeyDecision {
+        let mut prevented = report.default_prevented;
+        // Header's source content-background listener runs before the inner
+        // Dropdown handlers. This raw target fact projects that same guard.
+        if report.click_sites.iter().any(|site| {
+            site.connected
+                && site.target_is_host
+                && self.entry(&site.root).is_some_and(|entry| {
+                    entry.generation == site.generation && entry.kind == OverlayKind::Header
+                })
+        }) {
+            prevented = true;
+        }
+        for site in &report.click_sites {
+            let Some(entry) = self.entry(&site.root).filter(|entry| {
+                site.connected
+                    && entry.generation == site.generation
+                    && entry.kind.is_dropdown()
+                    && report.nodes.iter().any(|node| {
+                        node.id == site.root && node.generation == site.generation && node.connected
+                    })
+            }) else {
+                continue;
+            };
+            let source_receiver = match site.receiver.as_str() {
+                "host" => entry.dialog_click && site.popover && report.hosts.contains(&site.root),
+                "root" => entry.root_click_without_host || report.hosts.contains(&site.root),
+                _ => false,
+            };
+            if !source_receiver || self.read_current(&site.root, &entry).is_none() {
+                continue;
+            }
+            // Keep each captured receiver, including repeated dialog/Host
+            // calls. Re-read registration and policy after earlier callbacks.
+            if self.child_path(&site.root, &report.hosts, &report.triggers) {
+                prevented |= report.triggers.first().is_some_and(|id| id != &site.root);
+                continue;
+            }
+            if let Some(trigger) = report.triggers.first() {
+                prevented |= trigger != &site.root || entry.behavior == CloseBehavior::Outside;
+                continue;
+            }
+            let inside = !prevented && entry.behavior.allows_inside();
+            self.dismiss_dropdown_set(&site.root, site.generation, inside);
+        }
+        KeyDecision {
+            prevent: prevented,
+            ..KeyDecision::default()
+        }
+    }
+
     fn click(&self, report: &Report) -> KeyDecision {
         if report.phase == "trigger" {
             // Native default prevention can be established at the target,
@@ -1495,7 +1566,6 @@ impl RuntimeHandle {
         }
         if report.phase == "capture" {
             let mut blocked = Vec::new();
-            let mut prevent = false;
             for (index, id) in report.triggers.iter().enumerate() {
                 let Some(entry) = self.entry(id).filter(|entry| {
                     entry.kind == OverlayKind::Dropdown
@@ -1509,30 +1579,25 @@ impl RuntimeHandle {
                 // Block only the composed ancestor's Rust toggle. Preventing
                 // the original event here would veto the nearest child before
                 // that child's own trigger listener had a chance to run.
-                if index > 0 || child_path {
-                    blocked.push((id.clone(), entry.generation));
-                }
-                if index == 0
-                    && report.hosts.contains(id)
-                    && entry.behavior == CloseBehavior::Outside
-                    && !child_path
+                if index > 0
+                    || child_path
+                    || (entry.behavior == CloseBehavior::Outside
+                        && report.enclosing_triggers.contains(id))
                 {
-                    prevent = true;
                     blocked.push((id.clone(), entry.generation));
                 }
             }
             self.0.borrow_mut().capture_block = blocked;
-            return KeyDecision {
-                prevent,
-                ..KeyDecision::default()
-            };
+            return KeyDecision::default();
         }
         self.0.borrow_mut().capture_block.clear();
         let mut decision = KeyDecision::default();
         let keyboard = self.0.borrow().keyboard;
-        // Header owns its flat inside/More action in its existing bridge. Only
-        // nested Dropdown inside-close policy belongs to this coordinator.
-        if !report.default_prevented {
+        // Native reports retain source-equivalent receivers. Renderer-only
+        // reports without receiver facts keep their earlier flat test seam.
+        if !report.click_sites.is_empty() {
+            decision = self.host_click_sites(report);
+        } else if !report.default_prevented {
             let leaf = report
                 .hosts
                 .iter()
@@ -1590,8 +1655,12 @@ impl RuntimeHandle {
         // have run. An ended prevented click is not a vetoed opening request.
         if !report.triggers.is_empty() {
             let runtime = self.0.borrow();
-            decision.prevent = runtime.order.iter().any(|id| {
+            decision.prevent |= runtime.order.iter().any(|id| {
                 runtime.registry.is_open(id)
+                    && runtime
+                        .nodes
+                        .get(id)
+                        .is_some_and(|entry| entry.kind.is_dropdown())
                     && runtime
                         .registry
                         .child_path(id, &report.hosts, &report.triggers)
@@ -1921,6 +1990,17 @@ impl NodeHandle {
             entry.trigger_visibility_check = enabled;
         }
     }
+    pub(crate) fn set_host_click_receivers(&self, dialog: bool, root_without_host: bool) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        if let Some(entry) = runtime.0.borrow_mut().nodes.get_mut(&self.id)
+            && entry.generation == self.generation
+        {
+            entry.dialog_click = dialog;
+            entry.root_click_without_host = root_without_host;
+        }
+    }
     pub(crate) fn has_popover_ancestor(&self) -> bool {
         self.is_registered()
             && self
@@ -2129,7 +2209,11 @@ struct Report {
     #[serde(default)]
     hosts: Vec<String>,
     #[serde(default)]
+    click_sites: Vec<ClickSite>,
+    #[serde(default)]
     triggers: Vec<String>,
+    #[serde(default)]
+    enclosing_triggers: Vec<String>,
     #[serde(default)]
     nodes: Vec<NodeFacts>,
     #[serde(default)]
@@ -2146,6 +2230,17 @@ struct Report {
     active_hosts: Vec<String>,
     #[serde(default)]
     active_popover: String,
+}
+#[derive(Deserialize)]
+struct ClickSite {
+    root: String,
+    generation: u64,
+    connected: bool,
+    receiver: String,
+    #[serde(default)]
+    popover: bool,
+    #[serde(default)]
+    target_is_host: bool,
 }
 #[derive(Deserialize)]
 struct NodeFacts {
@@ -2431,6 +2526,228 @@ mod tests {
             {"id":"header","generation":1,"connected":true,"discovery_ready":true},
             {"id":"child","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":ancestors}
         ])
+    }
+
+    fn host_click_value(runtime: &RuntimeHandle, sequence: u64) -> serde_json::Value {
+        serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),
+            "sequence":sequence,"kind":"click","phase":"bubble","hosts":["origin"],
+            "nodes":[{"id":"origin","generation":1,"connected":true,"discovery_ready":true},
+                {"id":"both","generation":1,"connected":true,"discovery_ready":true},
+                {"id":"outside","generation":1,"connected":true,"discovery_ready":true},
+                {"id":"inside","generation":1,"connected":true,"discovery_ready":true},
+                {"id":"none","generation":1,"connected":true,"discovery_ready":true}],
+            "click_sites":[{"root":"origin","generation":1,"connected":true,"receiver":"host","popover":true},
+                {"root":"origin","generation":1,"connected":true,"receiver":"root"}]})
+    }
+
+    #[test]
+    fn host_click_fallthrough_keeps_origin_and_respects_each_peer_policy() {
+        for (behavior, prevented) in [
+            (CloseBehavior::Outside, false),
+            (CloseBehavior::None, false),
+            (CloseBehavior::Both, true),
+            (CloseBehavior::Inside, true),
+        ] {
+            let runtime = RuntimeHandle::new();
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let origin = model(&runtime, "origin", OverlayKind::Dropdown, log.clone());
+            origin.node.set_close_behavior(behavior);
+            origin.node.set_host_click_receivers(true, true);
+            let peers = [
+                model(&runtime, "both", OverlayKind::Dropdown, log.clone()),
+                model(&runtime, "outside", OverlayKind::Dropdown, log.clone()),
+                model(&runtime, "inside", OverlayKind::Dropdown, log.clone()),
+                model(&runtime, "none", OverlayKind::Dropdown, log.clone()),
+            ];
+            peers[1].node.set_close_behavior(CloseBehavior::Outside);
+            peers[2].node.set_close_behavior(CloseBehavior::Inside);
+            peers[3].node.set_close_behavior(CloseBehavior::None);
+            origin.open.set(true);
+            for peer in &peers {
+                peer.open.set(true);
+            }
+            let mut value = host_click_value(&runtime, 1);
+            value["default_prevented"] = prevented.into();
+            runtime.input(event(value));
+            assert!(
+                origin.open.get(),
+                "host fallthrough never closes its retained origin"
+            );
+            assert_eq!(
+                peers.map(|peer| peer.open.get()),
+                [false, false, true, true]
+            );
+            assert_eq!(
+                *log.borrow(),
+                [
+                    "before:both:false",
+                    "apply:both:false",
+                    "before:outside:false",
+                    "apply:outside:false"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn host_click_receiver_guards_reject_old_disconnected_and_non_source_sites() {
+        for (kind, receiver, generation, connected, popup_path) in [
+            (OverlayKind::Dropdown, "root", 0, true, true),
+            (OverlayKind::Dropdown, "root", 1, false, true),
+            (OverlayKind::Dropdown, "unknown", 1, true, true),
+            (OverlayKind::Header, "root", 1, true, false),
+            (OverlayKind::Dropdown, "root", 1, true, false),
+            (OverlayKind::Popover, "root", 1, true, true),
+        ] {
+            let runtime = RuntimeHandle::new();
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let origin = model(&runtime, "origin", kind, log.clone());
+            origin.open.set(true);
+            let peer = model(&runtime, "both", OverlayKind::Dropdown, log.clone());
+            peer.open.set(true);
+            let mut value = host_click_value(&runtime, 1);
+            if !popup_path {
+                value["hosts"] = serde_json::json!([]);
+            }
+            value["click_sites"] = serde_json::json!([{"root":"origin","generation":generation,"connected":connected,"receiver":receiver,"popover":true}]);
+            runtime.input(event(value));
+            assert!(origin.open.get());
+            assert!(peer.open.get());
+            assert!(log.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn host_click_uses_source_layer_and_live_trigger_guards_without_early_outside_veto() {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let origin = model(&runtime, "origin", OverlayKind::Dropdown, log.clone());
+        origin.node.set_close_behavior(CloseBehavior::Outside);
+        origin.open.set(true);
+        let peer = model(&runtime, "both", OverlayKind::Dropdown, log.clone());
+        peer.open.set(true);
+        peer.veto.set(true);
+        // A source non-top-layer component can still use a native popover in
+        // the renderer. Its physical dialog is not another source receiver.
+        runtime.input(event(host_click_value(&runtime, 1)));
+        assert_eq!(*log.borrow(), ["before:both:false"]);
+        log.borrow_mut().clear();
+        let mut capture = host_click_value(&runtime, 2);
+        capture["phase"] = "capture".into();
+        capture["triggers"] = serde_json::json!(["origin"]);
+        let captured = event(capture);
+        runtime.input(captured.clone());
+        assert!(captured.default_action_enabled());
+        assert!(origin.node.trigger_click_allowed());
+        // The own native target may attempt its toggle before the later host
+        // guard prevents that original click; the host does not run others.
+        let mut own = host_click_value(&runtime, 3);
+        own["triggers"] = serde_json::json!(["origin"]);
+        let own = event(own);
+        runtime.input(own.clone());
+        assert!(!own.default_action_enabled());
+        assert!(log.borrow().is_empty());
+        let mut foreign = host_click_value(&runtime, 4);
+        foreign["triggers"] = serde_json::json!(["both"]);
+        let foreign = event(foreign);
+        runtime.input(foreign.clone());
+        assert!(!foreign.default_action_enabled());
+        assert!(log.borrow().is_empty());
+        let mut enclosing = host_click_value(&runtime, 5);
+        enclosing["phase"] = "capture".into();
+        enclosing["triggers"] = serde_json::json!(["origin"]);
+        enclosing["enclosing_triggers"] = serde_json::json!(["origin"]);
+        let enclosing = event(enclosing);
+        runtime.input(enclosing.clone());
+        assert!(
+            enclosing.default_action_enabled(),
+            "wrapper guard does not preempt native target defaults"
+        );
+        assert!(
+            !origin.node.trigger_click_allowed(),
+            "an Outside trigger enclosing its host waits for the host guard"
+        );
+    }
+
+    #[test]
+    fn host_click_retains_two_local_veto_passes_and_independent_window_retry() {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let origin = model(&runtime, "origin", OverlayKind::Dropdown, log.clone());
+        origin.open.set(true);
+        origin.node.set_close_behavior(CloseBehavior::Outside);
+        origin.node.set_host_click_receivers(true, true);
+        let both = model(&runtime, "both", OverlayKind::Dropdown, log.clone());
+        both.open.set(true);
+        both.veto.set(true);
+        let outside = model(&runtime, "outside", OverlayKind::Dropdown, log.clone());
+        outside.open.set(true);
+        runtime.input(event(host_click_value(&runtime, 1)));
+        assert_eq!(
+            *log.borrow(),
+            [
+                "before:both:false",
+                "before:outside:false",
+                "apply:outside:false",
+                "before:both:false"
+            ]
+        );
+        assert!(origin.open.get() && both.open.get());
+        assert!(!outside.open.get());
+        let mut window = host_click_value(&runtime, 2);
+        window["phase"] = "window".into();
+        window["window_sequence"] = 1.into();
+        runtime.input(event(window.clone()));
+        assert_eq!(
+            log.borrow()
+                .iter()
+                .filter(|s| s.as_str() == "before:both:false")
+                .count(),
+            3
+        );
+        window["sequence"] = 3.into();
+        runtime.input(event(window));
+        assert_eq!(
+            log.borrow()
+                .iter()
+                .filter(|s| s.as_str() == "before:both:false")
+                .count(),
+            3,
+            "same Window event is not a fourth pass"
+        );
+    }
+
+    #[test]
+    fn header_more_click_does_not_acquire_a_popover_parents_dropdown_guard() {
+        for kind in [
+            OverlayKind::Popover,
+            OverlayKind::Dropdown,
+            OverlayKind::Header,
+        ] {
+            for child_open in [false, true] {
+                let runtime = RuntimeHandle::new();
+                let log = Rc::new(RefCell::new(Vec::new()));
+                let parent = model(&runtime, "parent", kind, log.clone());
+                parent.open.set(true);
+                let header = model(&runtime, "header", OverlayKind::Header, log.clone());
+                header.open.set(child_open);
+                let report = serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":1,
+                    "kind":"click","phase":"bubble","hosts":["parent"],"triggers":["header"],
+                    "nodes":[{"id":"parent","generation":1,"connected":true,"discovery_ready":true},
+                        {"id":"header","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":["parent"]}],
+                    "click_sites":[{"root":"parent","generation":1,"connected":true,"receiver":"root"}]});
+                let input = event(report);
+                runtime.input(input.clone());
+                assert_eq!(
+                    input.default_action_enabled(),
+                    kind == OverlayKind::Popover,
+                    "kind={kind:?},child_open={child_open}"
+                );
+                assert!(parent.open.get());
+                assert_eq!(header.open.get(), child_open);
+                assert!(log.borrow().is_empty());
+            }
+        }
     }
 
     #[test]
@@ -2918,24 +3235,28 @@ mod tests {
         runtime.query(stale.clone());
         assert!(stale.default_action_enabled());
 
-        // Model Dioxus web's fresh core MouseEvent metadata after an earlier
-        // native capture prevention: the component needs the runtime guard.
+        // Source114's own Outside trigger toggles before bubbling host
+        // prevention. A veto retains visibility without blocking admission.
         let log = Rc::new(RefCell::new(Vec::new()));
         let owner = model(&runtime, "outside", OverlayKind::Dropdown, log);
         owner.node.set_close_behavior(CloseBehavior::Outside);
         assert!(owner.node.request(true, Reason::Trigger, false));
+        owner.veto.set(true);
         let mut capture = serde_json::json!({"owner":runtime.owner_id(),"sequence":4,"kind":"click","phase":"capture","hosts":["outside"],"triggers":["outside"],"nodes":[{"id":"outside","generation":1,"connected":true,"discovery_ready":true}]});
         let original = event(capture.clone());
         runtime.input(original.clone());
-        assert!(!original.default_action_enabled() && !owner.node.trigger_click_allowed());
+        assert!(original.default_action_enabled() && owner.node.trigger_click_allowed());
         if owner.node.trigger_click_allowed() {
-            owner.node.request(false, Reason::Trigger, false);
+            assert!(!owner.node.request(false, Reason::Trigger, false));
         }
         assert!(owner.open.get());
         capture["sequence"] = 5.into();
         capture["phase"] = "bubble".into();
         capture["default_prevented"] = true.into();
-        runtime.input(event(capture.clone()));
+        capture["click_sites"] = serde_json::json!([{"root":"outside","generation":1,"connected":true,"receiver":"root"}]);
+        let host = event(capture.clone());
+        runtime.input(host.clone());
+        assert!(!host.default_action_enabled());
         assert!(owner.node.trigger_click_allowed() && owner.open.get());
         capture["sequence"] = 6.into();
         capture["phase"] = "capture".into();

@@ -194,6 +194,48 @@ fn present(dom: &VirtualDom, fixture: &Fixture) {
 }
 
 #[test]
+fn host_inside_click_enters_each_real_owner_and_preserves_foreign_inside_policy() {
+    let origin = Fixture::new("host-inside-origin", 811);
+    let peer = Fixture::new("host-inside-peer", 812);
+    let protected = Fixture::new("host-inside-protected", 813);
+    let a = build(&origin);
+    let b = build(&peer);
+    let c = build(&protected);
+    let owners = [(&a, &origin), (&b, &peer), (&c, &protected)];
+    let document = "host-inside-cross-owner-document";
+    let facts = anchor_focus_nodes(&[(&origin, &[]), (&peer, &[]), (&protected, &[])]);
+    prepare_others(&owners, document, &facts);
+    origin.node().set_close_behavior(CloseBehavior::Inside);
+    protected.node().set_close_behavior(CloseBehavior::Inside);
+    for (dom, fixture) in &owners {
+        present(dom, fixture);
+    }
+    let mut report = serde_json::json!({"owner":origin.runtime().owner_id(),"document":document,
+        "sequence":2,"kind":"click","phase":"bubble","hosts":[origin.node().id()],
+        "nodes":[{"id":origin.node().id(),"generation":1,"connected":true,"discovery_ready":true}],
+        "click_sites":[{"root":origin.node().id(),"generation":1,"connected":true,"receiver":"root"}]});
+    deliver_trap(&a, &origin, report.clone());
+    assert!(!origin.open() && !peer.open() && protected.open());
+    assert_eq!(
+        origin.0.borrow().calls,
+        [("before".into(), false), ("apply".into(), false)]
+    );
+    assert_eq!(
+        peer.0.borrow().calls,
+        [("before".into(), false), ("apply".into(), false)]
+    );
+    assert!(protected.0.borrow().calls.is_empty());
+    present(&b, &peer);
+    report["sequence"] = 3.into();
+    report["click_sites"][0]["generation"] = 2.into();
+    deliver_trap(&a, &origin, report);
+    assert!(
+        peer.open(),
+        "a stale receiver cannot dismiss a foreign owner's new state"
+    );
+}
+
+#[test]
 fn independent_vdom_callbacks_restore_owner_runtime_scope_and_context() {
     let a = Fixture::new("owner-runtime-a", 101);
     let b = Fixture::new("owner-runtime-b", 202);

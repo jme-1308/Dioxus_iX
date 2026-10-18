@@ -165,6 +165,22 @@ function collectFacts(kind,event,phase=''){
   const active=deepActive(),path=event?.composedPath?.()||[];
   const target=path[0] instanceof HTMLElement?path[0]:(event?.target instanceof HTMLElement?event.target:null);
   const hosts=pathIds(path,'data-ix-overlay-host',isActiveHost),triggers=pathIds(path,'data-ix-overlay-trigger');
+  const enclosing_triggers=triggers.filter(id=>{
+    const triggerIndex=path.findIndex(node=>node instanceof HTMLElement&&node.getAttribute('data-ix-overlay-trigger')===id);
+    const hostIndex=path.findIndex(node=>node instanceof HTMLElement&&isActiveHost(node)&&node.getAttribute('data-ix-overlay-host')===id);
+    return hostIndex>=0&&triggerIndex>hostIndex;
+  });
+  // Preserve actual receiver order and identity. Rust decides which physical
+  // root/host sites correspond to the source component's click handlers.
+  const click_sites=[];
+  if(kind==='click'&&phase==='bubble')for(const receiver of path){
+    if(!(receiver instanceof HTMLElement))continue;
+    const host=isActiveHost(receiver),id=receiver.getAttribute(host?'data-ix-overlay-host':'data-ix-overlay-root');
+    if(!id)continue;
+    const registration=path.find(root=>root instanceof HTMLElement&&root.getAttribute('data-ix-overlay-root')===id&&root.getAttribute('data-ix-overlay-owner')===owner);
+    if(!registration)continue;
+    click_sites.push({root:id,generation:Number(registration.getAttribute('data-ix-overlay-generation')||'0'),connected:registration.isConnected&&receiver.isConnected,receiver:host?'host':'root',popover:receiver.hasAttribute('popover'),target_is_host:host&&target===receiver});
+  }
   const candidate_ids=[],addCand=el=>{if(el instanceof HTMLElement&&el.isConnected&&el.id&&!candidate_ids.includes(el.id))candidate_ids.push(el.id);};
   if(target)addCand(target);
   if(active)addCand(active);
@@ -208,7 +224,7 @@ function collectFacts(kind,event,phase=''){
     key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,ctrl:!!event?.ctrlKey,meta:!!event?.metaKey,
     default_prevented:!!event?.defaultPrevented,
     target_id:nativeId(target),active_id:nativeId(active),
-    hosts,triggers,anchors,nodes,active_categories,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
+    hosts,triggers,enclosing_triggers,anchors,nodes,click_sites,active_categories,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||'',
     focus_targets:nodes.flatMap(node=>node.tab_candidates.map(candidate=>candidate.target))
   };

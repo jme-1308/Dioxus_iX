@@ -97,10 +97,17 @@ enum FocusMode {
     TriggerOthers,
     TriggerOthersTopology,
     CompletionFrame,
+    HostMoreOutside,
+    HostMoreNone,
+    HostMoreBoth,
+    HostMoreInside,
+    HostMoreChild,
+    HostMoreHeader,
+    HostMoreHeaderChild,
 }
 
 impl FocusMode {
-    const ALL: [Self; 32] = [
+    const ALL: [Self; 39] = [
         Self::Default,
         Self::Priority,
         Self::HeaderOnly,
@@ -133,6 +140,13 @@ impl FocusMode {
         Self::TriggerOthers,
         Self::TriggerOthersTopology,
         Self::CompletionFrame,
+        Self::HostMoreOutside,
+        Self::HostMoreNone,
+        Self::HostMoreBoth,
+        Self::HostMoreInside,
+        Self::HostMoreChild,
+        Self::HostMoreHeader,
+        Self::HostMoreHeaderChild,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -168,6 +182,13 @@ impl FocusMode {
             Self::TriggerOthers => "trigger-others",
             Self::TriggerOthersTopology => "trigger-others-topology",
             Self::CompletionFrame => "completion-frame",
+            Self::HostMoreOutside => "host-more-outside",
+            Self::HostMoreNone => "host-more-none",
+            Self::HostMoreBoth => "host-more-both",
+            Self::HostMoreInside => "host-more-inside",
+            Self::HostMoreChild => "host-more-child",
+            Self::HostMoreHeader => "host-more-header",
+            Self::HostMoreHeaderChild => "host-more-header-child",
         }
     }
     fn from_key(value: &str) -> Self {
@@ -192,10 +213,24 @@ impl FocusMode {
     fn is_trigger_others(self) -> bool {
         matches!(self, Self::TriggerOthers | Self::TriggerOthersTopology)
     }
+    fn is_host_more(self) -> bool {
+        matches!(
+            self,
+            Self::HostMoreOutside
+                | Self::HostMoreNone
+                | Self::HostMoreBoth
+                | Self::HostMoreInside
+                | Self::HostMoreChild
+                | Self::HostMoreHeader
+                | Self::HostMoreHeaderChild
+        )
+    }
     fn is_header(self) -> bool {
         matches!(
             self,
-            Self::HeaderSmallIsolated
+            Self::HostMoreHeader
+                | Self::HostMoreHeaderChild
+                | Self::HeaderSmallIsolated
                 | Self::HeaderSmallChild
                 | Self::HeaderHistoryChild
                 | Self::HeaderLargeIsolated
@@ -247,7 +282,7 @@ fn Probe() -> Element {
             button { id: "popover-topology-hover", onclick: move |_| { nested_child_host.set(true); hover_parent.set(true); focus_mode.set(FocusMode::Default); generation += 1; }, "Fresh hover parent trigger" }
             input { id: "popover-topology", r#type: "hidden", oninput: move |event| { let value = event.value(); nested_child_host.set(value != "sibling"); hover_parent.set(value == "hover"); focus_mode.set(FocusMode::Default); generation += 1; } }
             div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
-                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor() && !mode.is_trigger_others() && *mode != FocusMode::CompletionFrame) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
+                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor() && !mode.is_trigger_others() && *mode != FocusMode::CompletionFrame && !mode.is_host_more()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
             }
             input { id: "popover-focus-mode", r#type: "hidden", oninput: move |event| { focus_mode.set(FocusMode::from_key(&event.value())); nested_child_host.set(true); hover_parent.set(false); generation += 1; } }
             button { id: "popover-before", "Before opening focus target" }
@@ -261,6 +296,7 @@ fn Probe() -> Element {
                 for mode in FocusMode::ALL.into_iter().filter(|mode| mode.is_trigger_others()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh actual trigger: {}", mode.key())} } }
             }
             button { id: "popover-focus-mode-completion-frame", onclick: move |_| { focus_mode.set(FocusMode::CompletionFrame); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, "Fresh completion frame" }
+            div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0", for mode in FocusMode::ALL.into_iter().filter(|mode| mode.is_host_more()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh host / More: {}", mode.key())} } } }
         }
     } }
 }
@@ -345,7 +381,7 @@ fn Fixture(
             }
             if focus_mode != FocusMode::NoTrigger { PopoverTrigger { popover: handles[0], trigger_mode: if hover_parent { PopoverTriggerMode::Hover } else { PopoverTriggerMode::Click }, "Parent native trigger" } }
             if focus_mode.is_header() {
-                HeaderProbeOwner { initial_small: !matches!(focus_mode, FocusMode::HeaderHistoryChild | FocusMode::HeaderLargeIsolated), with_child: !matches!(focus_mode, FocusMode::HeaderSmallIsolated | FocusMode::HeaderLargeIsolated | FocusMode::HeaderSmallNoOverflow), permanent_overflow: !matches!(focus_mode, FocusMode::HeaderSmallNoOverflow | FocusMode::HeaderSmallChildNoOverflow), Panel { index: 0 } }
+                HeaderProbeOwner { host_more: matches!(focus_mode, FocusMode::HostMoreHeader | FocusMode::HostMoreHeaderChild), initial_small: !matches!(focus_mode, FocusMode::HeaderHistoryChild | FocusMode::HeaderLargeIsolated), with_child: !matches!(focus_mode, FocusMode::HeaderSmallIsolated | FocusMode::HeaderLargeIsolated | FocusMode::HeaderSmallNoOverflow | FocusMode::HostMoreHeader), permanent_overflow: !matches!(focus_mode, FocusMode::HeaderSmallNoOverflow | FocusMode::HeaderSmallChildNoOverflow), Panel { index: 0 } }
             } else { Panel { index: 0 } }
             if !nested_child_host || (focus_mode != FocusMode::Default && focus_mode != FocusMode::Excluded && focus_mode != FocusMode::TabNested) { Panel { index: 1 } }
             if focus_mode != FocusMode::Default { Panel { index: 4 } }
@@ -356,6 +392,7 @@ fn Fixture(
             if focus_mode.is_anchor() { AnchorProbe { mode: focus_mode } }
             if focus_mode.is_trigger_others() { TriggerOthersProbe { topology: focus_mode == FocusMode::TriggerOthersTopology } }
             if focus_mode == FocusMode::CompletionFrame { CompletionFrameProbe {} }
+            if focus_mode.is_host_more() { HostMoreProbe { mode: focus_mode } }
             pre { id: "popover-controller-log", style: "white-space:pre-wrap;overflow-wrap:anywhere", "{logs}" }
         }
     }
@@ -451,7 +488,9 @@ fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
         FocusMode::CachedAdd | FocusMode::CachedRemove => {
             rsx! { if dynamic_body() { button { id: "popover-focus-body", "Dynamic body action" } } p { "Dynamic content changes through Rust fixture state." } }
         }
-        FocusMode::HeaderSmallIsolated
+        FocusMode::HostMoreHeader
+        | FocusMode::HostMoreHeaderChild
+        | FocusMode::HeaderSmallIsolated
         | FocusMode::HeaderSmallChild
         | FocusMode::HeaderHistoryChild
         | FocusMode::HeaderLargeIsolated
@@ -485,6 +524,7 @@ struct HeaderProbeContext {
     child: DropdownHandle,
     small: Signal<bool>,
     root_veto: Signal<bool>,
+    root_veto_open: Signal<bool>,
     root_open: Signal<bool>,
     with_child: bool,
     permanent_overflow: bool,
@@ -495,6 +535,7 @@ fn HeaderProbeOwner(
     initial_small: bool,
     with_child: bool,
     permanent_overflow: bool,
+    #[props(default = false)] host_more: bool,
     children: Element,
 ) -> Element {
     let ProbeContext { rows, .. } = use_context();
@@ -503,11 +544,14 @@ fn HeaderProbeOwner(
     let mut roving = use_signal(|| false);
     let mut root_veto = use_signal(|| false);
     let mut child_veto = use_signal(|| false);
+    let mut root_veto_open = use_signal(|| false);
+    let mut child_veto_open = use_signal(|| false);
     let root_open = use_signal(|| false);
     use_context_provider(|| HeaderProbeContext {
         child,
         small,
         root_veto,
+        root_veto_open,
         root_open,
         with_child,
         permanent_overflow,
@@ -532,11 +576,17 @@ fn HeaderProbeOwner(
             input { id: "popover-header-roving", r#type: "hidden", oninput: move |event| roving.set(event.value() == "true") }
             input { id: "popover-header-root-veto", r#type: "hidden", oninput: move |event| root_veto.set(event.value() == "true") }
             input { id: "popover-header-child-veto", r#type: "hidden", oninput: move |event| child_veto.set(event.value() == "true") }
+            if host_more {
+                input { id: "popover-header-root-veto-open", r#type: "hidden", oninput: move |event| root_veto_open.set(event.value() == "true") }
+                input { id: "popover-header-child-veto-open", r#type: "hidden", oninput: move |event| child_veto_open.set(event.value() == "true") }
+                label { input { id: "popover-header-root-veto-open-visible", r#type: "checkbox", checked: root_veto_open(), oninput: move |event| root_veto_open.set(event.checked()) } "Veto Header opening" }
+                label { input { id: "popover-header-child-veto-open-visible", r#type: "checkbox", checked: child_veto_open(), oninput: move |event| child_veto_open.set(event.checked()) } "Veto Header child opening" }
+            }
             {children}
             if with_child {
                 div { id: "popover-header-child-surface", "data-open": child.is_open().to_string(),
                     Dropdown { controller: child, label: "Header Popover child", enable_top_layer: true, navigation_mode: if roving() { DropdownNavigationMode::RovingTabindex } else { DropdownNavigationMode::ActiveDescendant },
-                        onbeforechange: move |event: DropdownChangeEvent| { if !event.open && child_veto() { event.prevent_default(); } record(rows, "header-child-request", "header-child", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
+                        onbeforechange: move |event: DropdownChangeEvent| { if (!event.open && child_veto()) || (event.open && child_veto_open()) { event.prevent_default(); } record(rows, "header-child-request", "header-child", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
                         onchange: move |open| record(rows, "header-child-completed", "header-child", json!({"open":open})),
                         DropdownItem { label: "Header child first" }
                         DropdownItem { label: "Header child last" }
@@ -554,6 +604,7 @@ fn HeaderProbeContents() -> Element {
         child,
         small,
         root_veto,
+        root_veto_open,
         mut root_open,
         with_child,
         permanent_overflow,
@@ -562,7 +613,7 @@ fn HeaderProbeContents() -> Element {
         div { id: "popover-header-content", style: "width:640px;max-width:100%;height:240px",
             Application { force_breakpoint: if small() { ApplicationBreakpoint::Small } else { ApplicationBreakpoint::Large },
                 header: rsx! { ApplicationHeader { name: "Header Popover fixture", aria_label_more_menu_icon_button: "Header Popover More", enable_top_layer: true,
-                    onbeforeoverflowchange: move |event: HeaderOverflowEvent| { if !event.open && root_veto() { event.prevent_default(); } record(rows, "header-request", "header", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
+                    onbeforeoverflowchange: move |event: HeaderOverflowEvent| { if (!event.open && root_veto()) || (event.open && root_veto_open()) { event.prevent_default(); } record(rows, "header-request", "header", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
                     onoverflowchange: move |open| { root_open.set(open); record(rows, "header-completed", "header", json!({"open":open})); },
                     actions: rsx! { button { id: "popover-header-default-action", "Header default action" } if with_child { DropdownTrigger { dropdown: child, "Header child trigger" } } },
                     overflow: if permanent_overflow { Some(rsx! { button { id: "popover-header-overflow-action", "Header permanent overflow action" } }) } else { None },
@@ -582,6 +633,129 @@ const ANCHOR_POSITIONS: [(&str, i32, i32); 7] = [
     ("corner", 190, -20),
     ("outside", -120, 60),
 ];
+
+const HOST_MORE_ROLES: [&str; 6] = ["origin", "both", "outside", "inside", "none", "child"];
+
+#[derive(Clone, Copy)]
+struct HostMoreContext {
+    handles: [DropdownHandle; 6],
+    veto_open: Signal<[bool; 6]>,
+    veto_close: Signal<[bool; 6]>,
+    mode: FocusMode,
+}
+
+#[component]
+fn HostMoreProbe(mode: FocusMode) -> Element {
+    let ProbeContext { rows, .. } = use_context();
+    let handles = [
+        use_dropdown(),
+        use_dropdown(),
+        use_dropdown(),
+        use_dropdown(),
+        use_dropdown(),
+        use_dropdown(),
+    ];
+    let mut veto_open = use_signal(|| [false; 6]);
+    let mut veto_close = use_signal(|| [false; 6]);
+    use_context_provider(|| HostMoreContext {
+        handles,
+        veto_open,
+        veto_close,
+        mode,
+    });
+    let indices: Vec<usize> = if matches!(
+        mode,
+        FocusMode::HostMoreHeader | FocusMode::HostMoreHeaderChild
+    ) {
+        (1..5).collect()
+    } else if mode == FocusMode::HostMoreChild {
+        vec![0, 5, 1, 2, 3, 4]
+    } else {
+        (0..5).collect()
+    };
+    let state = json!(
+        HOST_MORE_ROLES
+            .into_iter()
+            .enumerate()
+            .map(|(index, role)| (role, handles[index].is_open()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    )
+    .to_string();
+    rsx! {
+        section { id: "host-more-probe", "data-mode": mode.key(), "data-state": state, "data-veto-open": json!(*veto_open.read()).to_string(), "data-veto-close": json!(*veto_close.read()).to_string(),
+            input { id: "host-more-command", r#type: "hidden", oninput: move |event| {
+                let Ok(value) = serde_json::from_str::<Value>(&event.value()) else { return; };
+                let Some(index) = HOST_MORE_ROLES.iter().position(|role| Some(*role) == value["target"].as_str()) else { return; };
+                let action = value["action"].as_str().unwrap_or("");
+                record(rows, "host-more-public-command", HOST_MORE_ROLES[index], value.clone());
+                match action { "open" => handles[index].open(), "close" => handles[index].close(false), "veto-open" => veto_open.write()[index] = value["value"].as_bool().unwrap_or(false), "veto-close" => veto_close.write()[index] = value["value"].as_bool().unwrap_or(false), _ => {} }
+                record(rows, "host-more-public-return", HOST_MORE_ROLES[index], json!({"action":action,"open":handles[index].is_open()}));
+            } }
+            div { id: "host-more-trigger-stage", style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
+                for index in indices.iter().copied().filter(|index| *index != 5) {
+                    span { id: format!("host-more-trigger-slot-{}", HOST_MORE_ROLES[index]), DropdownTrigger { dropdown: handles[index], aria_label: format!("Host More {} trigger", HOST_MORE_ROLES[index]), {format!("Host More {} trigger", HOST_MORE_ROLES[index])} } }
+                }
+            }
+            for index in indices.iter().copied() { HostMoreSurface { index } }
+            div { style: "display:flex;gap:4px;flex-wrap:wrap;margin:8px 0",
+                for index in indices {
+                    for action in ["open", "close", "veto-open", "veto-close"] {
+                        button { id: format!("host-more-control-{}-{action}", HOST_MORE_ROLES[index]), tabindex: "-1", onmousedown: move |event| event.prevent_default(), onclick: move |event| {
+                            event.stop_propagation();
+                            #[cfg(feature = "web")]
+                            { let data = event.data(); if let Some(native) = data.downcast::<web_sys::MouseEvent>() { native.stop_propagation(); } }
+                            record(rows, "host-more-public-command", HOST_MORE_ROLES[index], json!({"action":action,"origin":"visible-Rust-control"}));
+                            match action { "open" => handles[index].open(), "close" => handles[index].close(false), "veto-open" => { let next = !veto_open()[index]; veto_open.write()[index] = next; }, _ => { let next = !veto_close()[index]; veto_close.write()[index] = next; } }
+                            record(rows, "host-more-public-return", HOST_MORE_ROLES[index], json!({"action":action,"open":handles[index].is_open()}));
+                        }, {format!("{}: {action}", HOST_MORE_ROLES[index])} }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn HostMoreSurface(index: usize) -> Element {
+    let ProbeContext { rows, .. } = use_context();
+    let HostMoreContext {
+        handles,
+        veto_open,
+        veto_close,
+        mode,
+    } = use_context();
+    let role = HOST_MORE_ROLES[index];
+    let policy = match index {
+        0 => match mode {
+            FocusMode::HostMoreNone => "none",
+            FocusMode::HostMoreBoth => "both",
+            FocusMode::HostMoreInside => "inside",
+            _ => "outside",
+        },
+        2 => "outside",
+        3 => "inside",
+        4 => "none",
+        _ => "both",
+    };
+    let behavior = match policy {
+        "outside" => DropdownCloseBehavior::Outside,
+        "inside" => DropdownCloseBehavior::Inside,
+        "none" => DropdownCloseBehavior::None,
+        _ => DropdownCloseBehavior::Both,
+    };
+    rsx! {
+        div { id: "host-more-surface-{role}", "data-signal-index": index.to_string(), "data-close-behavior": policy,
+            Dropdown { controller: handles[index], label: format!("Host More {role}"), close_behavior: behavior, enable_top_layer: true, suppress_trigger_visibility_check: true, suppress_automatic_placement: true,
+                onbeforechange: move |event: DropdownChangeEvent| { if (event.open && veto_open()[index]) || (!event.open && veto_close()[index]) { event.prevent_default(); } record(rows, "host-more-request", role, json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
+                onchange: move |open| record(rows, "host-more-completed", role, json!({"open":open})),
+                div { id: "host-more-content-{role}",
+                    button { id: "host-more-action-{role}", {format!("Host More {role} action")} }
+                    if index == 0 && mode == FocusMode::HostMoreChild { span { id: "host-more-child-trigger-slot", DropdownTrigger { dropdown: handles[5], aria_label: "Host More child trigger", "Host More child trigger" } } }
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct CompletionFrameContext {
@@ -1093,8 +1267,8 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[],triggerOthersCases=[],completionFrameCases=[];
-let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null,activeTriggerOthers=null,readFailureTriggerOthers=()=>null,activeCompletionFrame=null,readFailureCompletionFrame=()=>null;
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[],triggerOthersCases=[],completionFrameCases=[],hostMoreCases=[];
+let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null,activeTriggerOthers=null,readFailureTriggerOthers=()=>null,activeCompletionFrame=null,readFailureCompletionFrame=()=>null,activeHostMore=null,readFailureHostMore=()=>null;
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -1554,6 +1728,61 @@ try {
  };
  for(const sourceCase of [104,105,106,107,108,109])await completionRun(sourceCase);
  assert(completionFrameCases.length===6,'all six paired completion-frame public/native/lifecycle histories complete actual fixture setup');
- return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,activeCompletionFrame,failureCompletionFrame:readFailureCompletionFrame(),activeTriggerOthers,failureTriggerOthers:readFailureTriggerOthers(),activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
+ const hostMoreRun=async(sourceCase)=>{
+  const header=sourceCase>=117&&sourceCase!==124,child=!header&&[115,116].includes(sourceCase),mode=header?(sourceCase===121?'host-more-header-child':'host-more-header'):child?'host-more-child':sourceCase===111?'host-more-none':sourceCase===112?'host-more-both':sourceCase===113?'host-more-inside':'host-more-outside';
+  const labels={110:'Outside origin ordinary native content',111:'None origin ordinary native content',112:'Both origin preprevented native content',113:'Inside origin preprevented native content',114:'own same native trigger inside own host with false veto',115:'actual cached child trigger true veto',116:'foreign trigger in closed origin nonvisible diagnostic',117:'actual Header More accepted opening',118:'actual Header More vetoed opening',119:'actual Header More accepted closing',120:'actual Header More vetoed closing',121:'actual Header child trigger true veto',122:'closed Header More ArrowDown opening veto',123:'closed Header More Alt ArrowDown opening veto',124:'Outside ordinary host content with Both target false veto',125:'actual Header content background with Both target false veto'};
+  await freshFocus(mode,'source'+sourceCase+' '+labels[sourceCase]);
+  const roles=header?['both','outside','inside','none']:child?['origin','both','outside','inside','none','child']:['origin','both','outside','inside','none'];
+  const nodes=()=>{const owner=get('host-more-probe'),surfaces=Object.fromEntries(roles.map(role=>{const wrapper=get('host-more-surface-'+role),host=wrapper?.querySelector('[data-ix-overlay-host]'),root=host?.closest('[data-ix-overlay-root]'),trigger=Array.from(document.querySelectorAll('[data-ix-overlay-trigger]')).find(node=>node.getAttribute('data-ix-overlay-trigger')===root?.dataset.ixOverlayRoot);return[role,{wrapper,root,host,trigger,content:get('host-more-content-'+role),action:get('host-more-action-'+role)}];}));return{owner,surfaces,header:header?headerNodes():null};};
+  await wait(()=>{const n=nodes();return n.owner&&roles.every(role=>{const s=n.surfaces[role];return s.trigger&&s.host&&s.root?.dataset.ixOverlayOwner&&/^\d+$/.test(s.root?.dataset.ixOverlayGeneration??'')&&s.root.querySelector('input[data-ix-overlay-transport][data-ix-overlay-native="true"]');});},'actual host/More fixture stable native bindings');
+  if(header){await command('show','parent');await wait(()=>headerNodes().more&&headerNodes().root?.dataset.ixOverlayReady!=='false'&&headerNodes().root?.querySelector('input[data-ix-overlay-transport][data-ix-overlay-native="true"]'),'actual Header More native binding inside public parentPopover');}
+  await settle();const held=nodes(),start=logs().length,timeline=[],listeners=new AbortController();let moved=null,originalParent=null,originalNext=null,eventSequence=0;
+  const element=node=>node?{...describe(node),connected:node.isConnected,attributes:Object.fromEntries(Array.from(node.attributes).filter(a=>a.name.startsWith('data-')||['popover','hidden','inert','aria-expanded'].includes(a.name)).map(a=>[a.name,a.value])),nativeOpen:node.hasAttribute('popover')?node.matches(':popover-open'):null,geometry:geometry(node)}:null;
+  const ancestry=node=>{const rows=[];for(let n=node?.parentElement;n;n=n.parentElement)if(n.hasAttribute('data-ix-overlay-host'))rows.push({node:describe(n),registration:n.getAttribute('data-ix-overlay-host'),nativeOpen:n.hasAttribute('popover')?n.matches(':popover-open'):null});return rows;};
+  const facts=()=>{const n=nodes();return{owner:n.owner?{...n.owner.dataset}:null,state:JSON.parse(n.owner?.dataset.state??'{}'),vetoOpen:JSON.parse(n.owner?.dataset.vetoOpen??'[]'),vetoClose:JSON.parse(n.owner?.dataset.vetoClose??'[]'),active:describe(document.activeElement),surfaces:Object.fromEntries(roles.map(role=>[role,{...Object.fromEntries(Object.entries(n.surfaces[role]).map(([key,node])=>[key,element(node)])),sameActualObjects:Object.fromEntries(Object.entries(held.surfaces[role]).map(([key,node])=>[key,n.surfaces[role][key]===node])),liveTriggerAncestors:ancestry(n.surfaces[role].trigger)}])),header:header?headerFacts():null,headerOpeningVeto:header?get('popover-header-root-veto-open-visible')?.checked:null,headerChildOpeningVeto:header?get('popover-header-child-veto-open-visible')?.checked:null,heldHeader:header?Object.fromEntries(['header','root','more','small','large','trigger','host'].map(key=>[key,{held:element(held.header[key]),sameCurrentObject:headerNodes()[key]===held.header[key]}])):null,callbacks:logs().slice(start)};};
+  const phase=(name,extra={})=>{const row={phase:name,time:performance.now(),facts:facts(),...extra};timeline.push(row);return row;};activeHostMore={sourceCase,timeline};readFailureHostMore=facts;
+  const publicCommand=async(action,target,value)=>{const before=logs().filter(row=>row.kind==='host-more-public-return').length;driverJournal.push({scenario,kind:'host-more-Rust-public-command',action,target,value});input('host-more-command',JSON.stringify({action,target,...(value===undefined?{}:{value})}));await wait(()=>logs().filter(row=>row.kind==='host-more-public-return').length>before,'host More actual Rust public return '+action+' '+target);if(action==='open'||action==='close')await wait(()=>{const n=nodes(),open=action==='open';return JSON.parse(n.owner.dataset.state)[target]===open&&n.surfaces[target].host.matches(':popover-open')===open;},'host More actual logical/native public '+action+' '+target);await settle();phase('public-Rust-command-settled',{action,target,value,adapter:'Rust public handle emits own typed request/focus; source public show property watcher does not'});};
+  const headerVeto=async(id,value)=>{input(id,String(value));await settle();phase('Rust-owned-Header-consumer-veto-control',{id,value});};
+  const actualEvent=async(target,tag,{prevent=false,key=false,alt=false,seed=true}={})=>{
+   const eventId=++eventSequence,focusSeed=sourceCase===125?headerNodes().more:target;if(seed){focusSeed.focus();await settle();if(sourceCase!==116)assert(document.activeElement===focusSeed,'actual visible host More input focus seed '+tag);}phase('actual-input-focus-seed',{eventId,tag,target:element(target),focusSeedTarget:element(focusSeed),sameActualFocusedObject:document.activeElement===focusSeed,focusSeedPerformed:seed,nonfocusableBackgroundAdapter:sourceCase===125,nonvisibleDiagnostic:sourceCase===116});
+   const event=key?new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',altKey:alt,bubbles:true,cancelable:true,composed:true}):new MouseEvent('click',{bubbles:true,cancelable:true,composed:true,button:0});
+   const originalPath=[];let reachedTarget=false,reachedDocument=false,reachedWindow=false;
+   const eventFacts=(extra={})=>({eventId,tag,type:event.type,key:event.key??null,alt:!!event.altKey,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,cancelBubble:event.cancelBubble,target:describe(target),originalPath,clientX:event.clientX??null,clientY:event.clientY??null,hitAtEventCoordinates:event instanceof MouseEvent?describe(document.elementFromPoint(event.clientX,event.clientY)):null,...extra});
+   if(prevent)target.addEventListener(event.type,actual=>{if(actual===event){actual.preventDefault();phase('native-consumer-preprevent-original-content',eventFacts());}},{capture:true,once:true,signal:listeners.signal});
+   document.addEventListener(event.type,actual=>{if(actual===event){originalPath.push(...actual.composedPath().map(node=>describe(node)));phase('actual-input-document-capture',eventFacts());}},{capture:true,passive:true,signal:listeners.signal});
+   target.addEventListener(event.type,actual=>{if(actual===event){reachedTarget=true;phase('actual-input-target-listener-return',eventFacts({adapter:'Late actual-target listener; delegated Rust callback handling may occur later at document, unlike source local listener'}));}},{once:true,passive:true,signal:listeners.signal});
+   const origin=header?headerNodes().small:nodes().surfaces.origin.host,root=header?headerNodes().root:nodes().surfaces.origin.root;
+   for(const [stage,node]of [['native-dialog',origin],['port-overlay-root',root]])if(node)node.addEventListener(event.type,actual=>{if(actual===event)phase('actual-input-'+stage+'-bubble',eventFacts({observerNode:describe(node),adapter:'Source has both actual dialog and custom Dropdown host listeners; port wrapper is a separately identified native observation boundary'}));},{passive:true,signal:listeners.signal});
+   document.addEventListener(event.type,actual=>{if(actual===event){reachedDocument=true;phase('actual-input-late-document',eventFacts());}},{passive:true,signal:listeners.signal});window.addEventListener(event.type,actual=>{if(actual===event){reachedWindow=true;phase('actual-input-late-window',eventFacts());}},{passive:true,signal:listeners.signal});
+   driverJournal.push({scenario,kind:key?'actual-Header-More-recognized-key':'actual-native-host-or-More-click',eventId,tag,target:describe(target),trusted:event.isTrusted,prevent,alt,nonvisibleDiagnostic:sourceCase===116});phase('before-actual-native-input',eventFacts());const beforeFrame=new Promise(resolve=>requestAnimationFrame(time=>{phase('native-frame-observer-queued-before-input',eventFacts({frameTime:time}));resolve();}));target.dispatchEvent(event);phase('actual-input-synchronous-return',eventFacts({reachedTarget,reachedDocument,reachedWindow,IPC:'Native dispatch return is not a Rust-handler acknowledgement'}));await Promise.resolve();phase('queued-driver-microtask',eventFacts());await Promise.all([beforeFrame,new Promise(resolve=>requestAnimationFrame(time=>{phase('actual-input-first-native-frame',eventFacts({frameTime:time}));resolve();}))]);await new Promise(resolve=>requestAnimationFrame(time=>{phase('actual-input-second-native-frame',eventFacts({frameTime:time}));resolve();}));await settle();return phase('actual-input-settled',eventFacts({reachedTarget,reachedDocument,reachedWindow}));
+  };
+  try{
+   for(const role of roles)for(const type of ['beforetoggle','toggle'])held.surfaces[role].host.addEventListener(type,event=>phase('native-'+type,{role,oldState:event.oldState,newState:event.newState,target:describe(event.target)}),{passive:true,signal:listeners.signal});
+   if(header)for(const host of [held.header.small,held.header.large])if(host)for(const type of ['beforetoggle','toggle'])host.addEventListener(type,event=>phase('Header-native-'+type,{oldState:event.oldState,newState:event.newState,target:describe(event.target)}),{passive:true,signal:listeners.signal});
+   for(const type of ['focusin','focusout'])document.addEventListener(type,event=>phase('native-'+type,{target:describe(event.target),relatedTarget:describe(event.relatedTarget)}),{capture:true,passive:true,signal:listeners.signal});
+   document.addEventListener('input',event=>{if(!(event.target instanceof HTMLInputElement)||!event.target.matches('[data-ix-overlay-transport]'))return;let report;try{report=JSON.parse(event.target.value);}catch{return;}if(['click','keydown','anchor-visibility','modality'].includes(report?.kind))phase('actual-native-overlay-report',{report:{owner:report.owner,sequence:report.sequence,kind:report.kind,phase:report.phase,key:report.key,default_prevented:report.default_prevented,target_id:report.target_id,hosts:report.hosts,triggers:report.triggers,anchor_visibility:report.anchor_visibility}});},{capture:true,passive:true,signal:listeners.signal});
+   phase('fresh-native-fixture-bound');
+   if(header&&[119,120,121,125].includes(sourceCase)){await actualEvent(headerNodes().more,'setup-actual-Header-More-opening',{seed:false});await wait(()=>headerNodes().owner.dataset.rootOpen==='true'&&headerNodes().small.matches(':popover-open'),'actual More setup logical/native Header opening');await settle();phase('actual-More-open-before-target-seeding');}
+   else if(!header&&sourceCase===115){await actualEvent(nodes().surfaces.origin.trigger,'setup-actual-origin-opening-for-cached-child',{seed:false});await wait(()=>JSON.parse(nodes().owner.dataset.state).origin&&nodes().surfaces.origin.host.matches(':popover-open'),'actual cached-child origin open after real registered trigger input');await settle();}
+   else if(!header&&sourceCase!==116)await publicCommand('open','origin');
+   if(sourceCase===114){moved=nodes().surfaces.origin.trigger;originalParent=moved.parentNode;originalNext=moved.nextSibling;nodes().surfaces.origin.content.append(moved);driverJournal.push({scenario,kind:'tool-only-same-native-trigger-relocation',sourceCase,target:describe(moved),originalParent:describe(originalParent),newParent:describe(moved.parentNode),privateRegistryMutation:false,remount:false});await settle();assert(nodes().surfaces.origin.trigger===moved&&nodes().surfaces.origin.host.contains(moved),'same actual own registered trigger moved inside its own native host without remount');phase('same-actual-trigger-relocated-before-input',{sameObject:nodes().surfaces.origin.trigger===moved,originNativeOpen:nodes().surfaces.origin.host.matches(':popover-open'),originalParent:describe(originalParent),currentParent:describe(moved.parentNode)});await publicCommand('veto-close','origin',true);}
+   if(sourceCase===115)await publicCommand('veto-open','child',true);
+   if(header&&[118,122,123].includes(sourceCase))await headerVeto('popover-header-root-veto-open',true);
+   if(sourceCase===120)await headerVeto('popover-header-root-veto',true);
+   if(sourceCase===121)await headerVeto('popover-header-child-veto-open',true);
+   if([124,125].includes(sourceCase))await publicCommand('veto-close','both',true);
+   for(const role of ['both','outside','inside','none'])await publicCommand('open',role);
+   assert(['both','outside','inside','none'].every(role=>JSON.parse(nodes().owner.dataset.state)[role]&&nodes().surfaces[role].host.matches(':popover-open')),'all four actual policy targets concurrently logical/native open before host More operation');
+   if(header)assert((headerNodes().owner.dataset.rootOpen==='true')===[119,120,121,125].includes(sourceCase)&&headerNodes().small.matches(':popover-open')===[119,120,121,125].includes(sourceCase),'actual Header root logical/native setup state before tested input');
+   else assert(JSON.parse(nodes().owner.dataset.state).origin===(sourceCase!==116)&&nodes().surfaces.origin.host.matches(':popover-open')===(sourceCase!==116),'actual origin logical/native setup state before tested host input');
+   const outside=get('popover-outside'),pointer=new MouseEvent('mousedown',{bubbles:true,cancelable:true,composed:true,button:0,buttons:1});outside.focus();await settle();outside.dispatchEvent(pointer);driverJournal.push({scenario,kind:'actual-outside-mousedown-only-modality-input',trusted:pointer.isTrusted,clickDispatched:false});await settle();phase('actual-pointer-modality-input-without-click',{trusted:pointer.isTrusted,defaultPrevented:pointer.defaultPrevented});
+   const target=header?(sourceCase===125?headerNodes().small:sourceCase===121?headerNodes().trigger:headerNodes().more):[115,116].includes(sourceCase)?nodes().surfaces.child.trigger:sourceCase===114?nodes().surfaces.origin.trigger:nodes().surfaces.origin.action;
+   phase('ready-before-tested-host-More-input',{inputTarget:element(target)});const operationStart=logs().length;await actualEvent(target,'tested-source'+sourceCase,{prevent:[112,113].includes(sourceCase),key:[122,123].includes(sourceCase),alt:sourceCase===123});
+   const settled=phase('settled-host-More-operation'),entry={sourceCase,label:scenario,input:{mode,header,ordinaryContent:sourceCase<=113||sourceCase===124,headerContentBackground:sourceCase===125,peerBothFalseVeto:[124,125].includes(sourceCase),originalNativePreprevent:[112,113].includes(sourceCase),sameNativeTriggerRelocation:sourceCase===114,closedNonvisibleDiagnostic:sourceCase===116,recognizedKey:[122,123].includes(sourceCase),alt:sourceCase===123,sourceCustomMoreVsPortNativeButton:header,publicHandleSetupAdapter:true},timeline,settled,operationCallbacks:logs().slice(operationStart),classification:'raw source-paired actual host/More input facts; dialog/root/document/Window boundaries and real duplicate requests retained without a source outcome oracle'};hostMoreCases.push(entry);save({phase:'raw-host-content-and-Header-More',hostMore:entry});activeHostMore=null;
+  }finally{if(moved&&originalParent?.isConnected){originalParent.insertBefore(moved,originalNext?.parentNode===originalParent?originalNext:null);await settle();phase('same-actual-trigger-restored-after-operation',{sameObject:nodes().surfaces[sourceCase===114?'origin':'child'].trigger===moved,restoredParent:describe(moved.parentNode)});}listeners.abort();}
+ };
+ for(const sourceCase of [110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125])await hostMoreRun(sourceCase);
+ assert(hostMoreCases.length===16,'all sixteen host-content and actual Header More diagnostics complete matched public/native setup');
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,hostMoreCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,hostMoreCases,activeHostMore,failureHostMore:readFailureHostMore(),activeCompletionFrame,failureCompletionFrame:readFailureCompletionFrame(),activeTriggerOthers,failureTriggerOthers:readFailureTriggerOthers(),activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
 "#;

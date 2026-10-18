@@ -7147,6 +7147,56 @@ mod tests {
             button {r#type:"button","data-header-slot-button":label.clone(),onclick:move |_|count+=1,"{label} count {count}"}
         }}
     }
+    #[derive(Clone, Default)]
+    struct HeaderPeerCapture(Rc<RefCell<HeaderPeerState>>);
+    impl PartialEq for HeaderPeerCapture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    #[derive(Default)]
+    struct HeaderPeerState {
+        handles: Option<[crate::DropdownHandle; 4]>,
+        runtime: Option<crate::overlay_runtime::RuntimeHandle>,
+        scope: Option<ScopeId>,
+        requests: Vec<(usize, bool)>,
+        completions: Vec<(usize, bool)>,
+    }
+    #[component]
+    fn HeaderOverflowPeers(capture: HeaderPeerCapture) -> Element {
+        let handles = [
+            crate::use_dropdown(),
+            crate::use_dropdown(),
+            crate::use_dropdown(),
+            crate::use_dropdown(),
+        ];
+        let runtime = crate::overlay_runtime::use_overlay_runtime();
+        {
+            let mut state = capture.0.borrow_mut();
+            state.handles = Some(handles);
+            state.runtime = Some(runtime);
+            state.scope = Some(dioxus::core::current_scope_id());
+        }
+        rsx! { div {
+            for (index, behavior) in [crate::DropdownCloseBehavior::Both, crate::DropdownCloseBehavior::Outside, crate::DropdownCloseBehavior::Inside, crate::DropdownCloseBehavior::None].into_iter().enumerate() {
+                HeaderOverflowPeer { index, behavior, dropdown: handles[index], capture: capture.clone() }
+            }
+        } }
+    }
+    #[component]
+    fn HeaderOverflowPeer(
+        index: usize,
+        behavior: crate::DropdownCloseBehavior,
+        dropdown: crate::DropdownHandle,
+        capture: HeaderPeerCapture,
+    ) -> Element {
+        let before = capture.clone();
+        rsx! { crate::Dropdown { controller: dropdown, label: "Header peer {index}", class: "header-test-peer-{index}", close_behavior: behavior, disable_focus_trap: true, suppress_trigger_visibility_check: true,
+            onbeforechange: move |event: crate::DropdownChangeEvent| before.0.borrow_mut().requests.push((index, event.open)),
+            onchange: move |open| capture.0.borrow_mut().completions.push((index, open)),
+            button { "Peer content {index}" }
+        } }
+    }
     struct AppSwitchFixture {
         capture: AppSwitchCapture,
         opening: AppSwitchOpeningCapture,
@@ -7173,6 +7223,7 @@ mod tests {
         overflow_veto: bool,
         overflow_requests: Vec<(bool, bool)>,
         overflow_changes: Vec<bool>,
+        overflow_peers: Option<HeaderPeerCapture>,
         show_menu: bool,
         sidebar: bool,
         breakpoint: ApplicationBreakpoint,
@@ -7267,6 +7318,7 @@ mod tests {
             onexpandchange:move |value|menu_notified.borrow_mut().menu_notifications.push(value),
             MenuItem {label:"Only item",close_on_select:false}
         }});
+        let peers = state.overflow_peers.clone();
         rsx! {div {oninput:move |event:FormEvent|{input.borrow_mut().ancestor_inputs+=1;event.prevent_default();},
             if state.visible {
                 if !state.contained {{header}}
@@ -7275,6 +7327,7 @@ mod tests {
                 else {Application {app_switch_config:authority,header,menu,menu_expanded,force_breakpoint:state.breakpoint,
                     sidebar:state.sidebar.then(||rsx!{div{"Sidebar"}})}}
             }
+            if let Some(capture) = peers { HeaderOverflowPeers { capture } }
         }}
     }
     struct AppSwitchHarness {
@@ -7333,6 +7386,7 @@ mod tests {
                 overflow_veto: false,
                 overflow_requests: vec![],
                 overflow_changes: vec![],
+                overflow_peers: None,
                 show_menu: false,
                 sidebar: false,
                 breakpoint: ApplicationBreakpoint::Large,
@@ -7564,6 +7618,55 @@ mod tests {
                 self.header_input.unwrap(),
                 report.to_string(),
             )
+        }
+        fn header_peer_nodes(&self) -> Vec<serde_json::Value> {
+            (0..4).map(|index| {
+                let class = format!("header-test-peer-{index}");
+                let attrs = self.attrs.values().find(|attrs| attrs.get("class").is_some_and(|value| value.split_whitespace().any(|value| value == class))).expect("rendered actual peer root");
+                serde_json::json!({"id":attrs["data-ix-overlay-root"],"generation":attrs["data-ix-overlay-generation"].parse::<u64>().unwrap(),"connected":true,"discovery_ready":true,"trigger_ancestors":[]})
+            }).collect()
+        }
+        fn header_peer_observe(&self, sequence: u64, child: bool) -> String {
+            let peers = self.settings.borrow().overflow_peers.clone().unwrap();
+            let runtime = peers.0.borrow().runtime.clone().unwrap();
+            let header = self.header_root_attrs()["id"].clone();
+            let mut nodes = self.header_peer_nodes();
+            let first = nodes[0]["id"].as_str().unwrap().to_string();
+            if child {
+                nodes[0]["trigger_ancestors"] = serde_json::json!([header]);
+            }
+            nodes.push(serde_json::json!({"id":header,"generation":self.header_rendered_root_attribute("data-ix-overlay-generation").parse::<u64>().unwrap(),"connected":true,"discovery_ready":true}));
+            menu_dispatch(&self.dom,"input",self.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe","nodes":nodes}).to_string());
+            first
+        }
+        fn header_peer_frame(&mut self) -> usize {
+            let peers = self.settings.borrow().overflow_peers.clone().unwrap();
+            let runtime = peers.0.borrow().runtime.clone().unwrap();
+            let frames = runtime.pending_completion_frames();
+            let count = frames.len();
+            for (sequence, root, generation) in frames {
+                menu_dispatch(&self.dom,"change",self.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,"completion_root":root,"completion_generation":generation}).to_string());
+            }
+            self.settle();
+            count
+        }
+        fn seed_header_peers(&mut self) -> HeaderPeerCapture {
+            let peers = self.settings.borrow().overflow_peers.clone().unwrap();
+            let (handles, scope) = {
+                let state = peers.0.borrow();
+                (state.handles.unwrap(), state.scope.unwrap())
+            };
+            self.dom.in_scope(scope, || {
+                for handle in handles {
+                    handle.open();
+                }
+            });
+            self.settle();
+            assert_eq!(self.header_peer_frame(), 4);
+            assert!(handles.into_iter().all(crate::DropdownHandle::is_open));
+            peers.0.borrow_mut().requests.clear();
+            peers.0.borrow_mut().completions.clear();
+            peers
         }
         fn click(&self) -> (bool, bool) {
             menu_dispatch(&self.dom, "click", self.trigger.unwrap(), ())
@@ -7924,6 +8027,203 @@ mod tests {
         harness.settle();
         assert_eq!(harness.settings.borrow().overflow_requests.len(), requests);
         assert_eq!(harness.header_root_attrs()["data-open"], "false");
+    }
+
+    #[test]
+    fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoed() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        for (previous, veto) in [(false, false), (false, true), (true, false), (true, true)] {
+            let capture = HeaderPeerCapture::default();
+            let mut h = AppSwitchHarness::configured(None, false, |state| {
+                state.overflow_peers = Some(capture)
+            });
+            h.settle();
+            h.header_raw(
+                h.header_message(1, "presence", serde_json::json!({})),
+                false,
+            );
+            h.header_peer_observe(1, false);
+            if previous {
+                h.header_raw(
+                    h.header_message(2, "click", serde_json::json!({"more":true})),
+                    false,
+                );
+                h.settle();
+                assert_eq!(h.header_root_attrs()["data-open"], "true");
+            }
+            let peers = h.seed_header_peers();
+            {
+                let mut state = h.settings.borrow_mut();
+                state.overflow_veto = veto;
+                state.overflow_requests.clear();
+                state.overflow_changes.clear();
+            }
+            let message = h.header_message(3, "click", serde_json::json!({"more":true}));
+            assert_eq!(h.header_raw(message.clone(), false), (false, false));
+            assert_eq!(
+                h.settings.borrow().overflow_requests,
+                [(previous, !previous)]
+            );
+            assert_eq!(
+                peers.0.borrow().requests,
+                [(0, false), (1, false)],
+                "independent post-toggle pass: previous={previous}, veto={veto}"
+            );
+            assert!(
+                peers.0.borrow().completions.is_empty(),
+                "generic Dropdown completion still waits for frame ACK"
+            );
+            assert_eq!(
+                h.header_raw(message, true),
+                (false, false),
+                "stop query only replays its saved flag"
+            );
+            assert_eq!(
+                peers.0.borrow().requests,
+                [(0, false), (1, false)],
+                "query cannot run the post-phase twice"
+            );
+            h.settle();
+            assert_eq!(
+                h.header_root_attrs()["data-open"],
+                (if veto { previous } else { !previous }).to_string()
+            );
+            assert_eq!(
+                h.settings.borrow().overflow_changes,
+                if veto { vec![] } else { vec![!previous] },
+                "Header accepted-state callback remains its existing synchronous adapter"
+            );
+            let handles = peers.0.borrow().handles.unwrap();
+            assert_eq!(
+                handles.map(crate::DropdownHandle::is_open),
+                [false, false, true, true]
+            );
+            assert_eq!(h.header_peer_frame(), 2);
+            assert_eq!(peers.0.borrow().completions, [(0, false), (1, false)]);
+            assert_eq!(h.header_peer_frame(), 0);
+        }
+    }
+
+    #[test]
+    fn header_closed_more_activation_keys_run_post_phase_with_or_without_alt_and_veto() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        for (alt, veto) in [(false, false), (false, true), (true, false), (true, true)] {
+            let capture = HeaderPeerCapture::default();
+            let mut h = AppSwitchHarness::configured(None, false, |state| {
+                state.overflow_peers = Some(capture)
+            });
+            h.settle();
+            h.header_raw(
+                h.header_message(1, "presence", serde_json::json!({})),
+                false,
+            );
+            h.header_peer_observe(1, false);
+            let peers = h.seed_header_peers();
+            h.settings.borrow_mut().overflow_veto = veto;
+            let message = h.header_message(
+                2,
+                "key",
+                serde_json::json!({"more":true,"key":"ArrowDown","alt":alt}),
+            );
+            assert_eq!(h.header_raw(message.clone(), false), (!alt, false));
+            assert_eq!(h.settings.borrow().overflow_requests, [(false, true)]);
+            assert_eq!(
+                peers.0.borrow().requests,
+                [(0, false), (1, false)],
+                "closed activation post-phase: Alt={alt}, veto={veto}"
+            );
+            assert_eq!(h.header_raw(message, true), (false, false));
+            assert_eq!(peers.0.borrow().requests.len(), 2);
+            h.settle();
+            assert_eq!(h.header_root_attrs()["data-open"], (!veto).to_string());
+            assert_eq!(
+                peers
+                    .0
+                    .borrow()
+                    .handles
+                    .unwrap()
+                    .map(crate::DropdownHandle::is_open),
+                [false, false, true, true]
+            );
+            assert_eq!(h.header_peer_frame(), 2);
+        }
+    }
+
+    #[test]
+    fn header_more_post_phase_excludes_open_navigation_prevented_and_child_owned_input() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        for case in [
+            "open-enter",
+            "prevented-click",
+            "prevented-key",
+            "child-trigger",
+        ] {
+            let capture = HeaderPeerCapture::default();
+            let mut h = AppSwitchHarness::configured(None, false, |state| {
+                state.overflow_peers = Some(capture)
+            });
+            h.settle();
+            h.header_raw(
+                h.header_message(1, "presence", serde_json::json!({})),
+                false,
+            );
+            h.header_peer_observe(1, false);
+            let previous = matches!(case, "open-enter" | "child-trigger");
+            if previous {
+                h.header_raw(
+                    h.header_message(2, "click", serde_json::json!({"more":true})),
+                    false,
+                );
+                h.settle();
+            }
+            let peers = h.seed_header_peers();
+            h.settings.borrow_mut().overflow_requests.clear();
+            h.settings.borrow_mut().overflow_changes.clear();
+            let (kind, extra) = match case {
+                "open-enter" => ("key", serde_json::json!({"key":"Enter","more":true})),
+                "prevented-click" => (
+                    "click",
+                    serde_json::json!({"more":true,"default_prevented":true}),
+                ),
+                "prevented-key" => (
+                    "key",
+                    serde_json::json!({"key":"ArrowDown","more":true,"default_prevented":true}),
+                ),
+                _ => {
+                    let child = h.header_peer_observe(2, true);
+                    (
+                        "click",
+                        serde_json::json!({"inside":true,"hosts":[h.header_root_attrs()["id"]],"triggers":[child]}),
+                    )
+                }
+            };
+            let message = h.header_message(3, kind, extra);
+            assert_eq!(
+                h.header_raw(message.clone(), false),
+                (case == "child-trigger", false)
+            );
+            assert_eq!(h.header_raw(message, true), (false, false));
+            h.settle();
+            assert_eq!(
+                h.header_root_attrs()["data-open"],
+                previous.to_string(),
+                "{case}"
+            );
+            assert!(h.settings.borrow().overflow_requests.is_empty(), "{case}");
+            assert!(h.settings.borrow().overflow_changes.is_empty(), "{case}");
+            assert!(peers.0.borrow().requests.is_empty(), "{case}");
+            assert!(
+                peers
+                    .0
+                    .borrow()
+                    .handles
+                    .unwrap()
+                    .into_iter()
+                    .all(crate::DropdownHandle::is_open),
+                "{case}"
+            );
+            assert_eq!(h.header_peer_frame(), 0, "{case}");
+        }
     }
 
     #[test]
