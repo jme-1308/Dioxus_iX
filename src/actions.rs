@@ -18,6 +18,24 @@ action_enum!(ButtonVariant, Primary,
     Primary => "primary", Secondary => "secondary", Tertiary => "tertiary",
     SubtlePrimary => "subtle-primary", SubtleSecondary => "subtle-secondary", SubtleTertiary => "subtle-tertiary",
     DangerPrimary => "danger-primary", DangerSecondary => "danger-secondary", DangerTertiary => "danger-tertiary");
+action_enum!(ToggleButtonVariant, SubtlePrimary,
+    Primary => "primary", Secondary => "secondary", Tertiary => "tertiary",
+    SubtlePrimary => "subtle-primary", SubtleSecondary => "subtle-secondary", SubtleTertiary => "subtle-tertiary");
+impl TryFrom<ButtonVariant> for ToggleButtonVariant {
+    type Error = ButtonVariant;
+
+    fn try_from(value: ButtonVariant) -> Result<Self, Self::Error> {
+        match value {
+            ButtonVariant::Primary => Ok(Self::Primary),
+            ButtonVariant::Secondary => Ok(Self::Secondary),
+            ButtonVariant::Tertiary => Ok(Self::Tertiary),
+            ButtonVariant::SubtlePrimary => Ok(Self::SubtlePrimary),
+            ButtonVariant::SubtleSecondary => Ok(Self::SubtleSecondary),
+            ButtonVariant::SubtleTertiary => Ok(Self::SubtleTertiary),
+            other => Err(other),
+        }
+    }
+}
 action_enum!(ButtonType, Button, Button => "button", Submit => "submit", Reset => "reset");
 action_enum!(ButtonAlignment, Center, Center => "center", Start => "start");
 action_enum!(ButtonIconSize, Twenty, Twelve => "12", Sixteen => "16", Twenty => "20", TwentyFour => "24");
@@ -230,11 +248,17 @@ pub fn LinkButton(
 }
 
 /// Controlled toggle button; update `pressed` from `onpressedchange`.
+///
+/// Supports the six current source variants and semantic selected-state tokens.
+/// A click requests the inverse of the supplied `pressed` value; it never changes
+/// that value internally. Disabled and loading controls do not emit requests.
+/// `active` locks the source host active appearance; `ix-toggle-active` exposes
+/// the source inner active diagnostic alias independently of the selected state.
 #[component]
 pub fn ToggleButton(
     children: Element,
     #[props(default)] pressed: bool,
-    #[props(default = ButtonVariant::SubtlePrimary)] variant: ButtonVariant,
+    #[props(default)] variant: ToggleButtonVariant,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
     icon: Option<String>,
@@ -245,13 +269,19 @@ pub fn ToggleButton(
 ) -> Element {
     let blocked = disabled || loading;
     rsx! { button {
-        class: "ix-button ix-button-{variant.as_str()} {class}", class: if pressed { "ix-selected" },
-        r#type: "button", disabled: blocked, aria_pressed: pressed, aria_busy: loading, aria_label,
+        class: "ix-button ix-button-tokenized ix-toggle-button-native ix-button-{variant.as_str()} {class}",
+        class: if pressed { "ix-selected" },
+        r#type: "button", disabled: blocked, tabindex: if blocked { -1 } else { 0 },
+        aria_pressed: pressed, aria_disabled: blocked, aria_busy: loading, aria_label,
         onclick: move |_| { if !blocked { onpressedchange.call(!pressed); } },
-        if loading { Spinner { size: SpinnerSize::Sm, hide_track: true } }
-        else if let Some(name) = icon { crate::Icon { name, size: 20 } }
+        if loading { span { class: "ix-button-loading", Spinner { size: SpinnerSize::Sm, hide_track: true } } }
+        else if let Some(name) = icon.filter(|name| !name.is_empty()) {
+            span { class: "ix-button-icon-start ix-toggle-button-icon", crate::Icon { name, size: 20, class: "ix-toggle-button-glyph" } }
+        }
         span { class: "ix-button-content", {children} }
-        if let Some(name) = icon_right { crate::Icon { name, size: 20 } }
+        if let Some(name) = icon_right.filter(|name| !name.is_empty()) {
+            span { class: "ix-button-icon-end ix-toggle-button-icon", crate::Icon { name, size: 20, class: "ix-toggle-button-glyph" } }
+        }
     } }
 }
 
@@ -1000,3 +1030,7 @@ mod button_token_tests;
 #[cfg(test)]
 #[path = "icon_button_token_tests.rs"]
 mod icon_button_token_tests;
+
+#[cfg(test)]
+#[path = "toggle_button_token_tests.rs"]
+mod toggle_button_token_tests;

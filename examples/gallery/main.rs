@@ -46,6 +46,7 @@ mod source_examples;
 mod tabs_review;
 mod text_commit_review;
 mod theme_review;
+mod toggle_button_review;
 mod tree;
 mod workflow_review;
 
@@ -203,7 +204,7 @@ fn Gallery() -> Element {
                     h1 { "{page().label()}" }
                     p { class: "review-intro", "Interactive Rust ports of iX example scenarios. This is a work in progress; exact Brand tokens and complete upstream parity are still being verified." }
                     match page() {
-                        GalleryPage::Actions => rsx! { icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
+                        GalleryPage::Actions => rsx! { toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples {} },
                         GalleryPage::Forms => rsx! { text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },

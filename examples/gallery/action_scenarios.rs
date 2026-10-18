@@ -204,6 +204,8 @@ fn IconButtonScenario() -> Element {
 
 #[component]
 fn ToggleScenario(variant: ButtonVariant, icon_only: bool) -> Element {
+    let toggle_variant = ToggleButtonVariant::try_from(variant)
+        .expect("toggle scenarios use the six source variants");
     let mut bold = use_signal(|| false);
     let mut underline = use_signal(|| true);
     let text_style = format!(
@@ -218,10 +220,10 @@ fn ToggleScenario(variant: ButtonVariant, icon_only: bool) -> Element {
             IconToggleButton { variant, icon: "text-underline", label: "Underline", pressed: underline(), onpressedchange: move |value| underline.set(value) }
             IconToggleButton { variant, icon: "", label: "Strikethrough", disabled: true, loading: true, onpressedchange: |_| {} }
         } else {
-            ToggleButton { variant, icon: "text-bold", pressed: bold(), onpressedchange: move |value| bold.set(value), "Bold" }
-            ToggleButton { variant, icon: "text-italic", disabled: true, onpressedchange: |_| {}, "Italic" }
-            ToggleButton { variant, icon: "text-underline", pressed: underline(), onpressedchange: move |value| underline.set(value), "Underline" }
-            ToggleButton { variant, disabled: true, loading: true, onpressedchange: |_| {}, "Strikethrough" }
+            ToggleButton { variant: toggle_variant, icon: "text-bold", pressed: bold(), onpressedchange: move |value| bold.set(value), "Bold" }
+            ToggleButton { variant: toggle_variant, icon: "text-italic", disabled: true, onpressedchange: |_| {}, "Italic" }
+            ToggleButton { variant: toggle_variant, icon: "text-underline", pressed: underline(), onpressedchange: move |value| underline.set(value), "Underline" }
+            ToggleButton { variant: toggle_variant, disabled: true, loading: true, onpressedchange: |_| {}, "Strikethrough" }
         }
     }
     p { style: text_style, "Lorem ipsum text" }

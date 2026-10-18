@@ -75,6 +75,7 @@ pub mod patterns;
 mod popover_focus;
 mod select_item;
 pub mod theme;
+mod toggle_button_styles;
 pub mod tooltip;
 pub mod tree;
 

@@ -71,6 +71,7 @@ pub fn IxTheme(
         style { {crate::actions::STYLES} }
         style { {crate::button_styles::STYLES} }
         style { {crate::icon_button_styles::STYLES} }
+        style { {crate::toggle_button_styles::STYLES} }
         style { {crate::application::STYLES} }
         style { {crate::header_layout::STYLES} }
         style { {crate::chat::STYLES} }

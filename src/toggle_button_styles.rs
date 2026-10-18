@@ -1,0 +1,283 @@
+//! Source-aligned sizing, icon/spinner constraints, and 6-variant pressed state token styles for [`crate::ToggleButton`].
+//!
+//! Scoped strictly to `.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native` and loaded
+//! after [`crate::button_styles::STYLES`] so shared button base tokens and layout rules are reused.
+
+pub(crate) const STYLES: &str = r#"
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native {
+  --ix-button-primary--background--pressed: var(--si-sys-color-background-accent-hover, color-mix(in srgb, var(--ix-color-primary) 85%, var(--ix-color-text)));
+  --ix-button-primary--background--pressed-active: var(--si-sys-color-background-accent-active, color-mix(in srgb, var(--ix-color-primary) 72%, var(--ix-color-text)));
+  --ix-button-primary--background--pressed-hover: var(--si-sys-color-background-accent-hover, color-mix(in srgb, var(--ix-color-primary) 85%, var(--ix-color-text)));
+  --ix-button-primary--border-color--pressed: rgba(0, 0, 0, 0);
+  --ix-button-primary--border-color--pressed-active: rgba(0, 0, 0, 0);
+  --ix-button-primary--border-color--pressed-hover: rgba(0, 0, 0, 0);
+  --ix-button-primary--border-color--pressed-hover-active: rgba(0, 0, 0, 0);
+  --ix-button-primary--color--pressed: var(--si-sys-color-text-on-accent, var(--ix-color-on-primary));
+  --ix-button-primary--color--pressed-active: var(--si-sys-color-text-on-accent, var(--ix-color-on-primary));
+  --ix-button-primary--color--pressed-hover: var(--si-sys-color-text-on-accent, var(--ix-color-on-primary));
+  --ix-button-secondary--background--pressed: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-secondary--background--pressed-active: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-secondary--background--pressed-hover: var(--si-sys-color-background-accent-secondary-hover, color-mix(in srgb, var(--ix-color-primary) 14%, transparent));
+  --ix-button-secondary--border-color--pressed: var(--si-sys-color-border-accent-hover, color-mix(in srgb, var(--ix-color-primary) 85%, var(--ix-color-text)));
+  --ix-button-secondary--border-color--pressed-active: var(--si-sys-color-border-accent-active, color-mix(in srgb, var(--ix-color-primary) 72%, var(--ix-color-text)));
+  --ix-button-secondary--border-color--pressed-hover: var(--si-sys-color-border-accent-hover, color-mix(in srgb, var(--ix-color-primary) 85%, var(--ix-color-text)));
+  --ix-button-secondary--color--pressed: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-secondary--color--pressed-active: var(--si-sys-color-text-accent-active, color-mix(in srgb, var(--ix-color-secondary) 72%, var(--ix-color-text)));
+  --ix-button-secondary--color--pressed-hover: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-primary--background--pressed: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-subtle-primary--background--pressed-active: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-subtle-primary--background--pressed-hover: var(--si-sys-color-background-accent-secondary-hover, color-mix(in srgb, var(--ix-color-primary) 14%, transparent));
+  --ix-button-subtle-primary--border-color--pressed: rgba(0, 0, 0, 0);
+  --ix-button-subtle-primary--border-color--pressed-active: rgba(0, 0, 0, 0);
+  --ix-button-subtle-primary--border-color--pressed-hover: rgba(0, 0, 0, 0);
+  --ix-button-subtle-primary--color--pressed: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-primary--color--pressed-active: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-primary--color--pressed-hover: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-secondary--background--pressed: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-subtle-secondary--background--pressed-active: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-subtle-secondary--background--pressed-hover: var(--si-sys-color-background-accent-secondary-hover, color-mix(in srgb, var(--ix-color-primary) 14%, transparent));
+  --ix-button-subtle-secondary--border-color--pressed: var(--si-sys-color-border-2, var(--ix-color-border));
+  --ix-button-subtle-secondary--border-color--pressed-active: var(--si-sys-color-border-2, var(--ix-color-border));
+  --ix-button-subtle-secondary--border-color--pressed-hover: var(--si-sys-color-border-2, var(--ix-color-border));
+  --ix-button-subtle-secondary--color--pressed: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-secondary--color--pressed-active: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-secondary--color--pressed-hover: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-tertiary--background--pressed: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-subtle-tertiary--background--pressed-active: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-subtle-tertiary--background--pressed-hover: var(--si-sys-color-background-accent-secondary-hover, color-mix(in srgb, var(--ix-color-primary) 14%, transparent));
+  --ix-button-subtle-tertiary--border-color--pressed: rgba(0, 0, 0, 0);
+  --ix-button-subtle-tertiary--border-color--pressed-active: rgba(0, 0, 0, 0);
+  --ix-button-subtle-tertiary--border-color--pressed-hover: rgba(0, 0, 0, 0);
+  --ix-button-subtle-tertiary--color--pressed: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-tertiary--color--pressed-active: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-subtle-tertiary--color--pressed-hover: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-tertiary--background--pressed: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-tertiary--background--pressed-active: var(--si-sys-color-background-accent-secondary-active, color-mix(in srgb, var(--ix-color-primary) 24%, transparent));
+  --ix-button-tertiary--background--pressed-hover: var(--si-sys-color-background-accent-secondary-hover, color-mix(in srgb, var(--ix-color-primary) 14%, transparent));
+  --ix-button-tertiary--border-color--pressed: rgba(0, 0, 0, 0);
+  --ix-button-tertiary--border-color--pressed-active: rgba(0, 0, 0, 0);
+  --ix-button-tertiary--border-color--pressed-hover: rgba(0, 0, 0, 0);
+  --ix-button-tertiary--color--pressed: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-button-tertiary--color--pressed-active: var(--si-sys-color-text-accent-active, color-mix(in srgb, var(--ix-color-secondary) 72%, var(--ix-color-text)));
+  --ix-button-tertiary--color--pressed-hover: var(--si-sys-color-text-accent-hover, color-mix(in srgb, var(--ix-color-secondary) 85%, var(--ix-color-text)));
+  --ix-toggle-button--height: var(--si-sys-sizing-size-80, var(--_ix-button-height, 32px));
+  --ix-toggle-button--min-width: var(--si-sys-sizing-size-120, 80px);
+  --ix-toggle-button-icon-right--icon-size: var(--si-sys-sizing-icon-lg, 20px);
+  height: var(--ix-toggle-button--height);
+  width: auto;
+  min-width: var(--ix-toggle-button--min-width);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native .ix-button-icon-start,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native .ix-button-icon-end,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native .ix-toggle-button-icon {
+  block-size: var(--ix-toggle-button-icon-right--icon-size);
+  inline-size: var(--ix-toggle-button-icon-right--icon-size);
+  min-block-size: var(--ix-toggle-button-icon-right--icon-size);
+  min-inline-size: var(--ix-toggle-button-icon-right--icon-size);
+  pointer-events: none;
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native .ix-toggle-button-glyph {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native .ix-spinner {
+  --ix-spinner-small--size: var(--si-sys-sizing-size-60, 20px);
+  width: var(--ix-spinner-small--size);
+  height: var(--ix-spinner-small--size);
+  min-width: var(--ix-spinner-small--size);
+  min-height: var(--ix-spinner-small--size);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-primary--border-color--active);
+  background-color: var(--ix-button-primary--background--active);
+  color: var(--ix-button-primary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-primary--background--pressed);
+  color: var(--ix-button-primary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-primary--border-color--hover);
+  background-color: var(--ix-button-primary--background--pressed-hover);
+  color: var(--ix-button-primary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-primary--border-color--active);
+  background-color: var(--ix-button-primary--background--pressed-hover);
+  color: var(--ix-button-primary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-primary--border-color--active);
+  background-color: var(--ix-button-primary--background--active);
+  color: var(--ix-button-primary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-secondary--border-color--active);
+  background-color: var(--ix-button-secondary--background--active);
+  color: var(--ix-button-secondary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-secondary--background--pressed);
+  color: var(--ix-button-secondary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-secondary--border-color--hover);
+  background-color: var(--ix-button-secondary--background--pressed-hover);
+  color: var(--ix-button-secondary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-secondary--border-color--active);
+  background-color: var(--ix-button-secondary--background--pressed-hover);
+  color: var(--ix-button-secondary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-secondary--border-color--active);
+  background-color: var(--ix-button-secondary--background--active);
+  color: var(--ix-button-secondary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-tertiary--border-color--active);
+  background-color: var(--ix-button-tertiary--background--active);
+  color: var(--ix-button-tertiary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-tertiary--background--pressed);
+  color: var(--ix-button-tertiary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-tertiary--border-color--hover);
+  background-color: var(--ix-button-tertiary--background--pressed-hover);
+  color: var(--ix-button-tertiary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-tertiary--border-color--active);
+  background-color: var(--ix-button-tertiary--background--pressed-hover);
+  color: var(--ix-button-tertiary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-tertiary--border-color--active);
+  background-color: var(--ix-button-tertiary--background--active);
+  color: var(--ix-button-tertiary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-subtle-primary--border-color--active);
+  background-color: var(--ix-button-subtle-primary--background--active);
+  color: var(--ix-button-subtle-primary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-subtle-primary--background--pressed);
+  color: var(--ix-button-subtle-primary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-subtle-primary--border-color--hover);
+  background-color: var(--ix-button-subtle-primary--background--pressed-hover);
+  color: var(--ix-button-subtle-primary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-subtle-primary--border-color--active);
+  background-color: var(--ix-button-subtle-primary--background--pressed-hover);
+  color: var(--ix-button-subtle-primary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-primary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-subtle-primary--border-color--active);
+  background-color: var(--ix-button-subtle-primary--background--active);
+  color: var(--ix-button-subtle-primary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-subtle-secondary--border-color--active);
+  background-color: var(--ix-button-subtle-secondary--background--active);
+  color: var(--ix-button-subtle-secondary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-subtle-secondary--background--pressed);
+  color: var(--ix-button-subtle-secondary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-subtle-secondary--border-color--hover);
+  background-color: var(--ix-button-subtle-secondary--background--pressed-hover);
+  color: var(--ix-button-subtle-secondary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-subtle-secondary--border-color--active);
+  background-color: var(--ix-button-subtle-secondary--background--pressed-hover);
+  color: var(--ix-button-subtle-secondary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-secondary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-subtle-secondary--border-color--active);
+  background-color: var(--ix-button-subtle-secondary--background--active);
+  color: var(--ix-button-subtle-secondary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).ix-toggle-active {
+  border-color: var(--ix-button-subtle-tertiary--border-color--active);
+  background-color: var(--ix-button-subtle-tertiary--background--active);
+  color: var(--ix-button-subtle-tertiary--color--active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active),
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active) {
+  background-color: var(--ix-button-subtle-tertiary--background--pressed);
+  color: var(--ix-button-subtle-tertiary--color--pressed);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):hover,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).hover {
+  border-color: var(--ix-button-subtle-tertiary--border-color--hover);
+  background-color: var(--ix-button-subtle-tertiary--background--pressed-hover);
+  color: var(--ix-button-subtle-tertiary--color--pressed-hover);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.ix-selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active):active,
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary.selected:not(:disabled):not([aria-disabled=true]):not(.disabled):not(.active).ix-toggle-active {
+  border-color: var(--ix-button-subtle-tertiary--border-color--active);
+  background-color: var(--ix-button-subtle-tertiary--background--pressed-hover);
+  color: var(--ix-button-subtle-tertiary--color--pressed-active);
+}
+.ix-theme .ix-button.ix-button-tokenized.ix-toggle-button-native.ix-button-subtle-tertiary:not(:disabled):not([aria-disabled=true]):not(.disabled).active {
+  border-color: var(--ix-button-subtle-tertiary--border-color--active);
+  background-color: var(--ix-button-subtle-tertiary--background--active);
+  color: var(--ix-button-subtle-tertiary--color--active);
+}
+"#;

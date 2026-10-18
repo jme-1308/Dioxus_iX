@@ -1,0 +1,440 @@
+<!doctype html>
+<!-- Excluded actual-source Button token diagnostic; no production state policy emulation. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="ix-icons:path" content="http://127.0.0.1:8089/www/node_modules/@siemens/ix-icons/svg"><title>Pinned ToggleButton token states</title><link rel="stylesheet" href="http://127.0.0.1:8089/keyboard-foundation.css"><script type="module" src="http://127.0.0.1:8089/www/build/siemens-ix.esm.js"></script><script nomodule src="http://127.0.0.1:8089/www/build/siemens-ix.js"></script>
+<style>body{margin:0;background:#f4f6f8;color:#202932;font:16px/1.5 system-ui,sans-serif}main{max-width:90rem;margin:auto;padding:24px}h1{font-size:1.75rem;line-height:1.2;margin:0 0 16px}h2{font-size:1.25rem;margin:24px 0 8px}p{max-width:75ch}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:16px 0}button,select{font:inherit;min-height:36px;padding:4px 10px;background:white;color:#202932;border:1px solid #7d8b98;border-radius:4px;cursor:pointer}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid #075c9d;outline-offset:3px}::selection{background:#bddcf2;color:#102c42}.matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.scope{padding:16px;border:1px solid #bdc6ce;background:white;min-width:0}.scope-title{font:600 16px/1.5 system-ui,sans-serif;margin:0 0 16px;color:#202932}.specimens{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}.specimen{display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding:6px;min-width:120px}.label{font:12px/1.5 system-ui,sans-serif;color:#384b5b}.nested{border:1px dashed #7d8b98;padding:8px;margin-top:16px}pre{max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:white;border:1px solid #bdc6ce;font:13px/1.5 ui-monospace,monospace;font-variant-numeric:tabular-nums;scrollbar-color:#7d8b98 #f4f6f8}@media(max-width:900px){.matrix{grid-template-columns:1fr}main{padding:16px}}</style></head>
+<body data-ix-theme="brand"><main><h1>Pinned ToggleButton token states</h1><p>Actual source toggle buttons under developer-authored system-font and semantic tokens. Hover and active classes are shipped CSS diagnostic aliases; focus uses actual native focus. These measurements are not full Brand font or color values.</p><p id="toggle-status" role="status" data-ready="false" data-run="idle">Loading pinned Button…</p><div class="controls"><button id="toggle-baseline" disabled>Baseline tokens</button><button id="toggle-revised" disabled>Revise tokens</button><button id="toggle-restored" disabled>Restore baseline</button><label>State <select id="toggle-state" disabled></select></label><button id="toggle-capture" disabled>Capture state</button><button id="toggle-run" disabled>Run token states</button></div><button id="toggle-outside">Outside keyboard seed</button><fieldset class="controlled-controls"><legend>Controlled request consumer</legend><button type="button" id="toggle-accept">Accept requests</button><button type="button" id="toggle-reject">Reject requests</button><button type="button" id="toggle-external-true">Set pressed</button><button type="button" id="toggle-external-false">Clear pressed</button><button type="button" id="toggle-reset">Reset requests</button><label><input id="toggle-controlled-disabled" type="checkbox"> Disabled</label><label><input id="toggle-controlled-loading" type="checkbox"> Loading</label><input id="toggle-controlled-json" type="hidden" value="{}"></fieldset><div id="toggle-matrix" class="matrix"></div><h2>Computed observations</h2><pre id="toggle-result" aria-hidden="true">{}</pre></main>
+<script type="module">
+const spec={
+  "revision": "8bf599bc68365d7752e12832e71b625883b93d7a",
+  "fixture": "Developer-authored system-token ToggleButton adapter, not full Brand metrics",
+  "variants": [
+    "primary",
+    "secondary",
+    "tertiary",
+    "subtle-primary",
+    "subtle-secondary",
+    "subtle-tertiary"
+  ],
+  "states": [
+    "rest",
+    "hover",
+    "active",
+    "disabled",
+    "loading",
+    "focus"
+  ],
+  "revisions": [
+    {
+      "id": "baseline",
+      "revision": 0
+    },
+    {
+      "id": "revised",
+      "revision": 1
+    },
+    {
+      "id": "restored",
+      "revision": 0
+    }
+  ],
+  "scopes": [
+    {
+      "id": "light-normal",
+      "index": 0,
+      "scheme": "light",
+      "density": "normal"
+    },
+    {
+      "id": "light-compact",
+      "index": 1,
+      "scheme": "light",
+      "density": "compact"
+    },
+    {
+      "id": "dark-normal",
+      "index": 2,
+      "scheme": "dark",
+      "density": "normal"
+    },
+    {
+      "id": "dark-compact",
+      "index": 3,
+      "scheme": "dark",
+      "density": "compact"
+    }
+  ],
+  "colorTokens": [
+    "si-sys-color-effects-focus",
+    "si-sys-color-background-danger",
+    "si-sys-color-background-danger-active",
+    "si-sys-color-background-1",
+    "si-sys-color-background-danger-hover",
+    "si-sys-color-text-on-danger",
+    "si-sys-color-text-disabled",
+    "si-sys-color-text-danger",
+    "si-sys-color-border-danger",
+    "si-sys-color-border-3",
+    "si-sys-color-background-accent",
+    "si-sys-color-background-accent-active",
+    "si-sys-color-background-accent-hover",
+    "si-sys-color-text-on-accent",
+    "si-sys-color-background-accent-secondary",
+    "si-sys-color-background-accent-secondary-active",
+    "si-sys-color-background-accent-secondary-hover",
+    "si-sys-color-border-accent",
+    "si-sys-color-border-accent-active",
+    "si-sys-color-border-accent-hover",
+    "si-sys-color-text-accent",
+    "si-sys-color-text-accent-active",
+    "si-sys-color-text-accent-hover",
+    "si-sys-color-background-2",
+    "si-sys-color-background-selected",
+    "si-sys-color-background-hover",
+    "si-sys-color-text-primary",
+    "si-sys-color-border-2"
+  ],
+  "sentinel": {
+    "color": "rgb(24+(13*k+7*s+3*r)%160,32+(11*k+5*s+7*r)%150,40+(7*k+3*s+11*r)%140); k indexcolorTokens, s scopeIndex, r revision",
+    "height": "32-8*(s%2)+4*r",
+    "minWidth": "64+2*s+4*r",
+    "paddingHorizontal": "10+s+r",
+    "iconGap": "4+s+r",
+    "radius": "3+s+r",
+    "borderWidth": "1+r",
+    "outlineOffset": "3+r",
+    "font": "600 (14+s+r)px/(20+s+r)px system-ui, sans-serif",
+    "letterSpacing": ".25+.25*r",
+    "glyphSize": "22+2*s+2*r",
+    "spinnerSize60": "20+s+r"
+  },
+  "extras": [
+    {
+      "key": "default",
+      "variant": null,
+      "pressed": null
+    },
+    {
+      "key": "icon-start",
+      "variant": "primary",
+      "pressed": false,
+      "icon": "add"
+    },
+    {
+      "key": "icon-end",
+      "variant": "primary",
+      "pressed": false,
+      "iconRight": "add"
+    },
+    {
+      "key": "icon-both",
+      "variant": "primary",
+      "pressed": false,
+      "icon": "add",
+      "iconRight": "add"
+    },
+    {
+      "key": "loading-icons",
+      "variant": "primary",
+      "pressed": true,
+      "icon": "add",
+      "iconRight": "add",
+      "loading": true
+    },
+    {
+      "key": "empty-icons",
+      "variant": "primary",
+      "pressed": false,
+      "icon": "",
+      "iconRight": ""
+    },
+    {
+      "key": "component-override",
+      "variant": "secondary",
+      "pressed": true,
+      "icon": "add",
+      "iconRight": "add"
+    },
+    {
+      "key": "host-active-selected",
+      "variant": "primary",
+      "pressed": true
+    },
+    {
+      "key": "nested",
+      "variant": "secondary",
+      "pressed": true
+    },
+    {
+      "key": "controlled",
+      "variant": "primary",
+      "pressed": false
+    }
+  ],
+  "extraScope": "light-normal, nested fixeds3r0",
+  "componentOverride": {
+    "--ix-toggle-button--height": "44+4*r px",
+    "--ix-toggle-button--min-width": "110+4*r px",
+    "--ix-toggle-button-icon-right--icon-size": "30+2*r px",
+    "--ix-button-padding": "2px 18px",
+    "--ix-button-border-radius-left": "2+r px",
+    "--ix-button-border-radius-right": "9+r px",
+    "--ix-button-secondary--background--pressed": "rgb(39,83,127)",
+    "--ix-button-secondary--color--pressed": "rgb(247,249,251)"
+  },
+  "props": {
+    "label": "Toggle",
+    "ariaLabel": "Toggle",
+    "icon": "add",
+    "coreIcon": "add",
+    "type": "button"
+  },
+  "ids": {
+    "scope": "toggle-scope-{scopeID}",
+    "row": "toggle-{scopeID}-{key}",
+    "extra": "toggle-extra-{key}",
+    "status": "toggle-status",
+    "run": "toggle-run",
+    "result": "toggle-result",
+    "state": "toggle-state",
+    "controls": [
+      "toggle-baseline",
+      "toggle-revised",
+      "toggle-restored",
+      "toggle-accept",
+      "toggle-reject",
+      "toggle-external-true",
+      "toggle-external-false",
+      "toggle-reset",
+      "toggle-controlled-disabled",
+      "toggle-controlled-loading"
+    ],
+    "controlledJSON": "toggle-controlled-json"
+  },
+  "resultSchema": [
+    "ok",
+    "revision",
+    "fixture",
+    "phases",
+    "errors",
+    "activation",
+    "limits"
+  ],
+  "phaseSchema": [
+    "id",
+    "revision",
+    "state",
+    "rows",
+    "extras",
+    "settleFrames"
+  ],
+  "rowSchema": [
+    "id",
+    "scope",
+    "scopeIndex",
+    "revision",
+    "variant",
+    "pressed",
+    "state",
+    "kind",
+    "key",
+    "host",
+    "control",
+    "icons",
+    "spinner",
+    "content",
+    "nativeFacts"
+  ],
+  "computedSchema": [
+    "display",
+    "width",
+    "height",
+    "minWidth",
+    "boxSizing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderTopColor",
+    "borderTopStyle",
+    "borderTopLeftRadius",
+    "borderTopRightRadius",
+    "borderBottomLeftRadius",
+    "borderBottomRightRadius",
+    "backgroundColor",
+    "color",
+    "fontSize",
+    "lineHeight",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "letterSpacing",
+    "fontFeatureSettings",
+    "outlineColor",
+    "outlineWidth",
+    "outlineStyle",
+    "outlineOffset",
+    "opacity",
+    "pointerEvents",
+    "justifyContent",
+    "textAlign",
+    "marginLeft",
+    "marginRight",
+    "minHeight"
+  ],
+  "counts": {
+    "coreRowsPerState": 48,
+    "states": 6,
+    "revisions": 3,
+    "coreRows": 864,
+    "extraRowsPerRevision": 10,
+    "extraRows": 30,
+    "totalRows": 894
+  },
+  "settlement": "source parent2RAF/microtask then actual current core/extras child componentOnReady then final2RAF; focus additional2perrow. Rust observedpubliccommit then2RAF. No desiredCSS waits",
+  "visualInputs": "hover/active literal source inner shipped aliases; disabled/loading alsoboth aliases; focus actual sequential nativecontrol.focus after outsideTab; extras host-active literal actualhostclass",
+  "activation": "controlled public property consumer requests plus native click/default/window; no auto-toggle/form/trusted navigation claim",
+  "core": [
+    {
+      "key": "primary-off",
+      "variant": "primary",
+      "pressed": false,
+      "icon": "add"
+    },
+    {
+      "key": "primary-on",
+      "variant": "primary",
+      "pressed": true,
+      "icon": "add"
+    },
+    {
+      "key": "secondary-off",
+      "variant": "secondary",
+      "pressed": false,
+      "icon": "add"
+    },
+    {
+      "key": "secondary-on",
+      "variant": "secondary",
+      "pressed": true,
+      "icon": "add"
+    },
+    {
+      "key": "tertiary-off",
+      "variant": "tertiary",
+      "pressed": false,
+      "icon": "add"
+    },
+    {
+      "key": "tertiary-on",
+      "variant": "tertiary",
+      "pressed": true,
+      "icon": "add"
+    },
+    {
+      "key": "subtle-primary-off",
+      "variant": "subtle-primary",
+      "pressed": false,
+      "icon": "add"
+    },
+    {
+      "key": "subtle-primary-on",
+      "variant": "subtle-primary",
+      "pressed": true,
+      "icon": "add"
+    },
+    {
+      "key": "subtle-secondary-off",
+      "variant": "subtle-secondary",
+      "pressed": false,
+      "icon": "add"
+    },
+    {
+      "key": "subtle-secondary-on",
+      "variant": "subtle-secondary",
+      "pressed": true,
+      "icon": "add"
+    },
+    {
+      "key": "subtle-tertiary-off",
+      "variant": "subtle-tertiary",
+      "pressed": false,
+      "icon": "add"
+    },
+    {
+      "key": "subtle-tertiary-on",
+      "variant": "subtle-tertiary",
+      "pressed": true,
+      "icon": "add"
+    }
+  ],
+  "controlledSteps": [
+    "reject-click-1",
+    "reject-click-2",
+    "accept-click-true",
+    "reject-click-false",
+    "accept-click-false",
+    "external-true-click-false",
+    "disabled-click",
+    "loading-click",
+    "restore"
+  ],
+  "controlledSchema": [
+    "pressed",
+    "accept",
+    "disabled",
+    "loading",
+    "requests"
+  ],
+  "requestSchema": [
+    "sequence",
+    "before",
+    "value",
+    "accept",
+    "after"
+  ],
+  "nativeAliases": {
+    "hover": "hover",
+    "active": "ix-toggle-active",
+    "hostActive": "active"
+  },
+  "sourceAliases": {
+    "hover": "hover",
+    "active": "active",
+    "hostActive": "active"
+  }
+};
+const byId=id=>document.getElementById('toggle-'+id),core=[],extras=[],scopes=[],errors=[],journal=[];
+const objects=new WeakMap();let objectSequence=0;function object(n){if(!objects.has(n))objects.set(n,++objectSequence);return objects.get(n);}
+let ready=false,busy=false,revision=0,revisionID='baseline',state='rest',sequence=0,lastStateSettlement=null;
+function log(kind,data={}){journal.push({seq:++sequence,kind,time:performance.now(),...data});}
+function tokens(root,s,r){for(const[k,name]of spec.colorTokens.entries())root.style.setProperty('--'+name,`rgb(${24+(13*k+7*s+3*r)%160}, ${32+(11*k+5*s+7*r)%150}, ${40+(7*k+3*s+11*r)%140})`);const sizes={'size-80':32-8*(s%2)+4*r,'size-120':64+2*s+4*r,'spacing-x-40':10+s+r,'spacing-x-20':4+s+r,'border-radius-xs':3+s+r,'border-width-default':1+r,'border-width-selected':2+r,'border-width-emphasis':3+r,'focus-ring-offset':3+r,'size-40':12,'size-50':16,'size-60':20+s+r,'size-130':40,'icon-lg':22+2*s+2*r};for(const[k,v]of Object.entries(sizes))root.style.setProperty('--si-sys-sizing-'+k,v+'px');root.style.setProperty('--si-sys-typography-body-sbold',`600 ${14+s+r}px/${20+s+r}px system-ui, sans-serif`);root.style.setProperty('--si-ref-typography-letter-spacing-normal',`${.25+.25*r}px`);root.dataset.scopeIndex=String(s);root.dataset.revision=String(r);root.dataset.ixTheme='brand';root.dataset.ixColorSchema=s>=2?'dark':'light';root.dataset.ixDensity=s%2?'compact':'normal';}
+function make(scope,id,key,props={},kind='core'){const wrap=document.createElement('div');wrap.className='specimen';const label=document.createElement('span');label.className='label';label.textContent=key;const host=document.createElement('ix-toggle-button');host.id=id;host.dataset.toggleKey=key;host.setAttribute('aria-label','Toggle');host.textContent='Toggle';for(const[k,v]of Object.entries(props))if(k!=='key'&&v!==null)host[k]=v;wrap.append(label,host);(scope.querySelector('.specimens')??scope).append(wrap);return{host,scope:scope.dataset.scopeId,key,kind,props};}
+function construct(){for(const entry of spec.scopes){const root=document.createElement('section');root.id='toggle-scope-'+entry.id;root.dataset.scopeId=entry.id;root.className='scope';const title=document.createElement('h2');title.className='scope-title';title.textContent=entry.id;const content=document.createElement('div');content.className='specimens';root.append(title,content);tokens(root,entry.index,0);byId('matrix').append(root);scopes.push({entry,node:root});for(const descriptor of spec.core)core.push(make(root,`toggle-${entry.id}-${descriptor.key}`,descriptor.key,descriptor));}const primary=scopes[0].node;for(const descriptor of spec.extras){let scope=primary;if(descriptor.key==='nested'){scope=document.createElement('div');scope.dataset.scopeId='nested';scope.className='nested';tokens(scope,3,0);primary.append(scope);}const item=make(scope,'toggle-extra-'+descriptor.key,descriptor.key,descriptor,'extra');if(descriptor.key==='host-active-selected')item.host.classList.add('active');extras.push(item);}}
+function control(item){return item.host.shadowRoot?.querySelector('button,a')??null;}
+function deepActive(){let n=document.activeElement;while(n?.shadowRoot?.activeElement)n=n.shadowRoot.activeElement;return n;}
+function metrics(n){if(!(n instanceof Element))return null;const cs=getComputedStyle(n),r=n.getBoundingClientRect();return{object:object(n),tag:n.tagName,id:n.id,class:n.className,attrs:Object.fromEntries([...n.attributes].map(a=>[a.name,a.value])),computed:Object.fromEntries(spec.computedSchema.map(k=>[k,cs[k]])),rect:{x:r.x,y:r.y,width:r.width,height:r.height}};}
+function capture(item,currentState=state){const host=item.host,n=control(item),scope=host.closest('[data-scope-id]');return{id:host.id,scope:item.scope,scopeIndex:Number(scope.dataset.scopeIndex),revision:Number(scope.dataset.revision),variant:host.variant,pressed:host.pressed,state:currentState,kind:item.kind,key:item.key,host:metrics(host),control:metrics(n),icons:[...host.shadowRoot?.querySelectorAll('ix-icon')??[]].map(n=>({side:n.classList.contains('icon-right')?'end':'start',size:n.size,node:metrics(n),svg:metrics(n.shadowRoot?.querySelector('svg'))})),spinner:[...host.shadowRoot?.querySelectorAll('ix-spinner')??[]].map(n=>({host:metrics(n),size:n.size,inner:metrics(n.shadowRoot?.querySelector('.spinner,.xxs,.xs,.sm,.md,.xxl')),hideTrack:n.hideTrack})),content:metrics(host.shadowRoot?.querySelector('.content')),nativeFacts:{disabledProperty:n?.disabled??null,ariaDisabled:n?.getAttribute('aria-disabled'),ariaPressed:n?.getAttribute('aria-pressed'),hostTabIndex:host.tabIndex,controlTabIndex:n?.tabIndex,focused:n===deepActive(),matchesFocus:n?.matches(':focus'),matchesFocusVisible:n?.matches(':focus-visible'),matchesHover:n?.matches(':hover'),matchesActive:n?.matches(':active'),hostActive:host.classList.contains('active'),hostFocused:host.classList.contains('ix-focused'),loading:host.loading,disabled:host.disabled,href:n?.getAttribute('href'),target:n?.getAttribute('target'),rel:n?.getAttribute('rel')}};}
+async function settle(label='fixed-native-observation'){await document.fonts.ready;for(let index=1;index<=2;index++)await new Promise(resolve=>requestAnimationFrame(timestamp=>queueMicrotask(()=>{log('native-frame',{index,timestamp,revisionID,state,label});resolve();})));}
+function setOverrides(){const item=extras.find(x=>x.key==='component-override');for(const[k,v]of Object.entries({'--ix-toggle-button--height':`${44+4*revision}px`,'--ix-toggle-button--min-width':`${110+4*revision}px`,'--ix-toggle-button-icon-right--icon-size':`${30+2*revision}px`,'--ix-button-padding':'2px 18px','--ix-button-border-radius-left':`${2+revision}px`,'--ix-button-border-radius-right':`${9+revision}px`,'--ix-button-secondary--background--pressed':'rgb(39,83,127)','--ix-button-secondary--color--pressed':'rgb(247,249,251)'}))item.host.style.setProperty(k,v);}
+async function setRevision(id){const p=spec.revisions.find(x=>x.id===id);if(!p)throw Error('Unknown revision '+id);revision=p.revision;revisionID=id;for(const{entry,node}of scopes)tokens(node,entry.index,revision);setOverrides();await setState('rest');}
+async function readyStateChildren(){const children=[...core,...extras].flatMap(item=>[...item.host.shadowRoot?.querySelectorAll('ix-icon,ix-spinner')??[]]);log('source-child-readiness-before',{children:children.map(n=>({object:object(n),tag:n.tagName,connected:n.isConnected}))});await Promise.all(children.map(async n=>{await n.componentOnReady();log('source-child-ready',{object:object(n),tag:n.tagName,connected:n.isConnected});}));log('source-child-readiness-complete',{count:children.length});return children.length;}
+async function setState(value){if(!spec.states.includes(value))throw Error('Unknown state '+value);state=value;byId('state').value=value;byId('outside').focus();for(const item of core){item.host.disabled=value==='disabled';item.host.loading=value==='loading';}for(const item of core){const n=control(item);n.classList.toggle('hover',['hover','disabled','loading'].includes(value));n.classList.toggle('active',['active','disabled','loading'].includes(value));}control(extras.find(x=>x.key==='host-active-selected')).classList.add('hover');await settle('source-parent-commit');const children=await readyStateChildren();await settle('source-children-ready-observation');lastStateSettlement={parentCommitFrames:2,childReadiness:'actual componentOnReady for current core/extras ix-icon and ix-spinner',childCount:children,finalObservationFrames:2,minimumStateFrames:4};}
+function seedKeyboard(){const n=byId('outside');n.focus();const event=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,composed:true,cancelable:true});n.dispatchEvent(event);log('native-keyboard-seed',{defaultPrevented:event.defaultPrevented});}
+async function phaseSnapshot(){const measured=[];if(state==='focus'){seedKeyboard();for(const item of core){const n=control(item);log('native-focus-input-before',{id:item.host.id});n.focus();await settle();measured.push(capture(item));log('native-focus-input-observed',{id:item.host.id,focused:n===deepActive()});}}else measured.push(...core.map(item=>capture(item)));return{id:revisionID+':'+state,revision,state,rows:measured,extras:state==='rest'?extras.map(item=>capture(item,item.key==='host-active-selected'?'host-active':item.props.loading?'loading':'rest')):[],settleFrames:2,settlement:{...lastStateSettlement,...(state==='focus'?{additionalPerRowNativeFocusFrames:2}:{})}};}
+async function nativeClickObservation(n){const events=[];let original=null;const capture=event=>{if(event.composedPath()[0]!==n)return;original=event;events.push({site:'document-capture',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});},bubble=event=>{if(event.composedPath()[0]!==n)return;events.push({site:'window-bubble',defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,targetTag:event.target.tagName,originTag:event.composedPath()[0].tagName});};document.addEventListener('click',capture,true);window.addEventListener('click',bubble);n.click();document.removeEventListener('click',capture,true);window.removeEventListener('click',bubble);return{eventObserved:!!original,defaultPrevented:original?.defaultPrevented??null,events};}
+const controlledModel={accept:false,requests:[]};
+function controlledItem(){return extras.find(x=>x.key==='controlled');}
+function controlledState(){const n=controlledItem().host;return{pressed:n.pressed,accept:controlledModel.accept,disabled:n.disabled,loading:n.loading,requests:controlledModel.requests.map(r=>({...r}))};}
+function paintControlled(){byId('controlled-json').value=JSON.stringify(controlledState());byId('controlled-disabled').checked=controlledItem().host.disabled;byId('controlled-loading').checked=controlledItem().host.loading;}
+function installControlled(){const held=controlledItem().host;held.addEventListener('pressedChange',event=>{if(event.composedPath()[0]!==held)return;const before=held.pressed,value=event.detail,accept=controlledModel.accept;if(accept)held.pressed=value;const request={sequence:controlledModel.requests.length+1,before,value,accept,after:held.pressed};controlledModel.requests.push(request);log('source-pressed-request',{...request,eventType:event.type,eventDefaultPrevented:event.defaultPrevented,currentNativePressed:control(controlledItem())?.getAttribute('aria-pressed')});paintControlled();});for(const id of ['accept','reject','external-true','external-false','reset'])byId(id).addEventListener('click',event=>{event.preventDefault();event.stopPropagation();if(id==='accept'||id==='reject')controlledModel.accept=id==='accept';else if(id.startsWith('external-'))held.pressed=id==='external-true';else{held.pressed=false;held.disabled=false;held.loading=false;controlledModel.accept=false;controlledModel.requests=[];}log('public-controlled-command',{id,state:controlledState()});paintControlled();});for(const key of ['disabled','loading'])byId('controlled-'+key).addEventListener('change',event=>{event.stopPropagation();held[key]=event.target.checked;log('public-controlled-prop',{key,value:event.target.checked,state:controlledState()});paintControlled();});paintControlled();}
+async function settleControlled(){await settle('source-controlled-parent-commit');await readyStateChildren();await settle('source-controlled-children-ready-observation');paintControlled();}
+async function controlledHistory(){await setRevision('restored');byId('reset').click();await settleControlled();const steps=[];for(const name of spec.controlledSteps){if(name.startsWith('reject-'))byId('reject').click();if(name.startsWith('accept-'))byId('accept').click();if(name==='external-true-click-false')byId('external-true').click();if(name==='disabled-click'||name==='loading-click'){for(const key of ['disabled','loading']){const n=byId('controlled-'+key);n.checked=name===key+'-click';n.dispatchEvent(new Event('change',{bubbles:true,composed:true}));}}await settleControlled();const before=controlledState();let original=null;if(name==='restore'){byId('reset').click();}else original=await nativeClickObservation(control(controlledItem()));await settleControlled();const after=controlledState();steps.push({name,before,after,original,requestsDelta:name==='restore'?[]:after.requests.slice(before.requests.length),row:capture(controlledItem(),'rest')});}return{steps,state:controlledState()};}
+function controls(enabled){for(const n of document.querySelectorAll('.controls button,.controls select'))n.disabled=!enabled;}
+const limits=['Semantic and sizing tokens are developer-authored neutral system-font sentinels; complete Brand metrics/color fidelity remain unproved','Hover/active states use literal shipped inner aliases, not proof of physical pointer hover/press; focus rows use actual sequential native focus','Source host and inner control versus Rust native root are separate measured layers','Source public state props first drain2 native RAF/microtasks, then actual current child componentOnReady, then2 final observation RAF/microtasks; focus adds2 per row. Parent-commit frames remain raw; no desired style waits','Rust static child publication after its commit2RAF is a renderer adapter; source final2 readiness-qualified observation frames do not claim identical total timing','Nativeclick smoke does not certify browser navigation, form submission, trusted key defaults or assistive technology'];
+function publish(result){byId('result').textContent=JSON.stringify(result,null,2);}
+async function run(){if(!ready||busy)return;busy=true;controls(false);byId('status').dataset.run='running';const phases=[];try{for(const rev of spec.revisions){await setRevision(rev.id);for(const st of spec.states){await setState(st);phases.push(await phaseSnapshot());}}const controlled=await controlledHistory(),result={ok:true,revision:spec.revision,fixture:spec.fixture,phases,controlled,errors:[...errors],journal:[...journal],limits};publish(result);byId('status').dataset.run='done';byId('status').textContent='894 source ToggleButton token/state rows observed';return result;}catch(error){errors.push(String(error));const result={ok:false,error:String(error),phases,errors:[...errors]};publish(result);byId('status').dataset.run='done';return result;}finally{busy=false;controls(ready);}}
+async function command(id){if(!ready||busy)return;busy=true;controls(false);try{await setRevision(id);publish({ok:true,revision:spec.revision,fixture:spec.fixture,phases:[await phaseSnapshot()],errors:[...errors],limits});}catch(error){errors.push(String(error));}finally{busy=false;controls(ready);}}
+for(const st of spec.states){const option=document.createElement('option');option.value=st;option.textContent=st;byId('state').append(option);}for(const rev of spec.revisions)byId(rev.id).addEventListener('click',event=>{event.preventDefault();event.stopPropagation();command(rev.id);});byId('state').addEventListener('change',async event=>{event.stopPropagation();if(!ready||busy)return;busy=true;controls(false);try{await setState(event.target.value);publish({ok:true,revision:spec.revision,phases:[await phaseSnapshot()],errors:[...errors],limits});}finally{busy=false;controls(true);}});byId('run').addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run();});byId('capture').addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();if(ready&&!busy)publish({ok:true,revision:spec.revision,phases:[await phaseSnapshot()],errors:[...errors],limits});});window.addEventListener('error',event=>errors.push(event.message));window.addEventListener('unhandledrejection',event=>errors.push(String(event.reason)));
+window.upstreamToggleButtonTokenReview=Object.freeze({run,snapshot:()=>({ready,revision,state,rows:core.map(item=>capture(item)),extras:extras.map(item=>capture(item))})});try{const{defineCustomElements}=await import('http://127.0.0.1:8089/www/node_modules/@siemens/ix-icons/loader/index.es2017.js');defineCustomElements();await Promise.all(['ix-toggle-button','ix-spinner','ix-icon'].map(tag=>customElements.whenDefined(tag)));construct();installControlled();await Promise.all([...core,...extras].map(item=>item.host.componentOnReady()));await setRevision('baseline');await Promise.all([...extras,...core].flatMap(item=>[...item.host.shadowRoot.querySelectorAll('ix-icon,ix-spinner')]).map(n=>n.componentOnReady?.()));await settle();ready=true;controls(true);byId('status').dataset.ready='true';byId('status').textContent='Ready: source ToggleButton matrix';publish({ok:true,revision:spec.revision,phases:[await phaseSnapshot()],errors:[...errors],limits});}catch(error){errors.push(String(error));byId('status').textContent='Pinned ToggleButton unavailable: '+error;publish({ok:false,error:String(error),errors:[...errors]});}
+</script></body></html>

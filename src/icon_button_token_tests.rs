@@ -62,7 +62,7 @@ fn render_fixture(component: fn() -> Element) -> String {
 }
 
 #[test]
-fn icon_button_defaults_and_variants_share_tokens_without_migrating_toggles() {
+fn icon_button_defaults_and_variants_retain_distinct_control_markers() {
     let html = render_fixture(|| {
         rsx! {
             IconButton { icon: "add", label: "Add", class: "default-icon" }
@@ -111,8 +111,10 @@ fn icon_button_defaults_and_variants_share_tokens_without_migrating_toggles() {
     assert!(classes(regular).contains(&"ix-button-standard"));
     assert!(!classes(regular).contains(&"ix-icon-button-native"));
     let (toggle, _) = button(&html, "toggle-peer");
-    assert!(!classes(toggle).contains(&"ix-button-tokenized"));
-    assert_eq!(html.matches("ix-button-tokenized").count(), 11);
+    assert!(classes(toggle).contains(&"ix-button-tokenized"));
+    assert!(classes(toggle).contains(&"ix-toggle-button-native"));
+    assert!(!classes(toggle).contains(&"ix-icon-button-native"));
+    assert_eq!(html.matches("ix-button-tokenized").count(), 12);
     assert_eq!(html.matches("ix-icon-button-native").count(), 10);
 }
 
