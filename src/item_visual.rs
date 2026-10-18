@@ -152,6 +152,7 @@ mod tests {
 
     fn host(key: &str, capture: &str, kind: ItemKind) -> HostFacts {
         HostFacts {
+            root_path: Vec::new(),
             item: ItemRef(capture.into()),
             kind,
             target: "same-public-id".into(),

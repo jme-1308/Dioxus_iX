@@ -1,4 +1,4 @@
-//! Literal broad descendant selection for Dropdown opening focus.
+//! Literal broad descendant selection and explicit Dropdown return projection.
 //!
 //! Native plumbing reports actual objects, own attributes and source topology.
 //! Rust applies the pinned selector, slot ordering and one-shadow projection.
@@ -134,13 +134,7 @@ fn query_order<'a>(
     Some(result)
 }
 
-/// Select once; native failure/no-op never retries another candidate/fallback.
-/// `is_html` is execution metadata, not a selector exclusion.
-pub(crate) fn choose(
-    facts: &DescendantFacts,
-    last: bool,
-    focus_checked: bool,
-) -> Option<DescendantChoice> {
+fn node_map(facts: &DescendantFacts) -> Option<BTreeMap<&str, &DescendantNode>> {
     let mut nodes = BTreeMap::new();
     for node in &facts.nodes {
         if node.capture.is_empty() {
@@ -148,6 +142,49 @@ pub(crate) fn choose(
         }
         nodes.entry(node.capture.as_str()).or_insert(node);
     }
+    Some(nodes)
+}
+
+fn project_with_nodes(
+    facts: &DescendantFacts,
+    nodes: &BTreeMap<&str, &DescendantNode>,
+    candidate: &str,
+) -> Option<DescendantChoice> {
+    let mut target = *nodes.get(candidate)?;
+    if let Some(shadow) = facts.shadows.iter().find(|shadow| shadow.host == candidate) {
+        for capture in &shadow.descendants {
+            let inner = nodes.get(capture.as_str())?;
+            if inner.matches(false) {
+                target = inner;
+                break;
+            }
+        }
+    }
+    Some(DescendantChoice {
+        candidate: Some(candidate.to_string()),
+        target: target.capture.clone(),
+        is_html: target.is_html,
+    })
+}
+
+/// Project an already selected actual object, regardless of its own eligibility.
+/// Source focusElementInContext does not reselect a disabled/hidden/negative
+/// trigger. Only its own first literal shadow descendant may replace it.
+pub(crate) fn project_candidate(
+    facts: &DescendantFacts,
+    candidate: &str,
+) -> Option<DescendantChoice> {
+    project_with_nodes(facts, &node_map(facts)?, candidate)
+}
+
+/// Select once; native failure/no-op never retries another candidate/fallback.
+/// `is_html` is execution metadata, not a selector exclusion.
+pub(crate) fn choose(
+    facts: &DescendantFacts,
+    last: bool,
+    focus_checked: bool,
+) -> Option<DescendantChoice> {
+    let nodes = node_map(facts)?;
     let checked = if focus_checked && !last {
         query_order(facts, &nodes, true)?
     } else {
@@ -169,21 +206,7 @@ pub(crate) fn choose(
             is_html: fallback.is_html,
         });
     };
-    let mut target = *nodes.get(candidate)?;
-    if let Some(shadow) = facts.shadows.iter().find(|shadow| shadow.host == candidate) {
-        for capture in &shadow.descendants {
-            let inner = nodes.get(capture.as_str())?;
-            if inner.matches(false) {
-                target = inner;
-                break;
-            }
-        }
-    }
-    Some(DescendantChoice {
-        candidate: Some(candidate.to_string()),
-        target: target.capture.clone(),
-        is_html: target.is_html,
-    })
+    project_with_nodes(facts, &nodes, candidate)
 }
 
 #[cfg(test)]
@@ -481,5 +504,94 @@ mod tests {
             }
         );
         assert_eq!(target(&raw, true, false).target, "later");
+    }
+
+    #[test]
+    fn explicit_return_candidate_ignores_its_late_eligibility_and_has_no_fallback() {
+        let mut trigger = node("trigger", "div");
+        trigger.source_kind = Some(ItemKind::Category);
+        trigger.tabindex = Some("-1".into());
+        trigger.hidden = true;
+        trigger.disabled = true;
+        let raw = facts(vec![trigger, node("other", "button")], &["other"]);
+        assert_eq!(
+            project_candidate(&raw, "trigger"),
+            Some(DescendantChoice {
+                candidate: Some("trigger".into()),
+                target: "trigger".into(),
+                is_html: true,
+            })
+        );
+        assert_eq!(project_candidate(&raw, "missing"), None);
+        assert_eq!(project_candidate(&raw, ""), None);
+    }
+
+    #[test]
+    fn explicit_return_projects_only_own_first_broad_shadow_match_even_when_non_html() {
+        let mut trigger = node("trigger", "div");
+        trigger.hidden = true;
+        let mut hidden = node("hidden", "button");
+        hidden.hidden = true;
+        let mut negative = node("negative", "input");
+        negative.tabindex = Some("-2".into());
+        let mut svg = node("svg", "g");
+        svg.tabindex = Some("0".into());
+        svg.is_html = false;
+        let mut raw = facts(
+            vec![
+                trigger,
+                hidden,
+                negative,
+                svg,
+                node("deep", "button"),
+                node("later", "button"),
+            ],
+            &["later"],
+        );
+        raw.shadows = vec![
+            DescendantShadow {
+                host: "trigger".into(),
+                descendants: vec![
+                    "hidden".into(),
+                    "negative".into(),
+                    "svg".into(),
+                    "later".into(),
+                ],
+            },
+            DescendantShadow {
+                host: "svg".into(),
+                descendants: vec!["deep".into()],
+            },
+        ];
+        raw.slots.push(DescendantSlot {
+            assignments: vec![DescendantAssignment {
+                root: "later".into(),
+                descendants: vec![],
+            }],
+            following: vec!["svg".into()],
+        });
+        assert_eq!(
+            project_candidate(&raw, "trigger"),
+            Some(DescendantChoice {
+                candidate: Some("trigger".into()),
+                target: "svg".into(),
+                is_html: false,
+            })
+        );
+        assert_eq!(project_candidate(&raw, "svg").unwrap().target, "deep");
+        raw.shadows[0].descendants = vec!["hidden".into(), "negative".into()];
+        assert_eq!(
+            project_candidate(&raw, "trigger").unwrap().target,
+            "trigger"
+        );
+        raw.shadows.clear();
+        assert_eq!(
+            project_candidate(&raw, "svg"),
+            Some(DescendantChoice {
+                candidate: Some("svg".into()),
+                target: "svg".into(),
+                is_html: false,
+            })
+        );
     }
 }

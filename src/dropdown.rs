@@ -226,6 +226,22 @@ impl DropdownContext {
         format!("ix-dropdown-trigger-{}", self.id)
     }
     fn navigation_owner(&self, reactive: bool) -> Self {
+        if self.state.borrow().native {
+            if reactive {
+                let _ = self.revision.try_read();
+            }
+            return self
+                .state
+                .borrow()
+                .forward
+                .and_then(DropdownHandle::try_context)
+                .filter(|child| {
+                    child.id != self.id
+                        && child.state.borrow().alive
+                        && child.state.borrow().surface
+                })
+                .unwrap_or_else(|| self.clone());
+        }
         let mut owner = self.clone();
         let mut visited = Vec::new();
         loop {
@@ -386,6 +402,7 @@ impl DropdownContext {
                     Reason::AnchorVisibility
                         | Reason::AnchorVisibilityParent
                         | Reason::TriggerOther
+                        | Reason::Left
                 ))
             .then_some(state.focus_epoch);
             (changed, state.generation, trigger_cleanup)
@@ -536,26 +553,46 @@ impl DropdownContext {
             }
             Activation::Submenu { item, trigger: _ } => {
                 result.stop = mode == DropdownNavigationMode::RovingTabindex;
-                let handle = inventory.host(&item).and_then(|host| {
-                    self.entries
-                        .borrow()
-                        .values()
-                        .find(|entry| entry.host_id == host.target)
-                        .and_then(|entry| entry.submenu)
-                });
-                if let Some(handle) = handle
-                    && let Some(child) = handle.try_context().filter(|child| child.id != self.id)
+                if let Some(host) = inventory.host(&item)
+                    && let Some(node) = self.node.borrow().clone()
+                    && let Some(receiver) = node
+                        .submenu_receiver(host)
+                        .and_then(DropdownHandle::try_context)
                 {
-                    child.request(true, Reason::Keyboard, false);
-                    self.state.borrow_mut().forward = Some(handle);
-                    self.notify();
-                    let checked = child.state.borrow().settings.mode
-                        == DropdownNavigationMode::RovingTabindex;
-                    child.focus_edge_with_checked(false, checked);
+                    receiver.open_submenu(host);
                 }
             }
         }
         result
+    }
+    fn open_submenu(&self, host: &crate::dropdown_inventory::HostFacts) {
+        let Some(node) = self.node.borrow().clone() else {
+            return;
+        };
+        let Some(handle) = node.first_assigned_submenu() else {
+            return;
+        };
+        let Some(child) = handle.try_context().filter(|child| child.id != self.id) else {
+            return;
+        };
+        node.mark_submenu_trigger(host);
+        child.request(true, Reason::Keyboard, false);
+        self.state.borrow_mut().forward = Some(handle);
+        self.notify();
+        child.focus_submenu_entry();
+    }
+    fn focus_submenu_entry(&self) {
+        let epoch = {
+            let mut state = self.state.borrow_mut();
+            state.focus_epoch = state.focus_epoch.wrapping_add(1);
+            state.focus_target = "none".into();
+            state.focus_pending = None;
+            state.focus_epoch
+        };
+        if let Some(node) = self.node.borrow().clone() {
+            node.queue_submenu_entry(epoch);
+        }
+        self.notify();
     }
     fn item_target(&self, order: &[usize], current: Option<usize>, key: &str) -> Option<usize> {
         menu_target(&self.entries.borrow(), order, current, key)
@@ -741,7 +778,7 @@ impl DropdownContext {
             .borrow()
             .forward
             .and_then(DropdownHandle::try_context);
-        if facts.key != "ArrowLeft" {
+        if facts.key != "ArrowLeft" && facts.inventory.is_none() {
             if let Some(child) = forward.filter(|child| {
                 child.id != self.id
                     && child.state.borrow().alive
@@ -780,6 +817,13 @@ impl DropdownContext {
             result.prevent = true;
             if let Some(target) = self.item_target(&facts.items, current, &facts.key) {
                 self.publish_item(target, true, false);
+            }
+        } else if facts.key == "ArrowLeft" && facts.inventory.is_some() {
+            let forward = self.navigation_owner(false);
+            if let Some(node) = forward.node.borrow().clone()
+                && let Some(runtime) = node.runtime()
+            {
+                runtime.close_submenu(node.id());
             }
         } else if facts.key == "ArrowLeft" {
             let forward = self.navigation_owner(false);
@@ -1089,14 +1133,17 @@ pub fn DropdownTrigger(
     } }
 }
 
-/// Persistent source-default Dropdown. `controller` omits the built-in composed
-/// trigger; use DropdownTrigger or a linked DropdownItem elsewhere. Ordinary
-/// native click ancestry is preserved by the built-in trigger surrounding its
+/// Persistent source-default Dropdown. `controller` or `trigger` omits the
+/// built-in trigger; use DropdownTrigger, a linked DropdownItem or an existing
+/// element ID. Ordinary native click ancestry is preserved by the built-in trigger surrounding its
 /// surface. Children keep their scopes and native nodes while closed.
 #[component]
 pub fn Dropdown(
     label: String,
     controller: Option<DropdownHandle>,
+    /// ID of an existing native trigger, matching the source string reference.
+    /// The actual host remains the trigger; no wrapper is inserted.
+    trigger: Option<String>,
     #[props(default)] placement: DropdownPlacement,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
@@ -1122,7 +1169,8 @@ pub fn Dropdown(
     children: Element,
 ) -> Element {
     let internal = use_dropdown();
-    let context = controller.unwrap_or(internal).context();
+    let handle = controller.unwrap_or(internal);
+    let context = handle.context();
     let key = context.node_id();
     let settings = Settings {
         mode: navigation_mode,
@@ -1134,14 +1182,16 @@ pub fn Dropdown(
         before: onbeforechange,
         changed: onchange,
     };
-    rsx! { DropdownSurface {key:"{key}",context,label,external:controller.is_some(),placement,blocked:disabled||loading,loading,variant,icon,aria_label,class,settings,enable_top_layer,suppress_automatic_placement,{children}} }
+    rsx! { DropdownSurface {key:"{key}",context,handle,label,external:controller.is_some()||trigger.is_some(),trigger,placement,blocked:disabled||loading,loading,variant,icon,aria_label,class,settings,enable_top_layer,suppress_automatic_placement,{children}} }
 }
 
 #[component]
 fn DropdownSurface(
     context: DropdownContext,
+    handle: DropdownHandle,
     label: String,
     external: bool,
+    trigger: Option<String>,
     placement: DropdownPlacement,
     blocked: bool,
     loading: bool,
@@ -1215,22 +1265,50 @@ fn DropdownSurface(
                 },
             );
             *context.node.borrow_mut() = Some(node.clone());
+            let query = context.clone();
+            let reset = context.clone();
+            let trigger_click = context.clone();
+            node.set_submenu_access(
+                handle,
+                Rc::new(move || Some(query.navigation_owner(false).node_id())),
+                Rc::new(move || {
+                    reset.state.borrow_mut().forward = None;
+                    reset.notify();
+                }),
+                Rc::new(move || {
+                    if !trigger_click.state.borrow().blocked {
+                        let previous = *trigger_click.open.peek();
+                        trigger_click.request_from_trigger(
+                            !previous,
+                            Reason::Trigger,
+                            trigger_click.keyboard_mode(),
+                        );
+                    }
+                }),
+            );
             let opening = context.clone();
-            node.set_descendant_focus_handler(Rc::new(move |facts, last, allow_checked| {
-                let (mode, checked) = {
-                    let state = opening.state.borrow();
-                    (
-                        state.settings.mode,
-                        !last && allow_checked && state.settings.focus_checked_item,
-                    )
-                };
-                if mode == DropdownNavigationMode::RovingTabindex {
-                    opening.initialize_roving(facts, last, checked);
-                    None
-                } else {
-                    Some(checked)
-                }
-            }));
+            node.set_descendant_focus_handler(Rc::new(
+                move |facts, last, allow_checked, submenu| {
+                    let (mode, checked, disabled_focus) = {
+                        let state = opening.state.borrow();
+                        (
+                            state.settings.mode,
+                            !last
+                                && (allow_checked || submenu)
+                                && state.settings.focus_checked_item,
+                            state.settings.disable_focus_handling,
+                        )
+                    };
+                    if mode == DropdownNavigationMode::RovingTabindex
+                        && (!submenu || !disabled_focus)
+                    {
+                        opening.initialize_roving(facts, last, checked);
+                        None
+                    } else {
+                        Some(!submenu && checked)
+                    }
+                },
+            ));
             let projection = context.clone();
             node.set_item_visual_reader(Rc::new(move || {
                 let active = projection.active_dom_id();
@@ -1369,6 +1447,7 @@ fn DropdownSurface(
     rsx! { div {
         id:if external {format!("ix-dropdown-surface-owner-{}",context.id)}else{trigger_id},
         class:"ix-dropdown {class}",role:root_role,tabindex:(!external).then_some(if blocked {-1}else{0}),
+        "data-ix-overlay-trigger-id":trigger,"data-ix-overlay-anchor-name":format!("--ix-dropdown-anchor-{}",context.id),
         "aria-label":(!external).then_some(aria_name.clone()),"aria-disabled":(!external).then_some(blocked.to_string()),"aria-busy":(!external).then_some(loading.to_string()),
         "aria-haspopup":(!external).then_some("menu"),"aria-expanded":(!external).then_some(open.to_string()),
         "aria-controls":(!external).then_some(host_id.clone()),

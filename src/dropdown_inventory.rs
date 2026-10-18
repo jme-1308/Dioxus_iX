@@ -43,11 +43,20 @@ pub(crate) struct HostPartFacts {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct HostRootFact {
+    pub(crate) id: String,
+    pub(crate) generation: u64,
+    pub(crate) is_host: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct HostFacts {
     pub(crate) item: ItemRef,
     pub(crate) kind: ItemKind,
     pub(crate) target: String,
     pub(crate) capture: String,
+    #[serde(default)]
+    pub(crate) root_path: Vec<HostRootFact>,
     #[serde(default)]
     pub(crate) registration_key: String,
     #[serde(default = "default_focusable")]
@@ -433,6 +442,7 @@ mod tests {
 
     fn item(id: &str, kind: ItemKind, tabindex: Option<&str>) -> HostFacts {
         HostFacts {
+            root_path: Vec::new(),
             item: ItemRef(id.into()),
             kind,
             target: format!("public-{id}"),

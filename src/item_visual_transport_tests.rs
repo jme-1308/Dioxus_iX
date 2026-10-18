@@ -85,6 +85,7 @@ fn owner(runtime: &RuntimeHandle, generation: u64) -> Owner {
 }
 fn host(key: &str, capture: &str, kind: ItemKind) -> HostFacts {
     HostFacts {
+        root_path: Vec::new(),
         item: ItemRef(capture.into()),
         kind,
         target: format!("consumer-{key}"),

@@ -55,6 +55,10 @@ pub(crate) struct NativeFact {
     pub(crate) connected: bool,
     #[serde(default)]
     pub(crate) trigger_ancestors: Vec<String>,
+    /// Discovery is emitted from a real trigger, while live coordinator
+    /// ancestry may come from an anchor. None preserves legacy fact producers.
+    #[serde(default)]
+    pub(crate) assignment_ancestors: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) discovery_ready: bool,
 }
@@ -70,6 +74,7 @@ struct NodeEntry {
     discovery_ready: bool,
     discovered: bool,
     trigger_ancestors: Vec<String>,
+    assignment_ancestors: Option<Vec<String>>,
     assigned_children: Vec<String>,
 }
 
@@ -90,6 +95,7 @@ impl NodeEntry {
             discovery_ready: false,
             discovered: false,
             trigger_ancestors: Vec::new(),
+            assignment_ancestors: None,
             assigned_children: Vec::new(),
         }
     }
@@ -167,6 +173,7 @@ impl Registry {
                         node.discovery_ready = false;
                         node.discovered = false;
                         node.trigger_ancestors.clear();
+                        node.assignment_ancestors = None;
                         node.assigned_children.clear();
                     }
                 }
@@ -179,11 +186,21 @@ impl Registry {
                     cleaned_ancestors.push(anc.clone());
                 }
             }
+            let assignment_ancestors = fact.assignment_ancestors.as_ref().map(|ancestors| {
+                let mut cleaned = Vec::with_capacity(ancestors.len());
+                for ancestor in ancestors {
+                    if ancestor != &fact.id && !cleaned.contains(ancestor) {
+                        cleaned.push(ancestor.clone());
+                    }
+                }
+                cleaned
+            });
 
             if let Some(node) = self.nodes.get_mut(&fact.id) {
                 node.connected = true;
                 node.discovery_ready = fact.discovery_ready;
                 node.trigger_ancestors = cleaned_ancestors;
+                node.assignment_ancestors = assignment_ancestors;
                 if node.discovery_ready && !node.discovered {
                     if node.kind == OverlayKind::Header {
                         node.discovered = true;
@@ -537,7 +554,12 @@ impl Registry {
             .nodes
             .get(child_id)
             .filter(|n| n.connected && n.discovery_ready)
-            .map(|n| n.trigger_ancestors.clone())
+            .map(|n| {
+                n.assignment_ancestors
+                    .as_ref()
+                    .unwrap_or(&n.trigger_ancestors)
+                    .clone()
+            })
         else {
             return;
         };
@@ -628,6 +650,7 @@ mod tests {
             generation,
             connected: true,
             trigger_ancestors: ancestors.iter().map(|s| (*s).to_string()).collect(),
+            assignment_ancestors: None,
             discovery_ready: ready,
         }
     }
@@ -842,6 +865,65 @@ mod tests {
     }
 
     #[test]
+    fn anchor_only_live_ancestor_does_not_emit_assignment_but_receives_real_children() {
+        let mut reg = Registry::new();
+        for id in ["root", "category", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        let mut category = fact("category", 1, &["root"], true);
+        category.assignment_ancestors = Some(Vec::new());
+        let mut child = fact("child", 1, &["category", "root"], true);
+        child.assignment_ancestors = Some(vec!["category".into(), "root".into()]);
+        reg.observe(&[fact("root", 1, &[], true), category.clone(), child]);
+        assert!(reg.assigned_children("root").is_empty());
+        assert_eq!(reg.assigned_children("category"), ["child"]);
+
+        for id in ["root", "category", "child"] {
+            reg.set_open(id, true);
+        }
+        assert_eq!(reg.live_parent("category").as_deref(), Some("root"));
+        assert_eq!(reg.live_ancestors("child"), ["category", "root"]);
+        assert!(reg.cached_children("root").is_empty());
+        assert_eq!(reg.cached_children("category"), ["child"]);
+        assert_eq!(reg.cached_root("child").as_deref(), Some("category"));
+
+        // A callback/policy refresh is the same lifetime: it keeps the explicit
+        // no-emission fact and the accepted controller child snapshot.
+        reg.register(
+            "category".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Inside,
+        );
+        reg.observe(&[category.clone()]);
+        assert!(reg.assigned_children("root").is_empty());
+        assert_eq!(reg.cached_children("category"), ["child"]);
+
+        // Replacement starts a fresh capture namespace. The retired explicit
+        // empty list cannot suppress a new legacy producer's real trigger.
+        reg.register(
+            "category".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+        );
+        assert!(reg.nodes["category"].assignment_ancestors.is_none());
+        reg.observe(&[category]);
+        assert!(reg.assigned_children("root").is_empty());
+        assert!(reg.cached_children("category").is_empty());
+        assert_eq!(reg.cached_parent("child"), None);
+        reg.observe(&[fact("category", 2, &["root"], true)]);
+        assert_eq!(reg.assigned_children("root"), ["category"]);
+        assert!(
+            reg.cached_children("root").is_empty(),
+            "discovery is not presentation"
+        );
+        reg.set_open("root", false);
+        reg.set_open("root", true);
+        assert_eq!(reg.cached_children("root"), ["category"]);
+    }
+
+    #[test]
     fn nearest_first_discovery_and_separate_snapshots() {
         let mut reg = Registry::new();
         reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
@@ -992,6 +1074,7 @@ mod tests {
             generation: 1,
             connected: false,
             trigger_ancestors: Vec::new(),
+            assignment_ancestors: None,
             discovery_ready: false,
         }]);
         assert!(reg.cached_children("a").is_empty());

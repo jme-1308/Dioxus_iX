@@ -939,6 +939,7 @@ mod tests {
             generation: 1,
             connected: true,
             trigger_ancestors: ancestors.iter().map(|id| (*id).to_owned()).collect(),
+            assignment_ancestors: None,
             discovery_ready: true,
         }
     }

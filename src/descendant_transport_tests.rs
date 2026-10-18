@@ -1,7 +1,7 @@
 //! Opening-focus protocol through registered runtime form-event handlers.
 use super::*;
-use crate::descendant_focus::{DescendantFacts, DescendantNode};
-use crate::dropdown_inventory::ItemRef;
+use crate::descendant_focus::{DescendantFacts, DescendantNode, DescendantShadow};
+use crate::dropdown_inventory::{HostPartFacts, HostPartKind, ItemRef};
 use std::cell::Cell;
 
 struct RawForm(String);
@@ -42,6 +42,7 @@ struct Owner {
     checked: Rc<Cell<bool>>,
     roving: Rc<Cell<bool>>,
     preparations: Rc<Cell<usize>>,
+    last_submenu: Rc<Cell<Option<bool>>>,
 }
 fn owner(runtime: &RuntimeHandle, generation: u64) -> Owner {
     let open = Rc::new(Cell::new(true));
@@ -65,8 +66,11 @@ fn owner(runtime: &RuntimeHandle, generation: u64) -> Owner {
     let current_checked = checked.clone();
     let current_roving = roving.clone();
     let count = preparations.clone();
-    node.set_descendant_focus_handler(Rc::new(move |_, last, allow_checked| {
+    let last_submenu = Rc::new(Cell::new(None));
+    let read_submenu = last_submenu.clone();
+    node.set_descendant_focus_handler(Rc::new(move |_, last, allow_checked, submenu| {
         count.set(count.get() + 1);
+        read_submenu.set(Some(submenu));
         if current_roving.get() {
             None
         } else {
@@ -79,10 +83,12 @@ fn owner(runtime: &RuntimeHandle, generation: u64) -> Owner {
         checked,
         roving,
         preparations,
+        last_submenu,
     }
 }
 fn host(key: &str, capture: &str) -> HostFacts {
     HostFacts {
+        root_path: Vec::new(),
         item: ItemRef(capture.into()),
         kind: ItemKind::Dropdown,
         target: format!("consumer-{key}"),
@@ -445,6 +451,229 @@ fn html_attempt_without_focusin_clears_prior_cue_while_svg_preserves_it() {
     assert!(query(&runtime, html_visual.clone()));
     assert!(cue(&runtime, &existing, false));
     assert!(!query(&runtime, html_visual));
+    assert!(runtime.0.borrow().descendant_focus.unsent().is_empty());
+    assert!(runtime.0.borrow().descendant_visual.is_empty());
+}
+
+#[test]
+fn return_handler_uses_exact_late_candidate_when_closed_and_keeps_category_paths_distinct() {
+    let runtime = RuntimeHandle::new();
+    let owner = owner(&runtime, 1);
+    let mut category = host("category", "actual-category");
+    category.kind = ItemKind::Category;
+    category.parts.push(HostPartFacts {
+        kind: HostPartKind::CategoryParent,
+        capture: "actual-category-parent".into(),
+        source_focusable: true,
+    });
+    observe(&runtime, 1, 1, std::slice::from_ref(&category));
+    focusin(&runtime, 1, 2, &category);
+    let part_cue = |active| {
+        query(
+            &runtime,
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
+            "item_cue":{"key":category.registration_key,"capture":category.capture,
+            "part":"actual-category-parent","active":active}}),
+        )
+    };
+    assert!(part_cue(true));
+    let mut late = node(&category.capture, "div", false);
+    late.source_kind = Some(ItemKind::Category);
+    late.disabled = true;
+    late.hidden = true;
+    late.tabindex = Some("-1".into());
+    let mut parent = node("actual-category-parent", "div", false);
+    parent.source_kind = Some(ItemKind::Menu);
+    parent.tabindex = Some("-1".into());
+    let mut raw = facts(vec![late, parent], 1);
+    raw.shadows.push(DescendantShadow {
+        host: category.capture.clone(),
+        descendants: vec!["actual-category-parent".into()],
+    });
+    owner.open.set(false);
+    owner.roving.set(true);
+    runtime.queue_submenu_return("opening-root", 1, category.capture.clone());
+    let returning = runtime.0.borrow().descendant_focus.unsent().pop().unwrap();
+    assert!(
+        matches!(&returning.purpose, DescendantPurpose::Return { capture } if capture == &category.capture)
+    );
+    let mut wrong = phase(&runtime, &returning, "arm", None);
+    wrong["descendant_focus"]["reference"] = "copied-reference".into();
+    assert!(!query(&runtime, wrong));
+    arm(&runtime, &returning);
+    assert!(!query(&runtime, phase(&runtime, &returning, "arm", None)));
+    assert!(prepare(
+        &runtime,
+        &returning,
+        &raw,
+        std::slice::from_ref(&category)
+    ));
+    assert_eq!(
+        owner.preparations.get(),
+        0,
+        "return bypasses the current roving/opening handler"
+    );
+    assert!(!query(
+        &runtime,
+        phase(
+            &runtime,
+            &returning,
+            "focus",
+            Some("actual-category-parent")
+        )
+    ));
+    let mut wrong = phase(&runtime, &returning, "focus", Some(&category.capture));
+    wrong["descendant_focus"]["reference"] = "copied-reference".into();
+    assert!(!query(&runtime, wrong));
+    assert!(query(
+        &runtime,
+        phase(&runtime, &returning, "focus", Some(&category.capture))
+    ));
+    assert!(
+        part_cue(true),
+        "permission has not executed the attempted path"
+    );
+    let mut visual = phase(&runtime, &returning, "visual", Some(&category.capture));
+    visual["descendant_focus"]["hosts"] = serde_json::to_value([category.clone()]).unwrap();
+    visual["descendant_focus"]["attempt_path"] =
+        serde_json::json!([category.capture, "reference-1"]);
+    assert!(query(&runtime, visual.clone()));
+    assert!(
+        part_cue(false),
+        "physical delegation does not add the private parent to the attempted outer path"
+    );
+    assert!(!part_cue(true));
+    assert!(!cue(&runtime, &category, true));
+    assert!(!query(&runtime, visual));
+    assert!(!query(
+        &runtime,
+        phase(&runtime, &returning, "focus", Some(&category.capture))
+    ));
+
+    // If current own-shadow metadata really makes the parent broad-eligible,
+    // selection attempts that exact part, whose path can publish its own cue.
+    raw.nodes
+        .iter_mut()
+        .find(|node| node.capture == "actual-category-parent")
+        .unwrap()
+        .tabindex = Some("0".into());
+    runtime.queue_submenu_return("opening-root", 1, category.capture.clone());
+    let part_return = runtime.0.borrow().descendant_focus.unsent().pop().unwrap();
+    arm(&runtime, &part_return);
+    assert!(prepare(
+        &runtime,
+        &part_return,
+        &raw,
+        std::slice::from_ref(&category)
+    ));
+    assert!(!query(
+        &runtime,
+        phase(&runtime, &part_return, "focus", Some(&category.capture))
+    ));
+    assert!(query(
+        &runtime,
+        phase(
+            &runtime,
+            &part_return,
+            "focus",
+            Some("actual-category-parent")
+        )
+    ));
+    let mut visual = phase(
+        &runtime,
+        &part_return,
+        "visual",
+        Some("actual-category-parent"),
+    );
+    visual["descendant_focus"]["hosts"] = serde_json::to_value([category.clone()]).unwrap();
+    visual["descendant_focus"]["attempt_path"] =
+        serde_json::json!(["actual-category-parent", category.capture, "reference-1"]);
+    assert!(query(&runtime, visual.clone()));
+    assert!(part_cue(true));
+    assert!(
+        !cue(&runtime, &category, true),
+        "private cue never becomes outer Category cue"
+    );
+    assert!(!query(&runtime, visual));
+    assert_eq!(owner.preparations.get(), 0);
+    assert!(runtime.0.borrow().descendant_focus.unsent().is_empty());
+    assert!(runtime.0.borrow().descendant_visual.is_empty());
+}
+
+#[test]
+fn submenu_prepare_reads_current_mode_and_cancels_only_the_roving_transfer_job() {
+    let runtime = RuntimeHandle::new();
+    let owner = owner(&runtime, 1);
+    observe(&runtime, 1, 1, &[]);
+    let raw = facts(
+        vec![
+            node("first", "button", false),
+            node("checked", "input", true),
+        ],
+        1,
+    );
+    let opening = job(&owner, &runtime, 1, false, true);
+    owner.node.queue_submenu_entry(2);
+    let submenu = runtime.0.borrow().descendant_focus.unsent().pop().unwrap();
+    assert_eq!(submenu.purpose, DescendantPurpose::Submenu);
+    arm(&runtime, &opening);
+    arm(&runtime, &submenu);
+    owner.roving.set(true);
+    assert!(!prepare(&runtime, &submenu, &raw, &[]));
+    assert_eq!(owner.last_submenu.get(), Some(true));
+    assert_eq!(owner.preparations.get(), 1);
+    assert!(!query(
+        &runtime,
+        phase(&runtime, &submenu, "focus", Some("first"))
+    ));
+    assert!(!prepare(&runtime, &submenu, &raw, &[]));
+    assert_eq!(
+        owner.preparations.get(),
+        1,
+        "cancelled job cannot invoke the handler again"
+    );
+    assert!(
+        runtime
+            .0
+            .borrow()
+            .descendant_focus
+            .pending_prepare(opening.sequence, "opening-root", 1, "reference-1")
+            .is_some()
+    );
+    owner.roving.set(false);
+    owner.checked.set(true);
+    assert!(prepare(&runtime, &opening, &raw, &[]));
+    assert_eq!(owner.last_submenu.get(), Some(false));
+    assert_eq!(owner.preparations.get(), 2);
+    assert!(query(
+        &runtime,
+        phase(&runtime, &opening, "focus", Some("checked"))
+    ));
+    assert!(query(
+        &runtime,
+        phase(&runtime, &opening, "visual", Some("checked"))
+    ));
+
+    // A fresh submenu prepared in AD takes its own broad-first path. Its false
+    // allow_checked must not borrow the parallel Opening's checked priority.
+    owner.node.queue_submenu_entry(3);
+    let broad = runtime.0.borrow().descendant_focus.unsent().pop().unwrap();
+    arm(&runtime, &broad);
+    assert!(prepare(&runtime, &broad, &raw, &[]));
+    assert_eq!(owner.last_submenu.get(), Some(true));
+    assert!(!query(
+        &runtime,
+        phase(&runtime, &broad, "focus", Some("checked"))
+    ));
+    assert!(query(
+        &runtime,
+        phase(&runtime, &broad, "focus", Some("first"))
+    ));
+    assert!(query(
+        &runtime,
+        phase(&runtime, &broad, "visual", Some("first"))
+    ));
+    assert_eq!(owner.preparations.get(), 3);
     assert!(runtime.0.borrow().descendant_focus.unsent().is_empty());
     assert!(runtime.0.borrow().descendant_visual.is_empty());
 }

@@ -81,7 +81,26 @@ function findItemsHost(root,id){
   const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?document.getElementById(configured):null;
   return element instanceof HTMLElement&&element.isConnected?element:findHost(root.getAttribute('data-ix-overlay-items-owner')||id);
 }
+// A declared ID resolves to one actual object for this root lifetime. Later
+// observations cannot retarget a retained binding to a same-ID replacement.
+const declaredTriggers=new WeakMap();
 function findTrigger(id,root){
+  const declared=root?.getAttribute('data-ix-overlay-trigger-id');
+  if(declared){
+    const key=id+'@'+root.getAttribute('data-ix-overlay-generation')+'@'+declared;
+    let binding=declaredTriggers.get(root);
+    if(!binding||binding.key!==key){binding={key,element:null};declaredTriggers.set(root,binding);}
+    if(!binding.element){
+      const element=document.getElementById(declared);
+      if(element instanceof HTMLElement){
+        binding.element=element;
+        element.setAttribute('data-ix-overlay-trigger',id);
+        const anchor=root.getAttribute('data-ix-overlay-anchor-name');
+        if(anchor)element.style.setProperty('anchor-name',anchor);
+      }
+    }
+    return binding.element;
+  }
   for(const n of document.querySelectorAll('[data-ix-overlay-trigger]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-trigger')===id)return n;
   const tid=root?.getAttribute('data-ix-overlay-trigger-id'),el=tid?document.getElementById(tid):null;
   return el instanceof HTMLElement&&el.isConnected?el:null;
@@ -181,11 +200,18 @@ function syncReflectedCheckedAttributes(){
     else if(element.getAttribute('checked')!==value)element.setAttribute('checked',value);
   }
 }
+function itemRootPath(element){
+  const roots=[];
+  for(let current=element;current;current=stepParent(current))if(current instanceof HTMLElement&&current.hasAttribute('data-ix-overlay-root')&&current.getAttribute('data-ix-overlay-owner')===owner){
+    roots.push({id:current.getAttribute('data-ix-overlay-root'),generation:Number(current.getAttribute('data-ix-overlay-generation')),is_host:current===element});
+  }
+  return roots;
+}
 function itemHostFacts(element){
   const binding=captureItem(element);if(!binding)return null;
   const rawKind=element.getAttribute('data-ix-item-kind');
   const kind=['dropdown','select','menu','category'].includes(rawKind)?rawKind:'native-opt-in';
-  return {item:binding.capture,kind,target:binding.target,capture:binding.capture,
+  return {item:binding.capture,kind,target:binding.target,capture:binding.capture,root_path:itemRootPath(element),
     registration_key:element.getAttribute('data-ix-item-key')||'',
     source_focusable:element.hasAttribute('data-ix-item-focusable')?element.getAttribute('data-ix-item-focusable')==='true':element.classList.contains('ix-focusable'),
     disabled_attribute:element.hasAttribute('disabled'),hidden_attribute:element.hasAttribute('hidden'),
@@ -274,9 +300,10 @@ function collectFacts(kind,event,phase=''){
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
     if(!id||(!['window','trap'].includes(phase)&&event?.key!=='Tab'&&ro!==owner))continue;
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
-    const discovery_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
+    const declared_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
     const open=root.hasAttribute('data-ix-overlay-open')?root.getAttribute('data-ix-overlay-open')==='true':root.getAttribute('data-open')==='true';
     const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id,root),anchor=findAnchor(root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
+    const discovery_ready=declared_ready&&(!root.hasAttribute('data-ix-overlay-trigger-id')||!!trigger);
     if(anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node)))anchors.push(id);
     if(trigger)addCand(trigger);
     for(const e of itemsWithEl)addCand(e.el);
@@ -289,16 +316,18 @@ function collectFacts(kind,event,phase=''){
     const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
     const tab_candidates=event?.key==='Tab'&&root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
     const item_focus_captures=ro===owner?[...new Set([...itemsWithEl.map(item=>item.el),...focusables])].map(captureItem).filter(Boolean):[];
-    const inventory=inventoryFacts(itemsHost);
+    const inventory=inventoryFacts(itemsHost),own_inventory=itemsHost===host?null:inventoryFacts(host);
     for(const item of inventory?.hosts||[])if(item.target)addCand(findElement(item.target));
     nodes.push({
       id,owner:ro||'',generation,root_capture:captureItem(root)?.capture,trigger_capture:captureItem(trigger)?.capture,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
+      assignment_ancestors:trigger?triggerAncestors(trigger,id):[],
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
       item_focus_captures,
-      inventory,
+      inventory,own_inventory,trigger_on_path:!!trigger&&path.includes(trigger),
+      configured_trigger_listener:root.hasAttribute('data-ix-overlay-trigger-id')&&!!trigger&&event?.currentTarget===trigger?captureItem(event.currentTarget)?.capture:null,
       focusable_ids:focusables.map(nativeId).filter(Boolean),
       focus_count:focusables.length,focused_index,on_trigger,inside,
       trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
@@ -478,6 +507,25 @@ function itemCuesPending(){
   input.value=JSON.stringify({owner,sequence:0,item_cues_pending:true});
   return !input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
 }
+function syncSubmenuMarkers(roots){
+  const input=transport();if(!alive||!input)return;
+  for(const [capture,binding] of itemCaptureNodes){
+    const element=binding.element;
+    if(!(element instanceof HTMLElement)||(!element.matches(itemSelector)&&!element.classList.contains('ix-dropdown-submenu-trigger-active')))continue;
+    const current=element.classList.contains('ix-dropdown-submenu-trigger-active');
+    let answered=false;
+    for(const root of roots){
+      const rootBinding=captureItem(root);if(!rootBinding)continue;
+      for(const active of [current,!current]){
+        input.value=JSON.stringify({owner,sequence:0,submenu_marker:{root:root.getAttribute('data-ix-overlay-root'),generation:Number(root.getAttribute('data-ix-overlay-generation')),root_capture:rootBinding.capture,capture,active}});
+        if(input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))continue;
+        if(element.classList.contains('ix-dropdown-submenu-trigger-active')!==active)element.classList.toggle('ix-dropdown-submenu-trigger-active',active);
+        answered=true;break;
+      }
+      if(answered)break;
+    }
+  }
+}
 function syncItemCues(captured=null,retained=false,force=false){
   if(!alive)return;
   if(captured instanceof HTMLElement)itemCueCapturedPending.add(captured);
@@ -497,6 +545,7 @@ function syncItemCues(captured=null,retained=false,force=false){
     // Therefore that entry must also offer retained detached original hosts.
     if(includeRetained||pending)for(const binding of itemCaptureNodes.values())if(binding.element instanceof HTMLElement&&binding.element.hasAttribute('data-ix-item-kind'))capturedHosts.add(binding.element);
     const roots=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).filter(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.hasAttribute('data-ix-overlay-mode'));
+    syncSubmenuMarkers(roots);
     const candidates=new Set();
     // Offers cover every captured inventory in this owner, including a linked
     // child whose physical host is elsewhere. Rust selects each root's value.

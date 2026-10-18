@@ -55,51 +55,62 @@ impl RuntimeHandle {
                 else {
                     return;
                 };
-                if !live.1 {
+                let returning = matches!(job.purpose, DescendantPurpose::Return { .. });
+                if !returning && !live.1 {
                     self.0
                         .borrow_mut()
                         .descendant_focus
                         .cancel(sequence, root, generation, reference);
                     return;
                 }
-                let (Some(facts), Some(inventory), Some(handler)) = (
-                    query.facts.as_ref(),
-                    query.inventory.as_ref(),
-                    live.0.descendant_focus.as_ref(),
-                ) else {
+                let Some(facts) = query.facts.as_ref() else {
                     return;
                 };
-                if facts.fallback != reference {
-                    return;
-                }
-                // This is an explicit delivery producer. The internal handler
-                // may initialize current roving mode, never an application
-                // callback. No Runtime borrow is held across that work.
-                let checked = self
-                    .with_owner(root, generation, || {
-                        handler(inventory, job.last, job.allow_checked)
-                    })
-                    .flatten();
-                let Some(checked) = checked else {
-                    self.0
-                        .borrow_mut()
-                        .descendant_focus
-                        .cancel(sequence, root, generation, reference);
-                    return;
-                };
-                if self
-                    .entry(root)
-                    .is_none_or(|entry| entry.generation != generation)
-                    || self
-                        .entry(root)
-                        .and_then(|entry| self.read_current(root, &entry))
-                        != Some(true)
+                if matches!(
+                    job.purpose,
+                    DescendantPurpose::Opening | DescendantPurpose::Return { .. }
+                ) && facts.fallback != reference
                 {
                     return;
                 }
-                let Some(choice) = crate::descendant_focus::choose(facts, job.last, checked) else {
-                    return;
+                let choice = if let DescendantPurpose::Return { capture } = &job.purpose {
+                    crate::descendant_focus::project_candidate(facts, capture)
+                } else {
+                    let (Some(inventory), Some(handler)) =
+                        (query.inventory.as_ref(), live.0.descendant_focus.as_ref())
+                    else {
+                        return;
+                    };
+                    let checked = self
+                        .with_owner(root, generation, || {
+                            handler(
+                                inventory,
+                                job.last,
+                                job.allow_checked,
+                                matches!(job.purpose, DescendantPurpose::Submenu),
+                            )
+                        })
+                        .flatten();
+                    let Some(checked) = checked else {
+                        self.0
+                            .borrow_mut()
+                            .descendant_focus
+                            .cancel(sequence, root, generation, reference);
+                        return;
+                    };
+                    if self
+                        .entry(root)
+                        .is_none_or(|entry| entry.generation != generation)
+                        || self
+                            .entry(root)
+                            .and_then(|entry| self.read_current(root, &entry))
+                            != Some(true)
+                    {
+                        return;
+                    }
+                    crate::descendant_focus::choose(facts, job.last, checked)
                 };
+                let Some(choice) = choice else { return };
                 let is_html = choice.is_html;
                 let mut state = self.0.borrow_mut();
                 if state
@@ -114,7 +125,15 @@ impl RuntimeHandle {
                 let Some(target) = query.target.as_deref() else {
                     return;
                 };
-                if !live.1 {
+                let returning = self
+                    .0
+                    .borrow()
+                    .descendant_visual
+                    .get(&sequence)
+                    .is_some_and(|(job, _)| {
+                        matches!(job.purpose, DescendantPurpose::Return { .. })
+                    });
+                if !returning && !live.1 {
                     self.0
                         .borrow_mut()
                         .descendant_focus
@@ -156,7 +175,7 @@ impl RuntimeHandle {
                             query
                                 .hosts
                                 .iter()
-                                .find(|host| host.capture == *capture && host.source_focusable)
+                                .find(|host| host.capture == *capture && host.source_focusable && (host.kind != ItemKind::Category || host.parts.iter().any(|part|part.kind == crate::dropdown_inventory::HostPartKind::CategoryParent && part.source_focusable && query.attempt_path.contains(&part.capture))))
                                 .filter(|host| self.0.borrow_mut().item_cue_hosts.observe(host))
                                 .cloned()
                         });

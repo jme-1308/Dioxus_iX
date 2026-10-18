@@ -26,7 +26,7 @@ function descendantRootMatches(root,command,reference){
 function descendantOwnContent(root,id){
   return Array.from(root.querySelectorAll('[data-ix-overlay-host]')).find(element=>element instanceof HTMLElement&&element.getAttribute('data-ix-overlay-host')===id&&element.closest('[data-ix-overlay-root]')===root&&isActiveHost(element))||null;
 }
-function collectDescendantFocus(root,content){
+function collectDescendantFocus(root,content,extra=[]){
   const nodes=new Map(),elements=new Map(),typedHosts=new Set(),light=[],slots=[],shadowOrders=new Map(),outerElements=new Set();
   const internal=element=>element.matches('input[data-ix-overlay-transport]');
   const remember=element=>{
@@ -64,6 +64,7 @@ function collectDescendantFocus(root,content){
   };
   const fallback=remember(root);
   if(content instanceof Element)for(const child of content.children)walk(child,light,null,true);
+  for(const element of extra)walk(element,[],null,false);
   const assignments=[];
   for(const slot of slots){
     const supplied=[];
@@ -102,22 +103,34 @@ function queueDescendantFocus(command){
   const discard=()=>{descendantQuery(command,reference||command.reference||'', 'discard');};
   if(!reference||!descendantRootMatches(root,command,reference)){discard();return;}
   const content=descendantOwnContent(root,command.root);
+  const returned=command.purpose?.kind==='return'?itemCaptureNodes.get(command.purpose.capture)?.element:null;
+  if(command.purpose?.kind==='return'&&!(returned instanceof Element)){discard();return;}
   if(!descendantQuery(command,reference,'arm')){discard();return;}
-  nativeFocusCommands.push({kind:'descendant',command,root,content,reference});scheduleNativeFocus();
+  nativeFocusCommands.push({kind:'descendant',command,root,content,reference,returned});scheduleNativeFocus();
 }
 function executeDescendantFocus(job){
-  const {command,root,content,reference}=job;
+  const {command,root,reference,returned}=job;
+  const content=command.purpose?.kind==='submenu'?findItemsHost(root,command.root):job.content;
   const cancel=()=>{descendantQuery(command,reference,'cancel');};
   if(!descendantRootMatches(root,command,reference)){cancel();return;}
   syncReflectedCheckedAttributes();
-  const held=collectDescendantFocus(root,content);
+  let fallback=root;
+  if(command.purpose?.kind==='submenu'&&content instanceof HTMLElement){
+    const hostId=content.getAttribute('data-ix-overlay-host');
+    fallback=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(candidate=>candidate instanceof HTMLElement&&candidate.getAttribute('data-ix-overlay-owner')===owner&&candidate.getAttribute('data-ix-overlay-root')===hostId)||root;
+  }
+  const held=collectDescendantFocus(fallback,content,returned?[returned]:[]);
   const currentHosts=(path=[])=>Array.from(new Set([...held.typedHosts,...path.filter(element=>element instanceof HTMLElement&&element.hasAttribute('data-ix-item-kind'))]),host=>itemHostFacts(host)).filter(Boolean);
   if(!descendantQuery(command,reference,'prepare',{facts:held.facts,inventory:inventoryFacts(content),hosts:currentHosts()})){cancel();return;}
   for(const [target,element]of held.elements){
     if(!descendantQuery(command,reference,'focus',{target}))continue;
     // Source tryFocusElement ignores a selected non-HTMLElement. The selected
     // object is still the only offer granted; no later candidate is retried.
-    if(element instanceof HTMLElement)try{element.focus();}catch{}
+    // Source Menu/Category hosts delegate native focus into their own control.
+    // Keep the logical attempted host for the post-focus source patch path.
+    const kind=element.getAttribute?.('data-ix-item-kind');
+    const delegated=['menu','category'].includes(kind)?Array.from(element.querySelectorAll('[data-ix-item-control]')).find(control=>control.closest('[data-ix-item-kind]')===element):null;
+    if(element instanceof HTMLElement)try{(delegated||element).focus();}catch{}
     // SetupMixin reads the attempted object's path AFTER original focus. Its
     // own-shadow step jumps to that root's host; it never follows assignedSlot.
     const path=[];
