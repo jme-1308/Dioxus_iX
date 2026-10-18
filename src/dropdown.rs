@@ -115,6 +115,9 @@ struct MenuState {
     focus_pending: Option<FocusRequest>,
     native: bool,
     forward: Option<DropdownHandle>,
+    placement: DropdownPlacement,
+    fallback_placement: Option<DropdownPlacement>,
+    anchor_in_dropdown_item: bool,
 }
 #[derive(Clone)]
 struct DropdownContext {
@@ -651,6 +654,9 @@ pub fn use_dropdown() -> DropdownHandle {
                 focus_pending: None,
                 native: false,
                 forward: None,
+                placement: DropdownPlacement::default(),
+                fallback_placement: None,
+                anchor_in_dropdown_item: false,
             }))
         }),
         entries: use_hook(|| Rc::new(RefCell::new(BTreeMap::new()))),
@@ -691,6 +697,38 @@ pub enum DropdownPlacement {
     RightEnd,
 }
 impl DropdownPlacement {
+    fn clipped(self, geometry: overlay_runtime::AnchorIntersection) -> Option<Self> {
+        let end = matches!(
+            self,
+            Self::BottomEnd | Self::TopEnd | Self::LeftEnd | Self::RightEnd
+        );
+        let bounds = geometry.bounding;
+        let intersection = geometry.intersection;
+        // Source observer assignments deliberately overwrite in this order;
+        // horizontal clipping wins when two edges are hidden.
+        let mut fallback = None;
+        if intersection.top > bounds.top {
+            fallback = Some(if end {
+                Self::BottomEnd
+            } else {
+                Self::BottomStart
+            });
+        }
+        if intersection.bottom < bounds.bottom {
+            fallback = Some(if end { Self::TopEnd } else { Self::TopStart });
+        }
+        if intersection.left > bounds.left {
+            fallback = Some(if end {
+                Self::RightEnd
+            } else {
+                Self::RightStart
+            });
+        }
+        if intersection.right < bounds.right {
+            fallback = Some(if end { Self::LeftEnd } else { Self::LeftStart });
+        }
+        fallback
+    }
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::BottomStart => "bottom-start",
@@ -786,6 +824,10 @@ pub fn Dropdown(
     #[props(default)] navigation_mode: DropdownNavigationMode,
     #[props(default)] close_behavior: DropdownCloseBehavior,
     #[props(default)] enable_top_layer: bool,
+    /// Disable automatic side flips. Inline/shift positioning remains a
+    /// platform adapter; full FloatingUI geometry is not implemented.
+    #[props(default)]
+    suppress_automatic_placement: bool,
     #[props(default)] disable_focus_handling: bool,
     #[props(default)] disable_focus_trap: bool,
     /// Keep the menu open when its native anchor leaves the viewport or hides.
@@ -809,7 +851,7 @@ pub fn Dropdown(
         before: onbeforechange,
         changed: onchange,
     };
-    rsx! { DropdownSurface {key:"{key}",context,label,external:controller.is_some(),placement,blocked:disabled||loading,loading,variant,icon,aria_label,class,settings,enable_top_layer,{children}} }
+    rsx! { DropdownSurface {key:"{key}",context,label,external:controller.is_some(),placement,blocked:disabled||loading,loading,variant,icon,aria_label,class,settings,enable_top_layer,suppress_automatic_placement,{children}} }
 }
 
 #[component]
@@ -826,6 +868,7 @@ fn DropdownSurface(
     class: String,
     settings: Settings,
     enable_top_layer: bool,
+    suppress_automatic_placement: bool,
     children: Element,
 ) -> Element {
     let runtime = overlay_runtime::use_overlay_runtime();
@@ -835,6 +878,7 @@ fn DropdownSurface(
         let mut state = context.state.borrow_mut();
         state.settings = settings.clone();
         state.blocked = blocked;
+        state.placement = placement;
     }
     let node = use_hook({
         let context = context.clone();
@@ -888,6 +932,39 @@ fn DropdownSurface(
                 },
             );
             *context.node.borrow_mut() = Some(node.clone());
+            let shape_context = context.clone();
+            node.set_anchor_shape_handler(Rc::new(move |in_dropdown_item| {
+                let changed = {
+                    let mut state = shape_context.state.borrow_mut();
+                    if !state.alive || !state.surface || state.generation != generation {
+                        return;
+                    }
+                    let changed = state.anchor_in_dropdown_item != in_dropdown_item;
+                    state.anchor_in_dropdown_item = in_dropdown_item;
+                    changed
+                };
+                if changed {
+                    shape_context.notify();
+                }
+            }));
+            let intersection_context = context.clone();
+            node.set_anchor_intersection_handler(Rc::new(move |geometry| {
+                let changed = {
+                    let mut state = intersection_context.state.borrow_mut();
+                    if !state.alive || !state.surface || state.generation != generation {
+                        return;
+                    }
+                    let fallback = state.placement.clipped(geometry);
+                    let changed = state.fallback_placement != fallback
+                        || state.anchor_in_dropdown_item != geometry.anchor_in_dropdown_item;
+                    state.fallback_placement = fallback;
+                    state.anchor_in_dropdown_item = geometry.anchor_in_dropdown_item;
+                    changed
+                };
+                if changed {
+                    intersection_context.notify();
+                }
+            }));
             node
         }
     });
@@ -948,6 +1025,13 @@ fn DropdownSurface(
     let generation = state.generation;
     let focus_target = state.focus_target.clone();
     let focus_version = state.focus_epoch;
+    let effective_placement = if state.anchor_in_dropdown_item {
+        DropdownPlacement::RightStart
+    } else if !settings.suppress_trigger_visibility_check {
+        state.fallback_placement.unwrap_or(placement)
+    } else {
+        placement
+    };
     drop(state);
     let navigation_owner = context.navigation_owner(true);
     let items_owner = navigation_owner.node_id();
@@ -977,7 +1061,7 @@ fn DropdownSurface(
         "data-ix-overlay-trigger-visibility-check":(!settings.suppress_trigger_visibility_check).to_string(),
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,"data-ix-overlay-focus-target":focus_target,"data-ix-overlay-focus-version":focus_version.to_string(),
-        style:if external{format!("--ix-dropdown-area:{}",placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,placement.area())},
+        style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
         onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;if !external{*mount_trigger.borrow_mut()=Some(event.data());}mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}},
         onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request(!previous,Reason::Trigger,click_context.keyboard_mode());}},
         onkeydown:move |event:KeyboardEvent|{if !key_context.state.borrow().native{fallback_key(&key_context,event,!external);}},
@@ -987,9 +1071,9 @@ fn DropdownSurface(
             "{label}" Icon {name:"chevron-down-small",size:16}
         }}
         dialog {id:host_id,class:"ix-dropdown-menu ix-dropdown-root-menu",role:"menu","aria-label":label,
-            "data-ix-overlay-host":id,"data-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
+            "data-ix-overlay-host":id,"data-placement":effective_placement.as_str(),"data-configured-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
             popover:enable_top_layer.then_some("manual"),
-            style:"position-anchor:--ix-dropdown-anchor-{context.id};--ix-dropdown-area:{placement.area()}",
+            style:format!("position-anchor:--ix-dropdown-anchor-{};--ix-dropdown-area:{};{}",context.id,effective_placement.area(),if suppress_automatic_placement {"position-try-fallbacks:none"} else {""}),
             DropdownFocusRetention {menu_id:context.host_id(),enabled:settings.mode==DropdownNavigationMode::RovingTabindex}
             {children}
         }
@@ -1453,6 +1537,9 @@ mod tests {
         linked_blocked: bool,
         focus_checked: bool,
         no_focus: bool,
+        placement: DropdownPlacement,
+        suppress_visibility: bool,
+        suppress_automatic: bool,
         linked_veto: bool,
         veto_open: bool,
         veto_close: bool,
@@ -1483,6 +1570,9 @@ mod tests {
                 linked_blocked: false,
                 focus_checked: false,
                 no_focus: false,
+                placement: DropdownPlacement::default(),
+                suppress_visibility: false,
+                suppress_automatic: false,
                 linked_veto: false,
                 veto_open: false,
                 veto_close: false,
@@ -1547,7 +1637,7 @@ mod tests {
         let linked_before = config.clone();
         rsx! {div {
             if settings.visible {
-            Dropdown {label:"Menu",navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,
+            Dropdown {label:"Menu",navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
                 onbeforechange:move |event:DropdownChangeEvent|{let veto={let mut state=before.borrow_mut();state.requests.push((event.open,event.previous));if event.open{state.veto_open}else{state.veto_close}};if veto{event.prevent_default();}},
                 onchange:move |open:bool|{let (close,capture)={let mut state=changed.borrow_mut();state.changed.push(open);(state.close_after_open&&open,state.context.clone())};let context=capture.borrow().clone();if close{if let Some(context)=context{context.request(false,Reason::Trigger,false);}}},
                 Stateful {config:config.clone()}
@@ -1675,6 +1765,97 @@ mod tests {
         fn html(&self) -> String {
             dioxus_ssr::render(&self.dom)
         }
+    }
+
+    #[test]
+    fn dropdown_partial_anchor_updates_preserve_alignment_until_fresh_geometry_and_reset() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            placement: DropdownPlacement::BottomEnd,
+            suppress_automatic: true,
+            ..Fixture::default()
+        });
+        h.click("Menu");
+        let context = h.context();
+        let node = context.node.borrow().clone().unwrap();
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| {
+                attrs.get("data-ix-overlay-transport") == Some(&node.runtime().unwrap().owner_id())
+            })
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        let mut sequence = 0;
+        let mut deliver = |h: &mut Harness, top, bottom, left, right, submenu| {
+            sequence += 1;
+            let report = serde_json::json!({
+                "owner":node.runtime().unwrap().owner_id(),"sequence":sequence,"kind":"anchor-visibility",
+                "nodes":[{"id":context.node_id(),"generation":node.generation(),"connected":true,"trigger_id":context.trigger_id()}],
+                "anchor_visibility":{"root":context.node_id(),"generation":node.generation(),"target":context.trigger_id(),"intersecting":true,
+                    "geometry":{"bounding":{"top":0,"bottom":40,"left":0,"right":100},
+                        "intersection":{"top":top,"bottom":bottom,"left":left,"right":right},"anchor_in_dropdown_item":submenu}}
+            });
+            assert_eq!(
+                dispatch(&h.dom, "input", transport, report.to_string()),
+                (false, false)
+            );
+            h.settle();
+        };
+        let host = |h: &Harness| {
+            let html = h.html();
+            html.split(&format!("id=\"{}\"", context.host_id()))
+                .nth(1)
+                .unwrap()
+                .split('>')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        // Actual handler reports, including opposing edges and a corner, must
+        // change only placement, never issue visibility requests or remount.
+        for (rect, expected) in [
+            ((20, 40, 0, 100), "bottom-end"),
+            ((0, 20, 0, 100), "top-end"),
+            ((0, 40, 50, 100), "right-end"),
+            ((0, 40, 0, 50), "left-end"),
+            ((20, 40, 0, 50), "left-end"),
+            ((20, 20, 50, 50), "left-end"),
+        ] {
+            deliver(&mut h, rect.0, rect.1, rect.2, rect.3, false);
+            assert!(host(&h).contains(&format!("data-placement=\"{expected}\"")));
+        }
+        h.config.borrow_mut().placement = DropdownPlacement::TopStart;
+        h.update();
+        assert!(
+            host(&h).contains("data-placement=\"left-end\""),
+            "source stores fallback alignment at delivery, not every render"
+        );
+        h.config.borrow_mut().suppress_visibility = true;
+        h.update();
+        assert!(host(&h).contains("data-placement=\"top-start\""));
+        deliver(&mut h, 0, 40, 0, 100, false);
+        h.config.borrow_mut().suppress_visibility = false;
+        h.update();
+        assert!(
+            host(&h).contains("data-placement=\"left-end\""),
+            "suppressed reports do not erase retained fallback"
+        );
+        deliver(&mut h, 0, 40, 0, 100, false);
+        assert!(host(&h).contains("data-placement=\"top-start\""));
+        assert!(host(&h).contains("position-try-fallbacks:none"));
+        h.config.borrow_mut().suppress_automatic = false;
+        h.update();
+        assert!(!host(&h).contains("position-try-fallbacks:none"));
+        deliver(&mut h, 0, 20, 0, 100, true);
+        assert!(
+            host(&h).contains("data-placement=\"right-start\""),
+            "submenu anchor overrides clipping and configured alignment"
+        );
+        assert!(*context.open.peek());
+        assert_eq!(h.config.borrow().requests, [(true, false)]);
+        assert_eq!(h.config.borrow().changed, [true]);
+        assert_eq!((h.config.borrow().mounts, h.config.borrow().drops), (1, 0));
     }
 
     #[test]

@@ -193,6 +193,7 @@ function collectFacts(kind,event,phase=''){
     const tab_candidates=event?.key==='Tab'&&root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
     nodes.push({
       id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
+      anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
@@ -348,10 +349,13 @@ function syncAnchorObservers(){
     const binding={root,target,generation,observer:null};
     binding.observer=new IntersectionObserver(entries=>{
       if(!alive||anchorObservers.get(id)!==binding||!root.isConnected||!target.isConnected)return;
+      if(root.getAttribute('data-ix-overlay-open')!=='true'||root.getAttribute('data-ix-overlay-trigger-visibility-check')==='false'||root.getAttribute('data-ix-overlay-generation')!==generation||(findAnchor(root)||findTrigger(id,root))!==target)return;
       for(const entry of entries){
         if(entry.target!==target)continue;
         const report=collectFacts('anchor-visibility',null,'visibility');
-        report.anchor_visibility={root:id,generation:Number(generation),target:nativeId(target),intersecting:entry.isIntersecting};
+        const rect=r=>({top:r.top,bottom:r.bottom,left:r.left,right:r.right});
+        report.anchor_visibility={root:id,generation:Number(generation),target:nativeId(target),intersecting:entry.isIntersecting,
+          geometry:{bounding:rect(entry.boundingClientRect),intersection:rect(entry.intersectionRect),anchor_in_dropdown_item:!!target.closest('[data-ix-dropdown-item]')}};
         send(report,null);
       }
     },{threshold:[0,0.5,1]});

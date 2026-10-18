@@ -77,6 +77,36 @@ pub(crate) struct KeyDecision {
 }
 type KeyCallback = Rc<dyn Fn(&KeyFacts) -> KeyDecision>;
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub(crate) struct AnchorRect {
+    pub(crate) top: f64,
+    pub(crate) bottom: f64,
+    pub(crate) left: f64,
+    pub(crate) right: f64,
+}
+impl AnchorRect {
+    fn valid(self) -> bool {
+        [self.top, self.bottom, self.left, self.right]
+            .into_iter()
+            .all(f64::is_finite)
+            && self.top <= self.bottom
+            && self.left <= self.right
+    }
+}
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub(crate) struct AnchorIntersection {
+    pub(crate) bounding: AnchorRect,
+    pub(crate) intersection: AnchorRect,
+    #[serde(default)]
+    pub(crate) anchor_in_dropdown_item: bool,
+}
+impl AnchorIntersection {
+    fn valid(self) -> bool {
+        self.bounding.valid() && self.intersection.valid()
+    }
+}
+type AnchorIntersectionCallback = Rc<dyn Fn(AnchorIntersection)>;
+
 #[derive(Clone)]
 pub(crate) struct Callbacks {
     pub(crate) read: Rc<dyn Fn() -> Option<bool>>,
@@ -92,6 +122,8 @@ struct Entry {
     kind: OverlayKind,
     behavior: CloseBehavior,
     trigger_visibility_check: bool,
+    anchor_intersection: Option<AnchorIntersectionCallback>,
+    anchor_shape: Option<Rc<dyn Fn(bool)>>,
     callbacks: Callbacks,
     scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
 }
@@ -216,6 +248,8 @@ impl RuntimeHandle {
                     kind,
                     behavior,
                     trigger_visibility_check: kind.is_dropdown(),
+                    anchor_intersection: None,
+                    anchor_shape: None,
                     callbacks,
                     scope,
                 },
@@ -755,6 +789,26 @@ impl RuntimeHandle {
                 domain.observe_input(&report.input_kind, &report.key);
             }
         }
+        // Submenu anchor ancestry is a current DOM fact, independent of the
+        // optional visibility observer. Suppressing visibility must not disable
+        // the source's submenu placement override.
+        for node in &report.nodes {
+            let Some(in_dropdown_item) = node.anchor_in_dropdown_item else {
+                continue;
+            };
+            let Some(entry) = self.entry(&node.id).filter(|entry| {
+                node.connected && node.generation == entry.generation && entry.kind.is_dropdown()
+            }) else {
+                continue;
+            };
+            if let Some(callback) = &entry.anchor_shape {
+                self.with_owner(&node.id, node.generation, || {
+                    if self.read_current(&node.id, &entry) == Some(true) {
+                        callback(in_dropdown_item);
+                    }
+                });
+            }
+        }
         let decision = if report.phase == "window" {
             if let Some(domain) = self
                 .domain()
@@ -1113,11 +1167,7 @@ impl RuntimeHandle {
         decision
     }
     fn anchor_visibility(&self, report: &Report) -> KeyDecision {
-        let Some(fact) = report
-            .anchor_visibility
-            .as_ref()
-            .filter(|fact| !fact.intersecting)
-        else {
+        let Some(fact) = report.anchor_visibility.as_ref() else {
             return KeyDecision::default();
         };
         let Some(node) = report.nodes.iter().find(|node| {
@@ -1142,6 +1192,14 @@ impl RuntimeHandle {
         };
         self.with_owner(&fact.root, fact.generation, || {
             if self.read_current(&fact.root, &entry) == Some(true) {
+                if fact.intersecting {
+                    if let Some(geometry) = fact.geometry.filter(|geometry| geometry.valid())
+                        && let Some(callback) = &entry.anchor_intersection
+                    {
+                        callback(geometry);
+                    }
+                    return;
+                }
                 // A real native observer delivery is a separate dismissal
                 // request in the registered owner's scope. Veto retains it.
                 self.request(
@@ -1402,6 +1460,26 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    pub(crate) fn set_anchor_shape_handler(&self, handler: Rc<dyn Fn(bool)>) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        if let Some(entry) = runtime.0.borrow_mut().nodes.get_mut(&self.id)
+            && entry.generation == self.generation
+        {
+            entry.anchor_shape = Some(handler);
+        }
+    }
+    pub(crate) fn set_anchor_intersection_handler(&self, handler: AnchorIntersectionCallback) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        if let Some(entry) = runtime.0.borrow_mut().nodes.get_mut(&self.id)
+            && entry.generation == self.generation
+        {
+            entry.anchor_intersection = Some(handler);
+        }
+    }
     pub(crate) fn set_trigger_visibility_check(&self, enabled: bool) {
         let Some(runtime) = self.runtime() else {
             return;
@@ -1655,6 +1733,8 @@ struct NodeFacts {
     #[serde(default)]
     anchor_id: String,
     #[serde(default)]
+    anchor_in_dropdown_item: Option<bool>,
+    #[serde(default)]
     header_controls: Vec<String>,
     #[serde(default)]
     items: Vec<usize>,
@@ -1679,6 +1759,8 @@ struct AnchorVisibility {
     generation: u64,
     target: String,
     intersecting: bool,
+    #[serde(default)]
+    geometry: Option<AnchorIntersection>,
 }
 #[derive(Deserialize)]
 struct Query {
