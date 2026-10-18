@@ -53,6 +53,7 @@ pub mod form_control;
 pub mod forms;
 mod header_layout;
 pub mod icons;
+mod item_visual;
 pub mod layout;
 mod menu_hover_dom;
 pub mod notifications;

@@ -28,6 +28,20 @@ pub(crate) enum InventoryMode {
     RovingTabindex,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum HostPartKind {
+    SelectOption,
+    CategoryParent,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct HostPartFacts {
+    pub(crate) kind: HostPartKind,
+    pub(crate) capture: String,
+    pub(crate) source_focusable: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct HostFacts {
     pub(crate) item: ItemRef,
@@ -52,6 +66,8 @@ pub(crate) struct HostFacts {
     pub(crate) roving_opt_in: bool,
     #[serde(default)]
     pub(crate) linked_trigger: Option<String>,
+    #[serde(default)]
+    pub(crate) parts: Vec<HostPartFacts>,
 }
 fn default_focusable() -> bool {
     true
@@ -430,6 +446,7 @@ mod tests {
             visible_focus: false,
             roving_opt_in: kind == ItemKind::NativeOptIn,
             linked_trigger: None,
+            parts: Vec::new(),
         }
     }
     fn inventory(

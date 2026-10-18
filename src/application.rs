@@ -3435,7 +3435,7 @@ pub fn MenuItem(
             attributes
         };
         rsx! {div {id:host_id,class:if source_active{"ix-source-menu-item ix-focused"}else{"ix-source-menu-item"},style,hidden:source_hidden,
-            "data-ix-item-kind":"menu","data-ix-item-key":item_host.key,"data-ix-item-focusable":(!disabled).to_string(),"data-active":source_active.to_string(),
+            "data-ix-item-kind":"menu","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":(!disabled).to_string(),"data-active":source_active.to_string(),
             // Host click is the source activation target. It does not invoke
             // the generated link/button's activation or application adapters.
             onclick:move |event:MouseEvent|onclick.call(event),
@@ -3731,7 +3731,7 @@ pub fn MenuCategory(
     let popup_roving = root_roving.clone();
     rsx! {
         div { id:host_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
-            "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-focusable":"true",
+            "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
             "data-ix-overlay-root":overlay_id.clone(),"data-ix-overlay-owner":overlay_runtime.owner_id(),
             "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-items-host-id":host_id,"data-ix-overlay-native-surface":"category",
             "data-menu-category-root":id.to_string(),"data-menu-category":id.to_string(),"data-menu-category-mode":if expanded{"expanded"}else{"collapsed"},
@@ -3743,6 +3743,7 @@ pub fn MenuCategory(
             crate::overlay_runtime::OverlayTransport {runtime:overlay_runtime.clone()}
             button {id:parent_id.clone(),class:if active||nested_active{"ix-menu-item ix-menu-item-active"}else{"ix-menu-item"},r#type:"button",title:(!disable_tooltip).then(||label.clone()),
                 "data-ix-item-control":"",
+                "data-ix-item-part":"category-parent","data-ix-item-focusable":"true",
                 role:"menuitem",tabindex,"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-label":label.clone(),"aria-expanded":is_open.to_string(),"aria-controls":format!("{content_id} {popup_id}"),
                 onmounted:move |event|{

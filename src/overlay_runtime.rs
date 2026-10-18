@@ -6,7 +6,6 @@ use crate::dropdown_inventory::{
 use crate::overlay_completion::CompletionQueue;
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue, TriggerRestoreQueue};
-#[cfg(test)]
 use crate::overlay_item_focus::ItemFocusJob;
 use crate::overlay_item_focus::ItemFocusQueue;
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
@@ -136,6 +135,7 @@ struct Entry {
     root_click_without_host: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
+    item_visual: Option<Rc<dyn Fn() -> RootVisual>>,
     suppress_trigger_restore: bool,
     callbacks: Callbacks,
     scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
@@ -162,6 +162,7 @@ struct Runtime {
     completions: CompletionQueue,
     item_focus: ItemFocusQueue,
     item_focus_callbacks: BTreeMap<u64, ItemFocusCallback>,
+    item_visual_deliveries: BTreeMap<u64, (ItemFocusJob, HostFacts)>,
     item_captures: BTreeMap<String, (u64, BTreeMap<String, String>)>,
     inventories: BTreeMap<String, (u64, InventoryFacts)>,
     roving: RovingState,
@@ -171,6 +172,10 @@ struct Runtime {
     item_visual: Option<String>,
     item_visual_target: Option<String>,
     item_visual_known: bool,
+    item_cues_dirty: bool,
+    item_visual_host: Option<HostFacts>,
+    item_cue_hosts: crate::item_visual::CueHosts,
+    item_root_captures: BTreeMap<String, (u64, String, String)>,
     item_visual_signal: Option<Signal<Option<String>>>,
     bridge: Option<dioxus::document::Eval>,
     domain: Option<Domain>,
@@ -181,6 +186,29 @@ struct ItemFocusCallback {
     root: String,
     generation: u64,
     callback: Rc<dyn Fn()>,
+    visual: Option<HostFacts>,
+}
+#[derive(Clone, Default)]
+pub(crate) struct RootVisual {
+    pub(crate) active: Option<String>,
+    pub(crate) aria: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum RootCueField {
+    Active,
+    Aria,
+    TriggerAria,
+}
+#[derive(Deserialize)]
+struct RootCueOffer {
+    root: String,
+    generation: u64,
+    capture: String,
+    #[serde(default)]
+    trigger_capture: Option<String>,
+    field: RootCueField,
+    value: Option<String>,
 }
 struct RovingBatch {
     sequence: u64,
@@ -245,6 +273,7 @@ impl RuntimeHandle {
             completions: CompletionQueue::default(),
             item_focus: ItemFocusQueue::default(),
             item_focus_callbacks: BTreeMap::new(),
+            item_visual_deliveries: BTreeMap::new(),
             item_captures: BTreeMap::new(),
             inventories: BTreeMap::new(),
             roving: RovingState::default(),
@@ -254,6 +283,10 @@ impl RuntimeHandle {
             item_visual: None,
             item_visual_target: None,
             item_visual_known: false,
+            item_cues_dirty: false,
+            item_visual_host: None,
+            item_cue_hosts: Default::default(),
+            item_root_captures: BTreeMap::new(),
             item_visual_signal: dioxus::core::Runtime::try_current()
                 .map(|_| Signal::new_in_scope(None, ScopeId::ROOT)),
             bridge: None,
@@ -278,15 +311,42 @@ impl RuntimeHandle {
         let _ = self.item_visual_key();
         self.0.borrow().item_visual_target.clone()
     }
-    fn set_item_visual(&self, key: Option<String>, target: Option<String>) {
+    pub(crate) fn register_item_cue(&self, key: String, kind: ItemKind) {
+        self.0.borrow_mut().item_cue_hosts.register(key, kind);
+    }
+    pub(crate) fn unregister_item_cue(&self, key: &str) {
+        self.0.borrow_mut().item_cue_hosts.unregister(key);
+    }
+    pub(crate) fn item_visual_matches(&self, host: &HostFacts) -> bool {
+        let state = self.0.borrow();
+        state.item_visual_host.as_ref().is_some_and(|current| {
+            current.capture == host.capture
+                && current.registration_key == host.registration_key
+                && current.kind == host.kind
+                && state.item_visual_target.as_ref() == Some(&host.target)
+        })
+    }
+    fn set_item_visual(
+        &self,
+        key: Option<String>,
+        target: Option<String>,
+        host: Option<HostFacts>,
+    ) {
         let signal = {
             let mut state = self.0.borrow_mut();
+            let was_known = state.item_visual_known;
             state.item_visual_known = true;
-            if state.item_visual == key && state.item_visual_target == target {
+            if was_known
+                && state.item_visual == key
+                && state.item_visual_target == target
+                && state.item_visual_host == host
+            {
                 return;
             }
             state.item_visual = key.clone();
+            state.item_cues_dirty = true;
             state.item_visual_target = target;
+            state.item_visual_host = host;
             state.item_visual_signal
         };
         if let Some(mut signal) = signal
@@ -294,9 +354,13 @@ impl RuntimeHandle {
         {
             *value = key;
         }
+        let bridge = self.0.borrow().bridge;
+        if let Some(bridge) = bridge {
+            let _ = bridge.send(serde_json::json!({"item_cues":true}));
+        }
     }
     pub(crate) fn clear_item_visual(&self) {
-        self.set_item_visual(None, None);
+        self.set_item_visual(None, None, None);
     }
     pub(crate) fn mark_item_visual(&self, host: &HostFacts) {
         if !self.keyboard_mode() {
@@ -312,7 +376,8 @@ impl RuntimeHandle {
             }
         });
         let target = key.as_ref().map(|_| host.target.clone());
-        self.set_item_visual(key, target);
+        self.0.borrow_mut().item_cue_hosts.observe(host);
+        self.set_item_visual(key, target, Some(host.clone()));
     }
     fn projected_inventory(&self, mut facts: InventoryFacts) -> InventoryFacts {
         let state = self.0.borrow();
@@ -428,10 +493,14 @@ impl RuntimeHandle {
                 runtime.trigger_restores.remove_root(&id, old_generation);
                 runtime.completions.remove_root(&id, old_generation);
                 runtime.item_focus.remove_root(&id, old_generation);
+                runtime
+                    .item_visual_deliveries
+                    .retain(|_, (job, _)| job.root != id || job.generation != old_generation);
                 runtime.item_focus_callbacks.retain(|_, callback| {
                     callback.root != id || callback.generation != old_generation
                 });
                 runtime.item_captures.remove(&id);
+                runtime.item_root_captures.remove(&id);
                 runtime.inventories.remove(&id);
                 if let Some(hosts) = runtime.roving_hosts.remove(&(id.clone(), old_generation)) {
                     for host in hosts {
@@ -468,6 +537,7 @@ impl RuntimeHandle {
                     root_click_without_host: false,
                     anchor_intersection: None,
                     anchor_shape: None,
+                    item_visual: None,
                     suppress_trigger_restore,
                     callbacks,
                     scope,
@@ -563,8 +633,16 @@ impl RuntimeHandle {
                 state.completions.clear();
                 state.item_focus.clear();
                 state.item_focus_callbacks.clear();
+                state.item_visual_deliveries.clear();
                 state.item_captures.clear();
                 state.inventories.clear();
+                state.item_cue_hosts.reset_captures();
+                state.item_root_captures.clear();
+                state.item_visual_host = None;
+                state.item_visual = None;
+                state.item_visual_target = None;
+                state.item_visual_known = false;
+                state.item_cues_dirty = false;
                 state.roving.clear_all();
                 state.roving_hosts.clear();
                 state.roving_writes.clear();
@@ -1123,9 +1201,13 @@ impl RuntimeHandle {
             runtime.completions.remove_root(id, generation);
             runtime.item_focus.remove_root(id, generation);
             runtime
+                .item_visual_deliveries
+                .retain(|_, (job, _)| job.root != id || job.generation != generation);
+            runtime
                 .item_focus_callbacks
                 .retain(|_, callback| callback.root != id || callback.generation != generation);
             runtime.item_captures.remove(id);
+            runtime.item_root_captures.remove(id);
             runtime.inventories.remove(id);
             if let Some(hosts) = runtime.roving_hosts.remove(&(id.into(), generation)) {
                 for host in hosts {
@@ -1234,6 +1316,25 @@ impl RuntimeHandle {
                     .get(&node.id)
                     .is_some_and(|entry| node.connected && entry.generation == node.generation)
                 {
+                    let captures = runtime
+                        .item_root_captures
+                        .entry(node.id.clone())
+                        .or_insert_with(|| {
+                            (
+                                node.generation,
+                                node.root_capture.clone(),
+                                node.trigger_capture.clone(),
+                            )
+                        });
+                    if captures.0 != node.generation || captures.1.is_empty() {
+                        *captures = (
+                            node.generation,
+                            node.root_capture.clone(),
+                            node.trigger_capture.clone(),
+                        );
+                    } else if captures.1 == node.root_capture {
+                        captures.2 = node.trigger_capture.clone();
+                    }
                     let mut captures = node
                         .item_focus_captures
                         .iter()
@@ -1241,6 +1342,9 @@ impl RuntimeHandle {
                         .map(|capture| (capture.target.clone(), capture.capture.clone()))
                         .collect::<BTreeMap<_, _>>();
                     if let Some(inventory) = &node.inventory {
+                        for host in &inventory.hosts {
+                            runtime.item_cue_hosts.observe(host);
+                        }
                         captures.extend(
                             inventory
                                 .hosts
@@ -1321,7 +1425,11 @@ impl RuntimeHandle {
             }
         }
         if report.kind == "item-focusin" {
-            if let Some(host) = &report.item_focus_host {
+            let host = report
+                .item_focus_host
+                .as_ref()
+                .filter(|host| self.0.borrow_mut().item_cue_hosts.observe(host));
+            if let Some(host) = host {
                 self.mark_item_visual(host);
             } else if self.keyboard_mode() {
                 self.clear_item_visual();
@@ -2016,6 +2124,68 @@ impl RuntimeHandle {
         if query.owner != self.owner_id() {
             return;
         }
+        if query.item_cues_pending {
+            if std::mem::take(&mut self.0.borrow_mut().item_cues_dirty) {
+                event.prevent_default();
+            }
+            return;
+        }
+        if let Some(offer) = query.item_cue {
+            let state = self.0.borrow();
+            if state.item_cue_hosts.permits(
+                &offer,
+                state.item_visual_host.as_ref(),
+                state.item_visual_known,
+            ) {
+                event.prevent_default();
+            }
+            return;
+        }
+        if let Some(offer) = query.item_root_cue {
+            let authorized = {
+                let state = self.0.borrow();
+                state.item_visual_known
+                    && state.item_root_captures.get(&offer.root).is_some_and(
+                        |(generation, root, trigger)| {
+                            *generation == offer.generation
+                                && !root.is_empty()
+                                && *root == offer.capture
+                                && (!matches!(offer.field, RootCueField::TriggerAria)
+                                    || offer.trigger_capture.as_ref().is_some_and(|capture| {
+                                        !capture.is_empty() && capture == trigger
+                                    }))
+                        },
+                    )
+            };
+            if !authorized {
+                return;
+            }
+            // The reader is internal projection only: no application callbacks,
+            // queue consumption or renderer work is permitted in this query.
+            let expected = self
+                .with_owner(&offer.root, offer.generation, || {
+                    let entry = self.entry(&offer.root)?;
+                    if entry.generation != offer.generation
+                        || self.read_current(&offer.root, &entry).is_none()
+                    {
+                        return None;
+                    }
+                    let projection = (entry.item_visual.as_ref()?)();
+                    Some(match offer.field {
+                        RootCueField::Active => projection.active,
+                        RootCueField::Aria | RootCueField::TriggerAria => projection.aria,
+                    })
+                })
+                .flatten();
+            if expected.is_some_and(|expected| expected == offer.value)
+                && self
+                    .entry(&offer.root)
+                    .is_some_and(|entry| entry.generation == offer.generation)
+            {
+                event.prevent_default();
+            }
+            return;
+        }
         if let Some(sequence) = query.roving_pending {
             if self
                 .0
@@ -2103,6 +2273,10 @@ impl RuntimeHandle {
                 if query.item_focus_capture.as_deref().is_some_and(|capture| {
                     let state = self.0.borrow();
                     state.item_focus.retains_token(capture)
+                        || state.item_visual_host.as_ref().is_some_and(|host| {
+                            host.capture == capture
+                                || host.parts.iter().any(|part| part.capture == capture)
+                        })
                         || state.roving.retains_token(capture)
                         || state
                             .roving_writes
@@ -2166,16 +2340,35 @@ impl RuntimeHandle {
                     event.prevent_default();
                 }
             } else if phase == "focus" {
-                let callback = {
+                let native_visual_delivery = query.item_focus_host.is_some();
+                let visual = {
+                    let state = self.0.borrow();
+                    let original = state
+                        .item_focus_callbacks
+                        .get(&sequence)
+                        .and_then(|callback| callback.visual.as_ref());
+                    match (&query.item_focus_host, original) {
+                        (Some(live), Some(original)) => {
+                            if live.capture != capture
+                                || live.registration_key != original.registration_key
+                                || live.kind != original.kind
+                            {
+                                return;
+                            }
+                            Some(live.clone())
+                        }
+                        (_, original) => original.cloned(),
+                    }
+                };
+                let (job, callback) = {
                     let mut state = self.0.borrow_mut();
-                    if state
+                    let Some(job) = state
                         .item_focus
                         .take_focus(sequence, &root, generation, &target, &capture)
-                        .is_none()
-                    {
+                    else {
                         return;
-                    }
-                    state.item_focus_callbacks.remove(&sequence)
+                    };
+                    (job, state.item_focus_callbacks.remove(&sequence))
                 };
                 let live = self
                     .with_owner(&root, generation, || {
@@ -2190,6 +2383,12 @@ impl RuntimeHandle {
                             return false;
                         }
                         if let Some(callback) = callback {
+                            // Legacy renderer-only callers have no native
+                            // post-attempt receipt. Actual native calls publish
+                            // only in focusin or their later exact visual phase.
+                            if !native_visual_delivery && let Some(visual) = &visual {
+                                self.mark_item_visual(visual);
+                            }
                             (callback.callback)();
                         }
                         // A first-frame callback can unmount or replace its owner.
@@ -2204,6 +2403,12 @@ impl RuntimeHandle {
                     })
                     .unwrap_or(false);
                 if live {
+                    if let Some(visual) = visual {
+                        self.0
+                            .borrow_mut()
+                            .item_visual_deliveries
+                            .insert(sequence, (job, visual));
+                    }
                     event.prevent_default();
                 } else {
                     // No native scroll is enrolled after a denied first frame.
@@ -2212,6 +2417,52 @@ impl RuntimeHandle {
                         .item_focus
                         .take_scroll(sequence, &root, generation, &target, &capture);
                 }
+            } else if phase == "visual" {
+                let original = {
+                    let state = self.0.borrow();
+                    state
+                        .item_visual_deliveries
+                        .get(&sequence)
+                        .filter(|(job, _)| {
+                            job.root == root
+                                && job.generation == generation
+                                && job.target == target
+                                && job.capture.as_deref() == Some(capture.as_str())
+                        })
+                        .map(|(_, facts)| facts.clone())
+                };
+                let Some(original) = original else {
+                    return;
+                };
+                let live = query.item_focus_host.unwrap_or_else(|| original.clone());
+                if live.capture != capture
+                    || live.registration_key != original.registration_key
+                    || live.kind != original.kind
+                {
+                    return;
+                }
+                let accepted = self
+                    .with_owner(&root, generation, || {
+                        let entry = self.entry(&root)?;
+                        let _ = self.read_current(&root, &entry)?;
+                        if !self
+                            .entry(&root)
+                            .is_some_and(|entry| entry.generation == generation)
+                        {
+                            return None;
+                        }
+                        self.0
+                            .borrow_mut()
+                            .item_visual_deliveries
+                            .remove(&sequence)?;
+                        self.mark_item_visual(&live);
+                        Some(())
+                    })
+                    .flatten()
+                    .is_some();
+                if accepted {
+                    event.prevent_default();
+                }
             } else if phase == "scroll" {
                 let job = self
                     .0
@@ -2219,6 +2470,7 @@ impl RuntimeHandle {
                     .item_focus
                     .take_scroll(sequence, &root, generation, &target, &capture);
                 if job.is_some() {
+                    self.0.borrow_mut().item_visual_deliveries.remove(&sequence);
                     let live = self
                         .with_owner(&root, generation, || {
                             let entry = self.entry(&root)?;
@@ -2581,11 +2833,6 @@ impl NodeHandle {
         runtime.queue_roving_writes(&self.id, self.generation, writes);
     }
     pub(crate) fn queue_item_host_focus(&self, host: &HostFacts, callback: Rc<dyn Fn()>) -> bool {
-        let Some(runtime) = self.runtime() else {
-            return false;
-        };
-        let facts = host.clone();
-        let weak = Rc::downgrade(&runtime.0);
         if host.capture.is_empty() {
             return false;
         }
@@ -2593,12 +2840,8 @@ impl NodeHandle {
             host.target.clone(),
             true,
             Some(host.capture.clone()),
-            Rc::new(move || {
-                if let Some(runtime) = weak.upgrade().map(RuntimeHandle) {
-                    runtime.mark_item_visual(&facts);
-                }
-                callback();
-            }),
+            callback,
+            Some(host.clone()),
         )
     }
     /// Admit one captured item operation. Newer keys, mode changes and accepted
@@ -2609,7 +2852,7 @@ impl NodeHandle {
         focus_native: bool,
         callback: Rc<dyn Fn()>,
     ) -> bool {
-        self.queue_item_focus_captured(target, focus_native, None, callback)
+        self.queue_item_focus_captured(target, focus_native, None, callback, None)
     }
     fn queue_item_focus_captured(
         &self,
@@ -2617,6 +2860,7 @@ impl NodeHandle {
         focus_native: bool,
         captured: Option<String>,
         callback: Rc<dyn Fn()>,
+        visual: Option<HostFacts>,
     ) -> bool {
         if target.is_empty() {
             return false;
@@ -2659,6 +2903,7 @@ impl NodeHandle {
                             root: self.id.clone(),
                             generation: self.generation,
                             callback,
+                            visual,
                         },
                     );
                 }
@@ -2934,6 +3179,18 @@ impl NodeHandle {
             runtime.unregister(&self.id, self.generation);
         }
     }
+    pub(crate) fn set_item_visual_reader(&self, reader: Rc<dyn Fn() -> RootVisual>) {
+        if let Some(runtime) = self.runtime() {
+            let mut state = runtime.0.borrow_mut();
+            if let Some(entry) = state
+                .nodes
+                .get_mut(&self.id)
+                .filter(|entry| entry.generation == self.generation)
+            {
+                entry.item_visual = Some(reader);
+            }
+        }
+    }
 }
 
 pub(crate) fn use_overlay_runtime() -> RuntimeHandle {
@@ -2951,6 +3208,10 @@ pub(crate) fn OverlayTransport(runtime: RuntimeHandle) -> Element {
         onchange:move |event| runtime.query(event),
     } }
 }
+
+#[cfg(test)]
+#[path = "item_visual_transport_tests.rs"]
+mod item_visual_transport_tests;
 
 #[derive(Deserialize)]
 struct Report {
@@ -3025,6 +3286,10 @@ struct NodeFacts {
     generation: u64,
     connected: bool,
     #[serde(default)]
+    root_capture: String,
+    #[serde(default)]
+    trigger_capture: String,
+    #[serde(default)]
     discovery_ready: bool,
     #[serde(default)]
     trigger_ancestors: Vec<String>,
@@ -3077,6 +3342,14 @@ struct AnchorVisibility {
 struct Query {
     owner: String,
     sequence: u64,
+    #[serde(default)]
+    item_cues_pending: bool,
+    #[serde(default)]
+    item_cue: Option<crate::item_visual::CueOffer>,
+    #[serde(default)]
+    item_root_cue: Option<RootCueOffer>,
+    #[serde(default)]
+    item_focus_host: Option<HostFacts>,
     #[serde(default)]
     roving_pending: Option<u64>,
     #[serde(default)]
@@ -3973,7 +4246,19 @@ mod tests {
         runtime: &RuntimeHandle,
         job: &ItemFocusJob,
     ) {
-        for phase in ["arm", "focus"] {
+        for phase in ["arm", "focus", "visual"] {
+            let host = runtime
+                .0
+                .borrow()
+                .inventories
+                .get(&job.root)
+                .and_then(|(_, facts)| {
+                    facts
+                        .hosts
+                        .iter()
+                        .find(|host| Some(host.capture.as_str()) == job.capture.as_deref())
+                })
+                .cloned();
             assert!(publication_dispatch(
                 dom,
                 transport,
@@ -3981,7 +4266,8 @@ mod tests {
                 serde_json::json!({
                     "owner":runtime.owner_id(),"sequence":0,"item_focus_sequence":job.sequence,
                     "item_focus_root":job.root,"item_focus_generation":job.generation,
-                    "item_focus_target":job.target,"item_focus_capture":job.capture,"item_focus_phase":phase
+                    "item_focus_target":job.target,"item_focus_capture":job.capture,"item_focus_phase":phase,
+                    "item_focus_host":if phase == "arm" { None } else { host }
                 })
             ));
         }
@@ -4276,6 +4562,9 @@ mod tests {
         );
         let mut raw = mixed_inventory_facts();
         raw.hosts[1].visible_focus = true;
+        for host in &raw.hosts {
+            runtime.register_item_cue(host.registration_key.clone(), host.kind);
+        }
         runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"document":"mixed-visual-runtime-test","kind":"observe",
             "nodes":[{"id":"visual-root","generation":1,"connected":true,"inventory":raw}]})));
         assert_eq!(

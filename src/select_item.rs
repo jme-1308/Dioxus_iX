@@ -63,6 +63,7 @@ pub fn SelectItem(
             class: "ix-select-item",
             role: "presentation", "aria-hidden": "true", "aria-label": aria_label,
             "data-ix-item-kind": "select", "data-ix-item-key": binding.key,
+            "data-ix-item-runtime": binding.runtime.owner_id(),
             "data-ix-item-focusable": "true", "data-active": active.to_string(),
             "value": value, "label": label, "disabled": disabled,
             onclick: move |event| onclick.call(event),
@@ -71,6 +72,7 @@ pub fn SelectItem(
                 class: if selected { "ix-dropdown-item ix-select-item-option select-item-checked" } else { "ix-dropdown-item ix-select-item-option" },
                 role: "option", "aria-hidden": "true", "checked": selected, "disabled": disabled,
                 "data-active": active.to_string(),
+                "data-ix-item-part": "select-option", "data-ix-item-focusable": "false",
                 onclick: move |_| { if !disabled { onitemclick.call(inner_value.clone()); } },
                 onkeydown: move |event: KeyboardEvent| {
                     if !disabled && (event.key() == Key::Enter || event.key() == Key::Character(" ".into())) {
@@ -80,7 +82,7 @@ pub fn SelectItem(
                 span { "{text}" }
                 if selected { crate::Icon { name: "single-check", size: 16 } }
             }
-            crate::overlay_runtime::OverlayTransport { runtime: binding.runtime }
+            crate::overlay_runtime::OverlayTransport { runtime: binding.runtime.clone() }
         }
     }
 }

@@ -34,17 +34,31 @@ impl ItemHostBinding {
     }
 }
 pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
+    let runtime = overlay_runtime::use_overlay_runtime();
+    let registry = runtime.clone();
     let key = use_hook(move || {
-        format!(
+        let key = format!(
             "ix-source-{kind}-{}",
             NEXT_SOURCE_ITEM.fetch_add(1, Ordering::Relaxed)
-        )
+        );
+        let kind = match kind {
+            "dropdown" => ItemKind::Dropdown,
+            "select" => ItemKind::Select,
+            "menu" => ItemKind::Menu,
+            "category" => ItemKind::Category,
+            _ => unreachable!("typed source item kind"),
+        };
+        registry.register_item_cue(key.clone(), kind);
+        key
     });
+    let cleanup = runtime.clone();
+    let dropped = key.clone();
+    use_drop(move || cleanup.unregister_item_cue(&dropped));
     ItemHostBinding {
         host_id: key.clone(),
         key,
         generic: try_use_context::<DropdownContext>().is_some(),
-        runtime: overlay_runtime::use_overlay_runtime(),
+        runtime,
     }
 }
 pub(crate) fn item_host_id(attributes: &[Attribute], default: &str) -> String {
@@ -232,13 +246,14 @@ impl DropdownContext {
         if let Some(node) = node
             && let Some(facts) = node.inventory()
         {
-            let target = node.runtime()?.item_visual_target()?;
+            let runtime = node.runtime()?;
+            let _ = runtime.item_visual_target()?;
             let inventory = Inventory::new(InventoryMode::ActiveDescendant, facts);
             return inventory
                 .query_hosts()
                 .into_iter()
                 .find(|host| {
-                    host.target == target
+                    runtime.item_visual_matches(host)
                         && host.kind != ItemKind::Category
                         && host.source_focusable
                 })
@@ -1189,6 +1204,16 @@ fn DropdownSurface(
                 },
             );
             *context.node.borrow_mut() = Some(node.clone());
+            let projection = context.clone();
+            node.set_item_visual_reader(Rc::new(move || {
+                let active = projection.active_dom_id();
+                let aria = (projection.state.borrow().settings.mode
+                    == DropdownNavigationMode::ActiveDescendant
+                    && *projection.open.peek())
+                .then(|| active.clone())
+                .flatten();
+                overlay_runtime::RootVisual { active, aria }
+            }));
             let shape_context = context.clone();
             node.set_anchor_shape_handler(Rc::new(move |in_dropdown_item| {
                 let changed = {
@@ -1533,7 +1558,7 @@ pub fn DropdownItem(
         id:host_id,class:if compact{"ix-dropdown-item ix-dropdown-quick-action"}else{"ix-dropdown-item"},
         role:if checked||checkable{"menuitemcheckbox"}else{"menuitem"},"data-ix-dropdown-item":id.to_string(),
         "data-ix-dropdown-owner":owner,"data-ix-dropdown-label":label.clone(),
-        "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key,
+        "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key,"data-ix-item-runtime":host_binding.runtime.owner_id(),
         "data-ix-item-focusable":(!blocked).to_string(),"checked":checked,
         style:host_style,"data-ix-overlay-trigger":trigger_marker,
         "data-active":active.to_string(),"aria-disabled":blocked.to_string(),"disabled":blocked,
