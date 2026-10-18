@@ -263,7 +263,7 @@ fn upload_source_state_texts_pair_with_the_actual_md_spinner_and_error_success_g
             let (spinner, contents) = part(host, "ix-spinner");
             assert!(classes(spinner).contains(&"ix-spinner-md"));
             assert!(classes(spinner).contains(&"ix-spinner-primary"));
-            assert!(contents.contains("ix-spinner-track") && contents.contains("ix-spinner-arc"));
+            assert!(contents.contains("ix-spinner-ring") && !contents.contains("<svg"));
             assert!(!body.contains("ix-upload-status-icon"));
         }
     }

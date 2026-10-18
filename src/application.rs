@@ -8066,8 +8066,13 @@ mod tests {
             let mut current = dioxus::core::ElementId::ROOT;
             for edit in mutations.edits {
                 match edit {
-                    dioxus::core::Mutation::SetId { id }
-                    | dioxus::core::Mutation::PushId { id } => current = id,
+                    dioxus::core::Mutation::SetId { id } => {
+                        // SetId registers a fresh node; the renderer can recycle
+                        // its numeric ID after removing a containing subtree.
+                        self.attrs.remove(&id.raw());
+                        current = id;
+                    }
+                    dioxus::core::Mutation::PushId { id } => current = id,
                     dioxus::core::Mutation::SetAttribute {
                         name,
                         value: dioxus::core::AttributeValue::Text(value),
@@ -8876,7 +8881,20 @@ mod tests {
         }
         h.settings.borrow().update.clone().unwrap()();
         h.render_now();
-        assert_ne!(h.header_root_attrs()["id"], old_root);
+        let rendered = h.html();
+        let rendered_owner = rendered
+            .split_once("data-header-layout-observer=\"")
+            .map(|(_, value)| value.split('"').next().unwrap());
+        assert_ne!(
+            h.header_root_attrs()["id"],
+            old_root,
+            "rendered observer owner: {rendered_owner:?}"
+        );
+        assert_eq!(
+            rendered_owner,
+            Some(h.header_root_attrs()["id"].as_str()),
+            "cached observer attributes must describe the current rendered node"
+        );
         h.header_raw(
             h.header_message(1, "presence", serde_json::json!({})),
             false,

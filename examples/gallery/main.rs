@@ -52,6 +52,7 @@ mod radio_review;
 mod select_visual_review;
 mod slider_review;
 mod source_examples;
+mod spinner_review;
 mod tabs_review;
 mod text_commit_review;
 mod theme_review;
@@ -215,7 +216,7 @@ fn Gallery() -> Element {
                     h1 { "{page().label()}" }
                     p { class: "review-intro", "Interactive Rust ports of iX example scenarios. This is a work in progress; exact Brand tokens and complete upstream parity are still being verified." }
                     match page() {
-                        GalleryPage::Actions => rsx! { icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
+                        GalleryPage::Actions => rsx! { spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples {} },
                         GalleryPage::Forms => rsx! { upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },

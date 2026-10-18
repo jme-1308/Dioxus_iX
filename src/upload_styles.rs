@@ -1,8 +1,8 @@
 //! Upload recipes translated from pinned MIT-licensed iX 5.2.1.
 //! SPDX-FileCopyrightText: 2023 Siemens AG
 //! SPDX-License-Identifier: MIT
-//! Explicit wrappers project source shadow hosts. Existing SVG Icon/Spinner
-//! adapters retain their established glyph and animation qualification.
+//! Explicit wrappers project source shadow hosts. Existing SVG Icon
+//! adapters retain their established glyph qualification. Spinner uses its shared CSS recipe.
 
 pub(crate) const STYLES: &str = r#"
 .ix-theme {
@@ -128,13 +128,6 @@ pub(crate) const STYLES: &str = r#"
   max-height: var(--ix-spinner-medium--size);
   color: inherit;
   flex-shrink: 1;
-}
-.ix-theme .ix-upload.ix-upload-visual .ix-upload-spinner-host .ix-spinner-arc {
-  color: var(--si-sys-color-border-accent-hover, var(--ix-color-primary));
-}
-.ix-theme .ix-upload.ix-upload-visual .ix-upload-spinner-host .ix-spinner-track {
-  color: var(--si-sys-color-border-4, var(--ix-color-border));
-  opacity: 1;
 }
 .ix-theme .ix-upload.ix-upload-visual .ix-upload-button-host {
   --ix-button-secondary--background: var(--si-sys-color-background-accent-secondary, rgba(0, 0, 0, 0));

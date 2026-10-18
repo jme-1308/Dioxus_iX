@@ -83,6 +83,7 @@ mod radio_styles;
 mod select_item;
 mod select_visual_styles;
 mod slider_styles;
+mod spinner_styles;
 pub mod theme;
 mod toggle_button_styles;
 mod toggle_styles;

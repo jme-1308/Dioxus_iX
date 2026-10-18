@@ -6,15 +6,15 @@
 
 web
 
-The library must support both Dioxus web and Dioxus desktop applications while retaining the Siemens iX design language. The platform value describes the interface system; it does not limit delivery to the browser. Desktop renderer and supported desktop operating systems remain open decisions. No platform-specific replacement of the iX identity has been requested.
+The library must support both Dioxus web and Dioxus desktop applications while retaining the Siemens iX design language. The platform value describes the interface system; it does not limit delivery to the browser. Desktop uses a WebView; broader OS coverage remains to be established. No platform-specific replacement of the iX identity has been requested.
 
 ## Stack
 
 - Rust with Dioxus **v0.8.0-alpha.2**, explicitly selected by the user.
 - Release reference: https://github.com/DioxusLabs/dioxus/releases/tag/v0.8.0-alpha.2
 - Do not silently substitute another Dioxus release.
-- Implementation architecture remains undecided: Rust implementations of the components, bindings to upstream Web Components, or a hybrid approach.
-- No application scaffold, build command, hosting target, or distribution configuration exists in this project at initialization.
+- Native Rust/Dioxus components, Rust-embedded styles/assets, and small native DOM bridges; no upstream Web Component runtime.
+- A library and interactive gallery exist. `just --list` is the command index; preserve build caches and the existing dependency/toolchain configuration.
 
 ## Users
 
@@ -24,11 +24,15 @@ Dioxus application developers who need reusable Siemens iX components and UI pat
 
 Create a Dioxus UI library based on Siemens Industrial Experience (iX), covering a broad range of UI components, UI patterns, and design tools according to Siemens iX guidelines.
 
-The user prefers a **1:1 clone**. Treat close visual and behavioral fidelity to upstream as the target, including component states and interactions, rather than inventing a replacement design system. Actual coverage and parity must be established through implementation and verification; they are not achieved at initialization.
+The user changed the goal on **2026-10-18** to **a good approximation of iX, with reliable core interactions**. Retain the recognizable iX Brand design language and coherent component states while adapting the implementation naturally to Rust/Dioxus.
+
+Acceptance means common workflows work: clicking, typing, selection, opening and closing surfaces, disabled/loading states, and basic keyboard/focus accessibility. Components should look convincing in representative desktop/narrow layouts and light/dark themes. Useful examples should make those capabilities easy to try.
+
+Exact DOM structure, exhaustive upstream API/member coverage, invisible computed-style equality, upstream bugs, millisecond timing and frame-by-frame event chronology are **outside the acceptance target**. Existing detailed comparisons remain historical reference. Further deep investigation needs a concrete user-facing defect, a regression, or an explicit request; it must not displace broader component coverage.
 
 ## Positioning
 
-Bring the Siemens iX interface system to the explicitly selected Dioxus release, with a shared library usable in web and desktop applications. Fidelity to iX is the defining requirement.
+Bring the Siemens iX interface system to the explicitly selected Dioxus release, with a shared library usable in web and desktop applications. Recognizable iX appearance, practical functionality, and broad component coverage define success.
 
 ## Operating Context
 
@@ -42,18 +46,18 @@ Bring the Siemens iX interface system to the explicitly selected Dioxus release,
 
 - Support Dioxus web and desktop consumers.
 - Keep authored implementation in Rust source files. The user approved small DOM bridges embedded in Rust for native surface activation, focus, pointer capture, and chart export; component state and interaction logic remain Rust. Do not introduce standalone JavaScript or TypeScript files.
-- Broad intended scope includes UI components, UI patterns, and design tools; the initial component inventory, implementation order, and exact tooling deliverables remain undecided.
-- Preserve upstream terminology and expected component behavior when adapting the interface to Dioxus.
-- Web and desktop parity must be verified separately; neither is currently implemented.
-- Exact upstream release or commit to target for ongoing parity remains undecided. The checkout snapshot below records inspected evidence, not a user-approved permanent version pin.
-- Packaging, public Rust API, third-party integrations, and deployment requirements remain open.
+- Broad intended scope includes components, patterns, and useful examples. IMPLEMENTATION.md records current capability coverage and priorities.
+- Preserve familiar terminology and common interaction expectations. Complete upstream API compatibility is optional.
+- Check representative web and desktop workflows separately. Do not infer usability from compilation alone.
+- Read-only reference: core 5.2.1 at 8bf599bc68365d7752e12832e71b625883b93d7a. This provides stable design/behavior guidance; exact runtime equivalence is not required.
+- Preserve MIT notices and existing packaging boundaries. Network/services and separately licensed assets remain outside the bundled library.
 
 ## Brand Commitments
 
 - Use the Siemens iX **Brand** option, as explicitly selected by the user.
 - Classic is not the requested design target.
 - Follow the selected upstream identity and guidelines. Future design work must preserve that commitment.
-- Default light/dark behavior and the exact Brand assets available for reuse have not yet been established.
+- Light/dark and normal/compact scopes exist. The user has no complete authorized Brand token stylesheet; use the established provisional appearance without treating exact Brand metrics as a blocker.
 
 ## Evidence on Hand
 
@@ -67,16 +71,16 @@ The upstream checkout was inspected during initialization:
 - `packages/core/scss`: styling references; the inspected theme directory contains `classic` and `core`.
 - `examples` and `patterns`: usage examples and higher-level compositions.
 - `testing/visual-testing`: visual regression tests and screenshot fixtures. Verify theme and freshness before using an individual fixture as visual authority.
-- `patterns/react-patterns/scripts/setup-corporate-theme.mjs` references a separate corporate-theme package and an optional download of `brand-theme.css`. Availability of the complete requested Brand theme for this port remains to be verified.
+- `patterns/react-patterns/scripts/setup-corporate-theme.mjs` references a separate corporate-theme package and an optional download of `brand-theme.css`. The user confirmed that no complete authorized Brand stylesheet is available.
 
-This project currently contains Impeccable setup files and this product record, with no implemented UI library or runnable preview. The upstream checkout is reference material; initialization does not modify it.
+The project now contains a Rust component library and runnable gallery. The upstream checkout remains read-only reference material.
 
 ## Product Principles
 
 For future landing pages and showcases, the user selected a hybrid workflow: use visual exploration when it helps establish the composition, then implement and refine in code. Library components, application screens, and documentation use code-first work within the established iX identity.
 
 1. Preserve Siemens iX Brand identity and guidelines across components and patterns.
-2. Make fidelity measurable against upstream behavior, states, and visual references.
+2. Check representative appearance and core workflows; prioritize user-visible quality over microscopic equivalence.
 3. Support both requested delivery targets without assuming success on one proves success on the other.
 4. Keep implementation compatible with the user's explicit Dioxus version.
-5. Record coverage and open decisions honestly; do not claim unimplemented parity.
+5. Record supported capabilities and meaningful limitations honestly. Ship completed capabilities and move on; do not pursue millisecond timing or internal-equivalence audits.

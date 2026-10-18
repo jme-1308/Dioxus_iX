@@ -2,7 +2,7 @@
 
 A Rust component library porting [Siemens Industrial Experience](https://github.com/siemens/ix) to **Dioxus 0.8.0-alpha.2**, for web and desktop applications.
 
-This is an independent, early-stage port. It is not an official Siemens product. Siemens logos, corporate wordmarks, and other logo icons are excluded. The target is the iX **Brand** design option, with visual and behavioral parity tracked against the upstream source; complete parity has not yet been achieved.
+This is an independent, early-stage port. It is not an official Siemens product. Siemens logos, corporate wordmarks, and other logo icons are excluded. The target is a good visual approximation of iX **Brand**, with reliable core interactions and basic keyboard accessibility. It is not intended as an exact runtime or API replica; component coverage and meaningful limitations are tracked in IMPLEMENTATION.md.
 
 ## Rust-authored implementation
 
