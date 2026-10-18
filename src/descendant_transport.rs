@@ -36,6 +36,17 @@ impl RuntimeHandle {
             return;
         };
         match query.phase.as_str() {
+            "hidden" => {
+                if self.0.borrow_mut().descendant_focus.ack_hidden(
+                    sequence,
+                    root,
+                    generation,
+                    reference,
+                    &query.hide_before,
+                ) {
+                    event.prevent_default();
+                }
+            }
             "arm" => {
                 if self
                     .0

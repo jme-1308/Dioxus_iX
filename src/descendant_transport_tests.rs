@@ -601,6 +601,168 @@ fn return_handler_uses_exact_late_candidate_when_closed_and_keeps_category_paths
 }
 
 #[test]
+fn submenu_return_waits_for_exact_native_hides_without_consuming_independent_work() {
+    let runtime = RuntimeHandle::new();
+    let owner = owner(&runtime, 1);
+    let prior = host("prior", "actual-prior");
+    let returning_host = host("returning", "actual-returning");
+    let hosts = [prior.clone(), returning_host.clone()];
+    observe(&runtime, 1, 1, &hosts);
+    focusin(&runtime, 1, 2, &prior);
+    assert!(cue(&runtime, &prior, true));
+
+    let mut children = Vec::new();
+    for (id, generation) in [("closing-a", 3), ("closing-b", 4)] {
+        let open = Rc::new(Cell::new(true));
+        let read = open.clone();
+        let apply = open.clone();
+        children.push(runtime.register(
+            id.into(),
+            generation,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            Callbacks {
+                read: Rc::new(move || Some(read.get())),
+                before: Rc::new(|_| true),
+                apply: Rc::new(move |change| apply.set(change.open)),
+                key: None,
+            },
+        ));
+    }
+    runtime.input(event(serde_json::json!({
+        "owner": runtime.owner_id(), "sequence": 3, "kind": "observe", "nodes": [
+            {"id": "opening-root", "generation": 1, "connected": true,
+                "root_capture": "reference-1", "inventory": inventory(&hosts)},
+            {"id": "closing-a", "generation": 3, "connected": true,
+                "root_capture": "actual-closing-a"},
+            {"id": "closing-b", "generation": 4, "connected": true,
+                "root_capture": "actual-closing-b"}
+        ]
+    })));
+    let mut hides = Vec::new();
+    for child in &children {
+        assert!(child.request(false, Reason::Left, true));
+        let entry = runtime.entry(child.id()).unwrap();
+        assert_eq!(runtime.read_current(child.id(), &entry), Some(false));
+        hides.push(DescendantHide {
+            root: child.id().into(),
+            generation: child.generation(),
+            operation: entry.revision,
+            reference: runtime.0.borrow().item_root_captures[child.id()].1.clone(),
+        });
+    }
+    runtime.queue_submenu_return_after_hide(
+        "opening-root",
+        1,
+        returning_host.capture.clone(),
+        hides.clone(),
+    );
+    let returning = runtime.0.borrow().descendant_focus.unsent().pop().unwrap();
+    assert_eq!(returning.hide_before, hides);
+    runtime.queue_submenu_return("opening-root", 1, prior.capture.clone());
+    let independent = runtime.0.borrow().descendant_focus.unsent().pop().unwrap();
+    assert!(independent.hide_before.is_empty());
+    owner.roving.set(true);
+    arm(&runtime, &returning);
+    arm(&runtime, &independent);
+
+    let mut late = node(&returning_host.capture, "button", false);
+    late.disabled = true;
+    late.hidden = true;
+    late.tabindex = Some("-1".into());
+    let raw = facts(vec![node(&prior.capture, "button", false), late], 1);
+    assert!(!prepare(&runtime, &returning, &raw, &hosts));
+    assert!(!query(
+        &runtime,
+        phase(&runtime, &returning, "focus", Some(&returning_host.capture))
+    ));
+    assert!(!query(
+        &runtime,
+        phase(
+            &runtime,
+            &returning,
+            "visual",
+            Some(&returning_host.capture)
+        )
+    ));
+    let mut hidden = phase(&runtime, &returning, "hidden", None);
+    hidden["descendant_focus"]["hide_before"] = serde_json::to_value(&hides).unwrap();
+    let mut wrong = hidden.clone();
+    wrong["descendant_focus"]["generation"] = 2.into();
+    assert!(!query(&runtime, wrong));
+    let mut wrong = hidden.clone();
+    wrong["descendant_focus"]["reference"] = "copied-reference".into();
+    assert!(!query(&runtime, wrong));
+    for field in ["operation", "generation", "reference"] {
+        let mut wrong = hidden.clone();
+        wrong["descendant_focus"]["hide_before"][0][field] = if field == "reference" {
+            "copied-closing-a".into()
+        } else {
+            99.into()
+        };
+        assert!(!query(&runtime, wrong));
+    }
+    for wrong_hides in [Vec::new(), vec![hides[0].clone()], {
+        let mut reversed = hides.clone();
+        reversed.reverse();
+        reversed
+    }] {
+        let mut wrong = hidden.clone();
+        wrong["descendant_focus"]["hide_before"] = serde_json::to_value(wrong_hides).unwrap();
+        assert!(!query(&runtime, wrong));
+    }
+    assert!(cue(&runtime, &prior, true));
+    assert!(!prepare(&runtime, &returning, &raw, &hosts));
+
+    // An ordinary return remains independent and needs no hide receipt, even
+    // when the registered parent is now closed.
+    owner.open.set(false);
+    assert!(prepare(&runtime, &independent, &raw, &hosts));
+    assert!(query(
+        &runtime,
+        phase(&runtime, &independent, "focus", Some(&prior.capture))
+    ));
+    let mut visual = phase(&runtime, &independent, "visual", Some(&prior.capture));
+    visual["descendant_focus"]["hosts"] = serde_json::to_value(&hosts).unwrap();
+    visual["descendant_focus"]["attempt_path"] = serde_json::json!([prior.capture]);
+    assert!(query(&runtime, visual));
+    assert_eq!(
+        runtime.0.borrow().descendant_focus.unsent(),
+        vec![returning.clone()]
+    );
+
+    assert!(query(&runtime, hidden.clone()));
+    assert!(!query(&runtime, hidden));
+    assert!(prepare(&runtime, &returning, &raw, &hosts));
+    assert!(!query(
+        &runtime,
+        phase(&runtime, &returning, "focus", Some(&prior.capture))
+    ));
+    assert!(query(
+        &runtime,
+        phase(&runtime, &returning, "focus", Some(&returning_host.capture))
+    ));
+    assert!(cue(&runtime, &prior, true));
+    let mut visual = phase(
+        &runtime,
+        &returning,
+        "visual",
+        Some(&returning_host.capture),
+    );
+    visual["descendant_focus"]["hosts"] = serde_json::to_value(&hosts).unwrap();
+    visual["descendant_focus"]["attempt_path"] = serde_json::json!([returning_host.capture]);
+    // The post-attempt receipt requires no physical-focus-success flag, so a
+    // native no-op still publishes the exact authorized attempted host's cue.
+    assert!(query(&runtime, visual.clone()));
+    assert!(cue(&runtime, &returning_host, true));
+    assert!(cue(&runtime, &prior, false));
+    assert!(!query(&runtime, visual));
+    assert_eq!(owner.preparations.get(), 0);
+    assert!(runtime.0.borrow().descendant_focus.unsent().is_empty());
+    assert!(runtime.0.borrow().descendant_visual.is_empty());
+}
+
+#[test]
 fn submenu_prepare_reads_current_mode_and_cancels_only_the_roving_transfer_job() {
     let runtime = RuntimeHandle::new();
     let owner = owner(&runtime, 1);

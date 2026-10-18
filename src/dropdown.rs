@@ -1517,6 +1517,7 @@ fn DropdownSurface(
         "aria-activedescendant":if settings.mode==DropdownNavigationMode::ActiveDescendant&&open{active_id.clone()}else{None},
         "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime_owner,"data-ix-overlay-trigger":trigger_marker,
         "data-ix-overlay-generation":generation.to_string(),"data-ix-overlay-open":open.to_string(),
+        "data-ix-overlay-revision":node.render_revision().to_string(),
         "data-ix-overlay-top-layer":enable_top_layer.to_string(),"data-ix-overlay-mode":settings.mode.as_str(),
         "data-ix-overlay-trigger-visibility-check":(!settings.suppress_trigger_visibility_check).to_string(),
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),

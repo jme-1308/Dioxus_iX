@@ -82,7 +82,17 @@ impl RuntimeHandle {
             .and_then(|item| facts.hosts.iter().find(|host| host.item == *item))
             .map(|host| host.capture.clone())
     }
+    #[cfg(test)]
     pub(super) fn queue_submenu_return(&self, root: &str, generation: u64, capture: String) {
+        self.queue_submenu_return_after_hide(root, generation, capture, Vec::new());
+    }
+    pub(super) fn queue_submenu_return_after_hide(
+        &self,
+        root: &str,
+        generation: u64,
+        capture: String,
+        hides: Vec<crate::overlay_descendant_focus::DescendantHide>,
+    ) {
         let admitted = self
             .with_owner(root, generation, || {
                 let Some(entry) = self.entry(root) else {
@@ -97,9 +107,24 @@ impl RuntimeHandle {
                     .get(root)
                     .filter(|(version, _, _)| *version == generation)
                     .map(|(_, capture, _)| capture.clone());
-                state
-                    .descendant_focus
-                    .admit_return(root.into(), generation, 0, reference, capture);
+                if hides.is_empty() {
+                    state.descendant_focus.admit_return(
+                        root.into(),
+                        generation,
+                        0,
+                        reference,
+                        capture,
+                    );
+                } else {
+                    state.descendant_focus.admit_return_after_hide(
+                        root.into(),
+                        generation,
+                        0,
+                        reference,
+                        capture,
+                        hides,
+                    );
+                }
                 true
             })
             .unwrap_or(false);

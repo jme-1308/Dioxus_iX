@@ -507,6 +507,7 @@ struct CategoryMirror {
 struct CategoryModel {
     alive: bool,
     native: bool,
+    pending_visual_clear: bool,
     generation: u64,
     children: BTreeMap<usize, CategoryChild>,
     observed: Vec<CategoryDomItem>,
@@ -915,6 +916,7 @@ impl CategoryNavigation {
             model: RefCell::new(CategoryModel {
                 alive: true,
                 native: false,
+                pending_visual_clear: false,
                 generation: 0,
                 children: BTreeMap::new(),
                 observed: vec![],
@@ -1016,7 +1018,7 @@ impl CategoryNavigation {
         }
     }
     fn reconcile(&self, expanded: bool, flyout: Option<usize>) {
-        let (desired, pending, transitioned, close_popup) = {
+        let (desired, pending, transitioned, close_popup, lost_flyout) = {
             let mut model = self.0.model.borrow_mut();
             let changed = model.previous_expanded != expanded;
             let lost_flyout = model.previous_flyout == Some(self.0.id) && flyout != Some(self.0.id);
@@ -1050,10 +1052,14 @@ impl CategoryNavigation {
                 pending,
                 changed || lost_flyout,
                 expanded && !changed && !initialize && active && open_active,
+                lost_flyout,
             )
         };
         if let Some(pending) = pending {
             pending.cancel();
+        }
+        if lost_flyout {
+            self.clear_flyout_visual();
         }
         if transitioned {
             self.notify();
@@ -1110,7 +1116,23 @@ impl CategoryNavigation {
             // ownership-loss observer must not invalidate its return ACK again.
             self.0.model.borrow_mut().previous_flyout = None;
             flyout.set(None);
+            self.clear_flyout_visual();
             self.notify();
+        }
+    }
+    fn clear_flyout_visual(&self) {
+        if self.0.model.borrow().native {
+            // Category state reaches its internal Dropdown through a renderer
+            // commit. A synchronous child return can publish focus meanwhile.
+            self.0.model.borrow_mut().pending_visual_clear = true;
+            return;
+        }
+        self.clear_flyout_visual_now();
+    }
+    fn clear_flyout_visual_now(&self) {
+        let node = self.0.overlay.borrow().clone();
+        if let Some(runtime) = node.and_then(|node| node.runtime()) {
+            runtime.clear_item_visual();
         }
     }
     fn authorize_dismiss_return(&self, connected: bool, active_categories: &[usize]) {
@@ -1851,6 +1873,7 @@ impl CategoryNavigation {
                 | "category-order"
                 | "category-outside"
                 | "category-disconnect"
+                | "category-hidden"
                 | "category-return"
                 | "category-key"
         ) {
@@ -1909,6 +1932,14 @@ impl CategoryNavigation {
             // Native movement dismisses through the controller without
             // replacing the registered child inventory or dropping its scope.
             self.dismiss_captured(message.connected, &message.active_categories);
+            return;
+        }
+        if message.kind == "category-hidden" {
+            let pending = std::mem::take(&mut self.0.model.borrow_mut().pending_visual_clear);
+            if pending {
+                self.clear_flyout_visual_now();
+                self.notify();
+            }
             return;
         }
         self.observe(message.category_items);
@@ -2030,7 +2061,9 @@ for(let frame=0;frame<frames;frame++)await new Promise(requestAnimationFrame);
 if(!directory.sameNodeById(root,owner)||directory.categories(owner,id)[0]!==category||!categoryBelongs(root,category)||category.dataset.menuCategoryGeneration!==generation||category.dataset.menuCategoryMode!==(expanded?'expanded':'collapsed'))return false;
 if(expected && (category.dataset.open!=='true'||JSON.stringify(categoryTuples(root,category))!==JSON.stringify(expected)))return false;
 if(!(node instanceof HTMLElement)||!node.isConnected||(target===null?categoryParent(category):category.querySelector('[data-menu-category-child="'+target+'"]'))!==node)return false;
-node.focus();return document.activeElement===node;
+node.focus();
+for(const report of document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.focusReaders?.values()??[])report(node);
+return document.activeElement===node;
 } finally { directory.release(lease); }
 "#
 );
@@ -2062,7 +2095,9 @@ const root=directory.elementById(owner),target=root?.querySelector('[data-menu-c
 await new Promise(requestAnimationFrame);
 if (!directory.sameNodeById(root,owner) || root.dataset.menuFocusGeneration!==generation || JSON.stringify(menuTuples(root))!==JSON.stringify(expected)) return false;
 if (!(target instanceof HTMLElement) || !target.isConnected || root.querySelector('[data-menu-control="'+id+'"]')!==target || target.closest('[data-menu-root]')!==root) return false;
-target.focus(); return document.activeElement===target;
+target.focus();
+for(const report of document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.focusReaders?.values()??[])report(target.closest('[data-ix-item-kind]')??target);
+return document.activeElement===target;
 } finally { directory.release(lease); }
 "#
 );
@@ -2108,7 +2143,7 @@ const sync=()=>{
     if(!categoryBindings.has(category)) {
       const listeners=new AbortController(),changes=new MutationObserver(sync);
       categoryBindings.set(category,{listeners,changes});
-      changes.observe(category,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden','style','tabindex','data-menu-category-disabled','data-menu-category-mode','data-menu-category-popup-open','data-menu-category-body-surface','data-menu-category-popup','data-open','popover']});
+      changes.observe(category,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden','style','tabindex','data-menu-category-disabled','data-menu-category-mode','data-menu-category-popup-open','data-menu-category-visual-clear','data-menu-category-body-surface','data-menu-category-popup','data-open','popover']});
       // The source Category owns its listeners independently of the Menu bar.
       // Only deliver here when the original event has no actual bar receiver.
       category.addEventListener('keydown',event=>{if(!event.composedPath().includes(bar)&&categoryBelongs(root,category))handleCategoryKey(event,category);},{capture:true,signal:listeners.signal});
@@ -2128,6 +2163,7 @@ const sync=()=>{
     }
     const body=category.querySelector('[data-menu-category-body]');if(body)for(const anchor of Array.from(body.children).filter(node=>node.tagName==='A'&&node.querySelector('[data-menu-category-child]')))if(anchor.getAttribute('tabindex')!=='-1')anchor.setAttribute('tabindex','-1');
     const id=Number(category.dataset.menuCategoryRoot),items=categoryFacts(root,category),serialized=JSON.stringify(items);currentCategories.add(id);
+    if(category.dataset.menuCategoryPopupOpen==='false'&&category.dataset.menuCategoryVisualClear==='true')send('category-hidden',null,{category:id,sequence:++sequence});
     if(categoryPrevious.get(id)!==serialized){categoryPrevious.set(id,serialized);send('category-order',null,{category:id,category_items:items});}
     category.dataset.categoryNative='true';category.dataset.categoryHoverNative='true';
   }
@@ -2144,7 +2180,10 @@ function handleCategoryKey(event,category) {
     if(child&&JSON.parse(category.dataset.menuCategoryReturnKeys??'[]').includes(event.key)) {
       const target=categoryParent(category);
       if(send('category-return',event,facts)) {
-        if(target?.isConnected&&categoryParent(category)===target&&categoryBelongs(root,category))target.focus();
+        if(target?.isConnected&&categoryParent(category)===target&&categoryBelongs(root,category)){
+          target.focus();
+          for(const report of document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.focusReaders?.values()??[])report(target);
+        }
       }
       if(send('category-default',event,facts))event.preventDefault();
       return null;
@@ -3757,6 +3796,7 @@ pub fn MenuCategory(
     )
     .expect("category return jobs");
     let keyboard_mode = hover_coordinator.keyboard().to_string();
+    let pending_visual_clear = category.0.model.borrow().pending_visual_clear.to_string();
     let expanded = expanded_signal();
     let panel_open = expanded && panel();
     let popup_open = flyout() == Some(id);
@@ -3812,6 +3852,7 @@ pub fn MenuCategory(
             "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-items-host-id":host_id,"data-ix-overlay-native-surface":"category",
             "data-menu-category-root":id.to_string(),"data-menu-category":id.to_string(),"data-menu-category-mode":if expanded{"expanded"}else{"collapsed"},
             "data-menu-category-return-jobs":pending_returns,"data-menu-category-keyboard-mode":keyboard_mode,
+            "data-menu-category-visual-clear":pending_visual_clear,
             "data-menu-category-generation":generation,"data-menu-category-return-target":parent_id.clone(),"data-menu-category-return-keys":"[\"Enter\",\" \"]",
             "data-menu-category-keys":"[\"Enter\",\" \",\"ArrowDown\",\"ArrowUp\",\"Home\",\"End\",\"Tab\",\"Escape\"]","data-open":is_open.to_string(),
             "data-menu-category-popup-open":popup_open.to_string(),"data-menu-category-panel-open":panel_open.to_string(),"data-menu-category-body-surface":if body_in_panel{"panel"}else{"popup"},
@@ -4533,6 +4574,9 @@ mod document_tests;
 
 #[cfg(test)]
 mod tests {
+    mod menu_cue_tests {
+        include!("application/menu_cue_tests.rs");
+    }
     mod menu_lifetime_tests {
         include!("application/menu_lifetime_tests.rs");
     }

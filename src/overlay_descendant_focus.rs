@@ -19,6 +19,14 @@ pub(crate) enum DescendantPurpose {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct DescendantHide {
+    pub(crate) root: String,
+    pub(crate) generation: u64,
+    pub(crate) operation: u64,
+    pub(crate) reference: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DescendantJob {
     pub(crate) sequence: u64,
@@ -29,6 +37,7 @@ pub(crate) struct DescendantJob {
     pub(crate) allow_checked: bool,
     pub(crate) reference: Option<String>,
     pub(crate) purpose: DescendantPurpose,
+    pub(crate) hide_before: Vec<DescendantHide>,
 }
 
 impl DescendantJob {
@@ -46,6 +55,7 @@ impl DescendantJob {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Phase {
     Unarmed,
+    AwaitingHide,
     Armed,
     Prepared(DescendantChoice),
     Focused(DescendantChoice),
@@ -81,6 +91,7 @@ impl DescendantQueue {
             allow_checked,
             reference,
             DescendantPurpose::Opening,
+            Vec::new(),
         )
     }
 
@@ -99,6 +110,7 @@ impl DescendantQueue {
             false,
             reference,
             DescendantPurpose::Submenu,
+            Vec::new(),
         )
     }
 
@@ -110,6 +122,25 @@ impl DescendantQueue {
         reference: Option<String>,
         capture: String,
     ) -> DescendantJob {
+        self.admit_return_after_hide(
+            root,
+            generation,
+            focus_version,
+            reference,
+            capture,
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn admit_return_after_hide(
+        &mut self,
+        root: String,
+        generation: u64,
+        focus_version: u64,
+        reference: Option<String>,
+        capture: String,
+        hides: Vec<DescendantHide>,
+    ) -> DescendantJob {
         self.admit_with_purpose(
             root,
             generation,
@@ -118,6 +149,7 @@ impl DescendantQueue {
             false,
             reference,
             DescendantPurpose::Return { capture },
+            hides,
         )
     }
 
@@ -131,6 +163,7 @@ impl DescendantQueue {
         allow_checked: bool,
         reference: Option<String>,
         purpose: DescendantPurpose,
+        hide_before: Vec<DescendantHide>,
     ) -> DescendantJob {
         loop {
             self.sequence = self.sequence.wrapping_add(1).max(1);
@@ -151,6 +184,7 @@ impl DescendantQueue {
             allow_checked,
             reference,
             purpose,
+            hide_before,
         };
         self.jobs.push_back(Entry {
             job: job.clone(),
@@ -206,6 +240,31 @@ impl DescendantQueue {
             return false;
         }
         entry.job.reference = Some(reference.into());
+        entry.phase = if entry.job.hide_before.is_empty() {
+            Phase::Armed
+        } else {
+            Phase::AwaitingHide
+        };
+        true
+    }
+
+    /// Accepted child hides must settle on the same captured native objects
+    /// before an explicit return can select or attempt its target.
+    pub(crate) fn ack_hidden(
+        &mut self,
+        sequence: u64,
+        root: &str,
+        generation: u64,
+        reference: &str,
+        hides: &[DescendantHide],
+    ) -> bool {
+        let Some(entry) = self.jobs.iter_mut().find(|entry| {
+            entry.phase == Phase::AwaitingHide
+                && entry.job.bound_to(sequence, root, generation, reference)
+                && entry.job.hide_before.as_slice() == hides
+        }) else {
+            return false;
+        };
         entry.phase = Phase::Armed;
         true
     }
@@ -319,6 +378,7 @@ impl DescendantQueue {
     pub(crate) fn retains_token(&self, capture: &str) -> bool {
         self.jobs.iter().any(|entry| {
             entry.job.reference.as_deref() == Some(capture)
+                || entry.job.hide_before.iter().any(|hide| hide.reference == capture)
                 || matches!(&entry.job.purpose,DescendantPurpose::Return { capture: target } if target == capture)
                 || matches!(&entry.phase,Phase::Prepared(choice) | Phase::Focused(choice) if choice.target == capture)
         })
@@ -692,5 +752,151 @@ mod tests {
         );
         assert!(queue.cancel(replacement.sequence, "root", 4, "new-reference"));
         assert!(queue.jobs.is_empty());
+    }
+
+    fn hide(root: &str, generation: u64, operation: u64, reference: &str) -> DescendantHide {
+        DescendantHide {
+            root: root.into(),
+            generation,
+            operation,
+            reference: reference.into(),
+        }
+    }
+
+    #[test]
+    fn return_preparation_requires_exact_ordered_hide_receipts_after_arming() {
+        let mut queue = DescendantQueue::default();
+        let hides = vec![
+            hide("child", 4, 8, "child-object"),
+            hide("grandchild", 5, 9, "grandchild-object"),
+        ];
+        let wire = serde_json::json!({"root":"child","generation":4,"operation":8,"reference":"child-object"});
+        assert_eq!(serde_json::to_value(&hides[0]).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<DescendantHide>(wire).unwrap(),
+            hides[0]
+        );
+        let job = queue.admit_return_after_hide(
+            "root".into(),
+            3,
+            0,
+            Some("reference".into()),
+            "held-trigger".into(),
+            hides.clone(),
+        );
+        assert!(!queue.ack_hidden(job.sequence, "root", 3, "reference", &hides));
+        assert!(arm(&mut queue, &job, "reference"));
+        assert!(
+            queue
+                .pending_prepare(job.sequence, "root", 3, "reference")
+                .is_none()
+        );
+        assert!(!prepare(&mut queue, &job, "reference", "held-trigger"));
+        for (root, generation, reference) in [
+            ("other", 3, "reference"),
+            ("root", 4, "reference"),
+            ("root", 3, "replacement"),
+        ] {
+            assert!(!queue.ack_hidden(job.sequence, root, generation, reference, &hides));
+        }
+        assert!(!queue.ack_hidden(job.sequence + 1, "root", 3, "reference", &hides));
+        let mut wrong_operation = hides.clone();
+        wrong_operation[0].operation += 1;
+        let mut wrong_generation = hides.clone();
+        wrong_generation[0].generation += 1;
+        let mut wrong_reference = hides.clone();
+        wrong_reference[0].reference = "same-id-replacement".into();
+        let mut wrong_root = hides.clone();
+        wrong_root[0].root = "other-child".into();
+        let mut reversed = hides.clone();
+        reversed.reverse();
+        for receipt in [
+            Vec::new(),
+            hides[..1].to_vec(),
+            wrong_operation,
+            wrong_generation,
+            wrong_reference,
+            wrong_root,
+            reversed,
+        ] {
+            assert!(!queue.ack_hidden(job.sequence, "root", 3, "reference", &receipt));
+            assert!(!prepare(&mut queue, &job, "reference", "held-trigger"));
+        }
+        assert!(queue.ack_hidden(job.sequence, "root", 3, "reference", &hides));
+        assert!(!queue.ack_hidden(job.sequence, "root", 3, "reference", &hides));
+        assert_eq!(
+            queue.pending_prepare(job.sequence, "root", 3, "reference"),
+            Some(job.clone())
+        );
+        assert!(prepare(&mut queue, &job, "reference", "held-trigger"));
+        assert!(
+            queue
+                .focus(job.sequence, "root", 3, "reference", "copy")
+                .is_none()
+        );
+        assert!(
+            queue
+                .focus(job.sequence, "root", 3, "reference", "held-trigger")
+                .is_some()
+        );
+        assert_eq!(
+            queue.visual(job.sequence, "root", 3, "reference", "held-trigger"),
+            Some(job)
+        );
+        assert!(!queue.retains_token("child-object"));
+    }
+
+    #[test]
+    fn pending_hides_retain_exact_objects_without_blocking_independent_jobs() {
+        let mut queue = DescendantQueue::default();
+        let hides = vec![hide("child", 4, 8, "child-object")];
+        let fenced = queue.admit_return_after_hide(
+            "root".into(),
+            3,
+            0,
+            Some("reference".into()),
+            "held-trigger".into(),
+            hides.clone(),
+        );
+        let ordinary = queue.admit_return(
+            "root".into(),
+            3,
+            1,
+            Some("reference".into()),
+            "new-target".into(),
+        );
+        assert!(ordinary.hide_before.is_empty());
+        assert!(arm(&mut queue, &fenced, "reference"));
+        assert!(arm(&mut queue, &ordinary, "reference"));
+        assert!(queue.retains_token("child-object"));
+        assert!(!queue.discard(fenced.sequence, "root", 3));
+        assert!(prepare(&mut queue, &ordinary, "reference", "new-target"));
+        assert!(
+            queue
+                .focus(ordinary.sequence, "root", 3, "reference", "new-target")
+                .is_some()
+        );
+        assert_eq!(
+            queue.visual(ordinary.sequence, "root", 3, "reference", "new-target"),
+            Some(ordinary)
+        );
+        assert!(
+            queue
+                .pending_prepare(fenced.sequence, "root", 3, "reference")
+                .is_none()
+        );
+        queue.remove_root("child", 4);
+        assert!(queue.retains_token("child-object"));
+        assert!(queue.ack_hidden(fenced.sequence, "root", 3, "reference", &hides));
+        assert!(prepare(&mut queue, &fenced, "reference", "held-trigger"));
+        queue.remove_root("root", 4);
+        assert!(queue.retains_token("child-object"));
+        queue.remove_root("root", 3);
+        assert!(!queue.retains_token("child-object"));
+        assert!(
+            queue
+                .focus(fenced.sequence, "root", 3, "reference", "held-trigger")
+                .is_none()
+        );
     }
 }

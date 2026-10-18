@@ -105,8 +105,31 @@ function queueDescendantFocus(command){
   const content=descendantOwnContent(root,command.root);
   const returned=command.purpose?.kind==='return'?itemCaptureNodes.get(command.purpose.capture)?.element:null;
   if(command.purpose?.kind==='return'&&!(returned instanceof Element)){discard();return;}
+  const hides=(command.hide_before||[]).map(fence=>({fence,element:itemCaptureNodes.get(fence.reference)?.element,host:findHost(fence.root)}));
+  if(hides.some(({fence,element})=>!descendantRootMatches(element,fence,fence.reference))){discard();return;}
   if(!descendantQuery(command,reference,'arm')){discard();return;}
-  nativeFocusCommands.push({kind:'descendant',command,root,content,reference,returned});scheduleNativeFocus();
+  nativeFocusCommands.push({kind:'descendant',command,root,content,reference,returned,hides,hidden:!hides.length});scheduleNativeFocus();
+}
+// A receipt observes the exact captured child after its accepted close has
+// reached the renderer. syncExecution applies native hides before this test;
+// no elapsed-frame assumption or replacement lookup can release the return.
+function descendantHidesReady(job){
+  for(const {fence,element,host}of job.hides){
+    if(!element.isConnected)continue;
+    if(!descendantRootMatches(element,fence,fence.reference))return 'cancel';
+    if(Number(element.getAttribute('data-ix-overlay-revision')||'0')<fence.operation)return 'wait';
+    // A newer committed reopen supersedes the old hide. Do not replay that
+    // hide over the newer state; the captured return remains independent.
+    if(element.getAttribute('data-ix-overlay-open')==='true')continue;
+    if(!(host instanceof HTMLElement)||!host.isConnected)continue;
+    const dialog=host.matches('dialog')?host:host.querySelector('dialog');
+    if(dialog instanceof HTMLElement){
+      if(dialog.getClientRects().length)return 'wait';
+      const active=deepActive();
+      if(active instanceof Element&&dialog.contains(active))return 'wait';
+    }
+  }
+  return 'ready';
 }
 function executeDescendantFocus(job){
   const {command,root,reference,returned}=job;

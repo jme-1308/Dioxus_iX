@@ -17,6 +17,7 @@ const documentSlot=Symbol.for('dioxus-ix.document-native-domain.v1');
 const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:owner,eventSequence:0,eventIds:new WeakMap()});
 nativeDocument.inventoryReaders||=new Map();
 nativeDocument.triggerReaders||=new Map();
+nativeDocument.focusReaders||=new Map();
 function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds.get(event);if(!id){id=++nativeDocument.eventSequence;nativeDocument.eventIds.set(event,id);}return id;}
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
@@ -562,6 +563,44 @@ function itemCueQuery(cue){
   input.value=JSON.stringify({owner,sequence:0,item_cue:cue});
   return !input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
 }
+// The source's global focus patch reports its exact attempted target after
+// native focus, including a no-op. Document listeners instead see the retargeted
+// target. Project only renderer-owned control/part boundaries into source hosts.
+function itemFocusStart(target,documentEvent){
+  if(!(target instanceof HTMLElement))return null;
+  const control=target.closest('[data-ix-item-control]');
+  if(control){
+    const host=control.closest('[data-ix-item-kind]');
+    if(host){
+      if(control.getAttribute('data-ix-item-part')==='category-parent')return documentEvent?host:control;
+      return host;
+    }
+  }
+  return target;
+}
+function reportItemFocus(target,documentEvent=false){
+  if(!alive)return;
+  const start=itemFocusStart(target,documentEvent);if(!start)return;
+  const path=[],hosts=[];
+  // Pinned getComposedPath jumps directly to an actual shadow host; it never
+  // flattens assigned slots or substitutes the deepest active element.
+  for(let node=start;node instanceof Element;){
+    if(node instanceof HTMLElement){
+      const part=node.hasAttribute('data-ix-item-part')?node:null;
+      const host=node.matches(itemSelector)?node:part?.closest(itemSelector);
+      if(host?.getAttribute('data-ix-item-runtime')===owner){
+        const binding=captureItem(node);if(binding)path.push(binding.capture);
+        if(!hosts.some(facts=>facts.registration_key===host.getAttribute('data-ix-item-key')))hosts.push(itemHostFacts(host));
+      }
+    }
+    const root=node.getRootNode();node=root instanceof ShadowRoot?root.host:node.parentElement;
+  }
+  const input=transport();if(!input)return;
+  input.value=JSON.stringify({owner,sequence:0,item_focus_observation:{path,hosts}});
+  input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+  syncItemCues();
+}
+nativeDocument.focusReaders.set(owner,reportItemFocus);
 function liveItemCueBinding(host,key,capture,part,partCapture,partKind,allowDetached){
   if(!alive||(!allowDetached&&!host.isConnected)||host.getAttribute('data-ix-item-runtime')!==owner||host.getAttribute('data-ix-item-key')!==key||itemCaptureNodes.get(capture)?.element!==host)return false;
   return !part||((allowDetached||part.isConnected)&&part.closest('[data-ix-item-kind]')===host&&part.getAttribute('data-ix-item-part')===partKind&&itemCaptureNodes.get(partCapture)?.element===part);
@@ -833,6 +872,7 @@ document.addEventListener('click',e=>send(collectFacts('click',e,'bubble'),e),{s
 window.addEventListener('keydown',e=>send(collectFacts('key',e,'window'),e),{signal});
 window.addEventListener('click',e=>send(collectFacts('click',e,'window'),e),{signal});
 document.addEventListener('pointerdown',e=>send(collectFacts('pointer',e),e),{capture:true,signal});
+document.addEventListener('focusin',event=>reportItemFocus(event.target,true),{capture:true,signal});
 document.addEventListener('focusin',event=>{
   const item=event.composedPath().find(n=>n instanceof HTMLElement&&n.hasAttribute('data-ix-dropdown-item'));
   if(item){
@@ -843,10 +883,9 @@ document.addEventListener('focusin',event=>{
       if(trigger&&trigger!==deepActive()&&visibleFocusable(trigger))trigger.focus();
     }
   }
-  send(collectFacts('item-focusin',event,'focus'),null);
   reportObserve();
 },{signal});
-document.addEventListener('focusout',()=>queueMicrotask(()=>{if(alive)reportObserve();}),{passive:true,signal});
+document.addEventListener('focusout',event=>{reportItemFocus(event.target,true);queueMicrotask(()=>{if(alive)reportObserve();});},{passive:true,signal});
 function itemCueMutation(change){
   if(change.type!=='attributes'||!(change.target instanceof HTMLElement))return false;
   const element=change.target,name=change.attributeName;
@@ -888,7 +927,7 @@ const observer=new MutationObserver(changes=>{
 });
 function observeRegistryScope(scope){observer.observe(scope===document?document.documentElement:scope,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-trigger-version','data-ix-overlay-trigger-dispose-version','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
-  'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
+  'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-revision','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
   ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
   ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked','slot','name'
 ]});}
@@ -943,7 +982,7 @@ function executeItemFocus(job){
   const control=['menu','category'].includes(markedKind)?Array.from(job.element.querySelectorAll('[data-ix-item-control]')).find(control=>control.closest('[data-ix-item-kind]')===job.element):null;
   const element=control||(job.element?.matches('ix-menu-category')?job.element.shadowRoot?.querySelector('.category-parent'):job.element);
   if(!itemFocusQuery(command,capture,'focus',job.element))return;
-  if(element instanceof HTMLElement&&command.focus_native)try{element.focus();}catch{}
+  if(element instanceof HTMLElement&&command.focus_native)try{element.focus();reportItemFocus(element);}catch{}
   // Reentrant focusin may change Rust's current cue. Source patches publish
   // the attempted host after original focus, even when native focus is a no-op.
   itemFocusQuery(command,capture,'visual',job.element);
@@ -986,7 +1025,16 @@ function scheduleNativeFocus(){
         Number(job.root.getAttribute('data-ix-overlay-focus-version')||'0')<command.focus_version)break;
       // Waiting for one renderer commit must not let a later captured Tab exit
       // overtake an earlier cleanup. Rust's channel supplies causal order.
-      nativeFocusCommands.shift();syncExecution();
+      syncExecution();
+      if(job.kind==='descendant'&&!job.hidden){
+        const state=descendantHidesReady(job);
+        if(state==='wait')break;
+        if(state==='cancel'||!descendantQuery(command,job.reference,'hidden',{hide_before:command.hide_before})){
+          nativeFocusCommands.shift();descendantQuery(command,job.reference,'cancel');continue;
+        }
+        job.hidden=true;
+      }
+      nativeFocusCommands.shift();
       const input=transport();if(!input)continue;
       if(job.kind==='completion'){
         input.value=JSON.stringify({owner,sequence:0,completion_sequence:command.sequence,completion_root:command.root,completion_generation:command.generation});
@@ -1000,7 +1048,7 @@ function scheduleNativeFocus(){
         const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})),root=job.root;
         if(allowed&&root?.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===command.root&&Number(root.getAttribute('data-ix-overlay-generation'))===command.generation){
           const trigger=findTrigger(command.root,root);
-          if(trigger?.isConnected)try{trigger.focus();}catch{}
+          if(trigger?.isConnected)try{trigger.focus();reportItemFocus(trigger);}catch{}
         }
       }else{
         executeCapturedTab(command);
@@ -1029,6 +1077,7 @@ try{
   for(const frame of itemScrollFrames)cancelAnimationFrame(frame);itemScrollFrames.clear();itemCaptureNodes.clear();
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);
+  if(nativeDocument.focusReaders.get(owner)===reportItemFocus)nativeDocument.focusReaders.delete(owner);
   for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   registryScopes.clear();
