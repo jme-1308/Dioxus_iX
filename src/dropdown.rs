@@ -257,7 +257,7 @@ impl DropdownContext {
         format!("ix-dropdown-trigger-{}", self.id)
     }
     fn navigation_owner(&self, reactive: bool) -> Self {
-        if self.state.borrow().native {
+        if self.native_key_route() {
             if reactive {
                 let _ = self.revision.try_read();
             }
@@ -2031,6 +2031,7 @@ mod tests {
         suppress_visibility: bool,
         suppress_automatic: bool,
         linked_veto: bool,
+        deep_veto: bool,
         veto_open: bool,
         veto_close: bool,
         close_after_open: bool,
@@ -2066,6 +2067,7 @@ mod tests {
                 suppress_visibility: false,
                 suppress_automatic: false,
                 linked_veto: false,
+                deep_veto: false,
                 veto_open: false,
                 veto_close: false,
                 close_after_open: false,
@@ -2129,6 +2131,7 @@ mod tests {
         let standalone_item = config.clone();
         let standalone_mouse = config.clone();
         let linked_before = config.clone();
+        let deep_before = config.clone();
         rsx! {div {
             if settings.visible {
             Dropdown {label:"Menu",navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
@@ -2141,7 +2144,7 @@ mod tests {
                 DropdownSubmenu {label:"Explicit",DropdownItem {label:"Persistent nested"}}
             }
             DropdownTrigger {dropdown:linked,aria_label:"External trigger","External trigger"}
-            Dropdown {label:"Detached",controller:linked,disabled:settings.linked_blocked,focus_checked_item:true,onbeforechange:move |event:DropdownChangeEvent|{if event.open&&linked_before.borrow().linked_veto{event.prevent_default();}},DropdownItem {label:"Detached leaf"} DropdownItem {label:"Checked detached",checked:true} DropdownSubmenu {label:"Deep",DropdownItem {label:"Deep first"} DropdownItem {label:"Deep last"}}}
+            Dropdown {label:"Detached",controller:linked,disabled:settings.linked_blocked,focus_checked_item:true,onbeforechange:move |event:DropdownChangeEvent|{if event.open&&linked_before.borrow().linked_veto{event.prevent_default();}},DropdownItem {label:"Detached leaf"} DropdownItem {label:"Checked detached",checked:true} DropdownSubmenu {label:"Deep",onbeforechange:move |event:DropdownChangeEvent|{if event.open&&deep_before.borrow().deep_veto{event.prevent_default();}},DropdownItem {label:"Deep first"} DropdownItem {label:"Deep last"}}}
             DropdownItem {label:"Standalone",onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=standalone_item.borrow_mut();state.standalone_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|standalone_mouse.borrow_mut().standalone_mouse+=1}
             }
         }}
@@ -2403,6 +2406,143 @@ mod tests {
         assert!(!h.key("Alpha", Key::Home).0);
         node.unregister();
         assert!(!node.native_observed());
+    }
+
+    #[test]
+    fn first_observed_submenu_callback_queries_its_direct_forward_host_after_open_veto() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            focus_checked: true,
+            deep_veto: true,
+            ..Fixture::default()
+        });
+        let root = h.context();
+        let child = h.config.borrow().linked.get().unwrap().context();
+        let grand = child
+            .entries
+            .borrow()
+            .values()
+            .find(|entry| entry.label == "Deep")
+            .unwrap()
+            .submenu
+            .unwrap()
+            .context();
+        // Real component key handlers establish both forwarding intents. The
+        // last child's actual cancelable request rejects its presentation.
+        h.key("Menu", Key::ArrowDown);
+        h.key("Menu", Key::ArrowRight);
+        h.key("Menu", Key::End);
+        h.key("Menu", Key::ArrowRight);
+        assert!(*root.open.peek() && *child.open.peek());
+        assert!(!*grand.open.peek());
+        assert_eq!(root.state.borrow().forward.unwrap().context().id, child.id);
+        assert_eq!(child.state.borrow().forward.unwrap().context().id, grand.id);
+        assert!(
+            !child.state.borrow().native,
+            "no own native key callback yet"
+        );
+        assert_eq!(
+            child.navigation_owner(false).id,
+            child.id,
+            "unobserved renderer fallback stays open-only"
+        );
+
+        let root_node = root.node.borrow().clone().unwrap();
+        let child_node = child.node.borrow().clone().unwrap();
+        let grand_node = grand.node.borrow().clone().unwrap();
+        let runtime = child_node.runtime().unwrap();
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        fn inventory(context: &DropdownContext, active_first: bool) -> serde_json::Value {
+            let entries = context.entries.borrow();
+            let hosts = entries
+                .iter()
+                .enumerate()
+                .map(|(index, (_, entry))| {
+                    serde_json::json!({
+                        "item":format!("actual-object-{}",entry.host_id),
+                        "capture":format!("actual-object-{}",entry.host_id),
+                        "kind":"dropdown","target":entry.host_id,
+                        "disabled_attribute":entry.disabled,"checked_attribute":entry.checked,
+                        "visible_focus":active_first&&index==0
+                    })
+                })
+                .collect::<Vec<_>>();
+            let order = hosts
+                .iter()
+                .map(|host| host["item"].clone())
+                .collect::<Vec<_>>();
+            serde_json::json!({"items_host":format!("actual-host-{}",context.id),
+                "hosts":hosts,"navigation_order":order,"query_order":order})
+        }
+        let root_inventory = inventory(&root, false);
+        let child_inventory = inventory(&child, true);
+        let grand_inventory = inventory(&grand, false);
+        let nodes = [&root, &child, &grand]
+            .into_iter()
+            .zip([&root_node, &child_node, &grand_node])
+            .zip([root_inventory, child_inventory, grand_inventory.clone()])
+            .map(|((context, node), inventory)| serde_json::json!({
+                "id":node.id(),"owner":runtime.owner_id(),"generation":node.generation(),
+                "connected":true,"discovery_ready":true,"open":*context.open.peek(),
+                "root_capture":format!("actual-root-{}",context.id),"mode":"active-descendant",
+                "trigger_capture":format!("actual-trigger-{}",context.id),
+                "trigger_ancestors":if context.id==root.id {vec![]} else if context.id==child.id {vec![root.node_id()]} else {vec![child.node_id(),root.node_id()]},
+                "on_trigger":context.id==child.id,"inside":context.id==root.id,
+                "inventory":inventory,"own_inventory":inventory
+            }))
+            .collect::<Vec<_>>();
+        assert!(runtime.pending_item_focus_jobs().is_empty());
+        dispatch(
+            &h.dom,
+            "input",
+            transport,
+            serde_json::json!({
+                "owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":nodes
+            })
+            .to_string(),
+        );
+        assert!(child_node.native_observed());
+        assert!(
+            !child.state.borrow().native,
+            "observation is not a key callback"
+        );
+        assert_eq!(
+            child.navigation_owner(false).id,
+            grand.id,
+            "a native-observed receiver uses its direct assigned host even if showing was vetoed"
+        );
+
+        for (sequence, key) in [(2, "ArrowDown"), (3, "End")] {
+            assert!(dispatch(&h.dom,"input",transport,serde_json::json!({
+                "owner":runtime.owner_id(),"sequence":sequence,"kind":"key","phase":"bubble",
+                "key":key,"hosts":[root_node.id()],"triggers":[child_node.id()],"nodes":nodes
+            }).to_string()).0);
+        }
+        let jobs = runtime.pending_item_focus_jobs();
+        let grand_hosts = grand_inventory["hosts"].as_array().unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(
+            jobs[0].target,
+            grand_hosts.first().unwrap()["target"].as_str().unwrap()
+        );
+        assert_eq!(
+            jobs[1].target,
+            grand_hosts.last().unwrap()["target"].as_str().unwrap()
+        );
+        assert!(
+            jobs.iter().all(|job| job.root == child_node.id()),
+            "the receiver owns both independently admitted focus jobs"
+        );
+        assert!(child.state.borrow().native);
+        assert!(
+            !*grand.open.peek(),
+            "querying the forwarded host does not retry showing it"
+        );
     }
 
     #[test]

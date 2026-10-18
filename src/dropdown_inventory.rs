@@ -155,6 +155,7 @@ pub(crate) struct Inventory {
     hosts: BTreeMap<ItemRef, HostFacts>,
     navigation_order: Vec<ItemRef>,
     query_order: Vec<ItemRef>,
+    active_order: Vec<ItemRef>,
 }
 
 impl Inventory {
@@ -169,6 +170,15 @@ impl Inventory {
                 .filter(|item| hosts.get(item).is_some_and(|host| host.eligible(mode)))
                 .collect()
         };
+        let filter_active = |order: Vec<ItemRef>| {
+            order
+                .into_iter()
+                .filter(|item| hosts.get(item).is_some_and(|host| host.active(mode)))
+                .collect()
+        };
+        // Source queryElements runs the active selector independently. An
+        // eligible but inactive assigned root must expose active descendants.
+        let mut active_order: Vec<ItemRef> = filter_active(facts.query_order.clone());
         let mut navigation_order: Vec<ItemRef> = filter(facts.navigation_order);
         let mut query_order: Vec<ItemRef> = filter(facts.query_order);
         if let Some(slots) = facts.slots {
@@ -186,6 +196,20 @@ impl Inventory {
                     })
                     .collect::<Vec<_>>()
             };
+            let expand_active = |slot: &SlotFacts| {
+                slot.assignments
+                    .iter()
+                    .flat_map(|assignment| {
+                        if let Some(root) = &assignment.root
+                            && hosts.get(root).is_some_and(|host| host.active(mode))
+                        {
+                            vec![root.clone()]
+                        } else {
+                            filter_active(assignment.descendants.clone())
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
             navigation_order = slots
                 .iter()
                 .flat_map(&expand)
@@ -198,6 +222,12 @@ impl Inventory {
                     .position(|item| slot.following.contains(item))
                     .unwrap_or(query_order.len());
                 query_order.splice(at..at, assigned);
+                let active = expand_active(slot);
+                let at = active_order
+                    .iter()
+                    .position(|item| slot.following.contains(item))
+                    .unwrap_or(active_order.len());
+                active_order.splice(at..at, active);
             }
         }
         Self {
@@ -206,6 +236,7 @@ impl Inventory {
             hosts,
             navigation_order,
             query_order,
+            active_order,
         }
     }
 
@@ -224,10 +255,7 @@ impl Inventory {
     }
 
     pub(crate) fn active(&self) -> Option<ItemRef> {
-        self.query_order
-            .iter()
-            .find(|item| self.hosts[*item].active(self.mode))
-            .cloned()
+        self.active_order.first().cloned()
     }
 
     /// Use the captured active host, not an inferred focused shadow descendant.
@@ -805,6 +833,217 @@ mod tests {
                 ItemRef("a".into()),
                 ItemRef("native-assigned-root".into()),
                 ItemRef("b".into())
+            ]
+        );
+    }
+
+    fn refs(ids: &[&str]) -> Vec<ItemRef> {
+        ids.iter().map(|id| ItemRef((*id).into())).collect()
+    }
+
+    fn assigned_active_child(mode: InventoryMode) -> InventoryFacts {
+        let root = item(
+            "root",
+            ItemKind::Dropdown,
+            match mode {
+                InventoryMode::ActiveDescendant => None,
+                InventoryMode::RovingTabindex => Some("-1"),
+            },
+        );
+        let mut child = item("child", ItemKind::Select, Some("0"));
+        child.visible_focus = true;
+        InventoryFacts {
+            items_host: ItemRef("actual-items-host".into()),
+            hosts: vec![
+                item("before", ItemKind::Menu, None),
+                root,
+                child,
+                item("after", ItemKind::Dropdown, None),
+            ],
+            navigation_order: refs(&["before", "after"]),
+            query_order: refs(&["before", "after"]),
+            slots: Some(vec![SlotFacts {
+                assignments: vec![SlotAssignment {
+                    root: Some(ItemRef("root".into())),
+                    descendants: refs(&["child"]),
+                }],
+                following: refs(&["after"]),
+            }]),
+        }
+    }
+
+    #[test]
+    fn active_slot_query_exposes_child_for_activation_without_flattening_navigation() {
+        for mode in [
+            InventoryMode::ActiveDescendant,
+            InventoryMode::RovingTabindex,
+        ] {
+            let inventory = Inventory::new(mode, assigned_active_child(mode));
+            let active = inventory.active();
+            assert_eq!(active, Some(ItemRef("child".into())));
+            assert_eq!(
+                inventory.query_order(),
+                refs(&["before", "root", "after"]).as_slice()
+            );
+            assert_eq!(
+                inventory.navigation_order(),
+                refs(&["root", "before", "after"]).as_slice()
+            );
+            assert_eq!(
+                inventory.activation("Enter", &["Enter".into()], active.as_ref()),
+                Activation::SyntheticHost {
+                    item: Some(ItemRef("child".into()))
+                },
+            );
+            // The active child is absent from the separate callback query.
+            // Source's findIndex returns -1, so Down starts at its first root.
+            assert_eq!(
+                inventory.navigate("ArrowDown", active.as_ref()),
+                Some(ItemRef("root".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn active_slot_root_short_circuit_and_own_eligibility_are_query_specific() {
+        for mode in [
+            InventoryMode::ActiveDescendant,
+            InventoryMode::RovingTabindex,
+        ] {
+            for condition in ["active", "disabled", "hidden", "negative"] {
+                let mut facts = assigned_active_child(mode);
+                let root = facts
+                    .hosts
+                    .iter_mut()
+                    .find(|host| host.item.0 == "root")
+                    .unwrap();
+                root.visible_focus = true;
+                root.tabindex_attribute = Some("0".into());
+                match condition {
+                    "disabled" => root.disabled_attribute = true,
+                    "hidden" => root.hidden_attribute = true,
+                    "negative" => root.tabindex_attribute = Some("-invalid".into()),
+                    _ => {}
+                }
+                let base_root = root.eligible(mode);
+                let inventory = Inventory::new(mode, facts);
+                assert_eq!(
+                    inventory.active(),
+                    Some(ItemRef(if condition == "active" {
+                        "root".into()
+                    } else {
+                        "child".into()
+                    })),
+                    "{mode:?} {condition}"
+                );
+                assert_eq!(
+                    inventory.query_order(),
+                    refs(&["before", if base_root { "root" } else { "child" }, "after",])
+                        .as_slice(),
+                    "{mode:?} {condition}"
+                );
+            }
+            for condition in ["disabled", "hidden", "negative"] {
+                let mut facts = assigned_active_child(mode);
+                let child = facts
+                    .hosts
+                    .iter_mut()
+                    .find(|host| host.item.0 == "child")
+                    .unwrap();
+                match condition {
+                    "disabled" => child.disabled_attribute = true,
+                    "hidden" => child.hidden_attribute = true,
+                    _ => child.tabindex_attribute = Some("-1".into()),
+                }
+                let inventory = Inventory::new(mode, facts);
+                assert!(inventory.active().is_none(), "{mode:?} {condition}");
+            }
+        }
+    }
+
+    #[test]
+    fn independent_active_slot_splicing_preserves_direct_order_and_duplicate_objects() {
+        for mode in [
+            InventoryMode::ActiveDescendant,
+            InventoryMode::RovingTabindex,
+        ] {
+            let mut hosts = vec![
+                item("a", ItemKind::Menu, Some("0")),
+                item("r", ItemKind::Dropdown, None),
+                item("x", ItemKind::Select, Some("0")),
+                item("s", ItemKind::Dropdown, None),
+                item("y", ItemKind::Select, Some("0")),
+                item("z", ItemKind::Menu, None),
+            ];
+            for host in &mut hosts {
+                host.visible_focus = matches!(host.item.0.as_str(), "a" | "x" | "y");
+            }
+            let inventory = Inventory::new(
+                mode,
+                InventoryFacts {
+                    items_host: ItemRef("actual-host".into()),
+                    hosts,
+                    navigation_order: refs(&["a", "r", "x", "s", "y", "z"]),
+                    query_order: refs(&["a", "r", "x", "s", "y", "z"]),
+                    slots: Some(vec![
+                        SlotFacts {
+                            assignments: vec![SlotAssignment {
+                                root: Some(ItemRef("r".into())),
+                                descendants: refs(&["x"]),
+                            }],
+                            following: refs(&["r", "x", "s", "y", "z"]),
+                        },
+                        SlotFacts {
+                            assignments: vec![SlotAssignment {
+                                root: Some(ItemRef("s".into())),
+                                descendants: refs(&["y"]),
+                            }],
+                            following: refs(&["s", "y", "z"]),
+                        },
+                    ]),
+                },
+            );
+            assert_eq!(
+                inventory.navigation_order(),
+                refs(&["r", "s", "a", "r", "x", "s", "y", "z"]).as_slice()
+            );
+            assert_eq!(
+                inventory.query_order(),
+                refs(&["a", "r", "r", "x", "s", "s", "y", "z"]).as_slice()
+            );
+            assert_eq!(inventory.active_order, refs(&["a", "x", "x", "y", "y"]));
+            assert_eq!(inventory.active(), Some(ItemRef("a".into())));
+            assert_eq!(
+                inventory.navigate("ArrowDown", inventory.active().as_ref()),
+                Some(ItemRef("r".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn active_only_slot_child_does_not_enter_the_base_roving_originals() {
+        let inventory = Inventory::new(
+            InventoryMode::RovingTabindex,
+            assigned_active_child(InventoryMode::RovingTabindex),
+        );
+        let active = inventory.active();
+        assert_eq!(active, Some(ItemRef("child".into())));
+        let next = inventory.navigate("ArrowDown", active.as_ref()).unwrap();
+        let mut state = RovingState::default();
+        assert_eq!(
+            state.select(&inventory.items_host, &inventory.query_hosts(), &next),
+            [
+                write("before", Some("-1")),
+                write("after", Some("-1")),
+                write("root", Some("0")),
+            ]
+        );
+        assert_eq!(
+            state.clear(&inventory.items_host),
+            [
+                write("before", None),
+                write("root", Some("-1")),
+                write("after", None),
             ]
         );
     }

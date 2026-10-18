@@ -197,6 +197,7 @@ struct Runtime {
     inventories: BTreeMap<String, (u64, InventoryFacts)>,
     roving: RovingState,
     roving_hosts: BTreeMap<(String, u64), Vec<ItemRef>>,
+    pending_roving_hosts: Vec<RovingEnrollment>,
     roving_sequence: u64,
     roving_writes: VecDeque<RovingBatch>,
     item_visual: Option<String>,
@@ -278,6 +279,12 @@ struct RootCueOffer {
     field: RootCueField,
     value: Option<String>,
 }
+struct RovingEnrollment {
+    root: String,
+    generation: u64,
+    query_root: String,
+    query_generation: u64,
+}
 struct RovingBatch {
     sequence: u64,
     event_sequence: u64,
@@ -299,6 +306,7 @@ impl Drop for Runtime {
         self.inventories.clear();
         self.roving.clear_all();
         self.roving_hosts.clear();
+        self.pending_roving_hosts.clear();
         self.roving_writes.clear();
         if let Some(domain) = &self.domain {
             domain.remove_owner(&self.owner);
@@ -350,6 +358,7 @@ impl RuntimeHandle {
             inventories: BTreeMap::new(),
             roving: RovingState::default(),
             roving_hosts: BTreeMap::new(),
+            pending_roving_hosts: Vec::new(),
             roving_sequence: 0,
             roving_writes: VecDeque::new(),
             item_visual: None,
@@ -582,6 +591,9 @@ impl RuntimeHandle {
                 runtime.item_captures.remove(&id);
                 runtime.item_root_captures.remove(&id);
                 runtime.inventories.remove(&id);
+                runtime.pending_roving_hosts.retain(|admission| {
+                    admission.root != id || admission.generation != old_generation
+                });
                 if let Some(hosts) = runtime.roving_hosts.remove(&(id.clone(), old_generation)) {
                     for host in hosts {
                         runtime.roving.clear(&host);
@@ -737,6 +749,7 @@ impl RuntimeHandle {
                 state.item_cues_dirty = false;
                 state.roving.clear_all();
                 state.roving_hosts.clear();
+                state.pending_roving_hosts.clear();
                 state.roving_writes.clear();
                 for entry in state.nodes.values_mut() {
                     if let Some(configuration) = &mut entry.navigation {
@@ -1328,6 +1341,9 @@ impl RuntimeHandle {
             runtime.item_captures.remove(id);
             runtime.item_root_captures.remove(id);
             runtime.inventories.remove(id);
+            runtime
+                .pending_roving_hosts
+                .retain(|admission| admission.root != id || admission.generation != generation);
             if let Some(hosts) = runtime.roving_hosts.remove(&(id.into(), generation)) {
                 for host in hosts {
                     runtime.roving.clear(&host);
@@ -1376,6 +1392,24 @@ impl RuntimeHandle {
         if !matches!(mode, "active-descendant" | "roving-tabindex") {
             return false;
         }
+        let Some(entry) = self
+            .entry(id)
+            .filter(|entry| entry.generation == generation && entry.kind == OverlayKind::Dropdown)
+        else {
+            return false;
+        };
+        let roving_root = if enabled && mode == "roving-tabindex" {
+            let root = self.with_owner(id, generation, || {
+                entry
+                    .submenu
+                    .as_ref()
+                    .and_then(|access| (access.query_root)())
+                    .unwrap_or_else(|| id.into())
+            });
+            root.and_then(|root| self.entry(&root).map(|entry| (root, entry.generation)))
+        } else {
+            None
+        };
         {
             let mut state = self.0.borrow_mut();
             let Some(entry) = state.nodes.get_mut(id).filter(|entry| {
@@ -1393,9 +1427,53 @@ impl RuntimeHandle {
                 capture: None,
                 sent: false,
             });
+            if let Some((query_root, query_generation)) = roving_root {
+                state.pending_roving_hosts.push(RovingEnrollment {
+                    root: id.into(),
+                    generation,
+                    query_root,
+                    query_generation,
+                });
+            }
         }
+        self.enroll_configured_roving_hosts();
         self.flush_navigation_configurations();
         true
+    }
+    fn enroll_configured_roving_hosts(&self) {
+        let mut state = self.0.borrow_mut();
+        let pending = std::mem::take(&mut state.pending_roving_hosts);
+        for admission in pending {
+            if !state
+                .nodes
+                .get(&admission.root)
+                .is_some_and(|entry| entry.generation == admission.generation)
+                || !state
+                    .nodes
+                    .get(&admission.query_root)
+                    .is_some_and(|entry| entry.generation == admission.query_generation)
+            {
+                continue;
+            }
+            let host = state
+                .submenu_own
+                .get(&admission.query_root)
+                .filter(|(version, facts)| {
+                    *version == admission.query_generation && !facts.items_host.0.is_empty()
+                })
+                .map(|(_, facts)| facts.items_host.clone());
+            let Some(host) = host else {
+                state.pending_roving_hosts.push(admission);
+                continue;
+            };
+            let hosts = state
+                .roving_hosts
+                .entry((admission.root, admission.generation))
+                .or_default();
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
     }
     fn flush_navigation_configurations(&self) {
         let commands =
@@ -1604,6 +1682,7 @@ impl RuntimeHandle {
                 }
             }
         }
+        self.enroll_configured_roving_hosts();
         self.flush_navigation_configurations();
         // Native open attributes may lag the Rust callback during an original
         // click. Reconcile with read(), never overwrite current state from DOM.
@@ -2714,6 +2793,11 @@ impl RuntimeHandle {
                             host.capture == capture
                                 || host.parts.iter().any(|part| part.capture == capture)
                         })
+                        || state
+                            .roving_hosts
+                            .values()
+                            .flatten()
+                            .any(|host| host.0 == capture)
                         || state.roving.retains_token(capture)
                         || state
                             .roving_writes
@@ -3225,13 +3309,8 @@ impl NodeHandle {
                 );
                 let writes = {
                     let mut state = runtime.0.borrow_mut();
-                    let hosts = state
-                        .roving_hosts
-                        .entry((self.id.clone(), self.generation))
-                        .or_default();
-                    if !hosts.contains(&inventory.items_host) {
-                        hosts.push(inventory.items_host.clone());
-                    }
+                    // Ordinary movement remembers baselines, but only source
+                    // configure/initialize enroll hosts for this owner's cleanup.
                     state
                         .roving
                         .select(&inventory.items_host, &inventory.query_hosts(), target)
@@ -3290,6 +3369,9 @@ impl NodeHandle {
         }
         let writes = {
             let mut state = runtime.0.borrow_mut();
+            state.pending_roving_hosts.retain(|admission| {
+                admission.root != self.id || admission.generation != self.generation
+            });
             let hosts = state
                 .roving_hosts
                 .remove(&(self.id.clone(), self.generation))
@@ -5015,6 +5097,7 @@ mod tests {
             Rc::new(RefCell::new(Vec::new())),
         );
         assert!(root.node.request(true, Reason::Trigger, false));
+        assert!(root.node.configure_navigation("roving-tabindex", true));
         let selected = root.node.clone();
         runtime
             .0
@@ -5985,6 +6068,326 @@ mod tests {
         let weak = Rc::downgrade(&runtime.0);
         drop(runtime);
         assert!(weak.upgrade().is_none() && node.runtime().is_none());
+    }
+    // Insert into overlay_runtime.rs's existing #[cfg(test)] tests module.
+    // Uses the real FormEvent input/query handlers; no native DOM/frame claim.
+    fn configured_roving_observe(runtime: &RuntimeHandle, sequence: u64, nodes: serde_json::Value) {
+        runtime.input(event(serde_json::json!({
+            "owner":runtime.owner_id(),"sequence":sequence,"kind":"observe","nodes":nodes
+        })));
+    }
+    fn configured_roving_empty(host: &str) -> InventoryFacts {
+        serde_json::from_value(serde_json::json!({"items_host":host,"hosts":[],
+        "navigation_order":[],"query_order":[]}))
+        .unwrap()
+    }
+    fn configured_roving_retained(runtime: &RuntimeHandle, capture: &str) -> bool {
+        let query = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
+        "item_focus_phase":"retain","item_focus_capture":capture}));
+        runtime.query(query.clone());
+        !query.default_action_enabled()
+    }
+    fn configured_roving_drain(
+        runtime: &RuntimeHandle,
+        attributes: &mut BTreeMap<ItemRef, Option<String>>,
+    ) {
+        loop {
+            let next = {
+                let state = runtime.0.borrow();
+                state.roving_writes.front().map(|batch| {
+                    (
+                        batch.sequence,
+                        batch.root.clone(),
+                        batch.generation,
+                        batch.writes.front().unwrap().clone(),
+                    )
+                })
+            };
+            let Some((sequence, root, generation, write)) = next else {
+                break;
+            };
+            let query = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
+            "roving_write":true,"roving_sequence":sequence,"roving_root":root,
+            "roving_generation":generation,"roving_item":write.item,
+            "roving_tabindex":write.tabindex}));
+            runtime.query(query.clone());
+            assert!(
+                !query.default_action_enabled(),
+                "exact FIFO captured write must be authorized"
+            );
+            attributes.insert(write.item, write.tabindex);
+        }
+    }
+
+    #[test]
+    fn configured_roving_empty_host_is_retained_without_remembering_any_attributes() {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "empty-roving",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        let facts = configured_roving_empty("actual-empty-host");
+        configured_roving_observe(
+            &runtime,
+            1,
+            serde_json::json!([
+                {"id":"empty-roving","generation":1,"connected":true,"discovery_ready":true,
+                    "root_capture":"actual-empty-root","inventory":facts}
+            ]),
+        );
+        assert!(root.node.request(true, Reason::Trigger, false));
+        assert!(root.node.configure_navigation("roving-tabindex", true));
+        assert!(configured_roving_retained(&runtime, "actual-empty-host"));
+        assert!(!configured_roving_retained(&runtime, "copied-empty-host"));
+        assert!(
+            !runtime.0.borrow().roving.retains_token("actual-empty-host"),
+            "configuration enrolls the host but does not snapshot original item attributes"
+        );
+        assert!(runtime.0.borrow().roving_writes.is_empty());
+        root.node.clear_roving();
+        assert!(!configured_roving_retained(&runtime, "actual-empty-host"));
+        assert!(runtime.0.borrow().roving_writes.is_empty());
+    }
+
+    #[test]
+    fn pending_roving_configuration_survives_newer_modes_but_not_owner_replacement_or_clear() {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let root = model(
+            &runtime,
+            "pending-roving",
+            OverlayKind::Dropdown,
+            log.clone(),
+        );
+        assert!(root.node.configure_navigation("roving-tabindex", true));
+        assert!(root.node.configure_navigation("active-descendant", false));
+        configured_roving_observe(
+            &runtime,
+            1,
+            serde_json::json!([
+                {"id":"pending-roving","generation":1,"connected":true,"discovery_ready":true,
+                    "inventory":configured_roving_empty("first-config-host")}
+            ]),
+        );
+        assert!(
+            configured_roving_retained(&runtime, "first-config-host"),
+            "later mode configuration does not erase an earlier source cleanup enrollment"
+        );
+        root.node.clear_roving();
+        assert!(!configured_roving_retained(&runtime, "first-config-host"));
+
+        let replaced = model(
+            &runtime,
+            "replaced-roving",
+            OverlayKind::Dropdown,
+            log.clone(),
+        );
+        assert!(replaced.node.configure_navigation("roving-tabindex", true));
+        let callbacks = runtime.entry("replaced-roving").unwrap().callbacks;
+        let replacement = runtime.register(
+            "replaced-roving".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        configured_roving_observe(
+            &runtime,
+            2,
+            serde_json::json!([
+                {"id":"replaced-roving","generation":1,"connected":true,"discovery_ready":true,
+                    "inventory":configured_roving_empty("stale-generation-host")}
+            ]),
+        );
+        configured_roving_observe(
+            &runtime,
+            3,
+            serde_json::json!([
+                {"id":"replaced-roving","generation":2,"connected":true,"discovery_ready":true,
+                    "inventory":configured_roving_empty("replacement-host")}
+            ]),
+        );
+        assert!(!configured_roving_retained(
+            &runtime,
+            "stale-generation-host"
+        ));
+        assert!(
+            !configured_roving_retained(&runtime, "replacement-host"),
+            "a replacement must not inherit old pending configuration"
+        );
+        assert!(!replaced.node.configure_navigation("roving-tabindex", true));
+        assert!(replacement.configure_navigation("roving-tabindex", true));
+        assert!(configured_roving_retained(&runtime, "replacement-host"));
+        replacement.unregister();
+        assert!(!configured_roving_retained(&runtime, "replacement-host"));
+
+        let cleared = model(&runtime, "cleared-pending", OverlayKind::Dropdown, log);
+        assert!(cleared.node.configure_navigation("roving-tabindex", true));
+        cleared.node.clear_roving();
+        configured_roving_observe(
+            &runtime,
+            4,
+            serde_json::json!([
+                {"id":"cleared-pending","generation":1,"connected":true,"discovery_ready":true,
+                    "inventory":configured_roving_empty("after-clear-host")}
+            ]),
+        );
+        assert!(
+            !configured_roving_retained(&runtime, "after-clear-host"),
+            "an unfulfilled enrollment cannot reappear after actual cleanup"
+        );
+    }
+
+    fn configured_roving_forwarded_cleanup(initialize: bool) {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let parent = model(&runtime, "header", OverlayKind::Dropdown, log.clone());
+        let child = model(&runtime, "child", OverlayKind::Dropdown, log.clone());
+        let parent_facts = configured_roving_empty("parent-direct-host");
+        let mut child_facts = mixed_inventory_facts();
+        let originals = child_facts
+            .hosts
+            .iter()
+            .map(|host| (host.item.clone(), host.tabindex_attribute.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut attributes = originals.clone();
+        configured_roving_observe(
+            &runtime,
+            1,
+            serde_json::json!([
+                {"id":"header","generation":1,"connected":true,"discovery_ready":true,
+                    "inventory":parent_facts},
+                {"id":"child","generation":1,"connected":true,"discovery_ready":true,
+                    "trigger_ancestors":["header"],"inventory":child_facts}
+            ]),
+        );
+        assert!(parent.node.request(true, Reason::Trigger, false));
+        assert!(parent.node.configure_navigation("roving-tabindex", true));
+        assert!(child.node.request(true, Reason::Trigger, false));
+        assert!(child.node.configure_navigation("roving-tabindex", true));
+        assert_eq!(
+            runtime.0.borrow().registry.cached_children("header"),
+            ["child"]
+        );
+        // The component's apply hook clears its enrolled set only on accepted hide.
+        // Preserve the model callback so actual requests/cascades remain observable.
+        let accepted = parent.node.clone();
+        let original_apply = runtime.entry("header").unwrap().callbacks.apply;
+        runtime
+            .0
+            .borrow_mut()
+            .nodes
+            .get_mut("header")
+            .unwrap()
+            .callbacks
+            .apply = Rc::new(move |change| {
+            if !change.open {
+                accepted.clear_roving();
+            }
+            original_apply(change);
+        });
+        let selected = parent.node.clone();
+        runtime
+            .0
+            .borrow_mut()
+            .nodes
+            .get_mut("header")
+            .unwrap()
+            .callbacks
+            .key = Some(Rc::new(move |facts| {
+            let raw = facts.inventory.as_ref().unwrap();
+            if initialize {
+                assert_eq!(selected.init_roving(raw, true, false).unwrap().target, "b");
+            } else {
+                assert!(selected.select_roving(raw, &ItemRef("actual-b".into())));
+            }
+            KeyDecision {
+                prevent: true,
+                ..KeyDecision::default()
+            }
+        }));
+        // Parent's existing listener now queries Child's forwarded direct host;
+        // its own direct host and the physical receiver remain separate raw facts.
+        let key = event(serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
+        "kind":"key","phase":"capture","key":"End","hosts":["header"],
+        "nodes":[
+            {"id":"header","generation":1,"connected":true,"discovery_ready":true,
+                "mode":"roving-tabindex","inside":true,"inventory":child_facts,
+                "own_inventory":parent_facts},
+            {"id":"child","generation":1,"connected":true,"discovery_ready":true,
+                "mode":"roving-tabindex","trigger_ancestors":["header"],"inventory":child_facts}
+        ]}));
+        runtime.input(key.clone());
+        assert!(!key.default_action_enabled());
+        configured_roving_drain(&runtime, &mut attributes);
+        assert_eq!(
+            attributes.get(&ItemRef("actual-a".into())),
+            Some(&Some("-1".into()))
+        );
+        assert_eq!(
+            attributes.get(&ItemRef("actual-b".into())),
+            Some(&Some("0".into()))
+        );
+        for host in &mut child_facts.hosts {
+            host.tabindex_attribute = attributes[&host.item].clone();
+        }
+        configured_roving_observe(
+            &runtime,
+            3,
+            serde_json::json!([
+                {"id":"header","generation":1,"connected":true,"discovery_ready":true,
+                    "inventory":child_facts,"own_inventory":parent_facts},
+                {"id":"child","generation":1,"connected":true,"discovery_ready":true,
+                    "trigger_ancestors":["header"],"inventory":child_facts}
+            ]),
+        );
+        child.veto.set(true);
+        log.borrow_mut().clear();
+        assert!(parent.node.request(false, Reason::Trigger, false));
+        assert!(!parent.open.get() && child.open.get());
+        assert_eq!(
+            *log.borrow(),
+            [
+                "before:header:false",
+                "before:child:false",
+                "apply:header:false"
+            ]
+        );
+        configured_roving_drain(&runtime, &mut attributes);
+        if initialize {
+            assert_eq!(
+                attributes, originals,
+                "explicit initialization enrolled the forwarded host and restores exact None/4 originals"
+            );
+        } else {
+            assert_eq!(
+                attributes.get(&ItemRef("actual-a".into())),
+                Some(&Some("-1".into()))
+            );
+            assert_eq!(
+                attributes.get(&ItemRef("actual-b".into())),
+                Some(&Some("0".into())),
+                "ordinary selection did not enroll Child in Parent's cleanup set"
+            );
+            child.node.clear_roving();
+            configured_roving_drain(&runtime, &mut attributes);
+            assert_eq!(
+                attributes, originals,
+                "Child still owns the exact shared baseline after its veto"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_forwarded_roving_selection_preserves_vetoed_child_attributes_on_parent_hide() {
+        configured_roving_forwarded_cleanup(false);
+    }
+
+    #[test]
+    fn explicit_roving_initialization_enrolls_forwarded_host_for_parent_cleanup() {
+        configured_roving_forwarded_cleanup(true);
     }
 }
 

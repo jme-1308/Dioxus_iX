@@ -97,7 +97,7 @@ function queueDescendantFocus(command){
   if(!reference){
     // Only an unbound bootstrap admission can find its first registered root.
     // A known reference never falls back to another element with that ID.
-    root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(element=>element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-owner')===owner&&element.getAttribute('data-ix-overlay-root')===command.root&&Number(element.getAttribute('data-ix-overlay-generation'))===command.generation);
+    root=Array.from(registryElements('[data-ix-overlay-root]')).find(element=>element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-owner')===owner&&element.getAttribute('data-ix-overlay-root')===command.root&&Number(element.getAttribute('data-ix-overlay-generation'))===command.generation);
     reference=descendantCapture(root);
   }
   const discard=()=>{descendantQuery(command,reference||command.reference||'', 'discard');};
@@ -117,7 +117,7 @@ function executeDescendantFocus(job){
   let fallback=root;
   if(command.purpose?.kind==='submenu'&&content instanceof HTMLElement){
     const hostId=content.getAttribute('data-ix-overlay-host');
-    fallback=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(candidate=>candidate instanceof HTMLElement&&candidate.getAttribute('data-ix-overlay-owner')===owner&&candidate.getAttribute('data-ix-overlay-root')===hostId)||root;
+    fallback=Array.from(registryElements('[data-ix-overlay-root]')).find(candidate=>candidate instanceof HTMLElement&&candidate.getAttribute('data-ix-overlay-owner')===owner&&candidate.getAttribute('data-ix-overlay-root')===hostId)||root;
   }
   const held=collectDescendantFocus(fallback,content,returned?[returned]:[]);
   const currentHosts=(path=[])=>Array.from(new Set([...held.typedHosts,...path.filter(element=>element instanceof HTMLElement&&element.hasAttribute('data-ix-item-kind'))]),host=>itemHostFacts(host)).filter(Boolean);

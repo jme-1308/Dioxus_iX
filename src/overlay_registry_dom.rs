@@ -45,10 +45,48 @@ function pruneItemCaptures(){
 }
 const lastFocus=new Map(),nativeIds=new WeakMap(),nativeNodes=new Map();let nativeSequence=0;
 function nativeId(el){if(!(el instanceof HTMLElement))return '';if(el.id)return el.id;let id=nativeIds.get(el);if(!id){id=owner+'-native-'+(++nativeSequence);nativeIds.set(el,id);}nativeNodes.set(id,el);return id;}
-function findElement(id){const el=document.getElementById(id)||nativeNodes.get(id);return el instanceof HTMLElement&&el.isConnected?el:null;}
-function transport(){
-  for(const n of document.querySelectorAll('input[data-ix-overlay-transport]'))if(n instanceof HTMLInputElement&&n.isConnected&&n.getAttribute('data-ix-overlay-transport')===owner)return n;
+// Registry reachability is separate from source-selected light-DOM queries.
+// Scan a subtree only at discovery/mutation boundaries, never for every query.
+const registryScopes=new Set([document]);
+function registryElements(selector){
+  const result=[];
+  for(const scope of registryScopes)if(scope===document||scope.host.isConnected)result.push(...scope.querySelectorAll(selector));
+  return result;
+}
+function registryElement(id){
+  for(const scope of registryScopes){
+    if(scope!==document&&!scope.host.isConnected)continue;
+    const element=scope.getElementById(id);if(element instanceof HTMLElement)return element;
+  }
   return null;
+}
+function discoverRegistryScopes(node){
+  if(!(node instanceof Element||node instanceof Document||node instanceof ShadowRoot))return;
+  const add=scope=>{
+    if(registryScopes.has(scope))return;
+    registryScopes.add(scope);observeRegistryScope(scope);
+    scope.addEventListener('slotchange',reportObserve,{signal});
+    discoverRegistryScopes(scope);
+  };
+  if(node instanceof Element&&node.shadowRoot)add(node.shadowRoot);
+  const containing=node.getRootNode();
+  if(containing instanceof ShadowRoot&&containing.host.isConnected)add(containing);
+  for(const element of node.querySelectorAll('*'))if(element.shadowRoot)add(element.shadowRoot);
+}
+function findElement(id){const el=registryElement(id)||nativeNodes.get(id);return el instanceof HTMLElement&&el.isConnected?el:null;}
+function transport(){
+  let fallback=null,owned=null;
+  for(const n of registryElements('input[data-ix-overlay-transport]')){
+    if(!(n instanceof HTMLInputElement)||!n.isConnected||n.getAttribute('data-ix-overlay-transport')!==owner)continue;
+    // A root-owned transport remains on the renderer's real delegation path,
+    // including when assigned light items are currently outside that path.
+    if(n.closest('[data-ix-overlay-root]')){
+      if(n.getRootNode() instanceof ShadowRoot)return n;
+      owned||=n;
+    }
+    fallback||=n;
+  }
+  return owned||fallback;
 }
 function deepActive(){
   let a=document.activeElement;
@@ -76,11 +114,11 @@ function isActiveHost(n){
   return n.getAttribute('data-header-popup-host')===(hr?.getAttribute('data-small')==='true'?'small':'large');
 }
 function findHost(id){
-  for(const n of document.querySelectorAll('[data-ix-overlay-host]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-host')===id&&isActiveHost(n))return n;
+  for(const n of registryElements('[data-ix-overlay-host]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-host')===id&&isActiveHost(n))return n;
   return null;
 }
 function findItemsHost(root,id){
-  const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?document.getElementById(configured):null;
+  const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?registryElement(configured):null;
   return element instanceof HTMLElement&&element.isConnected?element:findHost(root.getAttribute('data-ix-overlay-items-owner')||id);
 }
 // Rust publishes committed declaration/disposal versions. Each attempt retains
@@ -147,7 +185,7 @@ function findTrigger(id,root){
     if(!legacy.current){const element=document.getElementById(declared);if(element instanceof HTMLElement){legacy.current=element;legacy.installed=element;element.setAttribute('data-ix-overlay-trigger',id);const anchor=root.getAttribute('data-ix-overlay-anchor-name');if(anchor)element.style.setProperty('anchor-name',anchor);}}
     return legacy.current;
   }
-  for(const n of document.querySelectorAll('[data-ix-overlay-trigger]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-trigger')===id)return n;
+  for(const n of registryElements('[data-ix-overlay-trigger]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-trigger')===id)return n;
   const tid=root?.getAttribute('data-ix-overlay-trigger-id'),el=tid?document.getElementById(tid):null;
   return el instanceof HTMLElement&&el.isConnected?el:null;
 }
@@ -158,7 +196,7 @@ function navigationBindingFor(root){
 }
 function bindNavigationConfigurations(){
   for(const state of navigationBindings.values()){
-    const root=state.root||Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(element=>element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-owner')===owner&&element.getAttribute('data-ix-overlay-root')===state.id&&Number(element.getAttribute('data-ix-overlay-generation'))===state.generation);
+    const root=state.root||Array.from(registryElements('[data-ix-overlay-root]')).find(element=>element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-owner')===owner&&element.getAttribute('data-ix-overlay-root')===state.id&&Number(element.getAttribute('data-ix-overlay-generation'))===state.generation);
     if(!root||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner||Number(root.getAttribute('data-ix-overlay-generation'))!==state.generation)continue;
     state.root=root;
     // Even disabled/legacy configurations retain their actual registration for
@@ -258,7 +296,7 @@ function itemParts(element){
 // observation; eligibility remains the resulting actual own attribute in Rust.
 const reflectedCheckedAttributes=new WeakMap();
 function syncReflectedCheckedAttributes(){
-  for(const element of document.querySelectorAll('[data-ix-reflect-checked]')){
+  for(const element of registryElements('[data-ix-reflect-checked]')){
     if(!(element instanceof HTMLElement)||element.closest('[data-ix-item-kind][data-ix-item-runtime]')?.getAttribute('data-ix-item-runtime')!==owner)continue;
     const marker=element.getAttribute('data-ix-reflect-checked');
     if(reflectedCheckedAttributes.get(element)===marker)continue;
@@ -337,6 +375,7 @@ function headerControls(root){
     .filter(el=>el instanceof HTMLElement&&el.closest('header.ix-application-header')===header).map(nativeId);
 }
 function collectFacts(kind,event,phase=''){
+  for(const site of event?.composedPath?.()||[])if(site instanceof ShadowRoot&&!registryScopes.has(site))discoverRegistryScopes(site);
   for(const binding of itemCaptureNodes.values())binding.current=false;
   const active=deepActive(),path=event?.composedPath?.()||[];
   const target=path[0] instanceof HTMLElement?path[0]:(event?.target instanceof HTMLElement?event.target:null);
@@ -364,7 +403,7 @@ function collectFacts(kind,event,phase=''){
   const active_categories=[];
   for(let c=active;c;c=stepParent(c))if(c instanceof Element&&c.hasAttribute('data-menu-category-root')){const id=Number(c.getAttribute('data-menu-category-root'));if(Number.isSafeInteger(id)&&id>0&&!active_categories.includes(id))active_categories.push(id);}
   const nodes=[],anchors=[];
-  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
+  for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
     if(!id||(!['window','trap'].includes(phase)&&event?.key!=='Tab'&&ro!==owner))continue;
@@ -617,7 +656,7 @@ function syncItemCues(captured=null,retained=false,force=false){
     // Any entry can consume the dirty flag before its queued wake arrives.
     // Therefore that entry must also offer retained detached original hosts.
     if(includeRetained||pending)for(const binding of itemCaptureNodes.values())if(binding.element instanceof HTMLElement&&binding.element.hasAttribute('data-ix-item-kind'))capturedHosts.add(binding.element);
-    const roots=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).filter(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.hasAttribute('data-ix-overlay-mode'));
+    const roots=Array.from(registryElements('[data-ix-overlay-root]')).filter(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.hasAttribute('data-ix-overlay-mode'));
     syncSubmenuMarkers(roots);
     const candidates=new Set();
     // Offers cover every captured inventory in this owner, including a linked
@@ -636,7 +675,7 @@ function syncItemCues(captured=null,retained=false,force=false){
     // An admitted attempt retains its original object even after DOM removal.
     // No ID lookup may substitute a replacement for that detached object.
     for(const host of capturedHosts)projectHost(host,true);
-    for(const host of document.querySelectorAll('[data-ix-item-kind][data-ix-item-runtime]'))projectHost(host,false);
+    for(const host of registryElements('[data-ix-item-kind][data-ix-item-runtime]'))projectHost(host,false);
     for(const root of roots){
       const trigger=findTrigger(root.getAttribute('data-ix-overlay-root'),root);
       syncOneRootCue(root,trigger,'active','data-ix-overlay-active-item',candidates);
@@ -648,7 +687,7 @@ function syncItemCues(captured=null,retained=false,force=false){
 
 function syncExecution(){
   let needsFocusPass=false;
-  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
+  for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
     if(!id||ro!==owner)continue;
@@ -673,7 +712,7 @@ function syncExecution(){
   if(needsFocusPass&&!focusFrame){
     focusFrame=requestAnimationFrame(()=>{
       focusFrame=0;if(!alive)return;
-      for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
+      for(const root of registryElements('[data-ix-overlay-root]')){
         if(!(root instanceof HTMLElement)||!root.isConnected)continue;
         const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
         if(!id||ro!==owner)continue;
@@ -684,7 +723,7 @@ function syncExecution(){
         lastFocus.set(id,token);if(spec==='none')continue;
         const list=hostFocusables(findHost(id));
         const dest=spec==='trigger'?findTrigger(id,root):spec==='first-native'?list[0]:spec==='last-native'?list[list.length-1]:
-          spec.startsWith('index:')?list[Number(spec.slice(6))]:document.getElementById(spec.startsWith('id:')?spec.slice(3):spec);
+          spec.startsWith('index:')?list[Number(spec.slice(6))]:findElement(spec.startsWith('id:')?spec.slice(3):spec);
         if(dest instanceof HTMLElement&&dest.isConnected)try{dest.focus();}catch{}
       }
       reportObserve();
@@ -694,7 +733,7 @@ function syncExecution(){
 function syncKeyTargets(){
   const wanted=new Set(),wantedClicks=new Set(),wantedTriggerKeys=new Set(),wantedNavigation=new Set(),currentIds=new Set();
   bindNavigationConfigurations();
-  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
+  for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner)continue;
     currentIds.add(root.getAttribute('data-ix-overlay-root'));
     const current=findTrigger(root.getAttribute('data-ix-overlay-root'),root),binding=declaredTriggers.get(root);
@@ -736,7 +775,7 @@ function syncKeyTargets(){
   for(const [root,binding]of declaredTriggers)if(!triggerBindingAlive(binding))declaredTriggers.delete(root);
   for(const id of lastFocus.keys())if(!currentIds.has(id))lastFocus.delete(id);
   for(const [id,lease]of itemInventoryLeases){
-    const current=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(root=>root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id);
+    const current=Array.from(registryElements('[data-ix-overlay-root]')).find(root=>root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id);
     if(!current||Number(current.getAttribute('data-ix-overlay-generation'))!==lease.generation)itemInventoryLeases.delete(id);
   }
   for(const [target,listener]of keyTargets)if(!wanted.has(target)){target.removeEventListener('keydown',listener);keyTargets.delete(target);}
@@ -746,7 +785,7 @@ function syncKeyTargets(){
 }
 function syncAnchorObservers(){
   const wanted=new Set();
-  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
+  for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner)continue;
     if(!root.hasAttribute('data-ix-overlay-mode')||root.getAttribute('data-ix-overlay-open')!=='true'||root.getAttribute('data-ix-overlay-trigger-visibility-check')==='false')continue;
     const id=root.getAttribute('data-ix-overlay-root'),target=findAnchor(root)||findTrigger(id,root),generation=root.getAttribute('data-ix-overlay-generation')||'0';
@@ -777,7 +816,7 @@ function reportObserve(){
   for(const [id,node] of nativeNodes)if(!node.isConnected)nativeNodes.delete(id);
   syncKeyTargets();
   if(!transport())return;
-  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
+  for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   syncExecution();
   syncAnchorObservers();
   const report=collectFacts('observe',null);
@@ -798,7 +837,7 @@ document.addEventListener('focusin',event=>{
   const item=event.composedPath().find(n=>n instanceof HTMLElement&&n.hasAttribute('data-ix-dropdown-item'));
   if(item){
     const id=item.getAttribute('data-ix-dropdown-owner');
-    const root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(n=>n.getAttribute('data-ix-overlay-root')===id&&n.getAttribute('data-ix-overlay-owner')===owner);
+    const root=Array.from(registryElements('[data-ix-overlay-root]')).find(n=>n.getAttribute('data-ix-overlay-root')===id&&n.getAttribute('data-ix-overlay-owner')===owner);
     if(!item.hasAttribute('data-ix-item-kind')&&root?.getAttribute('data-ix-overlay-focus-proxy')==='true'){
       const trigger=findTrigger(id,root);
       if(trigger&&trigger!==deepActive()&&visibleFocusable(trigger))trigger.focus();
@@ -817,7 +856,7 @@ function itemCueMutation(change){
     ['class','data-active','data-ix-item-kind','data-ix-item-key','data-ix-item-runtime','data-ix-item-part','data-ix-item-focusable'].includes(name))return true;
   if(element.hasAttribute('data-ix-overlay-mode')&&element.getAttribute('data-ix-overlay-owner')===owner&&
     ['aria-activedescendant','data-ix-overlay-active-item','data-ix-overlay-mode'].includes(name))return true;
-  if(name==='aria-activedescendant')for(const root of document.querySelectorAll('[data-ix-overlay-root][data-ix-overlay-mode]')){
+  if(name==='aria-activedescendant')for(const root of registryElements('[data-ix-overlay-root][data-ix-overlay-mode]')){
     if(root.getAttribute('data-ix-overlay-owner')===owner&&findTrigger(root.getAttribute('data-ix-overlay-root'),root)===element)return true;
   }
   return false;
@@ -825,7 +864,21 @@ function itemCueMutation(change){
 const observer=new MutationObserver(changes=>{
   // Each outstanding source ID wait observes real child-list changes. Resolve
   // all retained attempts in their admission order, never only the latest ID.
-  if(changes.some(change=>change.type==='childList'))retryTriggerAttempts();
+  if(changes.some(change=>change.type==='childList')){
+    for(const change of changes)if(change.type==='childList'){
+      for(const node of [...change.addedNodes,...change.removedNodes])discoverRegistryScopes(node);
+    }
+    // Stop observing detached consumer trees; reattachment is discovered from
+    // its real insertion or event path, with no retained closed-root access.
+    if(Array.from(registryScopes).some(scope=>scope!==document&&!scope.host.isConnected)){
+      observer.disconnect();
+      for(const scope of Array.from(registryScopes)){
+        if(scope!==document&&!scope.host.isConnected){scope.removeEventListener('slotchange',reportObserve);registryScopes.delete(scope);}
+        else observeRegistryScope(scope);
+      }
+    }
+    retryTriggerAttempts();
+  }
   reportObserve();
   // Child-list/log/geometry work is still observed for raw discovery, but only
   // writes to actual cue fields force projection without a Rust work signal.
@@ -833,15 +886,16 @@ const observer=new MutationObserver(changes=>{
   // queries merely by appending ordinary text to the document.
   if(changes.some(itemCueMutation))syncItemCues(null,false,true);
 });
-observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
+function observeRegistryScope(scope){observer.observe(scope===document?document.documentElement:scope,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-trigger-version','data-ix-overlay-trigger-dispose-version','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
   'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
   ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
-  ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked'
-]});
+  ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked','slot','name'
+]});}
+observeRegistryScope(document);discoverRegistryScopes(document);
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 function queueTriggerRestore(command){
-  const root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(node=>
+  const root=Array.from(registryElements('[data-ix-overlay-root]')).find(node=>
     node instanceof HTMLElement&&node.getAttribute('data-ix-overlay-owner')===owner&&node.getAttribute('data-ix-overlay-root')===command.root&&Number(node.getAttribute('data-ix-overlay-generation'))===command.generation);
   nativeFocusCommands.push({kind:'trigger',command,root});scheduleNativeFocus();
 }
@@ -912,7 +966,7 @@ function executeRovingAttributes(command){
   pruneItemCaptures();
 }
 const inventoryReader=(id,generation)=>{
-  const root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id&&Number(root.getAttribute('data-ix-overlay-generation'))===generation);
+  const root=Array.from(registryElements('[data-ix-overlay-root]')).find(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id&&Number(root.getAttribute('data-ix-overlay-generation'))===generation);
   if(!alive||!root)return null;
   const facts=inventoryFacts(findItemsHost(root,id));
   if(facts)itemInventoryLeases.set(id,{generation,tokens:new Set([facts.items_host,...facts.hosts.flatMap(host=>[host.capture,...host.parts.map(part=>part.capture)])])});
@@ -976,7 +1030,8 @@ try{
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);
   for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();
-  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
+  for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
+  registryScopes.clear();
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');
 }
 "#;

@@ -71,6 +71,16 @@ path = "tools/source_dropdown_linked_probe.rs"
 required-features = ["desktop"]
 
 [[example]]
+name = "source_dropdown_slot_probe"
+path = "tools/source_dropdown_slot_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "dropdown_slot_probe"
+path = "tools/dropdown_slot_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "source_dropdown_rebind_probe"
 path = "tools/source_dropdown_rebind_probe.rs"
 required-features = ["desktop"]
