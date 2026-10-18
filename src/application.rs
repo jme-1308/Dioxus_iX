@@ -83,6 +83,8 @@ struct MenuObservation {
     #[serde(default)]
     inside: bool,
     #[serde(default)]
+    connected: bool,
+    #[serde(default)]
     active_categories: Vec<usize>,
     #[serde(default)]
     outside_cause: String,
@@ -1848,6 +1850,7 @@ impl CategoryNavigation {
                 | "category-window-key"
                 | "category-order"
                 | "category-outside"
+                | "category-disconnect"
                 | "category-return"
                 | "category-key"
         ) {
@@ -1901,6 +1904,12 @@ impl CategoryNavigation {
             }
             model.newest_sequence = message.sequence;
             model.root_claim = None;
+        }
+        if message.kind == "category-disconnect" {
+            // Native movement dismisses through the controller without
+            // replacing the registered child inventory or dropping its scope.
+            self.dismiss_captured(message.connected, &message.active_categories);
+            return;
         }
         self.observe(message.category_items);
         match message.kind.as_str() {
@@ -2069,7 +2078,12 @@ if (!root || !bar || !transport) {directory.release(scopeLease);return;}
 const hoverTransport=root.querySelector('input[data-menu-hover-observer]');
 document[Symbol.for('dioxus-ix-document-input')]?.get(hoverTransport?.dataset.menuDocumentOwner)?.sync();
 const hover=installMenuCategoryHover(root,message=>{if(hoverTransport?.isConnected){hoverTransport.value=JSON.stringify(message);hoverTransport.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));}},directory);
-const events=new AbortController(); let previous='',sequence=0;const categoryPrevious=new Map(),categoryBindings=new Map();
+const events=new AbortController(); let previous='',sequence=0;const categoryPrevious=new Map(),categoryBindings=new Map(),categoryConnections=new Map();
+const categoryConnection=category=>{
+  const ancestors=new Set();
+  for(let node=category;node;node=node.parentNode??(node instanceof ShadowRoot?node.host:null))ancestors.add(node);
+  return {category,id:Number(category.dataset.menuCategoryRoot),owner:category.dataset.menuOwner,ancestors};
+};
 const currentRoot=()=>directory.sameNodeById(root,__MENU_ROOT__)&&root.matches('[data-menu-root]');
 const send=(kind,event,extra={}) => {
   if(!currentRoot()||!transport.isConnected)return false;
@@ -2088,6 +2102,9 @@ const sync=()=>{
   const currentCategories=new Set();
   const currentObjects=new Set(directory.categories(root.id));
   for(const category of currentObjects) {
+    // Retain the old physical ancestry until the shared mutation journal has
+    // delivered removals, even if another observer synchronizes first.
+    if(!categoryConnections.has(category))categoryConnections.set(category,categoryConnection(category));
     if(!categoryBindings.has(category)) {
       const listeners=new AbortController(),changes=new MutationObserver(sync);
       categoryBindings.set(category,{listeners,changes});
@@ -2161,9 +2178,23 @@ bar.addEventListener('focusout',event=>{
   if(category)queueCategoryOutside(event,category);
 },{signal:events.signal});
 const observer=new MutationObserver(sync);observer.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden','style','tabindex','data-menu-category-disabled','data-menu-category-mode','data-menu-category-popup-open','data-menu-category-body-surface','data-menu-category-popup','data-open','popover']});
-directory.subscribe(scopeLease,sync);
+directory.subscribe(scopeLease,changes=>{
+  const removals=[];
+  for(const change of changes)if(change.type==='childList')for(const removed of change.removedNodes){
+    for(const connection of categoryConnections.values())if(connection.ancestors.has(removed)||removed.contains(connection.category))removals.push(connection);
+  }
+  // Report actual object removal. Rust decides whether its retained controller
+  // is present and authorizes dismissal/focus; DOM movement never unregisters it.
+  for(const {category,id,owner}of removals)if(owner===root.id&&category.dataset.menuOwner===owner&&Number(category.dataset.menuCategoryRoot)===id){
+    send('category-disconnect',null,{category:id,connected:category.isConnected,sequence:++sequence});
+  }
+  sync();
+  const currentObjects=new Set(directory.categories(root.id));
+  for(const category of categoryConnections.keys())if(!currentObjects.has(category))categoryConnections.delete(category);
+  for(const category of currentObjects)categoryConnections.set(category,categoryConnection(category));
+});
 sync();send('ready');root.dataset.menuNative='true';
-try{await dioxus.recv();}finally{hover.dispose();events.abort();observer.disconnect();directory.release(scopeLease);delete root.dataset.menuNative;for(const [category,binding]of categoryBindings){binding.listeners.abort();binding.changes.disconnect();for(const panel of category.querySelectorAll(':scope > [data-menu-category-panel], :scope > [data-menu-category-empty-popup]'))if(panel.matches(':popover-open'))panel.hidePopover();delete category.dataset.categoryNative;delete category.dataset.categoryHoverNative;}categoryBindings.clear();}
+try{await dioxus.recv();}finally{hover.dispose();events.abort();observer.disconnect();directory.release(scopeLease);delete root.dataset.menuNative;for(const [category,binding]of categoryBindings){binding.listeners.abort();binding.changes.disconnect();for(const panel of category.querySelectorAll(':scope > [data-menu-category-panel], :scope > [data-menu-category-empty-popup]'))if(panel.matches(':popover-open'))panel.hidePopover();delete category.dataset.categoryNative;delete category.dataset.categoryHoverNative;}categoryBindings.clear();categoryConnections.clear();}
 "#.replace("__MENU_ROOT__",&id))
 }
 
@@ -4502,6 +4533,9 @@ mod document_tests;
 
 #[cfg(test)]
 mod tests {
+    mod menu_lifetime_tests {
+        include!("application/menu_lifetime_tests.rs");
+    }
     mod menu_scope_tests {
         include!("application/menu_scope_tests.rs");
     }

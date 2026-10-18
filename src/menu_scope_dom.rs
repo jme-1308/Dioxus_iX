@@ -15,9 +15,9 @@ function menuScopeDirectory() {
   let initialized = false;
   let nextHandle = 0;
 
-  function notify() {
+  function notify(changes = []) {
     for (const callback of Array.from(subscribers.values())) {
-      if (typeof callback === 'function') callback();
+      if (typeof callback === 'function') callback(changes);
     }
   }
 
@@ -119,7 +119,7 @@ function menuScopeDirectory() {
       }
     }
     if (sawChildList) pruneDetachedScopes();
-    notify();
+    notify(changes);
   });
 
   function start() {

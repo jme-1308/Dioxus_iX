@@ -47,7 +47,7 @@ fn public_id(epoch: usize, role: &str) -> String {
     format!("menu-slot-{epoch}-{role}")
 }
 fn slotted(case_id: usize) -> bool {
-    matches!(case_id, 4 | 5 | 6 | 8)
+    matches!(case_id, 4 | 5 | 6 | 8 | 9 | 10)
 }
 
 #[component]
@@ -81,12 +81,13 @@ fn Probe() -> Element {
             }});}
         },
             h1{"Menu and Category native topology"}
-            p{"Eight fixed input histories distinguish actual Menu ancestry, shadow initialization and native callback delivery."}
+            p{"Ten fixed input histories distinguish actual Menu ancestry, shadow initialization and native callback delivery."}
             div{class:"menu-slot-controls",for next in 1..=8{button{id:format!("menu-slot-fresh-{next}"),onclick:move |_|{selected.set(next);epoch+=1;},"Fresh M{next:02}"}}}
-            input{id:"menu-slot-mode",r#type:"hidden",oninput:move |event|{selected.set(event.value().parse::<usize>().unwrap_or(1).clamp(1,8));epoch+=1;}}
+            input{id:"menu-slot-mode",r#type:"hidden",oninput:move |event|{selected.set(event.value().parse::<usize>().unwrap_or(1).clamp(1,10));epoch+=1;}}
             button{id:"menu-slot-outside","Outside keyboard seed"}
             for current in [epoch()]{Fixture{key:"{current}",epoch:current,case_id:selected()}}
             pre{id:"menu-slot-native-result","{readiness()}"}
+            div{class:"menu-slot-controls",for next in 9..=10{button{id:format!("menu-slot-fresh-{next}"),onclick:move |_|{selected.set(next);epoch+=1;},"Fresh M{next:02}"}}}
         }
     }}
 }
@@ -133,7 +134,7 @@ fn Fixture(epoch: usize, case_id: usize) -> Element {
                                             }
                                         }
                                     }
-                                    if case_id==8{button{id:public_id(epoch,"redistribution-peer"),"data-menu-slot-role":"redistribution-peer",slot:public_id(epoch,"tail"),"Redistribution peer"}}
+                                    if matches!(case_id,8..=10){button{id:public_id(epoch,"redistribution-peer"),"data-menu-slot-role":"redistribution-peer",slot:public_id(epoch,"tail"),"Redistribution peer"}}
                                 }
                             }else{Category{epoch,category_slot:None,child_hidden:child_hidden()}}
                             MenuItem{id:public_id(epoch,"menu-after"),"data-menu-slot-role":if case_id==7{"outer-after"}else{"menu-after"},label:"After Category",close_on_select:false}
