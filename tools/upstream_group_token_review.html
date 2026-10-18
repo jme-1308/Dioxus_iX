@@ -1,0 +1,1008 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="ix-icons:path" content="http://127.0.0.1:8089/www/node_modules/@siemens/ix-icons/svg"><title>Pinned group layout matrix</title><link rel="stylesheet" href="http://127.0.0.1:8089/keyboard-foundation.css"><script type="module" src="http://127.0.0.1:8089/www/build/siemens-ix.esm.js"></script><script nomodule src="http://127.0.0.1:8089/www/build/siemens-ix.js"></script><style>body{margin:0;background:#f4f6f8;color:#202932;font:16px/1.5 system-ui,sans-serif}main{max-width:96rem;margin:auto;padding:24px}h1{font-size:1.75rem;line-height:1.2;margin:0 0 16px}h2{font-size:1.25rem;margin:24px 0 8px}p{max-width:75ch}.controls{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}button{font:inherit;min-height:36px;padding:4px 10px;background:white;color:#202932;border:1px solid #7d8b98;border-radius:4px;cursor:pointer}button:disabled{opacity:.5;cursor:default}button:focus-visible,select:focus-visible{outline:2px solid #075c9d;outline-offset:3px}::selection{background:#bddcf2;color:#102c42}.matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.scope{padding:16px;border:1px solid #bdc6ce;background:white;min-width:0}.scope[data-ix-color-schema=dark]{background:#202932}.scope-title{color:#202932;background:#f4f6f8;font:600 16px/1.5 system-ui,sans-serif;padding:8px;margin:0 0 16px}.specimen{padding:8px 0;border-bottom:1px solid #bdc6ce;overflow-wrap:anywhere}.specimen-label{display:block;font:12px/1.5 system-ui,sans-serif;color:#384b5b;background:#eef2f5;padding:2px 4px;margin-bottom:4px}.nested{margin-top:24px;padding:12px;border:1px solid #7d8b98;background:#202932}pre{max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:white;border:1px solid #bdc6ce;font:13px/1.5 ui-monospace,monospace;font-variant-numeric:tabular-nums;scrollbar-color:#7d8b98 #f4f6f8}@media(max-width:900px){.matrix{grid-template-columns:1fr}main{padding:16px}}.group-matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.specimen{padding:16px;min-width:0;background:white;border:1px solid #bdc6ce}.fixture-group-narrow{width:200px}.fixture-group-override{--ix-checkbox-group-checkbox-container--gap:11px;--ix-radio-group-checkbox-container--gap:11px 19px;--ix-checkbox-group-checkbox-container--margin:9px 0;--ix-radio-group-checkbox-container--margin:9px 0}@media(max-width:720px){.group-matrix{grid-template-columns:1fr}}</style></head><body data-ix-theme="brand"><main id="group-review"><h1>Pinned group layout matrix</h1><p>Actual source CheckboxGroup and RadioGroup under developer-authored system tokens. Inline feedback and layout only; descendant validation and tooltip behavior remain separate.</p><p id="group-status" role="status" data-ready="false" data-run="idle">Loading pinned groups…</p><div class="controls"><button id="group-baseline" disabled>Baseline inputs</button><button id="group-revised" disabled>Revise tokens and live props</button><button id="group-run" disabled>Run 80 observations</button></div><div id="group-matrix" class="group-matrix"></div><h2>Computed observations</h2><pre id="group-result" aria-hidden="true">{}</pre></main><script type="module">
+const spec={
+  "revision": "8bf599bc68365d7752e12832e71b625883b93d7a",
+  "fixture": "Developer-authored system-token group inline-layout adapter; not full Brand metrics",
+  "revisions": [
+    {
+      "id": "baseline",
+      "revision": 0
+    },
+    {
+      "id": "revised",
+      "revision": 1
+    }
+  ],
+  "cases": [
+    {
+      "key": "checkbox-column-default",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 0,
+      "id": "group-checkbox-column-default"
+    },
+    {
+      "key": "checkbox-column-valid",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "valid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 1,
+      "id": "group-checkbox-column-valid"
+    },
+    {
+      "key": "checkbox-column-info",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "info",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 2,
+      "id": "group-checkbox-column-info"
+    },
+    {
+      "key": "checkbox-column-warning",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "warning",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 3,
+      "id": "group-checkbox-column-warning"
+    },
+    {
+      "key": "checkbox-column-invalid",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "invalid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 0,
+      "id": "group-checkbox-column-invalid"
+    },
+    {
+      "key": "checkbox-row-default",
+      "kind": "checkbox",
+      "direction": "row",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 1,
+      "id": "group-checkbox-row-default"
+    },
+    {
+      "key": "checkbox-row-valid",
+      "kind": "checkbox",
+      "direction": "row",
+      "state": "valid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 2,
+      "id": "group-checkbox-row-valid"
+    },
+    {
+      "key": "checkbox-row-info",
+      "kind": "checkbox",
+      "direction": "row",
+      "state": "info",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 3,
+      "id": "group-checkbox-row-info"
+    },
+    {
+      "key": "checkbox-row-warning",
+      "kind": "checkbox",
+      "direction": "row",
+      "state": "warning",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 0,
+      "id": "group-checkbox-row-warning"
+    },
+    {
+      "key": "checkbox-row-invalid",
+      "kind": "checkbox",
+      "direction": "row",
+      "state": "invalid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 1,
+      "id": "group-checkbox-row-invalid"
+    },
+    {
+      "key": "checkbox-absent-feedback",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": null,
+      "validText": null,
+      "infoText": null,
+      "warningText": null,
+      "invalidText": null,
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "absent-feedback",
+      "scopeIndex": 2,
+      "id": "group-checkbox-absent-feedback"
+    },
+    {
+      "key": "checkbox-blank-active",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "invalid",
+      "label": "Choose options",
+      "helperText": "Fallback helper",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": " \t ",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "blank-active",
+      "scopeIndex": 3,
+      "id": "group-checkbox-blank-active"
+    },
+    {
+      "key": "checkbox-inactive-helper",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Fallback helper",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "inactive-helper",
+      "scopeIndex": 0,
+      "id": "group-checkbox-inactive-helper"
+    },
+    {
+      "key": "checkbox-no-label",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "default",
+      "label": null,
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "no-label",
+      "scopeIndex": 1,
+      "id": "group-checkbox-no-label"
+    },
+    {
+      "key": "checkbox-required",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "required",
+      "required": true,
+      "scopeIndex": 2,
+      "id": "group-checkbox-required"
+    },
+    {
+      "key": "checkbox-narrow",
+      "kind": "checkbox",
+      "direction": "row",
+      "state": "invalid",
+      "label": "Choose a long group label that wraps",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "A longer invalid selection message that wraps across several lines",
+      "children": [
+        "A longer first choice",
+        "A longer second choice",
+        "A longer third choice"
+      ],
+      "extra": "narrow",
+      "width": 200,
+      "scopeIndex": 3,
+      "id": "group-checkbox-narrow"
+    },
+    {
+      "key": "checkbox-override",
+      "kind": "checkbox",
+      "direction": "row",
+      "state": "warning",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "override",
+      "scopeIndex": 0,
+      "id": "group-checkbox-override"
+    },
+    {
+      "key": "checkbox-inactive-blank",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": " \t ",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "inactive-blank",
+      "scopeIndex": 1,
+      "id": "group-checkbox-inactive-blank"
+    },
+    {
+      "key": "checkbox-whitespace-active",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "info",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "  Informative text  ",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "whitespace-active",
+      "scopeIndex": 2,
+      "id": "group-checkbox-whitespace-active"
+    },
+    {
+      "key": "checkbox-live-props",
+      "kind": "checkbox",
+      "direction": "column",
+      "state": "default",
+      "label": "Before update",
+      "helperText": "Before helper",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "live-props",
+      "revised": {
+        "label": "After update",
+        "direction": "row",
+        "state": "invalid",
+        "invalidText": "After invalid"
+      },
+      "scopeIndex": 3,
+      "id": "group-checkbox-live-props"
+    },
+    {
+      "key": "radio-column-default",
+      "kind": "radio",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 0,
+      "id": "group-radio-column-default"
+    },
+    {
+      "key": "radio-column-valid",
+      "kind": "radio",
+      "direction": "column",
+      "state": "valid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 1,
+      "id": "group-radio-column-valid"
+    },
+    {
+      "key": "radio-column-info",
+      "kind": "radio",
+      "direction": "column",
+      "state": "info",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 2,
+      "id": "group-radio-column-info"
+    },
+    {
+      "key": "radio-column-warning",
+      "kind": "radio",
+      "direction": "column",
+      "state": "warning",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 3,
+      "id": "group-radio-column-warning"
+    },
+    {
+      "key": "radio-column-invalid",
+      "kind": "radio",
+      "direction": "column",
+      "state": "invalid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 0,
+      "id": "group-radio-column-invalid"
+    },
+    {
+      "key": "radio-row-default",
+      "kind": "radio",
+      "direction": "row",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 1,
+      "id": "group-radio-row-default"
+    },
+    {
+      "key": "radio-row-valid",
+      "kind": "radio",
+      "direction": "row",
+      "state": "valid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 2,
+      "id": "group-radio-row-valid"
+    },
+    {
+      "key": "radio-row-info",
+      "kind": "radio",
+      "direction": "row",
+      "state": "info",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 3,
+      "id": "group-radio-row-info"
+    },
+    {
+      "key": "radio-row-warning",
+      "kind": "radio",
+      "direction": "row",
+      "state": "warning",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 0,
+      "id": "group-radio-row-warning"
+    },
+    {
+      "key": "radio-row-invalid",
+      "kind": "radio",
+      "direction": "row",
+      "state": "invalid",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "scopeIndex": 1,
+      "id": "group-radio-row-invalid"
+    },
+    {
+      "key": "radio-absent-feedback",
+      "kind": "radio",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": null,
+      "validText": null,
+      "infoText": null,
+      "warningText": null,
+      "invalidText": null,
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "absent-feedback",
+      "scopeIndex": 2,
+      "id": "group-radio-absent-feedback"
+    },
+    {
+      "key": "radio-blank-active",
+      "kind": "radio",
+      "direction": "column",
+      "state": "invalid",
+      "label": "Choose options",
+      "helperText": "Fallback helper",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": " \t ",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "blank-active",
+      "scopeIndex": 3,
+      "id": "group-radio-blank-active"
+    },
+    {
+      "key": "radio-inactive-helper",
+      "kind": "radio",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Fallback helper",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "inactive-helper",
+      "scopeIndex": 0,
+      "id": "group-radio-inactive-helper"
+    },
+    {
+      "key": "radio-no-label",
+      "kind": "radio",
+      "direction": "column",
+      "state": "default",
+      "label": null,
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "no-label",
+      "scopeIndex": 1,
+      "id": "group-radio-no-label"
+    },
+    {
+      "key": "radio-required",
+      "kind": "radio",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "required",
+      "required": true,
+      "scopeIndex": 2,
+      "id": "group-radio-required"
+    },
+    {
+      "key": "radio-narrow",
+      "kind": "radio",
+      "direction": "row",
+      "state": "invalid",
+      "label": "Choose a long group label that wraps",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "A longer invalid selection message that wraps across several lines",
+      "children": [
+        "A longer first choice",
+        "A longer second choice",
+        "A longer third choice"
+      ],
+      "extra": "narrow",
+      "width": 200,
+      "scopeIndex": 3,
+      "id": "group-radio-narrow"
+    },
+    {
+      "key": "radio-override",
+      "kind": "radio",
+      "direction": "row",
+      "state": "warning",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "override",
+      "scopeIndex": 0,
+      "id": "group-radio-override"
+    },
+    {
+      "key": "radio-inactive-blank",
+      "kind": "radio",
+      "direction": "column",
+      "state": "default",
+      "label": "Choose options",
+      "helperText": " \t ",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "inactive-blank",
+      "scopeIndex": 1,
+      "id": "group-radio-inactive-blank"
+    },
+    {
+      "key": "radio-whitespace-active",
+      "kind": "radio",
+      "direction": "column",
+      "state": "info",
+      "label": "Choose options",
+      "helperText": "Helpful guidance",
+      "validText": "Selection accepted",
+      "infoText": "  Informative text  ",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "whitespace-active",
+      "scopeIndex": 2,
+      "id": "group-radio-whitespace-active"
+    },
+    {
+      "key": "radio-live-props",
+      "kind": "radio",
+      "direction": "column",
+      "state": "default",
+      "label": "Before update",
+      "helperText": "Before helper",
+      "validText": "Selection accepted",
+      "infoText": "Selection information",
+      "warningText": "Selection warning",
+      "invalidText": "Selection invalid",
+      "children": [
+        "Alpha",
+        "Beta",
+        "Gamma"
+      ],
+      "extra": "live-props",
+      "revised": {
+        "label": "After update",
+        "direction": "row",
+        "state": "invalid",
+        "invalidText": "After invalid"
+      },
+      "scopeIndex": 3,
+      "id": "group-radio-live-props"
+    }
+  ],
+  "colorTokens": [
+    "si-sys-color-text-information",
+    "si-sys-color-text-danger",
+    "si-sys-color-text-success",
+    "si-sys-color-text-warning",
+    "si-sys-color-text-on-accent",
+    "si-sys-color-effects-focus",
+    "si-sys-color-background-accent",
+    "si-sys-color-background-accent-active",
+    "si-sys-color-text-disabled",
+    "si-sys-color-background-accent-hover",
+    "si-sys-color-background-information",
+    "si-sys-color-background-information-active",
+    "si-sys-color-background-information-hover",
+    "si-sys-color-background-danger",
+    "si-sys-color-background-danger-active",
+    "si-sys-color-background-danger-hover",
+    "si-sys-color-background-warning",
+    "si-sys-color-background-warning-active",
+    "si-sys-color-background-warning-hover",
+    "si-sys-color-border-warning",
+    "si-sys-color-text-inverse",
+    "si-sys-color-text-on-information",
+    "si-sys-color-text-on-danger",
+    "si-sys-color-text-on-warning",
+    "si-sys-color-text-primary",
+    "si-sys-color-background-1",
+    "si-sys-color-background-selected",
+    "si-sys-color-background-hover",
+    "si-sys-color-border-2",
+    "si-sys-color-border-information",
+    "si-sys-color-border-danger",
+    "si-sys-color-text-secondary"
+  ],
+  "colorFormula": "rgb(24+(13*k+7*s+3*r)%160,32+(11*k+5*s+7*r)%150,40+(7*k+3*s+11*r)%140)",
+  "tokens": {
+    "spacingY10": "1+s+r",
+    "spacingY20": "3+s+r",
+    "spacingY30": "5+s+r",
+    "spacingY40": "8+s+2*r",
+    "spacingX20": "4+s+r",
+    "spacingX40": "10+s+r",
+    "spacingX60": "14+s+2*r",
+    "size60": "20-4*(s%2)+floor(s/2)+2*r",
+    "size70": "size60+4",
+    "size30": "8+s+r",
+    "borderWidth": "1+r",
+    "fullRadius": "99+s+r",
+    "fontBody": "400 (14+s+r)px/(20+s+r)px system-ui,sans-serif",
+    "fontBodyParagraph": "400 (15+s+r)px/(23+s+r)px system-ui,sans-serif",
+    "letterSpacing": ".25+.25*r",
+    "scopeFont": "400 16px/24px system-ui,sans-serif",
+    "spacingX30": "6+s+r"
+  },
+  "override": {
+    "checkboxGroupGap": "11px",
+    "radioGroupGap": "11px 19px",
+    "choicesMargin": "9px 0"
+  },
+  "computedSchema": [
+    "display",
+    "width",
+    "height",
+    "minWidth",
+    "boxSizing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderTopColor",
+    "borderTopStyle",
+    "borderTopLeftRadius",
+    "borderTopRightRadius",
+    "borderBottomLeftRadius",
+    "borderBottomRightRadius",
+    "backgroundColor",
+    "color",
+    "fontSize",
+    "lineHeight",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "letterSpacing",
+    "fontFeatureSettings",
+    "outlineColor",
+    "outlineWidth",
+    "outlineStyle",
+    "outlineOffset",
+    "opacity",
+    "pointerEvents",
+    "justifyContent",
+    "textAlign",
+    "marginLeft",
+    "marginRight",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "position",
+    "flexShrink",
+    "gap",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "content",
+    "fill",
+    "stroke",
+    "strokeWidth",
+    "cursor",
+    "visibility",
+    "alignItems",
+    "marginTop",
+    "marginBottom",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "transform",
+    "transitionProperty",
+    "transitionDuration",
+    "transitionTimingFunction",
+    "transitionDelay",
+    "flexDirection",
+    "wordBreak",
+    "whiteSpace",
+    "overflow",
+    "marginBlockStart",
+    "marginBlockEnd",
+    "marginInlineStart",
+    "rowGap",
+    "columnGap",
+    "flexWrap",
+    "marginInlineEnd",
+    "minInlineSize"
+  ],
+  "rowSchema": [
+    "id",
+    "key",
+    "kind",
+    "scopeIndex",
+    "revision",
+    "props",
+    "host",
+    "wrapper",
+    "top",
+    "labelHost",
+    "label",
+    "slot",
+    "choices",
+    "bottom",
+    "feedback",
+    "feedbackText",
+    "icon",
+    "right",
+    "children",
+    "requiredMarker",
+    "nativeFacts"
+  ],
+  "counts": {
+    "cases": 40,
+    "revisions": 2,
+    "total": 80
+  },
+  "controls": [
+    "group-baseline",
+    "group-revised",
+    "group-run"
+  ],
+  "api": "window.upstreamGroupTokenReview.run()",
+  "initialCheckedIndex": 1,
+  "values": [
+    "alpha",
+    "beta",
+    "gamma"
+  ],
+  "narrowWidthTarget": "actualgroup host width200px via authorednamedfixtureclass"
+};
+const items=[],errors=[],journal=[],objects=new WeakMap();let objectSeq=0,seq=0,ready=false,busy=false,revision=0,revisionID='baseline';const byId=id=>document.getElementById('group-'+id);const oid=n=>{if(!objects.has(n))objects.set(n,++objectSeq);return objects.get(n);};const log=(kind,data={})=>journal.push({seq:++seq,kind,time:performance.now(),revision,...data});
+function tokens(root,s,r){for(const[k,name]of spec.colorTokens.entries())root.style.setProperty('--'+name,`rgb(${24+(13*k+7*s+3*r)%160}, ${32+(11*k+5*s+7*r)%150}, ${40+(7*k+3*s+11*r)%140})`);const size=20-4*(s%2)+Math.floor(s/2)+2*r;for(const[k,v]of Object.entries({'size-60':size,'size-70':size+4,'size-30':8+s+r,'spacing-y-10':1+s+r,'spacing-y-20':3+s+r,'spacing-y-30':5+s+r,'spacing-y-40':8+s+2*r,'spacing-x-20':4+s+r,'spacing-x-30':6+s+r,'spacing-x-40':10+s+r,'spacing-x-60':14+s+2*r,'border-width-default':1+r,'border-radius-full':99+s+r}))root.style.setProperty('--si-sys-sizing-'+k,v+'px');root.style.setProperty('--si-sys-typography-body',`400 ${14+s+r}px/${20+s+r}px system-ui,sans-serif`);root.style.setProperty('--si-sys-typography-body-paragraph',`400 ${15+s+r}px/${23+s+r}px system-ui,sans-serif`);root.style.setProperty('--si-ref-typography-letter-spacing-normal',`${.25+.25*r}px`);root.style.font='400 16px/24px system-ui,sans-serif';root.style.color='var(--si-sys-color-text-primary)';root.dataset.ixTheme='brand';root.dataset.ixColorSchema=s>=2?'dark':'light';root.dataset.ixDensity=s%2?'compact':'normal';root.dataset.revision=String(r);}
+function propsFor(d,r){return{...d,...(r&&d.revised?d.revised:{})};}
+function setProps(item,r){const p=propsFor(item.descriptor,r);item.props=p;for(const key of ['label','helperText','validText','infoText','warningText','invalidText'])item.host[key]=p[key]??undefined;item.host.direction=p.direction;item.host.showTextAsTooltip=false;for(const name of ['ix-valid','ix-info','ix-warning','ix-invalid'])item.host.classList.remove(name);if(p.state!=='default')item.host.classList.add('ix-'+p.state);item.children[0].required=!!p.required;}
+function construct(){for(const d of spec.cases){const sample=document.createElement('section');sample.className='specimen';sample.dataset.groupCase=d.key;tokens(sample,d.scopeIndex,0);const title=document.createElement('h2');title.className='scope-title';title.textContent=d.key;sample.append(title);const host=document.createElement('ix-'+d.kind+'-group');host.id=d.id;if(d.extra==='narrow')host.classList.add('fixture-group-narrow');if(d.extra==='override')host.classList.add('fixture-group-override');const children=d.children.map((label,index)=>{const n=document.createElement('ix-'+d.kind);n.label=label;n.value=spec.values[index];n.name='group-'+d.key;n.checked=index===spec.initialCheckedIndex;n.required=!!d.required&&index===0;host.append(n);return n;});const item={host,children,sample,descriptor:d,props:d};setProps(item,0);sample.append(host);byId('matrix').append(sample);items.push(item);}}
+function allElements(root){const result=[];for(const n of root.querySelectorAll('*')){result.push(n);if(n.shadowRoot)result.push(...allElements(n.shadowRoot));}return result;}
+async function readiness(){for(let round=0;round<4;round++){const nodes=items.flatMap(item=>[item.host,...allElements(item.host)]).filter(n=>typeof n.componentOnReady==='function');await Promise.all(nodes.map(n=>n.componentOnReady()));log('source-components-ready',{round,count:nodes.length});}}
+async function settle(label){await document.fonts.ready;for(let index=1;index<=2;index++)await new Promise(resolve=>requestAnimationFrame(timestamp=>queueMicrotask(()=>{log('native-frame',{label,index,timestamp});resolve();})));}
+function metric(n,root){if(!(n instanceof Element))return null;const cs=getComputedStyle(n),r=n.getBoundingClientRect(),rr=root.getBoundingClientRect();return{object:oid(n),tag:n.tagName,id:n.id,attrs:Object.fromEntries([...n.attributes].map(a=>[a.name,a.value])),class:n.getAttribute('class'),computed:Object.fromEntries(spec.computedSchema.map(k=>[k,cs[k]])),rect:{x:r.x,y:r.y,width:r.width,height:r.height,relativeX:r.x-rr.x,relativeY:r.y-rr.y}};}
+function composedText(n){if(!n)return'';if(n instanceof Element&&['STYLE','SCRIPT'].includes(n.tagName))return'';if(n.nodeType===Node.TEXT_NODE)return n.textContent;if(n instanceof HTMLSlotElement){const nodes=n.assignedNodes({flatten:true});return(nodes.length?nodes:[...n.childNodes]).map(composedText).join('');}return[...(n.shadowRoot??n).childNodes].map(composedText).join('');}
+function capture(item){const host=item.host,shadow=host.shadowRoot,wrapper=shadow?.querySelector('ix-field-wrapper'),w=wrapper?.shadowRoot,labelHost=w?.querySelector('ix-field-label'),label=labelHost?.shadowRoot?.querySelector('ix-typography'),feedback=w?.querySelector('.bottom-text'),icon=feedback?.querySelector('ix-icon');return{id:host.id,key:item.descriptor.key,kind:item.descriptor.kind,scopeIndex:item.descriptor.scopeIndex,revision,props:item.props,host:metric(host,host),wrapper:metric(wrapper,host),top:metric(w?.querySelector('.field-top'),host),labelHost:metric(labelHost,host),label:metric(label,host),labelText:labelHost?composedText(labelHost):null,slot:metric(w?.querySelector('.slot-wrapper'),host),choices:metric(shadow?.querySelector('.checkbox-container'),host),bottom:metric(w?.querySelector('.field-bottom'),host),feedback:metric(feedback,host),feedbackText:feedback?[...feedback.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join(''):null,icon:metric(icon,host),iconInner:metric(icon?.shadowRoot?.querySelector('svg'),host),right:metric(w?.querySelector('.bottom-right'),host),children:item.children.map(n=>({checked:n.checked,required:n.required,metrics:metric(n,host)})),requiredMarker:!!label?.querySelector('span'),nativeFacts:{groupRequired:host.required,ariaLabel:host.getAttribute('aria-label'),ariaLabelledby:host.getAttribute('aria-labelledby'),role:host.getAttribute('role'),wrapperRole:wrapper?.getAttribute('role'),wrapperAriaLive:wrapper?.getAttribute('aria-live')}};}
+async function setRevision(id){revisionID=id;revision=spec.revisions.find(x=>x.id===id).revision;for(const item of items){tokens(item.sample,item.descriptor.scopeIndex,revision);setProps(item,revision);}await settle('source-public-inputs');await readiness();await settle('source-actual-children-ready');}
+function controls(enabled){for(const n of document.querySelectorAll('.controls button'))n.disabled=!enabled;}
+function publish(result){byId('result').textContent=JSON.stringify(result,null,2);}
+const limits=['Authored systemtokens and systemfonts only, not full numeric Brand metrics','Source actualshadow group/wrapper/label/icon hosts versus nativefieldset/legend/SVG structure retained','Required source derived from child.required versus explicit portrequired adapter','Source descendant aggregation/touched/cancellation/radio roving/tooltip/labelclick focus/fullAT not certified','Fixed source component readiness plus2RAF versus Rust commit2RAF are not publicationchronology equality','Child style/state propagation recordedraw; core lane measures group/label/inlinefeedback recipes only'];
+async function run(){if(!ready||busy)return;busy=true;controls(false);byId('status').dataset.run='running';const phases=[];try{for(const p of spec.revisions){await setRevision(p.id);phases.push({id:p.id,revision,settleFrames:2,settlement:{parentCommitFrames:2,actualComponentReadyRounds:4,finalObservationFrames:2},rows:items.map(capture)});}const result={ok:true,revision:spec.revision,fixture:spec.fixture,phases,errors:[...errors],journal:[...journal],limits};publish(result);byId('status').dataset.run='done';byId('status').textContent='80 source group layouts observed';return result;}catch(error){errors.push(String(error));const result={ok:false,error:String(error),phases,errors:[...errors],journal};publish(result);byId('status').dataset.run='done';return result;}finally{busy=false;controls(ready);}}
+window.addEventListener('error',e=>errors.push(e.message));window.addEventListener('unhandledrejection',e=>errors.push(String(e.reason)));for(const p of spec.revisions)byId(p.id).addEventListener('click',async e=>{e.preventDefault();e.stopPropagation();if(!ready||busy)return;busy=true;try{await setRevision(p.id);publish({ok:true,revision:spec.revision,phases:[{id:p.id,revision,settleFrames:2,rows:items.map(capture)}],errors:[...errors]});}finally{busy=false;}});byId('run').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();run();});window.upstreamGroupTokenReview=Object.freeze({run,snapshot:()=>({ready,revision,rows:items.map(capture)})});
+try{const{defineCustomElements}=await import('http://127.0.0.1:8089/www/node_modules/@siemens/ix-icons/loader/index.es2017.js');defineCustomElements();await Promise.all(['ix-checkbox-group','ix-radio-group','ix-icon'].map(n=>customElements.whenDefined(n)));construct();await readiness();await settle('initial-ready');ready=true;controls(true);byId('status').dataset.ready='true';byId('status').textContent='Ready: source group layout';publish({ok:true,revision:spec.revision,phases:[{id:'baseline',revision:0,settleFrames:2,rows:items.map(capture)}],errors:[...errors]});}catch(error){errors.push(String(error));byId('status').textContent='Pinned groups unavailable: '+error;publish({ok:false,error:String(error),errors:[...errors]});}
+</script></body></html>

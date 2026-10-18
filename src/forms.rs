@@ -617,25 +617,105 @@ pub fn Checkbox(
     }
 }
 
+// Scoped field-wrapper presentation for groups. Other controls retain their
+// independently reviewed feedback adapters.
+#[component]
+fn GroupLayout(
+    children: Element,
+    label: String,
+    required: bool,
+    state: FieldState,
+    feedback: Option<FieldFeedback>,
+    invalid_alert: bool,
+) -> Element {
+    rsx! {
+        div { class: "ix-group-wrapper",
+            role: invalid_alert.then_some("alert"),
+            "aria-live": invalid_alert.then_some("polite"),
+            if !label.is_empty() {
+                div { class: "ix-group-top",
+                    div { class: "ix-group-label", "aria-hidden": "true",
+                        label {
+                            crate::Typography { format: crate::TypographyFormat::Body,
+                                text_color: if state == FieldState::Invalid { crate::TypographyColor::Alarm } else { crate::TypographyColor::Soft },
+                                "{label}"
+                                if required { span { "*" } }
+                            }
+                        }
+                    }
+                }
+            }
+            div { class: "ix-group-slot", {children} }
+            div { class: "ix-group-bottom",
+                if let Some(feedback) = feedback {
+                    GroupFeedback { feedback }
+                }
+                div { class: "ix-group-bottom-right" }
+            }
+        }
+    }
+}
+
+#[component]
+fn GroupFeedback(feedback: FieldFeedback) -> Element {
+    let (icon, color) = match feedback.state {
+        FieldState::Default => (None, crate::TypographyColor::Soft),
+        FieldState::Invalid => (Some("error"), crate::TypographyColor::Alarm),
+        FieldState::Valid => (Some("success"), crate::TypographyColor::Std),
+        FieldState::Info => (Some("info"), crate::TypographyColor::Std),
+        FieldState::Warning => (Some("warning"), crate::TypographyColor::Std),
+    };
+    rsx! {
+        crate::Typography { format: crate::TypographyFormat::BodyParagraph,
+            text_color: color, class: "ix-group-bottom-text {feedback.state.class()}",
+            if let Some(icon) = icon {
+                crate::Icon { name: icon, size: 16, class: "ix-group-text-icon {feedback.state.class()}" }
+            }
+            "{feedback.text}"
+        }
+    }
+}
+
 /// Semantic fieldset for related checkboxes; each child controls its own value.
+/// `required` presents the group marker; children retain their own constraints.
+/// Descendant validation aggregation is not inferred from arbitrary children.
 #[component]
 pub fn CheckboxGroup(
     children: Element,
     #[props(default)] label: String,
     #[props(default)] horizontal: bool,
     #[props(default)] disabled: bool,
+    #[props(default)] required: bool,
     #[props(default)] helper_text: Option<String>,
     #[props(default)] invalid_text: Option<String>,
     #[props(default)] valid_text: Option<String>,
     #[props(default)] info_text: Option<String>,
     #[props(default)] warning_text: Option<String>,
     #[props(default)] state: FieldState,
+    #[props(default)] class: String,
+    aria_label: Option<String>,
+    aria_labelledby: Option<String>,
 ) -> Element {
+    let accessible_label = aria_labelledby
+        .is_none()
+        .then(|| aria_label.unwrap_or_else(|| label.clone()))
+        .filter(|label| !label.is_empty());
+    let invalid_alert =
+        state == FieldState::Invalid && invalid_text.as_ref().is_some_and(|text| !text.is_empty());
+    let feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
     rsx! {
-        fieldset { class: "ix-field ix-check-group {state.class()}", disabled,
-            legend { class: "ix-field-label", "{label}" }
-            div { class: if horizontal { "ix-choices ix-choices-row" } else { "ix-choices" }, {children} }
-            HelperText { helper_text, invalid_text, valid_text, info_text, warning_text, state }
+        fieldset { class: "ix-group-native ix-checkbox-group {state.class()} {class}", disabled,
+            "aria-label": accessible_label, "aria-labelledby": aria_labelledby,
+            GroupLayout { label, required, state, feedback, invalid_alert,
+                div { class: if horizontal { "ix-group-choices ix-group-row" } else { "ix-group-choices" }, {children} }
+            }
         }
     }
 }
@@ -725,20 +805,41 @@ pub fn RadioGroup(
     #[props(default)] required: bool,
     #[props(default)] helper_text: Option<String>,
     #[props(default)] invalid_text: Option<String>,
+    #[props(default)] valid_text: Option<String>,
+    #[props(default)] info_text: Option<String>,
+    #[props(default)] warning_text: Option<String>,
     #[props(default)] state: FieldState,
+    #[props(default)] class: String,
+    aria_label: Option<String>,
+    aria_labelledby: Option<String>,
     #[props(default)] onvaluechange: EventHandler<String>,
 ) -> Element {
     let name = field_id(name);
+    let accessible_label = aria_labelledby
+        .is_none()
+        .then(|| aria_label.unwrap_or_else(|| label.clone()))
+        .filter(|label| !label.is_empty());
+    let invalid_alert =
+        state == FieldState::Invalid && invalid_text.as_ref().is_some_and(|text| !text.is_empty());
+    let feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
     rsx! {
-        fieldset { class: "ix-field ix-check-group {state.class()}", disabled,
-            legend { class: "ix-field-label", "{label}" if required { span { "aria-hidden": "true", " *" } } }
-            div { class: if horizontal { "ix-choices ix-choices-row" } else { "ix-choices" },
-                for option in options {
-                    Radio { key: "{option.value}", name: name.clone(), checked: option.value == value,
-                        value: option.value, label: option.label, disabled: disabled || option.disabled, required, state, onvaluechange }
+        fieldset { class: "ix-group-native ix-radio-group {state.class()} {class}", disabled, role: "radiogroup",
+            "aria-label": accessible_label, "aria-labelledby": aria_labelledby,
+            GroupLayout { label, required, state, feedback, invalid_alert,
+                div { class: if horizontal { "ix-group-choices ix-group-row" } else { "ix-group-choices" },
+                    for option in options {
+                        Radio { key: "{option.value}", name: name.clone(), checked: option.value == value,
+                            value: option.value, label: option.label, disabled: disabled || option.disabled, required, state, onvaluechange }
+                    }
                 }
             }
-            HelperText { helper_text, invalid_text, state }
         }
     }
 }
@@ -2555,6 +2656,10 @@ mod checkbox_token_tests;
 #[cfg(test)]
 #[path = "radio_token_tests.rs"]
 mod radio_token_tests;
+
+#[cfg(test)]
+#[path = "group_token_tests.rs"]
+mod group_token_tests;
 
 #[cfg(test)]
 #[path = "toggle_token_tests.rs"]
