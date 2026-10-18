@@ -53,6 +53,7 @@ pub mod dialogs;
 mod dom_query;
 mod dropdown;
 mod dropdown_inventory;
+mod expanding_search_styles;
 pub mod form_control;
 pub mod forms;
 mod group_styles;

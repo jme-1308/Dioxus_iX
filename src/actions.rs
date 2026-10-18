@@ -209,6 +209,8 @@ pub fn IconButton(
     #[props(default)] button_type: ButtonType,
     #[props(default)] class: String,
     aria_pressed: Option<bool>,
+    aria_expanded: Option<bool>,
+    tabindex: Option<i32>,
     onclick: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let blocked = disabled || loading;
@@ -221,8 +223,8 @@ pub fn IconButton(
         class: "ix-button ix-icon-button ix-button-tokenized ix-icon-button-native ix-button-{variant.as_str()} ix-icon-size-{size.as_str()} {class}",
         class: if oval { "ix-oval" }, r#type: button_type.as_str(),
         style: icon_color.map(|name| format!("--ix-icon-button-color:var({name})")),
-        disabled: blocked, tabindex: if blocked { -1 } else { 0 },
-        aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked, aria_pressed,
+        disabled: blocked, tabindex: if blocked { -1 } else { tabindex.unwrap_or(0) },
+        aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked, aria_pressed, aria_expanded,
         onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
         if loading { Spinner { size: loading_size, hide_track: true } }
         else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }

@@ -2401,47 +2401,118 @@ pub fn Select(
     }
 }
 
-/// Compact search that expands on activation and collapses when an empty input blurs.
-/// Escape clears a query first, then collapses; clearing retains text input focus.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ExpandingSearchState {
+    expanded: bool,
+    changed: bool,
+}
+
+impl ExpandingSearchState {
+    fn expand(&mut self) {
+        self.expanded = true;
+    }
+    fn input(&mut self, value: &str) {
+        self.changed = !self.changed || !value.is_empty();
+    }
+    fn blur(&mut self) {
+        if !self.changed {
+            self.expanded = false;
+        }
+    }
+    fn clear(&mut self) {
+        self.changed = false;
+    }
+}
+
+/// Search that starts collapsed and expands when its icon is activated.
+///
+/// Input history controls the clear button and whether blur collapses the field;
+/// an initial or externally supplied value does not expand it. Expansion focuses
+/// the retained native input after 300ms. Values remain consumer-controlled.
+/// `disabled` and the Enter `onsearch` callback are Rust extensions to source iX.
 #[component]
 pub fn ExpandingSearch(
     #[props(default)] value: String,
     #[props(default = "Enter text here".to_string())] placeholder: String,
     #[props(default)] full_width: bool,
     #[props(default)] disabled: bool,
+    #[props(default)] icon: Option<String>,
+    #[props(default = crate::ButtonVariant::Tertiary)] variant: crate::ButtonVariant,
+    #[props(default)] class: String,
+    #[props(default)] aria_label_search_icon_button: Option<String>,
+    #[props(default = "Clear search".to_string())] aria_label_clear_icon_button: String,
+    #[props(default = "Search input".to_string())] aria_label_search_input: String,
     #[props(default)] onvaluechange: EventHandler<String>,
     #[props(default)] onsearch: EventHandler<String>,
 ) -> Element {
-    let mut expanded = use_signal(|| !value.is_empty());
+    let mut state = use_signal(ExpandingSearchState::default);
     let mut input_ref = use_signal(|| None::<Rc<MountedData>>);
-    let mut button_ref = use_signal(|| None::<Rc<MountedData>>);
-    let keyboard_value = value.clone();
-    let search_value = value.clone();
-    let blur_empty = value.is_empty();
-    rsx! {
-        div { class: if full_width { "ix-expanding-search ix-search-full" } else { "ix-expanding-search" }, "data-expanded": expanded().to_string(),
-            onkeydown: move |event| match event.key() {
-                Key::Escape => { event.prevent_default(); if keyboard_value.is_empty() { expanded.set(false); let node = button_ref.peek().clone(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); } else { onvaluechange.call(String::new()); } }
-                Key::Enter => { event.prevent_default(); onsearch.call(keyboard_value.clone()); }
-                _ => {}
-            },
-            button { r#type: "button", class: "ix-search-button", disabled, "aria-label": if expanded() { "Close search" } else { "Open search" }, "aria-expanded": expanded().to_string(),
-                tabindex: if expanded() { -1 } else { 0 },
-                onmounted: move |event| button_ref.set(Some(event.data())),
-                onmousedown: move |event| if expanded() { event.prevent_default(); },
-                onclick: move |_| { if expanded() { onsearch.call(search_value.clone()); let node = input_ref.peek().clone(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); } else { expanded.set(true); } },
-                crate::Icon { name: "search".to_string(), size: if expanded() { 16 } else { 24 } }
+    let alive = use_hook(|| Rc::new(std::cell::Cell::new(true)));
+    let cleanup = alive.clone();
+    use_drop(move || cleanup.set(false));
+    let focus_input = use_callback(move |delay_ms: u64| {
+        let alive = alive.clone();
+        spawn(async move {
+            if delay_ms > 0 {
+                futures_timer::Delay::new(std::time::Duration::from_millis(delay_ms)).await;
             }
-            if expanded() {
-                input { class: "ix-input", r#type: "search", value: value.clone(), placeholder, disabled, "aria-label": "Search input",
-                    onmounted: move |event| { let node = event.data(); input_ref.set(Some(node.clone())); spawn(async move { let _ = node.set_focus(true).await; }); },
-                    oninput: move |event| onvaluechange.call(event.value()),
-                    onblur: move |_| if blur_empty { expanded.set(false); },
+            if !alive.get() {
+                return;
+            }
+            let node = input_ref.peek().clone();
+            if let Some(node) = node {
+                let _ = node.set_focus(true).await;
+            }
+        });
+    });
+    let expanded = state().expanded;
+    let changed = state().changed;
+    let search_label = aria_label_search_icon_button.unwrap_or_else(|| {
+        if expanded {
+            "Close search"
+        } else {
+            "Open search"
+        }
+        .to_string()
+    });
+    let search_value = value.clone();
+    rsx! {
+        div { class: "ix-expanding-search {class}",
+            class: if expanded { "expanded" },
+            class: if full_width { "ix-search-full fullWidth" },
+            "data-expanded": expanded.to_string(), "data-changed": changed.to_string(),
+            "data-disabled": disabled.to_string(),
+            span { class: "ix-search-trigger-host", class: if expanded { "ix-search-trigger-expanded" },
+                "data-expanded": expanded.to_string(),
+                crate::IconButton { class: "ix-search-button ix-search-trigger", disabled,
+                    icon: icon.unwrap_or_else(|| "search".to_string()),
+                    size: if expanded { crate::ButtonIconSize::Sixteen } else { crate::ButtonIconSize::TwentyFour },
+                    variant: if expanded { crate::ButtonVariant::Tertiary } else { variant },
+                    icon_color: expanded.then(|| "--si-sys-color-text-primary".to_string()),
+                    label: search_label, tabindex: if expanded { -1 } else { 0 }, aria_expanded: expanded,
+                    onclick: move |_| { state.write().expand(); focus_input.call(300); },
                 }
-                if !value.is_empty() {
-                    button { r#type: "button", class: "ix-search-button", disabled, "aria-label": "Clear search",
-                        onmousedown: move |event| event.prevent_default(),
-                        onclick: move |_| { onvaluechange.call(String::new()); let node = input_ref.peek().clone(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); }, crate::Icon { name: "clear".to_string(), size: 16 }
+            }
+            div { class: "ix-search-input-container", "data-expanded": expanded.to_string(),
+                input { class: "ix-search-input", class: if expanded { "ix-search-input-expanded" },
+                    r#type: "text", value, placeholder, disabled,
+                    tabindex: if expanded { 0 } else { -1 }, "aria-label": aria_label_search_input,
+                    onmounted: move |event| input_ref.set(Some(event.data())),
+                    oninput: move |event| { if !disabled { let value = event.value(); state.write().input(&value); onvaluechange.call(value); } },
+                    onblur: move |_| state.write().blur(),
+                    onkeydown: move |event| {
+                        if !disabled && event.key() == Key::Enter && !event.is_composing() {
+                            event.prevent_default(); onsearch.call(search_value.clone());
+                        }
+                    },
+                }
+                if changed {
+                    span { class: "ix-search-clear-host",
+                        crate::IconButton { class: "ix-search-button ix-search-clear", disabled,
+                            variant: crate::ButtonVariant::SubtleTertiary, size: crate::ButtonIconSize::Sixteen,
+                            label: aria_label_clear_icon_button, icon: "clear",
+                            onclick: move |_| { state.write().clear(); onvaluechange.call(String::new()); focus_input.call(0); },
+                        }
                     }
                 }
             }
@@ -2749,6 +2820,10 @@ mod checkbox_token_tests;
 mod radio_token_tests;
 
 #[cfg(test)]
+#[path = "expanding_search_tests.rs"]
+mod expanding_search_tests;
+
+#[cfg(test)]
 #[path = "number_input_token_tests.rs"]
 mod number_input_token_tests;
 
@@ -2820,7 +2895,6 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-select-popup[data-top-layer=true]{position:fixed;inset:auto;margin:0;box-sizing:border-box;color:var(--ix-color-text);overflow:hidden}.ix-theme .ix-select-popup[data-top-layer=true]:popover-open{display:flex;flex-direction:column}.ix-theme .ix-select-popup[data-top-layer=true]>.ix-select-list{flex:0 1 auto;min-height:0}.ix-theme .ix-select-popup[data-top-layer=true]>.ix-select-list-header{flex:none}
 .ix-theme .ix-select-option{display:flex;align-items:center;gap:.5rem;min-height:2.5rem;width:100%;font:inherit;font-size:.875rem;text-align:start;color:var(--ix-color-text);padding:.5rem .75rem;border:0;background:transparent;cursor:pointer}.ix-theme .ix-select-option>.ix-icon:last-child{margin-inline-start:auto}.ix-theme .ix-select-option:hover,.ix-theme .ix-select-active{background:var(--ix-color-surface-2)}.ix-theme .ix-select-option[aria-selected=true]{color:var(--ix-color-primary)}.ix-theme .ix-select-option:disabled{opacity:.45;cursor:not-allowed}.ix-theme .ix-select-option:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
 .ix-theme .ix-select-choice{width:1rem;height:1rem;border:1px solid var(--ix-color-text-secondary);border-radius:2px;display:flex;align-items:center;justify-content:center;flex-shrink:0}.ix-theme .ix-select-choice.checked{background:var(--ix-color-primary);color:var(--ix-color-on-primary);border-color:var(--ix-color-primary)}.ix-theme .ix-select-empty{padding:.75rem;color:var(--ix-color-text-secondary);font-size:.875rem}
-.ix-theme .ix-expanding-search{display:flex;align-items:center;min-height:2.5rem;max-width:100%;width:fit-content;border:1px solid transparent;border-radius:var(--ix-radius)}.ix-theme .ix-expanding-search[data-expanded=true]{border-color:var(--ix-color-border);background:var(--ix-color-surface-1);width:20rem}.ix-theme .ix-search-full[data-expanded=true]{width:100%}.ix-theme .ix-expanding-search>.ix-input{border:0;background:transparent;min-height:2.375rem}.ix-theme .ix-expanding-search:focus-within{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-theme .ix-expanding-search .ix-input:focus-visible{outline:0}.ix-theme .ix-search-button{border:0;background:transparent;color:var(--ix-color-primary);display:flex;align-items:center;justify-content:center;min-width:2.5rem;min-height:2.5rem;cursor:pointer}.ix-theme .ix-search-button:hover{background:var(--ix-color-surface-2)}.ix-theme .ix-search-button:disabled{opacity:.45;cursor:not-allowed}
 .ix-theme .ix-upload{display:flex;align-items:center;justify-content:space-between;flex-direction:row;gap:1rem;position:relative;min-height:4rem;padding:1rem;box-sizing:border-box;border:1px dashed var(--ix-color-border);color:var(--ix-color-text-secondary);font-size:.875rem;cursor:pointer;background:var(--ix-color-surface-1)}.ix-theme .ix-upload:hover{border-color:var(--ix-color-primary)}.ix-theme .ix-upload>input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:inherit}.ix-theme .ix-upload:has(:focus-visible){outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-theme .ix-upload-button{padding:.5rem 1rem;color:var(--ix-color-primary);border:1px solid var(--ix-color-primary);border-radius:var(--ix-radius)}.ix-theme .ix-upload-success{border-color:var(--ix-color-success)}.ix-theme .ix-upload-failed{border-color:var(--ix-color-danger-text);color:var(--ix-color-danger-text)}.ix-theme .ix-upload[data-disabled=true]{cursor:not-allowed;opacity:.45}
 "#;
 
