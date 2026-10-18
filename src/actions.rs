@@ -791,6 +791,9 @@ pub fn normalize_progress(value: f64, min: f64, max: f64) -> f64 {
 }
 
 /// Determinate linear or circular progress with semantic status and helper text.
+/// Values are normalized to 0–100 for both paint and accessibility. Invalid
+/// ranges render empty. Tooltip mode uses a native title; the helper remains
+/// available as the progress bar's accessible description.
 #[component]
 pub fn ProgressIndicator(
     #[props(default)] value: f64,
@@ -801,6 +804,7 @@ pub fn ProgressIndicator(
     #[props(default)] status: ProgressStatus,
     #[props(default)] text_alignment: TextAlignment,
     #[props(default)] show_text_as_tooltip: bool,
+    #[props(default)] class: String,
     label: Option<String>,
     helper_text: Option<String>,
     children: Option<Element>,
@@ -812,7 +816,7 @@ pub fn ProgressIndicator(
         ProgressStatus::Info => Some("info"),
         ProgressStatus::Warning => Some("warning"),
         ProgressStatus::Success => Some("success"),
-        ProgressStatus::Paused => Some("pause"),
+        ProgressStatus::Paused => Some("circle-pause"),
         _ => None,
     };
     let title = if show_text_as_tooltip {
@@ -822,18 +826,20 @@ pub fn ProgressIndicator(
     };
     let accessible_label = label.clone().unwrap_or_else(|| "Progress".into());
     rsx! { div {
-        class: "ix-progress ix-progress-{progress_type.as_str()} ix-progress-{size.as_str()} ix-progress-status-{status.as_str()}",
+        class: "ix-progress ix-progress-{progress_type.as_str()} ix-progress-{size.as_str()} ix-progress-status-{status.as_str()} ix-progress-text-{text_alignment.as_str()} {class}",
         style: "text-align:{text_alignment.as_str()};--ix-progress-size:{size.pixels()}px", title,
         if let Some(label) = label { div { class: "ix-progress-label", "{label}" } }
         div { class: "ix-progress-content",
             if progress_type == ProgressType::Linear {
                 div { class: "ix-progress-track", role: "progressbar", aria_label: accessible_label,
+                    "aria-description": helper_text.clone(),
                     aria_valuemin: "0", aria_valuemax: "100", aria_valuenow: percent,
                     div { class: "ix-progress-fill", style: "width:{percent}%" }
                 }
                 if let Some(children) = children { div { class: "ix-progress-value", {children} } }
             } else {
                 span { class: "ix-progress-circle", role: "progressbar", aria_label: accessible_label,
+                    "aria-description": helper_text.clone(),
                     aria_valuemin: "0", aria_valuemax: "100", aria_valuenow: percent,
                     svg { view_box: "0 0 40 40", "aria-hidden": "true",
                         circle { class: "ix-progress-circle-track", cx: "20", cy: "20", r: "17" }
@@ -847,7 +853,7 @@ pub fn ProgressIndicator(
         if !show_text_as_tooltip { if let Some(helper) = helper_text {
             div { class: "ix-progress-helper",
                 if let Some(name) = status_icon { crate::Icon { name: name.to_string(), size: 16 } }
-                "{helper}"
+                span { class: "ix-progress-helper-text", "{helper}" }
             }
         } }
     } }
@@ -927,7 +933,6 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-filter-chip{background:var(--ix-color-surface-2);color:var(--ix-color-text);padding:3px 4px 3px 12px;min-height:32px}.ix-theme .ix-filter-chip.ix-disabled{opacity:.5}.ix-theme .ix-filter-close{display:inline-flex;align-items:center;justify-content:center;background:transparent;color:inherit;border:0;border-radius:50%;width:24px;height:24px;cursor:pointer}.ix-theme .ix-filter-close:hover{background:var(--ix-color-surface-1)}
 .ix-theme .ix-badge{position:relative;display:inline-flex;vertical-align:middle}.ix-theme .ix-badge-indicator{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:20px;height:20px;padding:0 4px;border-radius:10px;background:var(--ix-status-bg);color:var(--ix-status-fg);font:700 14px/20px var(--ix-font);white-space:nowrap;max-width:var(--ix-badge-max-width,160px);overflow:hidden;text-overflow:ellipsis}.ix-theme .ix-badge-label:not(.ix-badge-attached) .ix-badge-indicator{width:100%}.ix-theme .ix-badge-label-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-badge-label .ix-badge-indicator{height:20px;line-height:20px;border-radius:10px;padding:0 8px;font-weight:400}.ix-theme .ix-badge-dot .ix-badge-indicator{min-width:12px;width:12px;height:12px;padding:0;border-radius:50%}.ix-theme .ix-badge-status-icon .ix-badge-indicator{min-width:20px;width:20px;height:20px;padding:0;border-radius:0;background:transparent;color:var(--ix-status-bg);overflow:visible}.ix-theme .ix-badge-status-stack{position:relative;display:inline-flex;width:20px;height:20px}.ix-theme .ix-badge-status-plate,.ix-theme .ix-badge-status-glyph{position:absolute;inset:0}.ix-theme .ix-badge-status-plate{color:var(--ix-status-fg)}.ix-theme .ix-badge.ix-outline.ix-badge-status-icon .ix-badge-indicator{background:transparent;border:0}.ix-theme .ix-badge.ix-outline .ix-badge-indicator{border:1px solid var(--ix-status-bg);background:var(--ix-color-surface);color:var(--ix-status-bg)}.ix-theme .ix-badge-attached .ix-badge-indicator{position:absolute;right:var(--ix-badge-x);top:var(--ix-badge-y)}.ix-theme .ix-badge-bottom-after .ix-badge-indicator{top:auto;bottom:var(--ix-badge-y)}.ix-theme .ix-badge-border .ix-badge-indicator{outline:2px solid var(--ix-color-surface)}.ix-theme .ix-badge-animated .ix-badge-indicator{position:relative;overflow:visible;isolation:isolate}.ix-theme .ix-badge-attached.ix-badge-animated .ix-badge-indicator{position:absolute}.ix-theme .ix-badge-animated .ix-badge-indicator::after{content:"";position:absolute;inset:.5px;z-index:-1;pointer-events:none;box-sizing:border-box;border:0 solid var(--ix-status-bg);border-radius:inherit;opacity:0;animation:ix-badge-pulse-ring var(--ix-badge-animation-duration,2s) linear infinite}.ix-theme .ix-badge-status-icon.ix-badge-animated .ix-badge-indicator::after{inset:.4px;border:0;background:var(--ix-status-bg);border-radius:50%;transform:scale(.521);animation-name:ix-badge-pulse-status}@keyframes ix-badge-pulse-ring{0%,100%{inset:.5px;border-width:0;opacity:0}5%{inset:.5px;border-width:0;opacity:.5}45%{opacity:.4}80%{inset:-7.5px;border-width:8px;opacity:.1;animation-timing-function:ease-out}90%{inset:-9.5px;border-width:10px;opacity:0}}@keyframes ix-badge-pulse-status{0%,100%{transform:scale(.521);opacity:0}5%{transform:scale(.521);opacity:.5;animation-timing-function:cubic-bezier(.637,.43,.928,1.008)}45%{transform:scale(1);opacity:.4}80%{transform:scale(1.6);opacity:.1;animation-timing-function:ease-out}90%{transform:scale(1.8);opacity:0}}
 .ix-theme .ix-avatar{display:inline-flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;vertical-align:middle;width:var(--ix-avatar-size);height:var(--ix-avatar-size);border-radius:50%;background:var(--ix-color-surface-2);color:var(--ix-color-text);font:600 14px/1 var(--ix-font)}.ix-theme .ix-avatar img{width:100%;height:100%;object-fit:cover}.ix-theme .ix-divider{height:1px;background:var(--ix-color-border);margin:16px 0;flex-shrink:0}.ix-theme .ix-divider-vertical{height:auto;min-height:24px;width:1px;margin:0 16px;align-self:stretch}
-.ix-theme .ix-progress{--ix-progress-color:var(--ix-color-primary);color:var(--ix-color-text);min-width:0}.ix-theme .ix-progress-status-error{--ix-progress-color:var(--ix-color-danger-text)}.ix-theme .ix-progress-status-success{--ix-progress-color:var(--ix-color-success)}.ix-theme .ix-progress-status-warning{--ix-progress-color:var(--ix-color-warning-text)}.ix-theme .ix-progress-status-info{--ix-progress-color:var(--ix-color-info-text)}.ix-theme .ix-progress-status-paused{--ix-progress-color:var(--ix-color-text-secondary)}.ix-theme .ix-progress-label{color:var(--ix-color-text-secondary);margin-bottom:8px;font-size:14px}.ix-theme .ix-progress-content{display:flex;align-items:center;gap:12px}.ix-theme .ix-progress-track{height:8px;flex:1;overflow:hidden;background:var(--ix-color-surface-2);border-radius:2px}.ix-theme .ix-progress-xs .ix-progress-track{height:2px}.ix-theme .ix-progress-sm .ix-progress-track{height:4px}.ix-theme .ix-progress-lg .ix-progress-track{height:16px}.ix-theme .ix-progress-xl .ix-progress-track{height:24px}.ix-theme .ix-progress-fill{height:100%;background:var(--ix-progress-color);transition:width .2s ease-out}.ix-theme .ix-progress-value{font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums}.ix-theme .ix-progress-helper{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--ix-color-text-secondary)}.ix-theme .ix-progress-status-error .ix-progress-helper{color:var(--ix-color-danger-text)}.ix-theme .ix-progress-circle{position:relative;display:inline-flex;width:var(--ix-progress-size);height:var(--ix-progress-size);flex-shrink:0}.ix-theme .ix-progress-circle svg{width:100%;height:100%;transform:rotate(-90deg)}.ix-theme .ix-progress-circle circle{fill:none;stroke-width:3}.ix-theme .ix-progress-circle-track{stroke:var(--ix-color-surface-2)}.ix-theme .ix-progress-circle-fill{stroke:var(--ix-progress-color);transition:stroke-dashoffset .2s ease-out}.ix-theme .ix-progress-circle-value{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-variant-numeric:tabular-nums}.ix-theme .ix-progress-circular .ix-progress-content{justify-content:inherit}
 .ix-theme .ix-typography{display:block;position:relative;font:var(--si-sys-typography-body,14px/20px var(--ix-font));margin:0;overflow-wrap:break-word}.ix-theme .ix-type-body{font:var(--si-sys-typography-body,14px/20px var(--ix-font))}.ix-theme .ix-type-body-sbold{font:var(--si-sys-typography-body-sbold,600 14px/20px var(--ix-font))}.ix-theme .ix-type-body-paragraph{font:var(--si-sys-typography-body-paragraph,14px/24px var(--ix-font))}.ix-theme .ix-type-body-paragraph-sbold{font:var(--si-sys-typography-body-paragraph-sbold,600 14px/24px var(--ix-font))}.ix-theme .ix-type-body-sm{font:var(--si-sys-typography-body-sm,12px/16px var(--ix-font))}.ix-theme .ix-type-body-sm-sbold{font:var(--si-sys-typography-body-sm-sbold,600 12px/16px var(--ix-font))}.ix-theme .ix-type-body-lg{font:var(--si-sys-typography-body-lg,16px/24px var(--ix-font))}.ix-theme .ix-type-body-lg-sbold{font:var(--si-sys-typography-body-lg-sbold,600 16px/24px var(--ix-font))}.ix-theme .ix-type-display{font:var(--si-sys-typography-display,40px/48px var(--ix-font))}.ix-theme .ix-type-display-sbold{font:var(--si-sys-typography-display-sbold,600 40px/48px var(--ix-font))}.ix-theme .ix-type-display-lg{font:var(--si-sys-typography-display-lg,48px/56px var(--ix-font))}.ix-theme .ix-type-display-lg-sbold{font:var(--si-sys-typography-display-lg-sbold,600 48px/56px var(--ix-font))}.ix-theme .ix-type-display-xl{font:var(--si-sys-typography-display-xl,56px/64px var(--ix-font))}.ix-theme .ix-type-display-xl-sbold{font:var(--si-sys-typography-display-xl-sbold,600 56px/64px var(--ix-font))}.ix-theme .ix-type-display-xxl{font:var(--si-sys-typography-display-xxl,64px/72px var(--ix-font))}.ix-theme .ix-type-display-xxl-sbold{font:var(--si-sys-typography-display-xxl-sbold,600 64px/72px var(--ix-font))}.ix-theme .ix-type-h1{font:var(--si-sys-typography-h1,40px/48px var(--ix-font))}.ix-theme .ix-type-h2{font:var(--si-sys-typography-h2,32px/40px var(--ix-font))}.ix-theme .ix-type-h3{font:var(--si-sys-typography-h3,24px/32px var(--ix-font))}.ix-theme .ix-type-h4{font:var(--si-sys-typography-h4,20px/28px var(--ix-font))}.ix-theme .ix-type-h5{font:var(--si-sys-typography-h5,16px/24px var(--ix-font))}.ix-theme .ix-type-h5-bold{font:var(--si-sys-typography-h5-bold,600 16px/24px var(--ix-font))}.ix-theme .ix-type-h6{font:var(--si-sys-typography-h6,600 14px/20px var(--ix-font))}.ix-theme .ix-type-code{font:var(--si-sys-typography-code,14px/20px monospace)}.ix-theme .ix-type-code-sm{font:var(--si-sys-typography-code-sm,12px/16px monospace)}.ix-theme .ix-type-code-lg{font:var(--si-sys-typography-code-lg,16px/24px monospace)}.ix-theme .ix-typography{font-feature-settings:"clig" off,"liga" off;font-style:normal;letter-spacing:var(--si-ref-typography-letter-spacing-normal,normal);-webkit-font-smoothing:antialiased}.ix-theme .ix-type-bold{font-weight:var(--ix-typography-weight-bold--font-weight,var(--si-ref-typography-font-weight-bold,700))!important}.ix-theme .ix-text-std,.ix-theme .ix-text-contrast{color:var(--si-sys-color-text-primary,var(--ix-color-text))}.ix-theme .ix-text-soft{color:var(--si-sys-color-text-secondary,var(--ix-color-text-secondary))}.ix-theme .ix-text-weak{color:var(--si-sys-color-text-disabled,var(--ix-color-text-disabled,var(--ix-color-text-secondary)))}.ix-theme .ix-text-alarm{color:var(--si-sys-color-text-danger,var(--ix-color-danger-text))}.ix-theme .ix-text-alarm-contrast{color:var(--si-sys-color-text-on-danger,var(--ix-color-on-danger,#fff))}.ix-theme .ix-text-critical-contrast{color:var(--si-sys-color-text-on-critical,var(--ix-color-on-critical,#000028))}.ix-theme .ix-text-info-contrast{color:var(--si-sys-color-text-on-information,var(--ix-color-on-info,#fff))}.ix-theme .ix-text-inv-contrast,.ix-theme .ix-text-inv-soft,.ix-theme .ix-text-inv-std,.ix-theme .ix-text-inv-weak,.ix-theme .ix-text-inverse{color:var(--si-sys-color-text-inverse,var(--ix-color-on-primary))}.ix-theme .ix-text-neutral-contrast{color:var(--si-sys-color-text-on-neutral,var(--ix-color-text))}.ix-theme .ix-text-primary-contrast{color:var(--si-sys-color-text-on-accent,var(--ix-color-on-primary))}.ix-theme .ix-text-success-contrast{color:var(--si-sys-color-text-on-success,var(--ix-color-on-success,#fff))}.ix-theme .ix-text-warning-contrast{color:var(--si-sys-color-text-on-warning,var(--ix-color-on-warning,#000028))}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-badge-animated .ix-badge-indicator::after{animation:none;opacity:0}.ix-theme .ix-button,.ix-theme .ix-progress-fill,.ix-theme .ix-progress-circle-fill{transition:none}}
 "#;
@@ -1093,3 +1098,7 @@ mod icon_toggle_button_token_tests;
 #[cfg(test)]
 #[path = "spinner_visual_tests.rs"]
 mod spinner_visual_tests;
+
+#[cfg(test)]
+#[path = "progress_tests.rs"]
+mod progress_tests;

@@ -70,6 +70,7 @@ pub fn IxTheme(
         style { {BASE_STYLES} }
         style { {crate::actions::STYLES} }
         style { {crate::spinner_styles::STYLES} }
+        style { {crate::progress_styles::STYLES} }
         style { {crate::button_styles::STYLES} }
         style { {crate::icon_button_styles::STYLES} }
         style { {crate::toggle_button_styles::STYLES} }

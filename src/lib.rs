@@ -79,6 +79,7 @@ mod overlay_runtime;
 pub mod overlays;
 pub mod patterns;
 mod popover_focus;
+mod progress_styles;
 mod radio_styles;
 mod select_item;
 mod select_visual_styles;

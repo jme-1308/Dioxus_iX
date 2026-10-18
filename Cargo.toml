@@ -41,6 +41,11 @@ path = "examples/gallery/main.rs"
 required-features = ["launch"]
 
 [[example]]
+name = "progress_probe"
+path = "tools/progress_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "spinner_visual_probe"
 path = "tools/spinner_visual_probe.rs"
 required-features = ["launch"]
