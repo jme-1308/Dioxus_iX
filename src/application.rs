@@ -7169,6 +7169,7 @@ mod tests {
         contained: bool,
         slot_state: HeaderSlotCapture,
         slot_top_layer: bool,
+        overflow_present: bool,
         overflow_veto: bool,
         overflow_requests: Vec<(bool, bool)>,
         overflow_changes: Vec<bool>,
@@ -7249,7 +7250,7 @@ mod tests {
             aria_label_app_switch_icon_button:state.switch_label.clone(),aria_label_more_menu_icon_button:state.more_label.clone(),
             actions:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"default"}},
             secondary:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"secondary"}},
-            overflow:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"overflow"}},
+            overflow:state.overflow_present.then(||rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"overflow"}}),
             avatar:rsx!{span{"Avatar slot"}},
             children:rsx!{span{"Leading compatibility"}},
             onopenappswitch:move |event:MouseEvent| {
@@ -7287,6 +7288,7 @@ mod tests {
         menu_control: Option<dioxus::core::ElementId>,
         sidebar_input: Option<dioxus::core::ElementId>,
         header_input: Option<dioxus::core::ElementId>,
+        overlay_input: Option<dioxus::core::ElementId>,
         slot_buttons: BTreeMap<String, dioxus::core::ElementId>,
         mounts: Vec<dioxus::core::ElementId>,
     }
@@ -7327,6 +7329,7 @@ mod tests {
                 contained: true,
                 slot_state: HeaderSlotCapture::default(),
                 slot_top_layer: false,
+                overflow_present: true,
                 overflow_veto: false,
                 overflow_requests: vec![],
                 overflow_changes: vec![],
@@ -7359,6 +7362,7 @@ mod tests {
                 menu_control: None,
                 sidebar_input: None,
                 header_input: None,
+                overlay_input: None,
                 slot_buttons: BTreeMap::new(),
                 mounts: vec![],
             };
@@ -7404,6 +7408,10 @@ mod tests {
                                     attrs.contains_key("data-header-layout-observer")
                                 }) {
                                     self.header_input = Some(current);
+                                } else if self.attrs.get(&current.raw()).is_some_and(|attrs| {
+                                    attrs.contains_key("data-ix-overlay-transport")
+                                }) {
+                                    self.overlay_input = Some(current);
                                 } else if self.attrs.get(&current.raw()).is_some_and(|attrs| {
                                     attrs.contains_key("data-app-switch-observer")
                                 }) {
@@ -7511,6 +7519,25 @@ mod tests {
                     attrs.get("id") == Some(owner) && attrs.contains_key("data-generation")
                 })
                 .unwrap()
+        }
+        fn header_rendered_root_attribute(&self, name: &str) -> String {
+            // Static template attributes do not produce SetAttribute edits.
+            // Resolve them on the rendered tag of the actual dynamic root ID.
+            let html = self.html();
+            let root = &self.header_root_attrs()["id"];
+            let id = html
+                .find(&format!(" id=\"{root}\""))
+                .expect("rendered current Header root ID");
+            let start = html[..id].rfind('<').expect("Header root opening tag");
+            let end = id + html[id..].find('>').expect("Header root tag end");
+            let tag = &html[start..end];
+            let marker = format!(" {name}=\"");
+            let value = tag.find(&marker).expect("rendered Header root attribute") + marker.len();
+            tag[value..]
+                .split_once('"')
+                .expect("Header attribute closing quote")
+                .0
+                .to_string()
         }
         fn header_message(
             &self,
@@ -7897,6 +7924,137 @@ mod tests {
         harness.settle();
         assert_eq!(harness.settings.borrow().overflow_requests.len(), requests);
         assert_eq!(harness.header_root_attrs()["data-open"], "false");
+    }
+
+    #[test]
+    fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut harness = AppSwitchHarness::configured(None, false, |state| {
+            state.breakpoint = ApplicationBreakpoint::Small;
+            state.slot_top_layer = true;
+            state.overflow_present = false;
+        });
+        harness.settle();
+        let presence = serde_json::json!({"presence":[true,true,false,true]});
+        assert_eq!(
+            harness.header_raw(
+                harness.header_message(1, "presence", presence.clone()),
+                false
+            ),
+            (false, false)
+        );
+        harness.settle();
+        assert!(!harness.slot_buttons.contains_key("overflow"));
+        assert!(
+            !harness
+                .settings
+                .borrow()
+                .slot_state
+                .0
+                .borrow()
+                .contains_key("overflow")
+        );
+        let default_button = harness.slot_buttons["default"];
+        menu_dispatch(&harness.dom, "click", default_button, ());
+        harness.settle();
+        assert_eq!(
+            harness.header_raw(
+                harness.header_message(
+                    2,
+                    "click",
+                    serde_json::json!({"more":true,"presence":[true,true,false,true]})
+                ),
+                false
+            ),
+            (false, false)
+        );
+        harness.settle();
+        assert_eq!(harness.header_root_attrs()["data-open"], "true");
+        assert_eq!(harness.settings.borrow().overflow_requests, [(false, true)]);
+        assert_eq!(harness.settings.borrow().overflow_changes, [true]);
+        let original_private_generation = harness.header_root_attrs()["data-generation"].clone();
+        let registration_generation = harness
+            .header_rendered_root_attribute("data-ix-overlay-generation")
+            .parse::<u64>()
+            .unwrap();
+        {
+            let mut settings = harness.settings.borrow_mut();
+            settings.overflow_veto = true;
+            settings.breakpoint = ApplicationBreakpoint::Large;
+        }
+        harness.update();
+        assert_ne!(
+            harness.header_root_attrs()["data-generation"],
+            original_private_generation
+        );
+        assert_eq!(
+            harness.header_rendered_root_attribute("data-ix-overlay-generation"),
+            registration_generation.to_string(),
+            "slot projection keeps the registered controller lifetime"
+        );
+        assert_eq!(
+            harness.header_raw(harness.header_message(1, "presence", presence), false),
+            (false, false)
+        );
+        harness.settle();
+        assert_eq!(harness.header_root_attrs()["data-open"], "true");
+        assert_eq!(harness.settings.borrow().overflow_requests, [(false, true)]);
+        assert_eq!(harness.settings.borrow().overflow_changes, [true]);
+        assert_eq!(harness.slot_buttons["default"], default_button);
+        assert!(harness.html().contains("default count 1"));
+        assert_eq!(
+            harness.settings.borrow().slot_state.0.borrow()["default"],
+            (1, 0)
+        );
+
+        let root = harness.header_root_attrs()["id"].clone();
+        let more = format!("{root}-more");
+        let transport = harness
+            .overlay_input
+            .expect("actual Header shared overlay transport");
+        let owner = harness.attrs[&transport.raw()]["data-ix-overlay-transport"].clone();
+        assert_eq!(harness.header_root_attrs()["data-ix-overlay-owner"], owner);
+        let visibility = |sequence| {
+            serde_json::json!({
+                "owner":owner,"document":"Header hidden More actual-handler regression",
+                "sequence":sequence,"kind":"anchor-visibility",
+                "nodes":[{"id":root,"generation":registration_generation,"connected":true,
+                    "discovery_ready":true,"trigger_id":more,"anchor_id":more}],
+                "anchor_visibility":{"root":root,"generation":registration_generation,
+                    "target":more,"intersecting":false}
+            })
+        };
+        assert_eq!(
+            menu_dispatch(&harness.dom, "input", transport, visibility(1).to_string()),
+            (false, false)
+        );
+        harness.settle();
+        assert_eq!(
+            harness.settings.borrow().overflow_requests,
+            [(false, true), (true, false)]
+        );
+        assert_eq!(harness.settings.borrow().overflow_changes, [true]);
+        assert_eq!(
+            harness.header_root_attrs()["data-open"],
+            "true",
+            "observer admission honors the root veto"
+        );
+
+        harness.settings.borrow_mut().overflow_veto = false;
+        assert_eq!(
+            menu_dispatch(&harness.dom, "input", transport, visibility(2).to_string()),
+            (false, false)
+        );
+        harness.settle();
+        assert_eq!(
+            harness.settings.borrow().overflow_requests,
+            [(false, true), (true, false), (true, false)]
+        );
+        assert_eq!(harness.settings.borrow().overflow_changes, [true, false]);
+        assert_eq!(harness.header_root_attrs()["data-open"], "false");
+        assert_eq!(harness.slot_buttons["default"], default_button);
+        assert!(harness.html().contains("default count 1"));
+        assert_eq!(harness.settings.borrow().ancestor_inputs, 0);
     }
 
     #[test]

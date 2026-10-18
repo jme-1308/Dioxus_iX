@@ -12,6 +12,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod native;
 static NEXT_OWNER: AtomicUsize = AtomicUsize::new(1);
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+struct CapturedFocus {
+    token: String,
+    group: u8,
+    epoch: u64,
+}
+
+#[derive(Deserialize)]
+struct FocusCheck {
+    version: u64,
+    token: String,
+    target_connected: bool,
+    target_owned: bool,
+    target_visible: bool,
+    target_group: Option<u8>,
+}
+
 #[derive(Deserialize)]
 struct Report {
     owner: String,
@@ -42,6 +59,14 @@ struct Report {
     hosts: Vec<String>,
     #[serde(default)]
     triggers: Vec<String>,
+    #[serde(default)]
+    focused_control: Option<CapturedFocus>,
+    #[serde(default)]
+    focus_epoch: u64,
+    #[serde(default)]
+    active_default: bool,
+    #[serde(default)]
+    focus_check: Option<FocusCheck>,
 }
 
 struct Model {
@@ -57,6 +82,8 @@ struct Model {
     keyboard: bool,
     focus_version: u64,
     focus: String,
+    focused_control: Option<CapturedFocus>,
+    preserve: Option<CapturedFocus>,
     stop: bool,
 }
 impl Model {
@@ -77,6 +104,8 @@ impl Model {
             keyboard: false,
             focus_version: 0,
             focus: "none".into(),
+            focused_control: None,
+            preserve: None,
             stop: false,
         }
     }
@@ -86,6 +115,62 @@ impl Model {
     fn focus(&mut self, target: String) {
         self.focus = target;
         self.focus_version = self.focus_version.wrapping_add(1);
+        self.preserve = None;
+    }
+    fn group_presented(&self, group: u8) -> bool {
+        match group {
+            0 | 1 => !self.small || self.open,
+            2 => self.open,
+            3 => true,
+            4 => self.more_visible(),
+            _ => false,
+        }
+    }
+    fn preserve_focus(&mut self, capture: CapturedFocus) {
+        self.focus("preserve".into());
+        self.preserve = Some(capture);
+    }
+    fn apply_focus(&mut self, restore: bool) {
+        let retained = (!restore)
+            .then(|| self.preserve.clone())
+            .flatten()
+            .filter(|capture| self.group_presented(capture.group));
+        if let Some(capture) = retained {
+            self.preserve_focus(capture);
+        } else {
+            self.focus(if restore { "more" } else { "none" }.into());
+        }
+    }
+    fn authorize_preserve(&mut self, report: &Report) -> bool {
+        if !self.accepts(report) {
+            return false;
+        }
+        self.sequence = report.sequence;
+        let Some(check) = &report.focus_check else {
+            return false;
+        };
+        let Some(capture) = &self.preserve else {
+            return false;
+        };
+        let same_active = report
+            .focused_control
+            .as_ref()
+            .is_some_and(|active| active.token == capture.token && active.epoch == capture.epoch);
+        if self.focus != "preserve"
+            || check.version != self.focus_version
+            || check.token != capture.token
+            || report.focus_epoch != capture.epoch
+            || !check.target_connected
+            || !check.target_owned
+            || !check.target_visible
+            || check.target_group != Some(capture.group)
+            || !self.group_presented(capture.group)
+            || !(same_active || report.active_default)
+        {
+            return false;
+        }
+        self.preserve = None;
+        true
     }
     fn sync_mode(&mut self, small: bool, top_layer: bool) -> bool {
         if self.small == small && self.top_layer == top_layer {
@@ -104,7 +189,16 @@ impl Model {
         self.generation = self.generation.wrapping_add(1);
         self.sequence = 0;
         self.stop = false;
-        self.focus("none".into());
+        let capture = (!layer_changed && self.alive && self.mounted)
+            .then(|| self.focused_control.take())
+            .flatten()
+            .filter(|capture| self.group_presented(capture.group));
+        if let Some(capture) = capture {
+            self.preserve_focus(capture);
+        } else {
+            self.focused_control = None;
+            self.focus("none".into());
+        }
         closed
     }
     fn accepts(&self, report: &Report) -> bool {
@@ -120,6 +214,8 @@ impl Model {
         self.mounted = false;
         self.open = false;
         self.generation = self.generation.wrapping_add(1);
+        self.focused_control = None;
+        self.preserve = None;
     }
 }
 
@@ -243,7 +339,6 @@ fn header_tab_key(
 struct Controller {
     model: Rc<RefCell<Model>>,
     revision: Signal<u64>,
-    onchange: EventHandler<bool>,
     node: NodeHandle,
 }
 impl Controller {
@@ -257,22 +352,24 @@ impl Controller {
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
+        if report.kind == "preserve-focus" {
+            if self.model.borrow_mut().authorize_preserve(&report) {
+                event.prevent_default();
+            }
+            return;
+        }
         // Domain presence reads can enter this owner; do not hold Model's
         // mutable borrow while computing source-aware ancestry.
         let popover_ancestor =
             report.kind == "key" && report.key == "Tab" && self.node.has_popover_ancestor();
-        let (decision, generation, previous, forced_close) = {
+        let (decision, generation, previous) = {
             let mut model = self.model.borrow_mut();
             if !model.accepts(&report) {
                 return;
             }
             model.sequence = report.sequence;
             model.presence = report.presence;
-            let forced_close = model.open && !model.more_visible();
-            if forced_close {
-                model.open = false;
-                model.focus("none".into());
-            }
+            model.focused_control = report.focused_control.clone();
             let child_owned = self.node.runtime().is_some_and(|runtime| {
                 if report.kind == "key" {
                     runtime.key_child_path(
@@ -295,17 +392,10 @@ impl Controller {
                 decide(&mut model, &report, popover_ancestor)
             };
             model.stop = decision.stop;
-            (decision, model.generation, model.open, forced_close)
+            (decision, model.generation, model.open)
         };
         if decision.prevent {
             event.prevent_default();
-        }
-        if forced_close {
-            self.onchange.call(false);
-        }
-        if forced_close {
-            self.node.sync_open(false);
-            self.node.close_children(Reason::Configuration);
         }
         let accepted = decision
             .request
@@ -413,7 +503,7 @@ pub(crate) fn HeaderLayout(
                             return;
                         }
                         model.open = change.open;
-                        model.focus(if change.restore_focus { "more" } else { "none" }.into());
+                        model.apply_focus(change.restore_focus);
                     }
                     let mut revision = revision;
                     if let Ok(mut value) = revision.try_write() {
@@ -465,7 +555,6 @@ pub(crate) fn HeaderLayout(
     let controller = Controller {
         model: model.clone(),
         revision,
-        onchange,
         node,
     };
     let stop_controller = controller.clone();
@@ -479,6 +568,7 @@ pub(crate) fn HeaderLayout(
     let presence = state.presence;
     let focus_version = state.focus_version.to_string();
     let focus = state.focus.clone();
+    let capture = state.preserve.as_ref().map(|capture| capture.token.clone());
     let active = if small { "small" } else { "large" };
     let more_id = format!("{owner}-more");
     let small_id = format!("{owner}-small");
@@ -492,7 +582,7 @@ pub(crate) fn HeaderLayout(
             "data-ix-overlay-open":open.to_string(),"data-ix-overlay-ready":discovery_ready.to_string(),
             "data-ix-overlay-mode":"active-descendant",
             "data-small":small.to_string(),"data-open":open.to_string(),"data-top-layer":enable_top_layer.to_string(),
-            "data-generation":generation,"data-focus-version":focus_version,"data-focus-target":focus,
+            "data-generation":generation,"data-focus-version":focus_version,"data-focus-target":focus,"data-focus-capture":capture,
             onmounted:move |_| {
                 let mut model = mount_model.borrow_mut();
                 if !model.alive || model.mounted { return; }
@@ -573,6 +663,10 @@ mod tests {
             background: false,
             hosts: vec![],
             triggers: vec![],
+            focused_control: None,
+            focus_epoch: 0,
+            active_default: false,
+            focus_check: None,
         }
     }
     #[test]
@@ -724,6 +818,160 @@ mod tests {
             "top-layer configuration remains separate"
         );
         assert!(!model.open);
+    }
+
+    fn capture(group: u8) -> CapturedFocus {
+        CapturedFocus {
+            token: "actual-captured-object".into(),
+            group,
+            epoch: 17,
+        }
+    }
+
+    fn pending_capture(group: u8) -> Model {
+        let mut model = Model::new(false, true);
+        model.mounted = true;
+        model.open = true;
+        model.presence = [true; 4];
+        model.focused_control = Some(capture(group));
+        assert!(!model.sync_mode(true, true));
+        model
+    }
+
+    fn preserve_report(model: &Model) -> Report {
+        let capture = model.preserve.as_ref().unwrap();
+        let mut report = report(model, "preserve-focus");
+        report.focus_epoch = capture.epoch;
+        report.active_default = true;
+        report.focus_check = Some(FocusCheck {
+            version: model.focus_version,
+            token: capture.token.clone(),
+            target_connected: true,
+            target_owned: true,
+            target_visible: true,
+            target_group: Some(capture.group),
+        });
+        report
+    }
+
+    #[test]
+    fn mode_focus_preservation_uses_current_group_presentation() {
+        for (small, open, expected) in [
+            (false, false, [true, true, false, true, true]),
+            (false, true, [true, true, true, true, true]),
+            (true, false, [false, false, false, true, true]),
+            (true, true, [true, true, true, true, true]),
+        ] {
+            let mut model = Model::new(small, true);
+            model.open = open;
+            model.presence = [true; 4];
+            for (group, expected) in expected.into_iter().enumerate() {
+                assert_eq!(model.group_presented(group as u8), expected);
+            }
+            assert!(!model.group_presented(5));
+        }
+        let mut no_overflow = Model::new(false, true);
+        no_overflow.presence = [false, true, false, false];
+        assert!(!no_overflow.group_presented(4));
+        no_overflow.small = true;
+        assert!(no_overflow.group_presented(4));
+
+        let mut closed = Model::new(false, true);
+        closed.mounted = true;
+        closed.focused_control = Some(capture(1));
+        assert!(!closed.sync_mode(true, true));
+        assert_eq!(closed.focus, "none", "hidden Small content is not revived");
+        assert!(closed.preserve.is_none());
+    }
+
+    #[test]
+    fn mode_capture_is_generation_scoped_and_authorized_only_once() {
+        let mut model = pending_capture(1);
+        assert_eq!(model.focus, "preserve");
+        assert_eq!(model.preserve, Some(capture(1)));
+        assert!(model.focused_control.is_none());
+        let mut stale = preserve_report(&model);
+        stale.generation -= 1;
+        assert!(!model.authorize_preserve(&stale));
+        let accepted = preserve_report(&model);
+        assert!(model.authorize_preserve(&accepted));
+        assert!(model.preserve.is_none());
+        let mut repeated = accepted;
+        repeated.sequence += 1;
+        assert!(!model.authorize_preserve(&repeated));
+    }
+
+    #[test]
+    fn mode_capture_rejects_outside_focus_replacement_and_stale_execution() {
+        for condition in 0..11 {
+            let mut model = pending_capture(1);
+            let mut report = preserve_report(&model);
+            match condition {
+                0 => report.owner.push_str("-other-owner"),
+                1 => report.connected = false,
+                2 => report.focus_epoch += 1,
+                3 => report.active_default = false,
+                4 => report.focus_check.as_mut().unwrap().version += 1,
+                5 => report
+                    .focus_check
+                    .as_mut()
+                    .unwrap()
+                    .token
+                    .push_str("-replacement"),
+                6 => report.focus_check.as_mut().unwrap().target_connected = false,
+                7 => report.focus_check.as_mut().unwrap().target_owned = false,
+                8 => report.focus_check.as_mut().unwrap().target_visible = false,
+                9 => report.focus_check.as_mut().unwrap().target_group = Some(2),
+                10 => report.sequence = model.sequence,
+                _ => unreachable!(),
+            }
+            assert!(!model.authorize_preserve(&report), "condition {condition}");
+        }
+        let mut model = pending_capture(1);
+        let mut active = preserve_report(&model);
+        active.active_default = false;
+        active.focused_control = Some(capture(1));
+        assert!(
+            model.authorize_preserve(&active),
+            "already focused is admitted without native refocus"
+        );
+
+        let mut newer = pending_capture(1);
+        let old = preserve_report(&newer);
+        newer.focus("more".into());
+        assert!(!newer.authorize_preserve(&old));
+        let mut dropped = pending_capture(1);
+        let old = preserve_report(&dropped);
+        dropped.invalidate();
+        assert!(!dropped.authorize_preserve(&old));
+        let mut reprojected = pending_capture(1);
+        let old = preserve_report(&reprojected);
+        assert!(!reprojected.sync_mode(false, true));
+        assert!(!reprojected.authorize_preserve(&old));
+    }
+
+    #[test]
+    fn accepted_close_retains_only_visible_pending_mode_capture() {
+        let mut large_default = pending_capture(1);
+        large_default.small = false;
+        large_default.open = false;
+        large_default.apply_focus(false);
+        assert_eq!(large_default.preserve, Some(capture(1)));
+        let admitted = preserve_report(&large_default);
+        assert!(large_default.authorize_preserve(&admitted));
+
+        for group in [1, 2] {
+            let mut hidden = pending_capture(group);
+            hidden.open = false;
+            hidden.apply_focus(false);
+            assert!(hidden.preserve.is_none(), "closed Small group {group}");
+            assert_eq!(hidden.focus, "none");
+        }
+        let mut restoring = pending_capture(1);
+        restoring.open = false;
+        restoring.apply_focus(true);
+        assert_eq!(restoring.focus, "more");
+        assert!(restoring.preserve.is_none());
     }
 
     #[test]
