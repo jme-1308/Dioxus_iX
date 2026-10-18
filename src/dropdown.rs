@@ -315,22 +315,51 @@ impl DropdownContext {
             }));
         }
     }
-    fn publish_item(&self, target: usize, focus: bool) {
+    fn publish_item(&self, target: usize, focus: bool, nearest: bool) {
         {
             let mut state = self.state.borrow_mut();
             if !state.alive || !*self.open.peek() {
                 return;
             }
-            state.active = Some(target);
+            // Roving tabindex changes synchronously in the source. The default
+            // active-descendant marker changes when its first RAF runs.
+            if focus || !nearest {
+                state.active = Some(target);
+            }
             state.focus_pending = None;
             state.focus_epoch = state.focus_epoch.wrapping_add(1);
-            state.focus_target = if focus {
+            state.focus_target = if focus && !nearest {
                 format!("ix-dropdown-item-{target}")
             } else {
                 "none".into()
             };
         }
         self.notify();
+        if nearest {
+            let node = self.node.borrow().clone();
+            if let Some(node) = node {
+                let context = self.clone();
+                node.queue_item_focus(
+                    format!("ix-dropdown-item-{target}"),
+                    focus,
+                    Rc::new(move || {
+                        // An admitted source focusItem survives later open,
+                        // mode and key changes, but cannot adopt a new item.
+                        if !context.entries.borrow().contains_key(&target)
+                            || !context.state.borrow().alive
+                        {
+                            return;
+                        }
+                        if context.state.borrow().settings.mode
+                            == DropdownNavigationMode::ActiveDescendant
+                        {
+                            context.state.borrow_mut().active = Some(target);
+                            context.notify();
+                        }
+                    }),
+                );
+            }
+        }
     }
     fn item_target(&self, order: &[usize], current: Option<usize>, key: &str) -> Option<usize> {
         menu_target(&self.entries.borrow(), order, current, key)
@@ -385,7 +414,11 @@ impl DropdownContext {
             }
             let mode = context.state.borrow().settings.mode;
             if let Some(target) = context.edge_target(&order, last, allow_checked) {
-                context.publish_item(target, mode == DropdownNavigationMode::RovingTabindex);
+                context.publish_item(
+                    target,
+                    mode == DropdownNavigationMode::RovingTabindex,
+                    mode == DropdownNavigationMode::RovingTabindex,
+                );
             }
         });
         *self.focus_task.borrow_mut() = Some(task);
@@ -430,7 +463,11 @@ impl DropdownContext {
                 if *self.open.peek() && !facts.alt && !no_focus {
                     let last = matches!(facts.key.as_str(), "End" | "ArrowUp");
                     if let Some(target) = self.edge_target(&facts.items, last, true) {
-                        self.publish_item(target, mode == DropdownNavigationMode::RovingTabindex);
+                        self.publish_item(
+                            target,
+                            mode == DropdownNavigationMode::RovingTabindex,
+                            mode == DropdownNavigationMode::RovingTabindex,
+                        );
                     } else {
                         self.focus_edge(last);
                     }
@@ -443,7 +480,7 @@ impl DropdownContext {
                     matches!(facts.key.as_str(), "End" | "ArrowUp"),
                     true,
                 ) {
-                    owner.publish_item(target, true);
+                    owner.publish_item(target, true, true);
                 }
             }
             if !open || mode == DropdownNavigationMode::RovingTabindex {
@@ -515,15 +552,11 @@ impl DropdownContext {
             .copied()
             .filter(|id| self.entries.borrow().contains_key(id))
             .collect();
-        let current = if mode == DropdownNavigationMode::RovingTabindex {
-            facts.focused_item
-        } else {
-            self.state.borrow().active
-        };
+        let current = self.state.borrow().active.or(facts.focused_item);
         if matches!(facts.key.as_str(), "ArrowDown" | "ArrowUp" | "Home" | "End") {
             result.prevent = true;
             if let Some(target) = self.item_target(&facts.items, current, &facts.key) {
-                self.publish_item(target, mode == DropdownNavigationMode::RovingTabindex);
+                self.publish_item(target, mode == DropdownNavigationMode::RovingTabindex, true);
             }
         } else if mode == DropdownNavigationMode::RovingTabindex
             && facts.key.chars().count() == 1
@@ -534,7 +567,7 @@ impl DropdownContext {
         {
             result.prevent = true;
             if let Some(target) = self.item_target(&facts.items, current, &facts.key) {
-                self.publish_item(target, true);
+                self.publish_item(target, true, false);
             }
         } else if facts.key == "ArrowLeft" {
             let forward = self.navigation_owner(false);
@@ -1791,10 +1824,48 @@ mod tests {
             self.render_now();
             count
         }
+        fn item_frames(&mut self) -> usize {
+            let Some(runtime) = self
+                .context()
+                .node
+                .borrow()
+                .as_ref()
+                .and_then(NodeHandle::runtime)
+            else {
+                return 0;
+            };
+            let jobs = runtime.pending_item_focus_jobs();
+            let Some(transport) = self
+                .attrs
+                .iter()
+                .find(|(_, attrs)| {
+                    attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
+                })
+                .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            else {
+                return 0;
+            };
+            // Explicit synthetic protocol phases exercise real registered Rust
+            // handlers. This does not establish native frame/scroll geometry.
+            for phase in ["arm", "focus", "scroll"] {
+                for job in &jobs {
+                    dispatch(&self.dom, "change", transport, serde_json::json!({
+                        "owner":runtime.owner_id(),"sequence":0,
+                        "item_focus_sequence":job.sequence,"item_focus_root":job.root,
+                        "item_focus_generation":job.generation,"item_focus_target":job.target,
+                        "item_focus_capture":job.capture.clone().unwrap_or_else(|| format!("test-object-{}",job.target)),
+                        "item_focus_phase":phase
+                    }).to_string());
+                }
+            }
+            self.render_now();
+            jobs.len()
+        }
         fn settle(&mut self) {
             for _ in 0..4 {
                 self.render_now();
                 self.completion_frame();
+                self.item_frames();
             }
         }
         fn update(&mut self) {
@@ -2221,6 +2292,104 @@ mod tests {
         );
     }
     #[test]
+    fn registered_rapid_navigation_keeps_each_job_and_source_active_timing() {
+        let _guard = crate::test_event_converter_guard();
+        for mode in [
+            DropdownNavigationMode::ActiveDescendant,
+            DropdownNavigationMode::RovingTabindex,
+        ] {
+            let mut h = Harness::with_settings(Fixture {
+                mode,
+                ..Fixture::default()
+            });
+            h.click("Menu");
+            let context = h.context();
+            let node = context.node.borrow().clone().unwrap();
+            let runtime = node.runtime().unwrap();
+            let transport = h
+                .attrs
+                .iter()
+                .find(|(_, attrs)| {
+                    attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
+                })
+                .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+                .unwrap();
+            let order = context.entries.borrow().keys().copied().collect::<Vec<_>>();
+            let initial = context.state.borrow().active;
+            for (index, key) in ["End", "Home", "End"].into_iter().enumerate() {
+                let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":index+1,"kind":"key",
+                    "phase":if mode==DropdownNavigationMode::ActiveDescendant {"bubble"} else {"capture"},"key":key,
+                    "hosts":[node.id()],"triggers":if mode==DropdownNavigationMode::ActiveDescendant {vec![node.id()]} else {vec![]},
+                    "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
+                        "mode":mode.as_str(),"items":order,"inside":true,"on_trigger":false}]});
+                assert!(dispatch(&h.dom, "input", transport, report.to_string()).0);
+                if mode == DropdownNavigationMode::ActiveDescendant {
+                    assert_eq!(
+                        context.state.borrow().active,
+                        initial,
+                        "AD marker awaits first frame"
+                    );
+                }
+            }
+            let jobs = runtime.pending_item_focus_jobs();
+            assert_eq!(jobs.len(), 3, "rapid calls must not coalesce");
+            assert_eq!(jobs[0].target, jobs[2].target);
+            assert_ne!(jobs[0].target, jobs[1].target);
+            assert!(
+                jobs.windows(2)
+                    .all(|pair| pair[0].sequence < pair[1].sequence)
+            );
+            assert!(jobs.iter().all(|job|job.focus_native==(mode==DropdownNavigationMode::RovingTabindex)));
+            // A first RAF for an earlier roving job must not undo the
+            // tabindex selected synchronously by the last native key.
+            let latest = context.state.borrow().active;
+            let first = &jobs[0];
+            for phase in ["arm", "focus"] {
+                dispatch(&h.dom,"change",transport,serde_json::json!({
+                    "owner":runtime.owner_id(),"sequence":0,"item_focus_sequence":first.sequence,
+                    "item_focus_root":first.root,"item_focus_generation":first.generation,
+                    "item_focus_target":first.target,"item_focus_capture":format!("test-object-{}",first.target),
+                    "item_focus_phase":phase
+                }).to_string());
+            }
+            if mode == DropdownNavigationMode::RovingTabindex {
+                assert_eq!(context.state.borrow().active, latest);
+            }
+            h.item_frames();
+            assert_eq!(
+                context.active_dom_id().as_deref(),
+                Some(jobs[2].target.as_str())
+            );
+            assert!(runtime.pending_item_focus_jobs().is_empty());
+            for (index, key) in ["Home", "ArrowDown", "ArrowDown"].into_iter().enumerate() {
+                let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":index+4,"kind":"key",
+                    "phase":if mode==DropdownNavigationMode::ActiveDescendant {"bubble"} else {"capture"},"key":key,
+                    "hosts":[node.id()],"triggers":if mode==DropdownNavigationMode::ActiveDescendant {vec![node.id()]} else {vec![]},
+                    "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
+                        "mode":mode.as_str(),"items":order,"inside":true,"on_trigger":false}]});
+                assert!(dispatch(&h.dom, "input", transport, report.to_string()).0);
+                if index == 0 {
+                    h.item_frames();
+                }
+            }
+            let down = runtime.pending_item_focus_jobs();
+            assert_eq!(down.len(), 2);
+            if mode == DropdownNavigationMode::ActiveDescendant {
+                assert_eq!(
+                    down[0].target, down[1].target,
+                    "AD uses unchanged marker before first frame"
+                );
+            } else {
+                assert_ne!(
+                    down[0].target, down[1].target,
+                    "roving uses synchronous tabindex before physical focus"
+                );
+            }
+            h.item_frames();
+        }
+    }
+
+    #[test]
     fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
         let _guard = crate::test_event_converter_guard();
         let mut h = Harness::new();
@@ -2255,12 +2424,10 @@ mod tests {
         h.update();
         let result = h.key("Menu", Key::ArrowDown);
         assert!(result.0);
-        assert!(
-            context
-                .state
-                .borrow()
-                .focus_target
-                .starts_with("ix-dropdown-item-")
+        assert_eq!(
+            context.state.borrow().focus_target,
+            "none",
+            "source item focus is independently queued, not the latest attribute"
         );
         let result = h.key("Menu", Key::Character("e".into()));
         assert!(result.0);

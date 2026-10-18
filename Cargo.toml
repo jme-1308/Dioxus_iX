@@ -46,6 +46,16 @@ path = "examples/desktop_probe.rs"
 required-features = ["desktop"]
 
 [[example]]
+name = "source_dropdown_scroll_probe"
+path = "tools/source_dropdown_scroll_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "dropdown_scroll_probe"
+path = "tools/dropdown_scroll_probe.rs"
+required-features = ["launch"]
+
+[[example]]
 name = "native_bridge_probe"
 path = "examples/native_bridge_probe.rs"
 required-features = ["desktop"]

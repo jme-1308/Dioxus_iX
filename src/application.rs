@@ -1529,7 +1529,7 @@ impl CategoryNavigation {
                     };
                     let target = target.copied();
                     if let Some(target) = target {
-                        self.focus(Some(target), 1);
+                        self.focus_dropdown_item(target);
                     }
                     return (true, false, target);
                 }
@@ -1581,8 +1581,34 @@ impl CategoryNavigation {
                 .map(|index| (index + items.len() - 1) % items.len())
                 .unwrap_or(items.len() - 1),
         };
-        self.focus(Some(items[index]), 1);
+        if expanded {
+            self.focus(Some(items[index]), 1);
+        } else {
+            self.focus_dropdown_item(items[index]);
+        }
         (true, false, None)
+    }
+    fn focus_dropdown_item(&self, target: usize) {
+        if !self.0.model.borrow().alive {
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.0.model.borrow_mut().requested = Some(Some(target));
+        }
+        let node = self.0.overlay.borrow().clone();
+        if let Some(node) = node {
+            // Only collapsed Dropdown navigation uses source focusItem. Entry,
+            // expanded panel arrows and focus return keep their own helpers.
+            node.queue_item_focus(
+                format!("ix-menu-category-child-{}-{target}", self.0.id),
+                true,
+                Rc::new(|| {}),
+            );
+        } else {
+            // Isolated renderer/test adapters without a registered popup.
+            self.focus(Some(target), 1);
+        }
     }
     fn focus(&self, target: Option<usize>, frames: u8) {
         if !self.0.model.borrow().alive {
@@ -3276,7 +3302,7 @@ pub fn MenuItem(
     };
     rsx! {
         if let Some(href) = href {
-            a { class, hidden,style,role:menu_role,href: if disabled { None } else { Some(href) }, target: target.clone(),"disabled":disabled,
+            a { id:nested.as_ref().map(|category| format!("ix-menu-category-child-{}-{id}", category.0.id)), class, hidden,style,role:menu_role,href: if disabled { None } else { Some(href) }, target: target.clone(),"disabled":disabled,
                 rel: if target == "_blank" { Some("noopener noreferrer") } else { None },
                 title, "aria-label": label, "aria-current": if active { Some("page") } else { None },
                 "aria-disabled": disabled.to_string(), tabindex: if disabled{-1}else{tabindex}, "data-home": home.to_string(),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
@@ -3284,7 +3310,7 @@ pub fn MenuItem(
                 onmounted: onmount, onfocus,onkeydown:onkey, onclick: onactivate, {content}
             }
         } else {
-            button { class, hidden,style,role:menu_role,r#type: "button", disabled:native_disabled, title, "aria-label": label,"aria-disabled":disabled.to_string(),tabindex:if native_disabled{-1}else{tabindex},"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
+            button { id:nested.as_ref().map(|category| format!("ix-menu-category-child-{}-{id}", category.0.id)), class, hidden,style,role:menu_role,r#type: "button", disabled:native_disabled, title, "aria-label": label,"aria-disabled":disabled.to_string(),tabindex:if native_disabled{-1}else{tabindex},"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-current": if active { Some("page") } else { None }, "data-home": home.to_string(),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
                 onmounted: onmount, onfocus,onkeydown:onkey, onclick: onactivate, {content}
@@ -3302,6 +3328,10 @@ pub fn MenuItem(
 /// wins while a separately open popup keeps an empty heading/shell. The native
 /// popup host switches between the content host and empty shell, an explicit
 /// renderer adapter rather than literal Stencil shadow-host identity.
+/// Collapsed item navigation retains each admitted native focus, followed by a
+/// separate frame scrolling the same item into view with nearest alignment.
+/// Entry, expanded-panel navigation and return focus use their own focus helpers.
+/// Scope teardown cancels retained item work; a later key or hide does not.
 /// Hover leave grace is a Rust-owned 250ms task. Collapsed popups participate in
 /// the shared overlay coordinator, with source category broadcast kept distinct
 /// from global topmost Escape and outside-click arbitration.
@@ -4742,6 +4772,21 @@ mod tests {
             let flags = menu_dispatch(&self.dom, "keydown", self.target(label), (key, modifiers));
             self.settle();
             flags
+        }
+        fn category_item_jobs(&self, label: &str) -> Vec<crate::overlay_item_focus::ItemFocusJob> {
+            let category = self.category(label);
+            let node = category.0.overlay.borrow().clone().unwrap();
+            node.runtime()
+                .unwrap()
+                .pending_item_focus_jobs()
+                .into_iter()
+                .filter(|job| job.root == node.id())
+                .collect()
+        }
+        fn queued_category_target(&self, label: &str) -> Option<String> {
+            self.category_item_jobs(label)
+                .last()
+                .map(|job| job.target.clone())
         }
         fn category(&self, label: &str) -> CategoryNavigation {
             CategoryNavigation(
@@ -6276,18 +6321,30 @@ mod tests {
             (true, true)
         );
         assert_eq!(
-            harness.focuses.borrow().last().copied(),
-            Some(harness.id("Two"))
+            harness.queued_category_target("Category"),
+            Some(format!(
+                "ix-menu-category-child-{}-{}",
+                first.0.id,
+                harness.id("Two")
+            ))
         );
         assert_eq!(harness.key(harness.target("Two"), Key::Home), (true, true));
         assert_eq!(
-            harness.focuses.borrow().last().copied(),
-            Some(harness.id("Child"))
+            harness.queued_category_target("Category"),
+            Some(format!(
+                "ix-menu-category-child-{}-{}",
+                first.0.id,
+                harness.id("Child")
+            ))
         );
         assert_eq!(harness.key(harness.target("Child"), Key::End), (true, true));
         assert_eq!(
-            harness.focuses.borrow().last().copied(),
-            Some(harness.id("Two"))
+            harness.queued_category_target("Category"),
+            Some(format!(
+                "ix-menu-category-child-{}-{}",
+                first.0.id,
+                harness.id("Two")
+            ))
         );
         let alt_before = harness.focuses.borrow().len();
         for key in [Key::ArrowDown, Key::ArrowUp] {
@@ -6737,10 +6794,25 @@ mod tests {
                 harness.category_event("category-key", key, "Category", None, 1, facts.clone()),
                 (true, true)
             );
-            assert!(
-                delayed_child.started.get(),
-                "the category target really waits for native geometry"
-            );
+            if expanded {
+                assert!(
+                    delayed_child.started.get(),
+                    "expanded direct focus waits for geometry"
+                );
+            } else {
+                assert!(
+                    !delayed_child.started.get(),
+                    "collapsed source item path uses native frame ACKs"
+                );
+                assert_eq!(
+                    harness.queued_category_target("Category"),
+                    Some(format!(
+                        "ix-menu-category-child-{}-{}",
+                        category.0.id,
+                        harness.id(child)
+                    ))
+                );
+            }
             assert!(category.0.model.borrow().root_claim.is_some());
             let owner = harness.context.model.borrow().owner.clone();
             let message = serde_json::json!({"owner":owner,"kind":"key","key":key,"origin":harness.id("Category"),"category":harness.id("Category"),"category_parent":true,"sequence":1,"items":root_facts,"category_items":facts});
@@ -6881,96 +6953,58 @@ mod tests {
     }
 
     #[test]
-    fn menu_category_native_protocol_focus_task_is_cancelled_on_supersession_and_category_only_unmount()
-     {
+    fn menu_category_captured_jobs_survive_later_keys_and_hide_but_cancel_on_scope_drop() {
         let _event_converter_guard = crate::test_event_converter_guard();
         let mut harness = MenuHarness::new();
-        let category = harness.category("Category");
         menu_dispatch(&harness.dom, "click", harness.toggle, ());
         harness.settle();
         harness.click("Category");
-        let child = harness.id("Child");
-        let delayed = MenuTestMount {
-            id: child,
-            focuses: harness.focuses.clone(),
-            ..Default::default()
-        };
-        menu_dispatch(
-            &harness.dom,
-            "mounted",
-            harness.target("Child"),
-            delayed.clone(),
-        );
-        harness.settle();
-        let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-        harness.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            Some("Two"),
-            1,
-            facts.clone(),
-        );
-        assert!(
-            delayed.started.get(),
-            "native observation callback must start its Menu-owned read"
-        );
-        harness.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            Some("Child"),
-            2,
-            facts.clone(),
-        );
-        assert!(
-            delayed.read_dropped.get(),
-            "newer protocol focus immediately cancels the old read"
-        );
-        delayed.started.set(false);
-        delayed.read_dropped.set(false);
-        harness.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            Some("Two"),
+        let category = harness.category("Category");
+        let node = category.0.overlay.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        for (sequence, child) in [(1, "Two"), (2, "Child"), (3, "Two")] {
+            let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
+            harness.category_event(
+                "category-key",
+                "ArrowDown",
+                "Category",
+                Some(child),
+                sequence,
+                facts,
+            );
+        }
+        let jobs = harness.category_item_jobs("Category");
+        assert_eq!(
+            jobs.len(),
             3,
-            facts,
+            "each admitted collapsed item focus survives a later key"
         );
-        assert!(delayed.started.get());
+        assert_eq!(jobs[0].target, jobs[2].target);
+        assert_ne!(jobs[0].target, jobs[1].target);
+
         harness.click("Second category");
-        assert!(
-            delayed.read_dropped.get(),
-            "losing shared flyout ownership cancels a pending native read"
-        );
         assert!(!category.is_open());
-        harness.click("Category");
-        delayed.started.set(false);
-        delayed.read_dropped.set(false);
-        let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-        harness.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            Some("Two"),
-            4,
-            facts,
+        assert_eq!(
+            harness.category_item_jobs("Category"),
+            jobs,
+            "hide is not source focusItem cancellation"
         );
-        assert!(delayed.started.get());
         harness.config.borrow_mut().category_present = false;
         harness.update();
-        assert!(
-            harness.context.model.borrow().alive,
-            "outer Menu remains mounted"
-        );
+        assert!(harness.context.model.borrow().alive);
         assert!(!category.0.model.borrow().alive);
         assert!(
-            delayed.read_dropped.get(),
-            "category drop explicitly cancels the Menu-owned future"
+            runtime
+                .pending_item_focus_jobs()
+                .iter()
+                .all(|job| job.root != node.id()),
+            "actual scope drop removes old registration jobs"
         );
-        assert!(category.0.model.borrow().focus_task.is_none());
-        harness.release(&delayed);
-        assert!(!harness.focuses.borrow().contains(&child));
+        assert!(!node.queue_item_focus(
+            jobs[0].target.clone(),
+            true,
+            Rc::new(|| panic!("dropped owner"))
+        ));
     }
 
     #[test]

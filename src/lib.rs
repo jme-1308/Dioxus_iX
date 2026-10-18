@@ -58,6 +58,7 @@ pub mod notifications;
 mod overlay_completion;
 mod overlay_domain;
 mod overlay_focus_pending;
+mod overlay_item_focus;
 mod overlay_registry;
 mod overlay_registry_dom;
 mod overlay_runtime;

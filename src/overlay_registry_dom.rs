@@ -21,6 +21,22 @@ let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),clickTargets=new Map(),handledBubbleKeys=new WeakSet();
 const tabFocusCaptures=new Map(),nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
 const anchorObservers=new Map();
+const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map(),itemScrollFrames=new Set();let itemObjectSequence=0;
+function captureItem(element){
+  if(!(element instanceof HTMLElement))return null;
+  const target=nativeId(element);if(!target)return null;
+  let capture=itemObjectTokens.get(element);
+  if(!capture){capture=owner+'-item-object-'+(++itemObjectSequence);itemObjectTokens.set(element,capture);}
+  itemCaptureNodes.set(capture,{element,current:true});return {target,capture};
+}
+function pruneItemCaptures(){
+  for(const [capture,binding]of itemCaptureNodes){
+    if(binding.current)continue;
+    const input=transport();if(!input)continue;
+    input.value=JSON.stringify({owner,sequence:0,item_focus_phase:'retain',item_focus_capture:capture});
+    if(input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))itemCaptureNodes.delete(capture);
+  }
+}
 const lastFocus=new Map(),nativeIds=new WeakMap(),nativeNodes=new Map();let nativeSequence=0;
 function nativeId(el){if(!(el instanceof HTMLElement))return '';if(el.id)return el.id;let id=nativeIds.get(el);if(!id){id=owner+'-native-'+(++nativeSequence);nativeIds.set(el,id);}nativeNodes.set(id,el);return id;}
 function findElement(id){const el=document.getElementById(id)||nativeNodes.get(id);return el instanceof HTMLElement&&el.isConnected?el:null;}
@@ -162,6 +178,7 @@ function headerControls(root){
     .filter(el=>el instanceof HTMLElement&&el.closest('header.ix-application-header')===header).map(nativeId);
 }
 function collectFacts(kind,event,phase=''){
+  for(const binding of itemCaptureNodes.values())binding.current=false;
   const active=deepActive(),path=event?.composedPath?.()||[];
   const target=path[0] instanceof HTMLElement?path[0]:(event?.target instanceof HTMLElement?event.target:null);
   const hosts=pathIds(path,'data-ix-overlay-host',isActiveHost),triggers=pathIds(path,'data-ix-overlay-trigger');
@@ -207,12 +224,14 @@ function collectFacts(kind,event,phase=''){
     const on_trigger=!!trigger&&(event?target===trigger:active===trigger);
     const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
     const tab_candidates=event?.key==='Tab'&&root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
+    const item_focus_captures=ro===owner?[...new Set([...itemsWithEl.map(item=>item.el),...focusables])].map(captureItem).filter(Boolean):[];
     nodes.push({
       id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
+      item_focus_captures,
       focusable_ids:focusables.map(nativeId).filter(Boolean),
       focus_count:focusables.length,focused_index,on_trigger,inside,
       trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
@@ -292,6 +311,7 @@ function send(report,event){
       }
     }
   }
+  pruneItemCaptures();
 }
 function syncExecution(){
   let needsFocusPass=false;
@@ -399,6 +419,7 @@ function reportObserve(){
   const report=collectFacts('observe',null);
   const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
   if(sig!==lastSignature){lastSignature=sig;send(report,null);}
+  pruneItemCaptures();
 }
 document.addEventListener('keydown',e=>send(collectFacts('key',e,'capture'),e),{capture:true,signal});
 document.addEventListener('keydown',e=>{if(!handledBubbleKeys.has(e))send(collectFacts('key',e,'fallback'),e);},{signal});
@@ -442,6 +463,47 @@ function executeCapturedTab(command){
   const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
   if(allowed&&el?.isConnected)el.focus();
 }
+function itemFocusQuery(command,capture,phase){
+  const input=transport();if(!input)return false;
+  input.value=JSON.stringify({owner,sequence:0,item_focus_sequence:command.sequence,
+    item_focus_root:command.root,item_focus_generation:command.generation,
+    item_focus_target:command.target,item_focus_capture:capture,item_focus_phase:phase});
+  return !input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+}
+function queueItemFocus(command){
+  const discard=()=>{
+    const input=transport();if(input){input.value=JSON.stringify({owner,sequence:0,item_focus_phase:'discard',
+      item_focus_sequence:command.sequence,item_focus_root:command.root,item_focus_generation:command.generation,
+      item_focus_target:command.target,item_focus_capture:command.capture});input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));}
+  };
+  let capture=command.capture,element=capture?itemCaptureNodes.get(capture)?.element:null;
+  // Only a pre-bootstrap/async admission without a capture may bind late. An
+  // existing object token never falls back to a replacement's public ID.
+  if(!capture){
+    element=findElement(command.target);
+    const binding=captureItem(element);capture=binding?.capture;
+  }
+  if(!(element instanceof HTMLElement)){
+    discard();return;
+  }
+  if(!capture||!itemFocusQuery(command,capture,'arm')){discard();return;}
+  nativeFocusCommands.push({kind:'item',command,capture,element});scheduleNativeFocus();
+}
+function executeItemFocus(job){
+  const {command,capture}=job;
+  // Source captures a Category host at admission, then resolves its current
+  // shadow parent in frame one. Frame two retains that resolved object.
+  const element=job.element?.matches('ix-menu-category')?job.element.shadowRoot?.querySelector('.category-parent'):job.element;
+  if(!itemFocusQuery(command,capture,'focus'))return;
+  if(element instanceof HTMLElement&&command.focus_native)try{element.focus();}catch{}
+  const frame=requestAnimationFrame(()=>{
+    itemScrollFrames.delete(frame);if(!alive)return;
+    const allowed=itemFocusQuery(command,capture,'scroll');
+    if(allowed&&element instanceof HTMLElement)try{element.scrollIntoView({block:'nearest'});}catch{}
+    pruneItemCaptures();
+  });
+  itemScrollFrames.add(frame);
+}
 function scheduleNativeFocus(){
   if(nativeFocusFrame||!nativeFocusCommands.length)return;
   nativeFocusFrame=requestAnimationFrame(()=>{
@@ -460,6 +522,8 @@ function scheduleNativeFocus(){
       if(job.kind==='completion'){
         input.value=JSON.stringify({owner,sequence:0,completion_sequence:command.sequence,completion_root:command.root,completion_generation:command.generation});
         input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+      }else if(job.kind==='item'){
+        executeItemFocus(job);
       }else if(job.kind==='trigger'){
         input.value=JSON.stringify({owner,sequence:0,trigger_restore_sequence:command.sequence,trigger_restore_root:command.root,trigger_restore_generation:command.generation});
         const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})),root=job.root;
@@ -480,11 +544,13 @@ try{
     if(command?.restore_trigger)queueTriggerRestore(command.restore_trigger);
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
     if(command?.completion_frame){nativeFocusCommands.push({kind:'completion',command:command.completion_frame});scheduleNativeFocus();}
+    if(command?.item_focus)queueItemFocus(command.item_focus);
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;tabFocusCaptures.clear();
+  for(const frame of itemScrollFrames)cancelAnimationFrame(frame);itemScrollFrames.clear();itemCaptureNodes.clear();
   for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');
