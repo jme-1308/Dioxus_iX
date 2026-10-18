@@ -271,7 +271,7 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-text-field-native .ix-input-start > * { margin-left: var(--ix-input-start-container--margin-left); }
 .ix-theme .ix-text-field-native .ix-input-start > :is(svg.ix-icon[width='24'],.ix-icon-button-native.ix-icon-size-16) { margin-left: var(--ix-input-icon-compact--margin-left); }
 .ix-theme .ix-text-field-native .ix-input-start > .ix-icon-button-native:is(.ix-icon-size-20,.ix-icon-size-24) { margin-left: 0; }
-.ix-theme .ix-text-field-native .ix-input-end > :not(.ix-input-password-holder) { margin-right: calc(var(--ix-input-end-container--margin-right) - var(--ix-input-end-container--inset)); }
+.ix-theme .ix-text-field-native .ix-input-end > :not(.ix-input-password-holder,.ix-number-steppers) { margin-right: calc(var(--ix-input-end-container--margin-right) - var(--ix-input-end-container--inset)); }
 .ix-theme .ix-text-field-native .ix-input-end > :is(svg.ix-icon[width='24'],.ix-icon-button-native.ix-icon-size-16) { margin-right: calc(var(--ix-input-icon-compact--margin-right) - var(--ix-input-end-container--inset)); }
 .ix-theme .ix-text-field-native .ix-input-end > .ix-icon-button-native:is(.ix-icon-size-20,.ix-icon-size-24) { margin-right: calc(0rem - var(--ix-input-end-container--inset)); }
 .ix-theme .ix-text-field-native .ix-input-end .ix-input-password-eye { margin-left: var(--ix-input-password-eye--margin-left); }

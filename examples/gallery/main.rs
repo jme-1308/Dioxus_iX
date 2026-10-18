@@ -44,6 +44,7 @@ mod menu_navigation_review;
 mod menu_overlay_review;
 mod native_field_review;
 mod number_input_review;
+mod number_input_token_review;
 mod pattern_scenarios;
 mod patterns;
 mod radio_review;
@@ -212,7 +213,7 @@ fn Gallery() -> Element {
                     match page() {
                         GalleryPage::Actions => rsx! { icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples {} },
-                        GalleryPage::Forms => rsx! { input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
+                        GalleryPage::Forms => rsx! { number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { grid_scenarios::GridExamples {} },

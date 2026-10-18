@@ -1022,6 +1022,8 @@ pub fn NumberInput(
     #[props(default)] info_text: Option<String>,
     #[props(default)] warning_text: Option<String>,
     #[props(default)] state: FieldState,
+    #[props(default)] class: String,
+    #[props(default)] show_text_as_tooltip: bool,
     #[props(default)] show_stepper_buttons: bool,
     #[props(default)] allow_empty_value_change: bool,
     #[props(default)] suppress_submit_on_enter: bool,
@@ -1049,13 +1051,23 @@ pub fn NumberInput(
     };
     let allowed_characters_pattern =
         allowed_characters_pattern.or_else(|| Some(r"[0-9Ee+\-.,]".to_string()));
+    let number_class = format!(
+        "ix-number-input-native{} {class}",
+        if show_stepper_buttons {
+            " ix-number-has-steppers"
+        } else {
+            ""
+        }
+    );
+    let steppers_hidden = !show_stepper_buttons || disabled || readonly;
     rsx! {
         div { class: "ix-number-field",
             Input { value: draft(), label, id, name, placeholder, aria_label, pattern,
-                allowed_characters_pattern, controller, input_type: "number",
+                allowed_characters_pattern, controller, input_type: "number", autocomplete: "off",
                 min: min.map(|v| v.to_string()), max: max.map(|v| v.to_string()),
                 step: step.to_string(), disabled, readonly, required,
                 helper_text, invalid_text, valid_text, info_text, warning_text, state,
+                class: number_class, show_text_as_tooltip,
                 onvaluechange: emit_value, text_alignment_end, suppress_submit_on_enter,
                 onixblur, onvaliditystatechange, start,
                 onfocus: move |event| {
@@ -1070,16 +1082,18 @@ pub fn NumberInput(
                 },
                 end: rsx! {
                     {end}
-                    if show_stepper_buttons && !disabled && !readonly {
-                        span { class: "ix-number-steppers",
-                            button { class: "ix-number-stepper", r#type: "button", "aria-label": "decrement number",
-                                onmousedown: move |event| event.prevent_default(),
-                                onclick: move |_| { let next = stepped_number(&draft.peek(), step, min, max, false); emit_value(next); },
-                                crate::Icon { name: "minus".to_string(), size: 16 } }
-                            button { class: "ix-number-stepper", r#type: "button", "aria-label": "increment number",
-                                onmousedown: move |event| event.prevent_default(),
-                                onclick: move |_| { let next = stepped_number(&draft.peek(), step, min, max, true); emit_value(next); },
-                                crate::Icon { name: "plus".to_string(), size: 16 } }
+                    span { class: "ix-number-steppers", "data-hidden": steppers_hidden.to_string(),
+                        // Preserve the existing Rust focus-retention adapter.
+                        onmousedown: move |event| event.prevent_default(),
+                        crate::IconButton { class: "ix-number-stepper ix-number-minus",
+                            variant: crate::ButtonVariant::SubtleTertiary, size: crate::ButtonIconSize::Sixteen,
+                            label: "decrement number", icon: "minus",
+                            onclick: move |_| { if !steppers_hidden { let next = stepped_number(&draft.peek(), step, min, max, false); emit_value(next); } },
+                        }
+                        crate::IconButton { class: "ix-number-stepper ix-number-plus",
+                            variant: crate::ButtonVariant::SubtleTertiary, size: crate::ButtonIconSize::Sixteen,
+                            label: "increment number", icon: "plus",
+                            onclick: move |_| { if !steppers_hidden { let next = stepped_number(&draft.peek(), step, min, max, true); emit_value(next); } },
                         }
                     }
                 },
@@ -2735,6 +2749,10 @@ mod checkbox_token_tests;
 mod radio_token_tests;
 
 #[cfg(test)]
+#[path = "number_input_token_tests.rs"]
+mod number_input_token_tests;
+
+#[cfg(test)]
 #[path = "input_token_tests.rs"]
 mod input_token_tests;
 
@@ -2785,7 +2803,6 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-slider::-webkit-slider-thumb{appearance:none;width:1rem;height:1rem;border-radius:50%;background:var(--ix-slider-accent,var(--ix-color-primary));border:0;margin-top:-6px}.ix-theme .ix-slider::-moz-range-thumb{width:1rem;height:1rem;border-radius:50%;background:var(--ix-slider-accent,var(--ix-color-primary));border:0}.ix-theme .ix-slider:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}.ix-theme .ix-slider:disabled{opacity:.45;cursor:not-allowed}
 .ix-theme .ix-slider-markers{position:relative;height:1.5rem;font-size:.75rem;color:var(--ix-color-text-secondary);margin-inline:.5rem}.ix-theme .ix-slider-markers>span{position:absolute;transform:translateX(-50%)}
 .ix-theme .ix-range-field{display:flex;align-items:end;gap:2.5rem;position:relative;min-width:0;width:100%}.ix-theme .ix-range-field>.ix-temporal-field,.ix-theme .ix-range-field>.ix-field{flex:1;min-width:0}.ix-theme .ix-range-field:before{content:'';position:absolute;left:calc(50% - .5rem);bottom:1.25rem;width:1rem;border-top:1px solid var(--ix-color-text-secondary)}.ix-theme .ix-range-field:after{content:'';position:absolute;left:calc(50% + .125rem);bottom:1.075rem;width:.35rem;height:.35rem;border-top:1px solid var(--ix-color-text-secondary);border-right:1px solid var(--ix-color-text-secondary);transform:rotate(45deg)}.ix-theme .ix-range-no-arrow:before,.ix-theme .ix-range-no-arrow:after{display:none}.ix-theme .ix-range-no-arrow{gap:.75rem}
-.ix-theme .ix-number-field{min-width:0;width:100%}.ix-theme .ix-number-field input[type=number]{appearance:textfield;-moz-appearance:textfield}.ix-theme .ix-number-field input[type=number]::-webkit-inner-spin-button,.ix-theme .ix-number-field input[type=number]::-webkit-outer-spin-button{appearance:none;margin:0}.ix-theme .ix-number-steppers{display:flex;gap:0;margin-inline-end:-.25rem}.ix-theme .ix-number-stepper{display:flex;align-items:center;justify-content:center;width:2rem;height:2rem;border:0;background:transparent;color:var(--ix-color-primary);cursor:pointer;border-radius:var(--ix-radius)}.ix-theme .ix-number-stepper:hover{background:var(--ix-color-surface-2)}.ix-theme .ix-number-stepper:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}.ix-theme .ix-number-stepper:disabled{opacity:.45;cursor:not-allowed}
 .ix-theme .ix-field-info{--ix-slider-accent:var(--ix-color-info);--ix-check-accent:var(--ix-color-info)}.ix-theme .ix-field-warning{--ix-slider-accent:var(--ix-color-warning);--ix-check-accent:var(--ix-color-warning)}.ix-theme .ix-field-invalid{--ix-slider-accent:var(--ix-color-danger);--ix-check-accent:var(--ix-color-danger)}.ix-theme .ix-field-valid{--ix-slider-accent:var(--ix-color-primary);--ix-check-accent:var(--ix-color-primary)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid) .ix-check-shape{border-color:var(--ix-check-accent)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)[data-checked=true] .ix-check-shape,.ix-theme .ix-radio:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)>input:checked+.ix-check-shape{background:var(--ix-check-accent)}.ix-theme .ix-slider-control{position:relative}.ix-theme .ix-slider-tooltip{position:absolute;bottom:100%;transform:translateX(-50%);font-size:.75rem;line-height:1.5rem;padding:0 .375rem;border-radius:var(--ix-radius);background:var(--ix-color-surface-2);color:var(--ix-color-text);pointer-events:none;white-space:nowrap}.ix-theme .ix-slider-endpoints{display:flex;justify-content:space-between;color:var(--ix-color-text-secondary);font-size:.75rem}.ix-theme .ix-slider-marker-line{display:block;height:6px;width:2px;background:var(--ix-color-border);margin-inline:auto}.ix-theme .ix-slider-marker-active .ix-slider-marker-line{background:var(--ix-slider-accent,var(--ix-color-primary))}.ix-theme .ix-upload-state{display:flex;align-items:center;gap:.5rem;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-upload-button{flex:none}.ix-theme .ix-field-info>.ix-input,.ix-theme .ix-field-info .ix-select-control{border-color:var(--ix-color-info-text)}.ix-theme .ix-field-valid>.ix-input,.ix-theme .ix-field-valid .ix-select-control{border-color:var(--ix-color-success)}.ix-theme .ix-field-warning .ix-select-control{border-color:var(--ix-color-warning-text)}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-toggle-track:before{transition:none}}
 .ix-theme .ix-select{position:relative}
@@ -3691,7 +3708,9 @@ mod tests {
         assert!(html.contains("text-align:start"));
         assert!(html.contains("placeholder=\"Enter an amount\""));
         assert!(html.contains("name=\"amount\""));
-        assert_eq!(html.matches("aria-label=\"increment number\"").count(), 1);
-        assert_eq!(html.matches("aria-label=\"decrement number\"").count(), 1);
+        assert_eq!(html.matches("aria-label=\"increment number\"").count(), 4);
+        assert_eq!(html.matches("aria-label=\"decrement number\"").count(), 4);
+        assert_eq!(html.matches("data-hidden=\"true\"").count(), 3);
+        assert_eq!(html.matches("data-hidden=\"false\"").count(), 1);
     }
 }
