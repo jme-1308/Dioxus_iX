@@ -68,6 +68,7 @@ pub(crate) struct KeyFacts {
     pub(crate) focused_target: Option<String>,
     pub(crate) items: Vec<usize>,
     pub(crate) focus_count: usize,
+    pub(crate) focusable_ids: Vec<String>,
     pub(crate) focused_index: Option<usize>,
     pub(crate) on_trigger: bool,
     pub(crate) inside: bool,
@@ -205,6 +206,7 @@ struct Runtime {
 #[derive(Clone)]
 struct ItemMount {
     target: String,
+    focus_id: String,
     node: Rc<MountedData>,
 }
 struct OwnedItemFocus {
@@ -352,12 +354,18 @@ impl RuntimeHandle {
         self.0.borrow_mut().item_cue_hosts.register(key, kind);
     }
     pub(crate) fn register_item_mount(&self, key: &str, target: &str, node: Rc<MountedData>) {
-        let changed = self
-            .0
-            .borrow()
-            .item_mounts
-            .get(key)
-            .is_some_and(|old| old.target != target || !Rc::ptr_eq(&old.node, &node));
+        self.register_item_control_mount(key, target, target, node);
+    }
+    pub(crate) fn register_item_control_mount(
+        &self,
+        key: &str,
+        target: &str,
+        focus_id: &str,
+        node: Rc<MountedData>,
+    ) {
+        let changed = self.0.borrow().item_mounts.get(key).is_some_and(|old| {
+            old.target != target || old.focus_id != focus_id || !Rc::ptr_eq(&old.node, &node)
+        });
         if changed {
             self.cancel_item_key(key);
         }
@@ -365,6 +373,7 @@ impl RuntimeHandle {
             key.into(),
             ItemMount {
                 target: target.into(),
+                focus_id: focus_id.into(),
                 node,
             },
         );
@@ -2221,6 +2230,7 @@ impl RuntimeHandle {
             focused_target: (!report.active_id.is_empty()).then(|| report.active_id.clone()),
             items: owner.items.clone(),
             focus_count: owner.focus_count,
+            focusable_ids: owner.focusable_ids.clone(),
             focused_index: owner.focused_index,
             on_trigger: owner.on_trigger,
             inside: owner.inside,
@@ -3066,6 +3076,49 @@ impl NodeHandle {
     pub(crate) fn queue_item_host_focus(&self, host: &HostFacts, callback: Rc<dyn Fn()>) -> bool {
         self.queue_mounted_item_focus(host.target.clone(), true, callback, Some(host.clone()))
     }
+    /// Native candidate order is observational only; registered Dioxus handles
+    /// remain the sole executor, including items with a distinct inner control.
+    pub(crate) fn queue_tab_boundary_focus(
+        &self,
+        ids: &[String],
+        last: bool,
+        callback: Rc<dyn Fn()>,
+    ) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        if !runtime.item_owner_open(&self.id, self.generation) {
+            return false;
+        }
+        let Some(inventory) = self.inventory() else {
+            return false;
+        };
+        let host = {
+            let state = runtime.0.borrow();
+            let matching = |id: &String| {
+                if id.is_empty() {
+                    return None;
+                }
+                inventory
+                    .hosts
+                    .iter()
+                    .find(|host| {
+                        !host.disabled_attribute
+                            && !host.hidden_attribute
+                            && RuntimeHandle::mounted_item_key(&state, host)
+                                .and_then(|key| state.item_mounts.get(&key))
+                                .is_some_and(|mount| mount.focus_id == *id)
+                    })
+                    .cloned()
+            };
+            if last {
+                ids.iter().rev().find_map(matching)
+            } else {
+                ids.iter().find_map(matching)
+            }
+        };
+        host.is_some_and(|host| self.queue_item_host_focus(&host, callback))
+    }
     /// Only explicitly registered Dioxus mounted elements can receive item focus.
     /// Consumers opt in by registering their own mounted control.
     pub(crate) fn queue_item_focus(
@@ -3583,6 +3636,8 @@ struct NodeFacts {
     focused_item: Option<usize>,
     #[serde(default)]
     focus_count: usize,
+    #[serde(default)]
+    focusable_ids: Vec<String>,
     #[serde(default)]
     focused_index: Option<usize>,
     #[serde(default)]
@@ -4761,6 +4816,207 @@ mod tests {
         runtime.register_item_mount(&host.registration_key, &host.target, node);
         weak
     }
+    #[test]
+    fn tab_boundary_uses_registered_physical_control_order_and_skips_ineligible_hosts() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        let mut raw = mixed_inventory_facts();
+        raw.hosts[0].kind = ItemKind::Menu;
+        raw.hosts[1].kind = ItemKind::Category;
+        raw.hosts[1].source_focusable = false;
+        for (item, disabled, hidden) in [
+            ("custom", false, false),
+            ("disabled", true, false),
+            ("hidden", false, true),
+            ("unregistered", false, false),
+        ] {
+            let mut host = raw.hosts[0].clone();
+            host.item = ItemRef(item.into());
+            host.target = item.into();
+            host.capture = item.into();
+            host.registration_key = format!("key-{item}");
+            host.kind = ItemKind::NativeOptIn;
+            host.roving_opt_in = true;
+            host.disabled_attribute = disabled;
+            host.hidden_attribute = hidden;
+            raw.hosts.push(host);
+        }
+        let menu = ItemMountMock::default();
+        let category = ItemMountMock::default();
+        let custom = ItemMountMock::default();
+        for (host, focus_id, mock) in [
+            (&raw.hosts[0], "a-control", menu.clone()),
+            (&raw.hosts[1], "b-parent", category.clone()),
+            (&raw.hosts[2], "custom", custom.clone()),
+            (&raw.hosts[3], "disabled", ItemMountMock::default()),
+            (&raw.hosts[4], "hidden", ItemMountMock::default()),
+        ] {
+            runtime.register_item_cue(host.registration_key.clone(), host.kind);
+            runtime.register_item_control_mount(
+                &host.registration_key,
+                &host.target,
+                focus_id,
+                Rc::new(MountedData::new(mock)),
+            );
+        }
+        // A registered element outside the current inventory is not a target.
+        runtime.register_item_mount(
+            "orphan",
+            "orphan",
+            Rc::new(MountedData::new(ItemMountMock::default())),
+        );
+        dom.in_scope(fixture.0.owner.get().unwrap(), || {
+            runtime.input(event(
+                serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
+            "nodes":[{"id":node.id,"generation":1,"connected":true,"inventory":raw}]}),
+            ))
+        });
+        let ids = [
+            "unregistered",
+            "disabled",
+            "hidden",
+            "orphan",
+            "b-parent",
+            "custom",
+            "a-control",
+        ]
+        .map(str::to_string);
+        assert!(node.queue_tab_boundary_focus(&ids, false, Rc::new(|| {})));
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            *category.events.borrow(),
+            [("focus", owner), ("scroll", owner)]
+        );
+        assert!(menu.events.borrow().is_empty());
+        assert!(node.queue_tab_boundary_focus(&ids, true, Rc::new(|| {})));
+        settle_item_effects(&mut dom);
+        assert_eq!(*menu.events.borrow(), [("focus", owner), ("scroll", owner)]);
+        assert!(node.queue_tab_boundary_focus(&["custom".into()], false, Rc::new(|| {})));
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            *custom.events.borrow(),
+            [("focus", owner), ("scroll", owner)]
+        );
+        assert!(!node.queue_tab_boundary_focus(
+            &["a".into(), "b".into()],
+            false,
+            Rc::new(|| panic!("logical IDs are not physical candidates"))
+        ));
+    }
+
+    #[test]
+    fn tab_boundary_metadata_replacement_dismissal_and_owner_drop_cancel_pending_work() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let raw = mixed_inventory_facts();
+        let host = raw.hosts[0].clone();
+        let mock = ItemMountMock::default();
+        let mounted = Rc::new(MountedData::new(mock.clone()));
+        runtime.register_item_cue(host.registration_key.clone(), host.kind);
+        runtime.register_item_control_mount(
+            &host.registration_key,
+            &host.target,
+            "old-control",
+            mounted.clone(),
+        );
+        dom.in_scope(fixture.0.owner.get().unwrap(), || {
+            runtime.input(event(
+                serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
+            "nodes":[{"id":node.id,"generation":1,"connected":true,"inventory":raw}]}),
+            ))
+        });
+        let captured = Rc::new(());
+        let released = Rc::downgrade(&captured);
+        assert!(node.queue_tab_boundary_focus(
+            &["old-control".into()],
+            false,
+            Rc::new(move || {
+                let _ = &captured;
+                panic!("replaced physical metadata");
+            })
+        ));
+        runtime.register_item_control_mount(
+            &host.registration_key,
+            &host.target,
+            "new-control",
+            mounted,
+        );
+        assert!(released.upgrade().is_none());
+        assert!(!node.queue_tab_boundary_focus(&["old-control".into()], false, Rc::new(|| {})));
+        settle_item_effects(&mut dom);
+        assert!(mock.events.borrow().is_empty());
+        assert!(node.queue_tab_boundary_focus(
+            &["new-control".into()],
+            false,
+            Rc::new(|| panic!("dismissed owner"))
+        ));
+        assert!(node.request(false, Reason::Trigger, false));
+        settle_item_effects(&mut dom);
+        assert!(mock.events.borrow().is_empty());
+        assert!(!node.queue_tab_boundary_focus(&["new-control".into()], false, Rc::new(|| {})));
+        fixture.0.open.set(true);
+        let stale = NodeHandle {
+            generation: node.generation + 1,
+            ..node.clone()
+        };
+        assert!(!stale.queue_tab_boundary_focus(&["new-control".into()], false, Rc::new(|| {})));
+        assert!(node.queue_tab_boundary_focus(
+            &["new-control".into()],
+            false,
+            Rc::new(|| panic!("removed owner"))
+        ));
+        node.unregister();
+        settle_item_effects(&mut dom);
+        assert!(mock.events.borrow().is_empty());
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+    }
+
+    #[test]
+    fn key_facts_preserve_existing_native_focusable_candidate_order() {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "tab-report",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        root.open.set(true);
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        let captured = delivered.clone();
+        runtime
+            .0
+            .borrow_mut()
+            .nodes
+            .get_mut("tab-report")
+            .unwrap()
+            .callbacks
+            .key = Some(Rc::new(move |facts| {
+            *captured.borrow_mut() = facts.focusable_ids.clone();
+            KeyDecision::default()
+        }));
+        let mut report = report(
+            &runtime,
+            1,
+            "key",
+            serde_json::json!([
+                {"id":"tab-report","generation":1,"connected":true,"inside":true,"on_trigger":true,
+                    "focusable_ids":["b-parent","custom","a-control"]}
+            ]),
+        );
+        report.key = "Tab".into();
+        report.phase = "bubble".into();
+        report.hosts = vec!["tab-report".into()];
+        runtime.key(&report);
+        assert_eq!(*delivered.borrow(), ["b-parent", "custom", "a-control"]);
+    }
+
     #[test]
     fn mounted_item_effect_uses_latest_intent_owner_focus_and_nearest_scroll_even_on_focus_error() {
         let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));

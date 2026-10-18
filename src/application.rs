@@ -3439,10 +3439,20 @@ pub fn MenuItem(
         &attributes,
         default_id.as_deref().unwrap_or(&item_host.host_id),
     );
+    let control_id = if generic {
+        Some(format!("{host_id}-control"))
+    } else {
+        default_id
+    };
     let mounted_host = item_host.clone();
     let mounted_id = host_id.clone();
+    let mounted_control_id = if generic { control_id.clone() } else { None };
     let onmount = move |event: MountedEvent| {
-        mounted_host.mount(&mounted_id, event.data());
+        if let Some(control_id) = &mounted_control_id {
+            mounted_host.mount_control(&mounted_id, control_id, event.data());
+        } else {
+            mounted_host.mount(&mounted_id, event.data());
+        }
         if let Some(nested) = &nested_mount {
             nested.mount(id, event.data());
         }
@@ -3508,11 +3518,6 @@ pub fn MenuItem(
             child.host_id = Some(host_id.clone());
         }
     }
-    let control_id = if generic {
-        Some(format!("{host_id}-control"))
-    } else {
-        default_id
-    };
     let control_attributes = if generic {
         Vec::new()
     } else {
@@ -3862,6 +3867,7 @@ pub fn MenuCategory(
     let mounted_host = item_host.clone();
     let dropdown_parent_key = item_host.clone();
     let mounted_id = host_id.clone();
+    let mounted_parent_id = parent_id.clone();
     rsx! {
         div { id:host_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
             "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
@@ -3881,7 +3887,7 @@ pub fn MenuCategory(
                 role:"menuitem",tabindex:roving_tabindex.unwrap_or(tabindex),"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-label":label.clone(),"aria-expanded":is_open.to_string(),"aria-controls":format!("{content_id} {popup_id}"),
                 onmounted:move |event|{
-                    mounted_host.mount(&mounted_id,event.data());
+                    mounted_host.mount_control(&mounted_id,&mounted_parent_id,event.data());
                     parent_mount.0.model.borrow_mut().parent=Some(event.data());
                     if let Some(roving)=&mount_roving {roving.mount(id,event.data());}
                     if let Some(context)=&mount_context {let mut order=context.prefix.clone();order.push(id);context.entries.borrow_mut().push(NavigationEntry{id,node:event.data(),enabled:Rc::new(Cell::new(true)),order});}

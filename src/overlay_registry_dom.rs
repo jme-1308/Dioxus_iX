@@ -439,6 +439,8 @@ function collectFacts(kind,event,phase=''){
       configured_trigger_listener:(root.hasAttribute('data-ix-overlay-trigger-version')||root.hasAttribute('data-ix-overlay-trigger-id'))&&!!installedTrigger&&event?.currentTarget===installedTrigger?captureItem(event.currentTarget)?.capture:null,
       navigation_binding:navigationBinding?.enabled&&navigationBinding.element?{version:navigationBinding.version,capture:captureItem(navigationBinding.element)?.capture}:null,
       navigation_listener:navigationBinding?.enabled&&navigationBinding.element&&event?.currentTarget===navigationBinding.element?{version:navigationBinding.version,capture:captureItem(event.currentTarget)?.capture}:null,
+      // Pinned MountedData can focus a registered handle, but cannot enumerate
+      // current native Tab order. Report IDs only; Dropdown never executes focus here.
       focusable_ids:focusables.map(nativeId).filter(Boolean),
       focus_count:focusables.length,focused_index,on_trigger,inside,
       trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
@@ -714,6 +716,8 @@ function syncExecution(){
         }
       }
     }
+    // Dropdown local focus is entirely executed by registered Dioxus mounts.
+    if(root.getAttribute('data-ix-dropdown-focus-owned')==='true')continue;
     const ver=root.getAttribute('data-ix-overlay-focus-version')||'0',gen=root.getAttribute('data-ix-overlay-generation')||'0';
     if(lastFocus.get(id)!==gen+':'+ver)needsFocusPass=true;
   }
@@ -724,12 +728,12 @@ function syncExecution(){
         if(!(root instanceof HTMLElement)||!root.isConnected)continue;
         const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
         if(!id||ro!==owner)continue;
-        if(root.hasAttribute('data-ix-overlay-native-surface'))continue;
+        if(root.hasAttribute('data-ix-overlay-native-surface')||root.getAttribute('data-ix-dropdown-focus-owned')==='true')continue;
         const ver=root.getAttribute('data-ix-overlay-focus-version')||'0',gen=root.getAttribute('data-ix-overlay-generation')||'0';
         const token=gen+':'+ver,spec=root.getAttribute('data-ix-overlay-focus-target')||'none';
         if(lastFocus.get(id)===token)continue;
         lastFocus.set(id,token);
-        if(spec==='none'||(spec==='trigger'&&root.getAttribute('data-ix-dropdown-focus-owned')==='true'))continue;
+        if(spec==='none')continue;
         const list=hostFocusables(findHost(id));
         const dest=spec==='trigger'?findTrigger(id,root):spec==='first-native'?list[0]:spec==='last-native'?list[list.length-1]:
           spec.startsWith('index:')?list[Number(spec.slice(6))]:findElement(spec.startsWith('id:')?spec.slice(3):spec);

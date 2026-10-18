@@ -64,6 +64,16 @@ pub fn DescendantPreview() -> Element {
                     DropdownItem { id:"r028-child-action", label:"Another child action", tabindex:0 }
                 }
             }
+            section {
+                h2 { "Tab between mixed controls" }
+                Dropdown { label:"Review equipment actions", class:"r029-mixed", close_behavior:DropdownCloseBehavior::Outside,
+                    MenuItem { id:"r029-first", label:"Inspect equipment action" }
+                    DropdownItem { id:"r029-middle", label:"Schedule equipment action", tabindex:0 }
+                    MenuCategory { id:"r029-category", label:"More equipment actions",
+                        MenuItem { label:"Hidden category action" }
+                    }
+                }
+            }
             div { onmounted:move |_| {
                 #[cfg(all(feature="desktop",not(target_arch="wasm32")))]
                 {let window=window.clone();spawn(async move {
@@ -82,7 +92,7 @@ pub fn DescendantPreview() -> Element {
 const NATIVE_DESCENDANT_CHECK: &str = r#"
 await dioxus.recv();
 const wait=async(label,predicate)=>{for(let n=0;n<200;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+document.activeElement?.id);};
-const byId=id=>document.getElementById(id),key=(node,value)=>{const event=new KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
+const byId=id=>document.getElementById(id),key=(node,value,shiftKey=false)=>{const event=new KeyboardEvent('keydown',{key:value,shiftKey,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const actions=document.querySelector('.r028-actions');await wait('mounted actions',()=>actions);
 for(const [pressed,id]of [['ArrowDown','r028-checked'],['Home','r028-checked'],['End','r028-last']]){
  actions.focus();key(actions,pressed);await wait('opening '+pressed,()=>document.activeElement===byId(id));
@@ -95,6 +105,11 @@ const field=byId('r028-name');field.value='Pump';field.dispatchEvent(new Event('
 for(const pressed of ['Home','End','ArrowLeft','ArrowRight','Enter',' ']){const event=key(field,pressed);if(event.defaultPrevented||document.activeElement!==field)throw new Error('native editing key blocked: '+pressed);}
 const apply=byId('r028-apply');apply.focus();const enter=key(apply,'Enter');if(enter.defaultPrevented)throw new Error('custom button activation blocked');apply.click();
 await wait('custom button action',()=>byId('r028-form-state').textContent.includes('applied: 1'));
+field.focus();const reverse=key(field,'Tab',true);if(!reverse.defaultPrevented)throw new Error('registered reverse boundary not trapped');
+await wait('registered reverse wrap',()=>document.activeElement===apply);
+const forward=key(apply,'Tab');if(!forward.defaultPrevented)throw new Error('registered forward boundary not trapped');
+await wait('registered forward wrap',()=>document.activeElement===field);
+const interior=key(field,'Tab');if(interior.defaultPrevented)throw new Error('interior native Tab blocked');apply.focus();
 key(apply,'Escape');await wait('form return',()=>form.getAttribute('aria-expanded')==='false'&&document.activeElement===form);
 const parent=document.querySelector('.r028-parent'),child=document.querySelector('.r028-child');parent.focus();key(parent,'Home');await wait('parent entry',()=>document.activeElement===byId('r028-parent-item'));
 key(document.activeElement,'ArrowRight');await wait('mixed child entry',()=>child.getAttribute('data-ix-overlay-open')==='true'&&document.activeElement.id==='r028-child-menu-control');
@@ -103,5 +118,11 @@ key(document.activeElement,'Home');await wait('child first item',()=>document.ac
 key(document.activeElement,'ArrowLeft');await wait('mounted parent return',()=>child.getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r028-parent-item'));
 await wait('parent focus cue',()=>byId('r028-parent-item').getAttribute('data-active')==='true');
 key(document.activeElement,'Escape');await wait('nested root return',()=>parent.getAttribute('aria-expanded')==='false'&&document.activeElement===parent);
-return {ok:true,checked:true,firstLast:true,disabledHiddenSkipped:true,registeredInput:true,editingKeys:true,nativeButton:true,mixedChildEntry:true,childNavigation:true,parentReturn:true,parentCue:true};
+const mixed=document.querySelector('.r029-mixed');mixed.focus();key(mixed,'Home');
+const first=byId('r029-first-control'),last=byId('r029-category').querySelector('[data-ix-item-part="category-parent"]');
+await wait('mixed physical opening',()=>document.activeElement===first);
+key(first,'Tab',true);await wait('mixed physical reverse wrap',()=>document.activeElement===last);
+key(last,'Tab');await wait('mixed physical forward wrap',()=>document.activeElement===first);
+key(first,'Escape');await wait('mixed Escape',()=>mixed.getAttribute('aria-expanded')==='false'&&document.activeElement===mixed);
+return {ok:true,registeredTabWrap:true,mixedPhysicalWrap:true,interiorTabDefault:true,checked:true,firstLast:true,disabledHiddenSkipped:true,registeredInput:true,editingKeys:true,nativeButton:true,mixedChildEntry:true,childNavigation:true,parentReturn:true,parentCue:true};
 "#;

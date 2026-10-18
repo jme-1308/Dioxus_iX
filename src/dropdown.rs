@@ -35,6 +35,10 @@ impl ItemHostBinding {
     pub(crate) fn mount(&self, target: &str, node: Rc<MountedData>) {
         self.runtime.register_item_mount(&self.key, target, node);
     }
+    pub(crate) fn mount_control(&self, target: &str, focus_id: &str, node: Rc<MountedData>) {
+        self.runtime
+            .register_item_control_mount(&self.key, target, focus_id, node);
+    }
     pub(crate) fn active(&self) -> bool {
         self.runtime.item_visual_key().as_deref() == Some(self.key.as_str())
     }
@@ -749,31 +753,33 @@ impl DropdownContext {
         }
     }
     fn publish_item(&self, target: usize, focus: bool, nearest: bool) {
+        let Some(host_id) = self
+            .entries
+            .borrow()
+            .get(&target)
+            .map(|entry| entry.host_id.clone())
+        else {
+            return;
+        };
+        if !self.state.borrow().alive || !*self.open.peek() {
+            return;
+        }
+        self.invalidate_focus();
         {
             let mut state = self.state.borrow_mut();
-            if !state.alive || !*self.open.peek() {
-                return;
-            }
             // Roving tabindex follows the current key immediately. The active-
             // descendant marker is committed by the owned focus attempt.
             if focus || !nearest {
                 state.active = Some(target);
             }
-            state.focus_pending = None;
-            state.focus_epoch = state.focus_epoch.wrapping_add(1);
-            state.focus_target = if focus && !nearest {
-                format!("ix-dropdown-item-{target}")
-            } else {
-                "none".into()
-            };
         }
         self.notify();
-        if nearest {
+        if focus || nearest {
             let node = self.node.borrow().clone();
             if let Some(node) = node {
                 let context = self.clone();
                 node.queue_item_focus(
-                    format!("ix-dropdown-item-{target}"),
+                    host_id,
                     focus,
                     Rc::new(move || {
                         // The runtime cancels obsolete work; this callback also
@@ -1130,17 +1136,21 @@ impl DropdownContext {
             {
                 // The source trap listens on the content host and only wraps
                 // a current candidate. An external trigger keeps native Tab.
-                result.prevent = true;
-                result.stop = true;
-                let mut state = self.state.borrow_mut();
-                state.focus_epoch = state.focus_epoch.wrapping_add(1);
-                state.focus_target = if facts.shift {
-                    "last-native".into()
-                } else {
-                    "first-native".into()
-                };
-                drop(state);
-                self.notify();
+                self.invalidate_focus();
+                if let Some(node) = self.node.borrow().clone() {
+                    let context = self.clone();
+                    if node.queue_tab_boundary_focus(
+                        &facts.focusable_ids,
+                        facts.shift,
+                        Rc::new(move || context.notify()),
+                    ) {
+                        result.prevent = true;
+                        result.stop = true;
+                        // Wake the renderer so the queued mounted effect can run
+                        // without waiting for an unrelated component update.
+                        self.notify();
+                    }
+                }
             }
             return result;
         }
@@ -1850,8 +1860,6 @@ fn DropdownSurface(
     ));
     let state = context.state.borrow();
     let generation = state.generation;
-    let focus_target = state.focus_target.clone();
-    let focus_version = state.focus_epoch;
     let trigger_version =
         (state.declaration.version > 0).then(|| state.declaration.version.to_string());
     let trigger_dispose_version = state.declaration.dispose_version.to_string();
@@ -1899,7 +1907,7 @@ fn DropdownSurface(
         "data-ix-overlay-top-layer":enable_top_layer.to_string(),"data-ix-overlay-mode":settings.mode.as_str(),
         "data-ix-overlay-trigger-visibility-check":(!settings.suppress_trigger_visibility_check).to_string(),
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
-        "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,"data-ix-overlay-focus-target":focus_target,"data-ix-overlay-focus-version":focus_version.to_string(),
+        "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,
         style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
         onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;mount_trigger.call(event.clone());mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.configure_navigation(state.settings.mode.as_str(),!state.settings.disable_focus_handling);drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}},
         onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}},
@@ -1937,6 +1945,7 @@ fn fallback_key(context: &DropdownContext, event: KeyboardEvent, on_trigger: boo
         focused_item: None,
         items: order,
         focus_count: 0,
+        focusable_ids: Vec::new(),
         focused_index: None,
         on_trigger,
         inside: !on_trigger,
@@ -2408,6 +2417,8 @@ mod tests {
         linked_blocked: bool,
         focus_checked: bool,
         no_focus: bool,
+        no_trap: bool,
+        alpha_id: Option<String>,
         placement: DropdownPlacement,
         suppress_visibility: bool,
         suppress_automatic: bool,
@@ -2444,6 +2455,8 @@ mod tests {
                 linked_blocked: false,
                 focus_checked: false,
                 no_focus: false,
+                no_trap: false,
+                alpha_id: None,
                 placement: DropdownPlacement::default(),
                 suppress_visibility: false,
                 suppress_automatic: false,
@@ -2515,11 +2528,11 @@ mod tests {
         let deep_before = config.clone();
         rsx! {div {
             if settings.visible {
-            Dropdown {label:"Menu",navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
+            Dropdown {label:"Menu",navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,disable_focus_trap:settings.no_trap,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
                 onbeforechange:move |event:DropdownChangeEvent|{let veto={let mut state=before.borrow_mut();state.requests.push((event.open,event.previous));if event.open{state.veto_open}else{state.veto_close}};if veto{event.prevent_default();}},
                 onchange:move |open:bool|{let (close,capture)={let mut state=changed.borrow_mut();state.changed.push(open);(state.close_after_open&&open,state.context.clone())};let context=capture.borrow().clone();if let Some(context)=context{changed.borrow_mut().deliveries.push((settings.listener_revision,open,*context.open.peek()));if close{context.request(false,Reason::Trigger,false);}}},
                 Stateful {config:config.clone()}
-                DropdownItem {label:"Alpha",onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|click.borrow_mut().native_clicks+=1}
+                DropdownItem {label:"Alpha",id:settings.alpha_id.clone(),onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|click.borrow_mut().native_clicks+=1}
                 DropdownItem {label:"Disabled",disabled:true}
                 DropdownItem {label:"Linked",dropdown:linked,checked:true}
                 DropdownSubmenu {label:"Explicit",DropdownItem {label:"Persistent nested"}}
@@ -3590,27 +3603,50 @@ mod tests {
     }
 
     #[test]
-    fn native_ordinary_tab_wraps_only_current_content_candidates() {
+    fn native_ordinary_tab_wraps_registered_controls_and_preserves_native_paths() {
         let _guard = crate::test_event_converter_guard();
-        for (inside, on_trigger, count, index, shift, expected) in [
-            (false, true, 1, None, false, "none"),
-            (false, true, 1, None, true, "none"),
-            (false, true, 1, Some(0), false, "none"),
-            (true, false, 1, None, false, "none"),
-            (true, false, 1, Some(1), false, "none"),
-            (true, false, 0, None, false, "none"),
-            (true, false, 3, Some(1), false, "none"),
-            (true, false, 3, Some(0), false, "none"),
-            (true, false, 3, Some(2), false, "first-native"),
-            (true, false, 3, Some(0), true, "last-native"),
-            // A custom trigger within the content can itself be a candidate.
-            (true, true, 1, Some(0), false, "first-native"),
+        for (inside, index, shift, registered, no_trap, expected) in [
+            (true, 2, false, true, false, Some("mixed-category")),
+            (true, 0, true, true, false, Some("mixed-native")),
+            (true, 1, false, true, false, None),
+            (false, 2, false, true, false, None),
+            (true, 2, false, false, false, None),
+            (true, 2, false, true, true, None),
         ] {
-            let mut h = Harness::new();
+            let mut h = Harness::with_settings(Fixture {
+                no_trap,
+                ..Default::default()
+            });
             h.click("Menu");
             let context = h.context();
             let node = context.node.borrow().clone().unwrap();
             let runtime = node.runtime().unwrap();
+            let facts = mixed_inventory_facts();
+            let focuses = Rc::new(RefCell::new(Vec::new()));
+            let focusable_ids = facts
+                .hosts
+                .iter()
+                .map(|host| format!("{}-control", host.target))
+                .collect::<Vec<_>>();
+            if registered {
+                for (host, focus_id) in facts.hosts.iter().zip(&focusable_ids) {
+                    let key = if host.registration_key.is_empty() {
+                        &host.capture
+                    } else {
+                        &host.registration_key
+                    };
+                    runtime.register_item_cue(key.clone(), host.kind);
+                    runtime.register_item_control_mount(
+                        key,
+                        &host.target,
+                        focus_id,
+                        Rc::new(MountedData::new(InventoryMount {
+                            target: host.target.clone(),
+                            focuses: focuses.clone(),
+                        })),
+                    );
+                }
+            }
             let transport = h
                 .attrs
                 .iter()
@@ -3620,32 +3656,79 @@ mod tests {
                 .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
                 .unwrap();
             let before = h.config.borrow().requests.clone();
-            let report = serde_json::json!({
-                "owner":runtime.owner_id(),"sequence":1,"kind":"key","phase":"bubble",
-                "key":"Tab","shift":shift,
-                "hosts":if inside {vec![node.id()]} else {vec![]},
-                "triggers":if on_trigger {vec![node.id()]} else {vec![]},
-                "nodes":[{
-                    "id":node.id(),"generation":node.generation(),"connected":true,
-                    "discovery_ready":true,"mode":"active-descendant","open":true,
-                    "on_trigger":on_trigger,"inside":inside,
-                    "focus_count":count,"focused_index":index
-                }]
-            });
+            let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"key","phase":"bubble",
+            "key":"Tab","shift":shift,"hosts":if inside {vec![node.id()]} else {vec![]},
+            "triggers":if inside {vec![]} else {vec![node.id()]},"nodes":[{
+                "id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
+                "mode":"active-descendant","open":true,"on_trigger":!inside,"inside":inside,
+                "focus_count":3,"focused_index":index,"focusable_ids":focusable_ids,"inventory":facts
+            }]});
+            let revision_before = *context.revision.peek();
             let (prevented, propagates) = dispatch(&h.dom, "input", transport, report.to_string());
+            if expected.is_some() {
+                assert!(
+                    *context.revision.peek() > revision_before,
+                    "admitted Tab focus wakes the renderer before any manual settling"
+                );
+            }
             h.settle();
-            assert_eq!(prevented, expected != "none", "{report}");
-            assert!(
-                !propagates,
-                "transport stays private; native stop uses the acknowledgement channel"
+            assert_eq!(prevented, expected.is_some(), "{report}");
+            assert!(!propagates, "transport remains private");
+            assert_eq!(
+                focuses.borrow().last().map(String::as_str),
+                expected,
+                "{report}"
             );
-            assert_eq!(context.state.borrow().focus_target, expected, "{report}");
-            assert!(
-                *context.open.peek(),
-                "ordinary Tab leaves visibility unchanged"
-            );
-            assert_eq!(h.config.borrow().requests, before, "no visibility request");
+            assert_eq!(*context.open.peek(), !no_trap);
+            if !no_trap {
+                assert_eq!(
+                    h.config.borrow().requests,
+                    before,
+                    "wrapping does not request visibility changes"
+                );
+            }
+            assert_eq!(runtime.pending_item_focus_count(), 0);
         }
+    }
+
+    #[test]
+    fn roving_typeahead_focuses_authored_item_id_and_dismissal_cancels_pending_mount() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            mode: DropdownNavigationMode::RovingTabindex,
+            alpha_id: Some("authored-alpha".into()),
+            ..Default::default()
+        });
+        h.click("Menu");
+        let mock = mount_trigger_mock(&mut h, "Alpha");
+        assert!(h.key("Menu", Key::Character("a".into())).0);
+        assert_eq!(*mock.calls.borrow(), ["Alpha"]);
+        let context = h.context();
+        let selected = context.state.borrow().active.unwrap();
+        assert_eq!(
+            context.entries.borrow()[&selected].host_id,
+            "authored-alpha"
+        );
+        let html = h.html();
+        assert!(!html.contains("data-ix-overlay-focus-target"));
+        assert!(!html.contains("data-ix-overlay-focus-version"));
+        mock.pending.set(true);
+        mock.started.set(false);
+        mock.dropped.set(false);
+        h.key("Menu", Key::Character("a".into()));
+        assert!(mock.started.get());
+        assert!(!mock.dropped.get());
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Outside, false)));
+        h.settle();
+        assert!(
+            mock.dropped.get(),
+            "dismissal releases the pending mounted focus attempt"
+        );
+        mock.pending.set(false);
+        mock.waiter.borrow_mut().take().unwrap().wake();
+        h.settle();
+        assert_eq!(*mock.calls.borrow(), ["Alpha"]);
     }
 
     #[test]
