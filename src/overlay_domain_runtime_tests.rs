@@ -694,3 +694,395 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
     assert!(!trap_query(&dom_parent, &parent, 5, "parent-last").default_action_enabled());
     assert!(parent.open());
 }
+
+fn build_deferred_exit_fixture(fixture: &Fixture, nested_observe: Rc<Cell<bool>>) -> VirtualDom {
+    let dom = build(fixture);
+    dom.in_scope(fixture.scope(), || {
+        let runtime = fixture.runtime();
+        let id = fixture.0.borrow().id;
+        let mut callbacks = runtime.entry(id).unwrap().callbacks;
+        let close = fixture.node();
+        callbacks.key = Some(Rc::new(move |facts| {
+            if facts.key != "Tab" || facts.default_prevented {
+                return KeyDecision::default();
+            }
+            let runtime = close.runtime().unwrap();
+            runtime.dismiss_root(close.id(), Reason::Keyboard, false);
+            if nested_observe.replace(false) {
+                // Real nested input replaces global ACK state while the outer
+                // key callback has not yet returned/admitted its focus job.
+                let sequence = runtime.0.borrow().sequence + 1;
+                let document = runtime.0.borrow().document.clone();
+                let generation = runtime.entry(close.id()).unwrap().generation;
+                let report = serde_json::json!({
+                    "owner":runtime.owner_id(),"document":document,"sequence":sequence,
+                    "kind":"observe","nodes":[{"id":close.id(),"generation":generation,
+                        "connected":true,"discovery_ready":true}]
+                });
+                runtime.input(trap_form(report));
+            }
+            KeyDecision {
+                release_focus: true,
+                ..KeyDecision::default()
+            }
+        }));
+        let node = runtime.register(
+            id.into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        fixture.0.borrow_mut().node = Some(node);
+    });
+    dom
+}
+
+fn deferred_exit_report(fixture: &Fixture, document: &str, sequence: u64) -> serde_json::Value {
+    let id = fixture.0.borrow().id;
+    serde_json::json!({
+        "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
+        "kind":"key","phase":"capture","key":"Tab","hosts":[id],"triggers":[id],
+        "tab_order":["before","trigger","after"],
+        "nodes":[{"id":id,"generation":fixture.node().generation(),"connected":true,
+            "discovery_ready":true,"mode":"roving-tabindex","trigger_id":"trigger",
+            "inside":true,"on_trigger":true}]
+    })
+}
+
+fn deferred_query(
+    dom: &VirtualDom,
+    fixture: &Fixture,
+    sequence: u64,
+    field: &str,
+    target: &str,
+    owner: Option<&str>,
+) -> FormEvent {
+    let mut value = serde_json::json!({
+        "owner":owner.map(str::to_string).unwrap_or_else(||fixture.runtime().owner_id()),
+        "sequence":sequence
+    });
+    value[field] = target.into();
+    let event = trap_form(value);
+    dom.in_scope(fixture.scope(), || fixture.runtime().query(event.clone()));
+    event
+}
+
+fn deferred_observe(dom: &VirtualDom, fixture: &Fixture, document: &str, sequence: u64) {
+    let value = serde_json::json!({
+        "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
+        "kind":"observe","nodes":[{"id":fixture.0.borrow().id,
+            "generation":fixture.node().generation(),"connected":true,"discovery_ready":true}]
+    });
+    assert!(deliver_trap(dom, fixture, value).default_action_enabled());
+}
+
+#[test]
+fn deferred_exit_schedule_and_execution_survive_observe_ack_and_consume_once() {
+    let fixture = Fixture::new("deferred-exit-ack", 601);
+    let dom = build_deferred_exit_fixture(&fixture, Rc::new(Cell::new(false)));
+    let document = "deferred exit ACK document";
+    attach(&dom, &fixture, document);
+    deferred_observe(&dom, &fixture, document, 1);
+    present(&dom, &fixture);
+    assert!(
+        !deliver_trap(&dom, &fixture, deferred_exit_report(&fixture, document, 2))
+            .default_action_enabled()
+    );
+    assert!(!fixture.open());
+    assert!(
+        deferred_query(&dom, &fixture, 2, "pending_focus_target", "after", None)
+            .default_action_enabled(),
+        "unarmed job cannot execute"
+    );
+    assert!(
+        deferred_query(
+            &dom,
+            &fixture,
+            2,
+            "schedule_focus_target",
+            "after",
+            Some("foreign owner")
+        )
+        .default_action_enabled()
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 99, "schedule_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 2, "schedule_focus_target", "wrong", None)
+            .default_action_enabled()
+    );
+    deferred_observe(&dom, &fixture, document, 3);
+    assert!(
+        trap_query(&dom, &fixture, 2, "after").default_action_enabled(),
+        "deferred job is separate from immediate focus ACK"
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 2, "schedule_focus_target", "after", None)
+            .default_action_enabled(),
+        "later observe ACK does not erase scheduling admission"
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 2, "schedule_focus_target", "after", None)
+            .default_action_enabled(),
+        "schedule only once"
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 2, "pending_focus_target", "wrong", None)
+            .default_action_enabled()
+    );
+    assert!(
+        deferred_query(
+            &dom,
+            &fixture,
+            2,
+            "pending_focus_target",
+            "after",
+            Some("foreign owner")
+        )
+        .default_action_enabled()
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 2, "pending_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 2, "pending_focus_target", "after", None)
+            .default_action_enabled(),
+        "execution consumes once"
+    );
+}
+
+#[test]
+fn deferred_veto_exit_survives_same_owner_close_reopen_and_later_observation() {
+    let fixture = Fixture::new("deferred-exit-veto", 602);
+    let dom = build_deferred_exit_fixture(&fixture, Rc::new(Cell::new(false)));
+    let document = "deferred veto owner document";
+    attach(&dom, &fixture, document);
+    deferred_observe(&dom, &fixture, document, 1);
+    present(&dom, &fixture);
+    fixture.0.borrow().veto.set(true);
+    assert!(
+        !deliver_trap(&dom, &fixture, deferred_exit_report(&fixture, document, 2))
+            .default_action_enabled()
+    );
+    assert!(
+        fixture.open(),
+        "veto retains root but still admits exit focus"
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 2, "schedule_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    fixture.0.borrow().veto.set(false);
+    dom.in_scope(fixture.scope(), || {
+        assert!(fixture.node().request(false, Reason::Trigger, false));
+        assert!(fixture.node().request(true, Reason::Trigger, false));
+    });
+    deferred_observe(&dom, &fixture, document, 3);
+    assert!(
+        !deferred_query(&dom, &fixture, 2, "pending_focus_target", "after", None)
+            .default_action_enabled(),
+        "later same-registration visibility/revision must not revoke source job"
+    );
+    assert!(fixture.open());
+}
+
+#[test]
+fn deferred_exit_rejects_replaced_and_unregistered_owner() {
+    let fixture = Fixture::new("deferred-exit-replaced", 603);
+    let dom = build_deferred_exit_fixture(&fixture, Rc::new(Cell::new(false)));
+    let document = "deferred replaced owner document";
+    attach(&dom, &fixture, document);
+    deferred_observe(&dom, &fixture, document, 1);
+    present(&dom, &fixture);
+    assert!(
+        !deliver_trap(&dom, &fixture, deferred_exit_report(&fixture, document, 2))
+            .default_action_enabled()
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 2, "schedule_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    dom.in_scope(fixture.scope(), || {
+        let runtime = fixture.runtime();
+        let callbacks = runtime.entry("deferred-exit-replaced").unwrap().callbacks;
+        let replacement = runtime.register(
+            "deferred-exit-replaced".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        fixture.0.borrow_mut().node = Some(replacement);
+    });
+    assert!(
+        deferred_query(&dom, &fixture, 2, "pending_focus_target", "after", None)
+            .default_action_enabled(),
+        "new registration cannot execute old queued target"
+    );
+    present(&dom, &fixture);
+    assert!(
+        !deliver_trap(&dom, &fixture, deferred_exit_report(&fixture, document, 3))
+            .default_action_enabled()
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 3, "schedule_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    dom.in_scope(fixture.scope(), || fixture.node().unregister());
+    assert!(
+        deferred_query(&dom, &fixture, 3, "pending_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 3, "schedule_focus_target", "after", None)
+            .default_action_enabled()
+    );
+}
+
+#[test]
+fn deferred_reentrant_observe_and_second_tab_preserve_both_source_jobs() {
+    let fixture = Fixture::new("deferred-exit-reentrant", 604);
+    let dom = build_deferred_exit_fixture(&fixture, Rc::new(Cell::new(true)));
+    let document = "deferred reentrant report document";
+    attach(&dom, &fixture, document);
+    deferred_observe(&dom, &fixture, document, 1);
+    present(&dom, &fixture);
+    assert!(
+        !deliver_trap(&dom, &fixture, deferred_exit_report(&fixture, document, 2))
+            .default_action_enabled()
+    );
+    assert_eq!(
+        fixture.runtime().0.borrow().sequence,
+        3,
+        "nested actual input advanced the latest ACK before outer callback returned"
+    );
+    present(&dom, &fixture);
+    assert!(
+        !deliver_trap(&dom, &fixture, deferred_exit_report(&fixture, document, 4))
+            .default_action_enabled()
+    );
+    deferred_observe(&dom, &fixture, document, 5);
+    assert!(
+        !deferred_query(&dom, &fixture, 2, "schedule_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 4, "schedule_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 4, "pending_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 2, "pending_focus_target", "after", None)
+            .default_action_enabled(),
+        "later job does not erase resumed outer job"
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 2, "pending_focus_target", "after", None)
+            .default_action_enabled()
+    );
+}
+
+#[test]
+fn deferred_exit_projects_current_destination_popover_visibility_without_canceling_root_jobs() {
+    let parent = Fixture::new("deferred-destination-popover", 605);
+    let child = Fixture::new("deferred-destination-dropdown", 606);
+    let dom_parent = build_popover_fixture(&parent);
+    let dom_child = build_deferred_exit_fixture(&child, Rc::new(Cell::new(false)));
+    let document = "deferred destination projection document";
+    attach(&dom_parent, &parent, document);
+    attach(&dom_child, &child, document);
+    observe(
+        &dom_parent,
+        &parent,
+        document,
+        1,
+        0,
+        false,
+        &[parent.0.borrow().id],
+    );
+    deferred_observe(&dom_child, &child, document, 1);
+    present(&dom_parent, &parent);
+    present(&dom_child, &child);
+
+    let report = |sequence| {
+        let mut value = deferred_exit_report(&child, document, sequence);
+        value["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(trap_node(parent.0.borrow().id, &[], &[]));
+        value
+    };
+    let execute = |sequence| {
+        let event = trap_form(serde_json::json!({
+            "owner":child.runtime().owner_id(),"sequence":sequence,
+            "pending_focus_target":"after","focus_hosts":[parent.0.borrow().id]
+        }));
+        dom_child.in_scope(child.scope(), || child.runtime().query(event.clone()));
+        event
+    };
+
+    assert!(!deliver_trap(&dom_child, &child, report(2)).default_action_enabled());
+    assert!(!child.open());
+    assert!(
+        !deferred_query(
+            &dom_child,
+            &child,
+            2,
+            "schedule_focus_target",
+            "after",
+            None
+        )
+        .default_action_enabled()
+    );
+    dom_parent.in_scope(parent.scope(), || {
+        assert!(parent.node().request(false, Reason::Trigger, false));
+    });
+    assert!(
+        execute(2).default_action_enabled(),
+        "Rust projects the closing destination's hidden-focus no-op before native hide catches up"
+    );
+
+    dom_parent.in_scope(parent.scope(), || {
+        assert!(parent.node().request(true, Reason::Trigger, false));
+    });
+    assert!(
+        execute(2).default_action_enabled(),
+        "a rejected destination projection still consumes that source job once"
+    );
+    present(&dom_child, &child);
+    assert!(!deliver_trap(&dom_child, &child, report(3)).default_action_enabled());
+    assert!(
+        !deferred_query(
+            &dom_child,
+            &child,
+            3,
+            "schedule_focus_target",
+            "after",
+            None
+        )
+        .default_action_enabled()
+    );
+    dom_parent.in_scope(parent.scope(), || {
+        assert!(parent.node().request(false, Reason::Trigger, false));
+        assert!(parent.node().request(true, Reason::Trigger, false));
+    });
+    assert!(
+        !execute(3).default_action_enabled(),
+        "current reopened destination permits a different job from the same closed Dropdown root"
+    );
+    assert!(
+        !child.open(),
+        "originating Dropdown visibility does not gate execution"
+    );
+    assert!(
+        execute(3).default_action_enabled(),
+        "successful execution consumes once"
+    );
+}

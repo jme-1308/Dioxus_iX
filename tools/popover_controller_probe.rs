@@ -402,12 +402,20 @@ fn TabDropdown(roving: bool) -> Element {
 }
 
 const TAB_NATIVE_JOURNAL: &str = r#"
-const abort=new AbortController(),events=new WeakMap();let sequence=0;
-const node=element=>element?{id:element.id,tag:element.tagName,label:element.getAttribute?.('aria-label'),host:element.closest?.('[data-ix-overlay-host]')?.getAttribute('data-ix-overlay-host')}:null;
-const capture=(phase,event)=>{if(event.key!=='Tab')return;if(!events.has(event))events.set(event,++sequence);dioxus.send({phase,sequence:events.get(event),key:event.key,shift:event.shiftKey,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,cancelBubble:event.cancelBubble,target:node(event.target),active:node(document.activeElement)});};
-document.addEventListener('keydown',event=>capture('document-capture',event),{capture:true,passive:true,signal:abort.signal});
+const abort=new AbortController(),events=new WeakMap(),objects=new WeakMap(),watched=new WeakMap();let sequence=0,objectSequence=0;
+const objectId=element=>{if(!element)return null;if(!objects.has(element))objects.set(element,++objectSequence);return objects.get(element);};
+const node=element=>element?{id:element.id,tag:element.tagName,label:element.getAttribute?.('aria-label'),host:element.closest?.('[data-ix-overlay-host]')?.getAttribute('data-ix-overlay-host'),objectId:objectId(element),connected:element.isConnected}:null;
+const dropdown=event=>{const wrapper=event.target?.closest?.('#popover-tab-dropdown'),host=wrapper?.querySelector('[data-ix-overlay-host]');return{wrapper,host};};
+const capture=(phase,event,extra={})=>{if(event.key!=='Tab')return;if(!events.has(event))events.set(event,++sequence);const {wrapper,host}=dropdown(event);dioxus.send({phase,sequence:events.get(event),key:event.key,shift:event.shiftKey,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,cancelBubble:event.cancelBubble,target:node(event.target),active:node(document.activeElement),dropdown:wrapper?{open:wrapper.dataset.open,host:node(host),nativeOpen:host?.matches(':popover-open')??null,hidden:host?.hidden,inert:host?.inert}:null,...extra});};
+document.addEventListener('keydown',event=>{capture('document-capture',event);if(event.key!=='Tab')return;const {host}=dropdown(event);if(!host)return;
+ if(!watched.has(host))for(const type of ['beforetoggle','toggle'])host.addEventListener(type,native=>{const latest=watched.get(host);if(latest)capture('dropdown-native-'+type,latest,{oldState:native.oldState,newState:native.newState});},{passive:true,signal:abort.signal});
+ watched.set(host,event);
+},{capture:true,passive:true,signal:abort.signal});
 document.addEventListener('keydown',event=>capture('document-bubble-observer',event),{passive:true,signal:abort.signal});
-window.addEventListener('keydown',event=>capture('window-bubble-observer',event),{passive:true,signal:abort.signal});
+window.addEventListener('keydown',event=>{capture('window-bubble-observer',event);if(event.key!=='Tab')return;
+ queueMicrotask(()=>{if(!abort.signal.aborted)capture('window-after-dispatch-microtask',event);});
+ requestAnimationFrame(time=>{if(abort.signal.aborted)return;capture('window-next-native-frame',event,{frameTime:time});requestAnimationFrame(next=>{if(!abort.signal.aborted)capture('window-second-native-frame',event,{frameTime:next});});});
+},{passive:true,signal:abort.signal});
 dioxus.send({phase:'ready',readOnly:true});try{await dioxus.recv();}finally{abort.abort();}
 "#;
 
@@ -450,7 +458,7 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[];
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[];
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -543,15 +551,31 @@ try {
   const matched=row.afterActiveObject===objectId(expected.target)&&row.immediateDefaultPrevented===expected.prevented&&row.reachedWindow===expected.window;
   tabChecks.push({label:row.label,matched,expected:{active:describe(expected.target),defaultPrevented:expected.prevented,reachedWindow:expected.window},actual:{active:row.afterActive,defaultPrevented:row.immediateDefaultPrevented,reachedWindow:row.reachedWindow}});
  };
- const tab=async(label,target,shift=false)=>{
+ const tab=async(label,target,shift=false,afterDispatch=null)=>{
   if(!target)throw Error('Missing native Tab target '+label);target.focus();await settle();assert(document.activeElement===target,'actual native seeded Tab focus '+label);
   const before={state:read(),active:describe(document.activeElement),dropdownOpen:get('popover-tab-dropdown')?.dataset.open??null},nativeStart=nativeTabRows().length,rustStart=logs().length,event=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',shiftKey:shift,bubbles:true,cancelable:true,composed:true});
-  let reachedDocument=false,reachedWindow=false;const listeners=new AbortController();
-  document.addEventListener('keydown',actual=>{if(actual===event)reachedDocument=true;},{passive:true,signal:listeners.signal});
-  window.addEventListener('keydown',actual=>{if(actual===event)reachedWindow=true;},{passive:true,signal:listeners.signal});
+  let reachedDocument=false,reachedWindow=false;const listeners=new AbortController(),dropdown=target.closest('#popover-tab-dropdown'),dropdownHost=dropdown?.querySelector('[data-ix-overlay-host]'),deferredTimeline=[],secondaryEvents=[];
+  const phase=(name,extra={})=>{const host=dropdownHost,row={phase:name,time:performance.now(),active:describe(document.activeElement),activeObject:objectId(document.activeElement),originalDefaultPrevented:event.defaultPrevented,targetConnected:target.isConnected,dropdown:dropdown?{connected:dropdown.isConnected,open:dropdown.dataset.open,host:describe(host),hostConnected:!!host?.isConnected,nativeOpen:host?.matches(':popover-open')??null,hidden:host?.hidden,inert:host?.inert,geometry:geometry(host)}:null,rustCallbacks:logs().slice(rustStart),...extra};if(dropdown)deferredTimeline.push(row);return row;};
+  document.addEventListener('keydown',actual=>{if(actual===event){reachedDocument=true;phase('late-document-bubble');}},{passive:true,signal:listeners.signal});
+  window.addEventListener('keydown',actual=>{if(actual===event){reachedWindow=true;phase('window-bubble');}},{passive:true,signal:listeners.signal});
+  if(dropdown){
+   for(const type of ['beforetoggle','toggle'])dropdownHost?.addEventListener(type,native=>phase('native-'+type,{oldState:native.oldState,newState:native.newState}),{passive:true,signal:listeners.signal});
+   for(const type of ['focusin','focusout'])document.addEventListener(type,native=>phase('native-'+type,{focusEventTarget:describe(native.target),relatedTarget:describe(native.relatedTarget)}),{capture:true,passive:true,signal:listeners.signal});
+   requestAnimationFrame(time=>{if(!listeners.signal.aborted)phase('native-frame-before-release',{frameTime:time});});
+  }
+  const dispatchSecondary=backwards=>{
+   const second=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',shiftKey:backwards,bubbles:true,cancelable:true,composed:true}),value={shift:backwards,target:describe(target),beforeActive:describe(document.activeElement),lateDocument:null,window:null};
+   document.addEventListener('keydown',actual=>{if(actual===second)value.lateDocument={active:describe(document.activeElement),defaultPrevented:second.defaultPrevented};},{passive:true,signal:listeners.signal});
+   window.addEventListener('keydown',actual=>{if(actual===second)value.window={active:describe(document.activeElement),defaultPrevented:second.defaultPrevented};},{passive:true,signal:listeners.signal});
+   driverJournal.push({scenario,kind:'synthetic-native-Tab',label:label+' same-turn second key',shift:backwards,trusted:second.isTrusted,target:describe(target),beforeActive:value.beforeActive,nativeDefaultNavigation:false,sameTurn:true});
+   target.dispatchEvent(second);value.defaultPrevented=second.defaultPrevented;value.afterActive=describe(document.activeElement);secondaryEvents.push(value);phase('secondary-post-dispatch',{secondary:value});return value;
+  };
   driverJournal.push({scenario,kind:'synthetic-native-Tab',label,shift,trusted:event.isTrusted,target:describe(target),beforeActive:describe(document.activeElement),nativeDefaultNavigation:false});
-  target.dispatchEvent(event);const immediateDefaultPrevented=event.defaultPrevented,immediateActive=describe(document.activeElement);await settle();
-  const row={label,shift,trusted:event.isTrusted,target:describe(target),immediateDefaultPrevented,settledDefaultPrevented:event.defaultPrevented,reachedDocument,reachedWindow,immediateActive,afterActive:describe(document.activeElement),afterActiveObject:objectId(document.activeElement),before,nativePhases:nativeTabRows().slice(nativeStart),rustCallbacks:logs().slice(rustStart),afterState:read(),dropdownOpen:get('popover-tab-dropdown')?.dataset.open??null};
+  target.dispatchEvent(event);const immediateDefaultPrevented=event.defaultPrevented,immediateActive=describe(document.activeElement);phase('post-dispatch');
+  const actionFacts=afterDispatch?afterDispatch({phase,dispatchSecondary}):null;if(afterDispatch)phase('after-same-turn-action',{actionFacts});
+  if(dropdown){const frame=name=>new Promise(resolve=>requestAnimationFrame(time=>resolve(phase(name,{frameTime:time}))));const firstFrame=frame('first-native-frame');await Promise.resolve();phase('post-dispatch-microtask');await firstFrame;await frame('second-native-frame');}
+  await settle();phase('settled');
+  const row={label,shift,trusted:event.isTrusted,target:describe(target),immediateDefaultPrevented,settledDefaultPrevented:event.defaultPrevented,reachedDocument,reachedWindow,immediateActive,afterActive:describe(document.activeElement),afterActiveObject:objectId(document.activeElement),before,nativePhases:nativeTabRows().slice(nativeStart),rustCallbacks:logs().slice(rustStart),afterState:read(),dropdownOpen:get('popover-tab-dropdown')?.dataset.open??null,deferredTimeline,secondaryEvents,actionFacts};
   tabCases.push(row);save({phase:'synthetic-Tab',tab:row});listeners.abort();return row;
  };
  await wait(()=>nativeTabRows().some(row=>row.phase==='ready'),'read-only document/window Tab recorder ready');
@@ -585,6 +609,10 @@ try {
  const checkDropdown=(result,target,retained)=>{
   const matched=result.afterActiveObject===objectId(target)&&result.immediateDefaultPrevented===true&&result.dropdownOpen===String(retained)&&result.afterState.parent===true;
   tabChecks.push({label:result.label,matched,expected:{active:describe(target),defaultPrevented:true,dropdownOpen:String(retained),parentOpen:true},actual:{active:result.afterActive,defaultPrevented:result.immediateDefaultPrevented,dropdownOpen:result.dropdownOpen,parentOpen:result.afterState.parent}});
+  const timing=result.deferredTimeline,oldTarget=result.target.objectId,synchronous=['late-document-bubble','window-bubble','post-dispatch'].map(name=>timing.find(row=>row.phase===name)),microtask=timing.find(row=>row.phase==='post-dispatch-microtask'),settled=timing.find(row=>row.phase==='settled');
+  const requests=result.rustCallbacks.filter(row=>row.kind==='tab-dropdown-request'&&row.details.open===false),completed=result.rustCallbacks.filter(row=>row.kind==='tab-dropdown-completed'&&row.details.open===false);
+  const deferred=synchronous.every(row=>row?.activeObject===oldTarget&&row.originalDefaultPrevented===true)&&!!microtask&&timing.some(row=>row.phase==='first-native-frame')&&timing.some(row=>row.phase==='second-native-frame')&&settled?.activeObject===objectId(target)&&settled?.dropdown?.hostConnected===true&&settled.dropdown.nativeOpen===retained&&requests.length===1&&requests[0].details.vetoed===retained&&completed.length===(retained?0:1);
+  deferredChecks.push({label:result.label,matched:deferred,expected:{synchronousActive:result.target,settledActive:describe(target),settledNativeOpen:retained,falseRequests:1,falseCompletions:retained?0:1},actual:{synchronous,microtask,settled,falseRequests:requests,falseCompletions:completed}});
  };
  for(const mode of ['tab-dropdown-active','tab-dropdown-roving']){
   await freshFocus(mode,'actual nested Dropdown Tab ownership '+mode);await command('show','parent');
@@ -598,7 +626,40 @@ try {
  await freshFocus('tab-dropdown-active','vetoed Dropdown Tab still queues parent-adjacent focus');await command('show','parent');await openTabDropdown();input('popover-tab-dropdown-veto-input','true');await wait(()=>get('popover-tab-dropdown')?.dataset.vetoClose==='true','actual Rust Dropdown close veto');
  const vetoTrigger=get('popover-tab-dropdown').querySelector('[data-ix-overlay-trigger]');row=await tab('vetoed active-descendant forward release retains child but focuses parent',vetoTrigger);checkDropdown(row,get('popover-tab-second'),true);
  assert(row.rustCallbacks.some(value=>value.kind==='tab-dropdown-request'&&value.details.open===false&&value.details.vetoed===true),'actual Dropdown false request was vetoed before retained parent-adjacent focus');
+ const queuedSetup=async(label,veto=false)=>{
+  await freshFocus('tab-dropdown-active',label);await command('show','parent');await openTabDropdown();
+  if(veto){input('popover-tab-dropdown-veto-input','true');await wait(()=>get('popover-tab-dropdown')?.dataset.vetoClose==='true','actual Rust queued-exit veto');}
+  return{trigger:get('popover-tab-dropdown').querySelector('[data-ix-overlay-trigger]'),before:get('popover-tab-first'),after:get('popover-tab-second'),parentTrigger:document.querySelector('[popovertarget="'+native('parent').id+'"]')};
+ };
+ const checkQueued=(result,target,parentOpen,dropdownOpen,extra)=>{
+  const synchronous=['late-document-bubble','window-bubble','post-dispatch','after-same-turn-action','post-dispatch-microtask','native-frame-before-release'].map(name=>result.deferredTimeline.find(row=>row.phase===name)),settled=result.deferredTimeline.find(row=>row.phase==='settled');
+  const originRetained=synchronous.every(row=>row?.activeObject===result.target.objectId&&row.originalDefaultPrevented===true),endpoint=result.afterActiveObject===objectId(target)&&result.afterState.parent===parentOpen&&result.dropdownOpen===String(dropdownOpen)&&native('parent').matches(':popover-open')===parentOpen&&settled?.dropdown?.nativeOpen===dropdownOpen;
+  queuedChecks.push({label:result.label,matched:result.immediateDefaultPrevented&&result.reachedDocument&&result.reachedWindow&&originRetained&&endpoint&&extra.matched,expected:{originBeforeFrame:result.target,settledActive:describe(target),parentOpen,dropdownOpen,...extra.expected},actual:{synchronous,settledActive:result.afterActive,parentOpen:result.afterState.parent,dropdownOpen:result.dropdownOpen,settledNativeOpen:settled?.dropdown?.nativeOpen,...extra.actual}});
+ };
+ let queued=await queuedSetup('source53 accepted first Tab survives same-turn unhandled reverse Tab');
+ row=await tab('accepted forward plus same-turn reverse queues only first exit',queued.trigger,false,({dispatchSecondary})=>({action:'second-reverse-Tab',second:dispatchSecondary(true)}));
+ let second=row.secondaryEvents[0];checkQueued(row,queued.after,true,false,{matched:second?.defaultPrevented===false&&second.afterActive?.objectId===objectId(queued.trigger)&&second.lateDocument?.active?.objectId===objectId(queued.trigger)&&second.lateDocument.defaultPrevented===false&&second.window?.active?.objectId===objectId(queued.trigger)&&second.window.defaultPrevented===false,expected:{secondDefaultPrevented:false},actual:{second}});
+ queued=await queuedSetup('source54 two vetoed same-turn Tab exits retain both captured jobs',true);
+ row=await tab('vetoed forward plus same-turn reverse retains native focus order',queued.trigger,false,({dispatchSecondary})=>({action:'second-reverse-Tab',second:dispatchSecondary(true)}));
+ second=row.secondaryEvents[0];
+ const firstBoundary=row.deferredTimeline.findIndex(value=>value.phase==='native-frame-before-release'),lastBoundary=row.deferredTimeline.findIndex(value=>value.phase==='first-native-frame'),frameFocus=row.deferredTimeline.slice(firstBoundary+1,lastBoundary).filter(value=>value.phase==='native-focusin').map(value=>value.focusEventTarget),focusOrder=frameFocus.map(value=>value.objectId),expectedOrder=[objectId(queued.after),objectId(queued.before)],beforeFrame=row.deferredTimeline[firstBoundary],afterFrame=row.deferredTimeline[lastBoundary];
+ checkQueued(row,queued.before,true,true,{matched:second?.defaultPrevented===true&&second.afterActive?.objectId===objectId(queued.trigger)&&second.lateDocument?.active?.objectId===objectId(queued.trigger)&&second.lateDocument.defaultPrevented===true&&second.window?.active?.objectId===objectId(queued.trigger)&&second.window.defaultPrevented===true&&JSON.stringify(focusOrder)===JSON.stringify(expectedOrder)&&firstBoundary>=0&&lastBoundary>firstBoundary&&beforeFrame?.frameTime===afterFrame?.frameTime,expected:{secondDefaultPrevented:true,nativeFocusOrder:[describe(queued.after),describe(queued.before)],bothJobsInOneObservedFrame:true},actual:{second,nativeFocusOrder:frameFocus,beforeFrameTime:beforeFrame?.frameTime,afterFrameTime:afterFrame?.frameTime}});
+ queued=await queuedSetup('source55 actual trigger reopen does not revoke captured exit focus');
+ row=await tab('captured forward exit survives same-turn actual trigger click reopen',queued.trigger,false,()=>{driverJournal.push({scenario,kind:'synthetic-actual-Dropdown-trigger-click',target:describe(queued.trigger),sameTurn:true});queued.trigger.click();return{action:'reopen-actual-trigger-click',trigger:describe(queued.trigger)};});
+ checkQueued(row,queued.after,true,true,{matched:true,expected:{actualTriggerClickReopened:true},actual:{action:row.actionFacts}});
+ queued=await queuedSetup('source56 same-ID replacement cannot inherit captured actual target focus');
+ let replacement=null;const originalAfter=queued.after;
+ row=await tab('captured actual target replacement with same ID does not retarget focus',queued.trigger,false,()=>{replacement=document.createElement('button');replacement.type='button';replacement.id=originalAfter.id;replacement.tabIndex=originalAfter.tabIndex;replacement.textContent='Diagnostic same-ID native replacement';originalAfter.replaceWith(replacement);const value={action:'diagnostic-native-candidate-replacement',captured:describe(originalAfter),capturedConnected:originalAfter.isConnected,replacement:describe(replacement),replacementConnected:replacement.isConnected};driverJournal.push({scenario,kind:value.action,...value,sameTurn:true});return value;});
+ const replacementFocus=row.deferredTimeline.filter(value=>value.phase==='native-focusin'&&value.focusEventTarget?.objectId===objectId(replacement));
+ checkQueued(row,queued.trigger,true,false,{matched:originalAfter.isConnected===false&&replacement?.isConnected===true&&replacement!==originalAfter&&get(originalAfter.id)===replacement&&replacementFocus.length===0,expected:{capturedConnected:false,replacementConnected:true,replacementNeverFocused:true},actual:{captured:describe(originalAfter),capturedConnected:originalAfter.isConnected,replacement:describe(replacement),replacementConnected:replacement?.isConnected,replacementFocus}});
+ replacement.replaceWith(originalAfter);driverJournal.push({scenario,kind:'diagnostic-native-replacement-cleanup-after-recorded-verdict',restored:describe(originalAfter)});
+ queued=await queuedSetup('source57 parent public hide wins settled focus after captured child exit');
+ row=await tab('captured Dropdown exit followed by same-turn parent public hide',queued.trigger,false,()=>{const detail={action:'hide',target:'parent'};driverJournal.push({scenario,kind:'public-Rust-command-via-synthetic-input',detail,sameTurn:true});input('popover-command',JSON.stringify(detail));return{action:'parent-public-hide',detail};});
+ const closingAfterFocus=row.deferredTimeline.filter(value=>value.phase==='native-focusin'&&value.focusEventTarget?.objectId===objectId(queued.after));
+ checkQueued(row,queued.parentTrigger,false,false,{matched:closingAfterFocus.length===0,expected:{settledConfiguredParentTrigger:true,closingAfterNeverFocused:true},actual:{action:row.actionFacts,closingAfterFocus}});
  assert(tabChecks.every(check=>check.matched),'all named document Tab policy comparisons match pinned source contract');
- return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks}; }
+ assert(deferredChecks.every(check=>check.matched),'all five Dropdown exits defer their exact target focus beyond original dispatch');
+ assert(queuedChecks.every(check=>check.matched),'all five source-paired adversarial queued-focus cases preserve captured jobs and target identity');
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks}; }
 "#;

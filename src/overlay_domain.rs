@@ -487,6 +487,17 @@ impl Domain {
         self.0.borrow().keyboard
     }
 
+    /// Project accepted destination visibility while native hide may still be
+    /// awaiting renderer/IPC work. These are current native Popover ancestors,
+    /// not the originating Dropdown's presence or an earlier target path.
+    pub(crate) fn focus_destinations_visible(&self, popovers: &[String]) -> bool {
+        popovers.iter().all(|id| {
+            self.entry(id)
+                .filter(|entry| entry.kind == OverlayKind::Popover)
+                .is_some_and(|entry| self.read(id, &entry) == Some(true))
+        })
+    }
+
     pub(crate) fn topmost(&self) -> Option<String> {
         self.refresh();
         self.0.borrow().registry.topmost()

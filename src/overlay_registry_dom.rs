@@ -19,6 +19,7 @@ function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),handledBubbleKeys=new WeakSet();
+const pendingFocusFrames=new Set();
 const lastFocus=new Map(),nativeIds=new WeakMap(),nativeNodes=new Map();let nativeSequence=0;
 function nativeId(el){if(!(el instanceof HTMLElement))return '';if(el.id)return el.id;let id=nativeIds.get(el);if(!id){id=owner+'-native-'+(++nativeSequence);nativeIds.set(el,id);}nativeNodes.set(id,el);return id;}
 function findElement(id){const el=document.getElementById(id)||nativeNodes.get(id);return el instanceof HTMLElement&&el.isConnected?el:null;}
@@ -103,6 +104,13 @@ function hostAncestors(element){
 function nearestPopover(element){
   for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.getAttribute('data-ix-overlay-native-surface')==='popover')return n;
   return null;
+}
+function popoverAncestors(element){
+  const result=[];
+  for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.getAttribute('data-ix-overlay-native-surface')==='popover'){
+    const id=n.getAttribute('data-ix-overlay-host');if(id&&!result.includes(id))result.push(id);
+  }
+  return result;
 }
 function popoverTabFacts(panel,active){
   if(!panel)return [];
@@ -203,7 +211,7 @@ function send(report,event){
   if(!alive||!input)return;
   // Keep the actual observed objects through Rust callbacks. A replacement
   // with the same public ID must not inherit this event's focus permission.
-  const focusExecution=new Map([...report.tab_order,...report.focus_targets].map(id=>{
+  const focusExecution=new Map([...report.tab_order,...report.focus_targets,...report.nodes.map(node=>node.trigger_id)].filter(Boolean).map(id=>{
     const element=findElement(id),panel=element?nearestPopover(element):null;
     return [id,{element,panel,generation:panel?.getAttribute('data-surface-generation')}];
   }));
@@ -223,6 +231,23 @@ function send(report,event){
   if(report.kind==='key'){
     for(const [id,facts]of focusExecution){
       const el=facts.element;
+      if(report.key==='Tab'&&['capture','bubble','fallback'].includes(report.phase)){
+        const scheduleInput=transport();if(!scheduleInput)return;
+        scheduleInput.value=JSON.stringify({owner,sequence:report.sequence,schedule_focus_target:id});
+        if(!scheduleInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
+          // Rust owns the pending intent and validates it again in this frame.
+          // Keep the captured actual element: public-ID replacements cannot
+          // inherit it, and same-owner reopen does not retarget the source job.
+          const frame=requestAnimationFrame(()=>{
+            pendingFocusFrames.delete(frame);if(!alive)return;
+            const pendingInput=transport();if(!pendingInput)return;
+            pendingInput.value=JSON.stringify({owner,sequence:report.sequence,pending_focus_target:id,focus_hosts:popoverAncestors(el)});
+            const allowed=!pendingInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+            if(allowed&&el?.isConnected)el.focus();
+          });
+          pendingFocusFrames.add(frame);break;
+        }
+      }
       const valid=()=>el?.isConnected&&(!facts.panel||(facts.panel.isConnected&&facts.panel.matches(':popover-open')&&facts.panel.getAttribute('data-surface-generation')===facts.generation));
       if(!valid())continue;
       const focusInput=transport();if(!focusInput)return;
@@ -345,6 +370,7 @@ observer.observe(document.documentElement,{subtree:true,childList:true,attribute
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 try{reportObserve();await dioxus.recv();}finally{
   alive=false;listeners.abort();keyTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
+  for(const frame of pendingFocusFrames)cancelAnimationFrame(frame);pendingFocusFrames.clear();
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');
 }

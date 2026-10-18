@@ -1,6 +1,7 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
 use crate::overlay_domain::{Domain, DomainCallbacks};
+use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -109,6 +110,7 @@ struct Runtime {
     keyboard: bool,
     capture_block: Vec<(String, u64)>,
     ack: Ack,
+    pending_focus: PendingFocusQueue,
     bridge: Option<dioxus::document::Eval>,
     domain: Option<Domain>,
     document: String,
@@ -118,6 +120,7 @@ type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 
 impl Drop for Runtime {
     fn drop(&mut self) {
+        self.pending_focus.clear();
         if let Some(domain) = &self.domain {
             domain.remove_owner(&self.owner);
         }
@@ -154,6 +157,7 @@ impl RuntimeHandle {
             keyboard: false,
             capture_block: Vec::new(),
             ack: Ack::default(),
+            pending_focus: PendingFocusQueue::default(),
             bridge: None,
             domain: None,
             document: String::new(),
@@ -186,6 +190,11 @@ impl RuntimeHandle {
             .get(&id)
             .is_some_and(|entry| entry.generation > generation)
         {
+            if let Some(old_generation) = runtime.nodes.get(&id).map(|entry| entry.generation)
+                && old_generation != generation
+            {
+                runtime.pending_focus.remove_root(&id, old_generation);
+            }
             let revision = runtime
                 .nodes
                 .get(&id)
@@ -281,6 +290,7 @@ impl RuntimeHandle {
         let domain = Domain::join(document);
         let (ids, categories) = {
             let mut state = self.0.borrow_mut();
+            state.pending_focus.clear();
             state.document = document.to_string();
             state.domain = Some(domain);
             (state.order.clone(), state.categories.clone())
@@ -642,6 +652,7 @@ impl RuntimeHandle {
             .get(id)
             .is_some_and(|entry| entry.generation == generation)
         {
+            runtime.pending_focus.remove_root(id, generation);
             runtime.nodes.remove(id);
             runtime.order.retain(|candidate| candidate != id);
             runtime.registry.unregister(id, generation);
@@ -1012,15 +1023,21 @@ impl RuntimeHandle {
         };
         let mut decision = callback(&facts);
         if let Some((root, generation, target)) = tab_release.filter(|_| decision.release_focus) {
-            if let Some(expected_open) = self
+            if self
                 .entry(&root)
                 .filter(|entry| entry.generation == generation)
                 .and_then(|entry| self.read_current(&root, &entry))
+                .is_some()
             {
-                let revision = self.entry(&root).map(|entry| entry.revision);
-                if let Some(revision) = revision {
-                    self.0.borrow_mut().ack.focus =
-                        Some((target.clone(), root, generation, revision, expected_open));
+                // Each source exit queues its precomputed target, including
+                // veto and reentrant events. Later ACKs/visibility do not revoke
+                // this work; only the owning registration's lifetime does.
+                if self.0.borrow_mut().pending_focus.admit(PendingFocus {
+                    sequence: report.sequence,
+                    target: target.clone(),
+                    root,
+                    generation,
+                }) {
                     decision.prevent = true;
                     decision.focus = Some(target);
                 }
@@ -1170,6 +1187,49 @@ impl RuntimeHandle {
         let Ok(query) = serde_json::from_str::<Query>(&event.value()) else {
             return;
         };
+        if query.owner != self.owner_id() {
+            return;
+        }
+        if let Some(target) = query.schedule_focus_target {
+            if self
+                .0
+                .borrow_mut()
+                .pending_focus
+                .schedule(query.sequence, &target)
+            {
+                event.prevent_default();
+            }
+            return;
+        }
+        if let Some(target) = query.pending_focus_target {
+            let pending = self
+                .0
+                .borrow_mut()
+                .pending_focus
+                .take(query.sequence, &target);
+            if let Some(pending) = pending {
+                // Destination reads can enter another owner. Validate the
+                // authorizing registration only after those callbacks finish.
+                let destination_visible = query.focus_hosts.is_empty()
+                    || self.domain().is_some_and(|domain| {
+                        domain.focus_destinations_visible(&query.focus_hosts)
+                    });
+                let live = self
+                    .with_owner(&pending.root, pending.generation, || {
+                        let entry = self.entry(&pending.root)?;
+                        pending
+                            .matches_owner(&pending.root, entry.generation)
+                            .then(|| self.read_current(&pending.root, &entry))
+                            .flatten()
+                    })
+                    .flatten()
+                    .is_some();
+                if live && destination_visible {
+                    event.prevent_default();
+                }
+            }
+            return;
+        }
         let authorization = {
             let mut runtime = self.0.borrow_mut();
             if query.owner != runtime.owner || query.sequence != runtime.ack.sequence {
@@ -1485,6 +1545,13 @@ struct Query {
     focus_target: Option<String>,
     #[serde(default)]
     immediate_stop: bool,
+    #[serde(default)]
+    schedule_focus_target: Option<String>,
+    #[serde(default)]
+    pending_focus_target: Option<String>,
+    /// Current Popover ancestors of the captured native destination object.
+    #[serde(default)]
+    focus_hosts: Vec<String>,
 }
 
 #[cfg(test)]
@@ -2185,8 +2252,20 @@ mod tests {
         let input = event(key);
         runtime.input(input.clone());
         assert!(!input.default_action_enabled() && !open.get());
-        let value =
-            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"focus_target":"after"});
+        let early = event(
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"focus_target":"after"}),
+        );
+        runtime.query(early.clone());
+        assert!(
+            early.default_action_enabled(),
+            "release is not an immediate focus ACK"
+        );
+        let schedule = event(
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"schedule_focus_target":"after"}),
+        );
+        runtime.query(schedule.clone());
+        assert!(!schedule.default_action_enabled());
+        let value = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"pending_focus_target":"after"});
         let first = event(value.clone());
         runtime.query(first.clone());
         assert!(!first.default_action_enabled());
