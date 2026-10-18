@@ -164,6 +164,23 @@ const itemSelector='[data-ix-item-kind],[data-ix-roving-item]';
 function itemParts(element){
   return Array.from(element.querySelectorAll('[data-ix-item-part]')).filter(part=>part instanceof HTMLElement&&part.closest('[data-ix-item-kind]')===element&&['select-option','category-parent'].includes(part.getAttribute('data-ix-item-part')));
 }
+// The alpha interpreter writes checked as a property even on component DIV
+// hosts. Copy the literal Rust declaration once per changed marker. Remembering
+// copied bytes avoids overwriting independent consumer DOM edits on every
+// observation; eligibility remains the resulting actual own attribute in Rust.
+const reflectedCheckedAttributes=new WeakMap();
+function syncReflectedCheckedAttributes(){
+  for(const element of document.querySelectorAll('[data-ix-reflect-checked]')){
+    if(!(element instanceof HTMLElement)||element.closest('[data-ix-item-kind][data-ix-item-runtime]')?.getAttribute('data-ix-item-runtime')!==owner)continue;
+    const marker=element.getAttribute('data-ix-reflect-checked');
+    if(reflectedCheckedAttributes.get(element)===marker)continue;
+    let value;try{value=JSON.parse(marker);}catch{continue;}
+    if(value!==null&&typeof value!=='string')continue;
+    reflectedCheckedAttributes.set(element,marker);
+    if(value===null){if(element.hasAttribute('checked'))element.removeAttribute('checked');}
+    else if(element.getAttribute('checked')!==value)element.setAttribute('checked',value);
+  }
+}
 function itemHostFacts(element){
   const binding=captureItem(element);if(!binding)return null;
   const rawKind=element.getAttribute('data-ix-item-kind');
@@ -397,6 +414,8 @@ function send(report,event){
 
 // Each Boolean or nullable string is an offer. Only Rust's current model may
 // grant it; DOM values are never a saved desired state or a navigation policy.
+__DESCENDANT_PLUMBING__
+
 function itemCueQuery(cue){
   const input=transport();if(!alive||!input)return false;
   input.value=JSON.stringify({owner,sequence:0,item_cue:cue});
@@ -606,6 +625,7 @@ function syncAnchorObservers(){
 }
 function reportObserve(){
   if(!alive)return;
+  syncReflectedCheckedAttributes();
   for(const [id,node] of nativeNodes)if(!node.isConnected)nativeNodes.delete(id);
   syncKeyTargets();
   if(!transport())return;
@@ -666,7 +686,7 @@ observer.observe(document.documentElement,{subtree:true,childList:true,attribute
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
   'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
   ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
-  ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item'
+  ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked'
 ]});
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 function queueTriggerRestore(command){
@@ -757,7 +777,7 @@ function scheduleNativeFocus(){
     let remaining=nativeFocusCommands.length;
     while(nativeFocusCommands.length&&remaining--){
       const job=nativeFocusCommands[0],command=job.command;
-      if(job.kind==='trigger'&&job.root?.isConnected&&job.root.getAttribute('data-ix-overlay-owner')===owner&&job.root.getAttribute('data-ix-overlay-root')===command.root&&Number(job.root.getAttribute('data-ix-overlay-generation'))===command.generation&&
+      if(['trigger','descendant'].includes(job.kind)&&job.root?.isConnected&&job.root.getAttribute('data-ix-overlay-owner')===owner&&job.root.getAttribute('data-ix-overlay-root')===command.root&&Number(job.root.getAttribute('data-ix-overlay-generation'))===command.generation&&
         Number(job.root.getAttribute('data-ix-overlay-focus-version')||'0')<command.focus_version)break;
       // Waiting for one renderer commit must not let a later captured Tab exit
       // overtake an earlier cleanup. Rust's channel supplies causal order.
@@ -766,6 +786,8 @@ function scheduleNativeFocus(){
       if(job.kind==='completion'){
         input.value=JSON.stringify({owner,sequence:0,completion_sequence:command.sequence,completion_root:command.root,completion_generation:command.generation});
         input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+      }else if(job.kind==='descendant'){
+        executeDescendantFocus(job);
       }else if(job.kind==='item'){
         executeItemFocus(job);
       }else if(job.kind==='trigger'){
@@ -789,6 +811,7 @@ try{
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
     if(command?.completion_frame){nativeFocusCommands.push({kind:'completion',command:command.completion_frame});scheduleNativeFocus();}
     if(command?.item_focus)queueItemFocus(command.item_focus);
+    if(command?.descendant_focus)queueDescendantFocus(command.descendant_focus);
     if(command?.item_cues)syncItemCues(null,true);
     if(command?.roving_attributes)executeRovingAttributes(command.roving_attributes);
   }

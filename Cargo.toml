@@ -66,6 +66,11 @@ path = "tools/source_dropdown_cue_probe.rs"
 required-features = ["desktop"]
 
 [[example]]
+name = "source_dropdown_opening_probe"
+path = "tools/source_dropdown_opening_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
 name = "dropdown_items_probe"
 path = "tools/dropdown_items_probe.rs"
 required-features = ["launch"]
@@ -78,6 +83,11 @@ required-features = ["launch"]
 [[example]]
 name = "dropdown_cue_probe"
 path = "tools/dropdown_cue_probe.rs"
+required-features = ["launch"]
+
+[[example]]
+name = "dropdown_opening_probe"
+path = "tools/dropdown_opening_probe.rs"
 required-features = ["launch"]
 
 [[example]]

@@ -3743,7 +3743,7 @@ pub fn MenuCategory(
             crate::overlay_runtime::OverlayTransport {runtime:overlay_runtime.clone()}
             button {id:parent_id.clone(),class:if active||nested_active{"ix-menu-item ix-menu-item-active"}else{"ix-menu-item"},r#type:"button",title:(!disable_tooltip).then(||label.clone()),
                 "data-ix-item-control":"",
-                "data-ix-item-part":"category-parent","data-ix-item-focusable":"true",
+                "data-ix-item-part":"category-parent","data-ix-descendant-kind":"menu","data-ix-item-focusable":"true",
                 role:"menuitem",tabindex,"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-label":label.clone(),"aria-expanded":is_open.to_string(),"aria-controls":format!("{content_id} {popup_id}"),
                 onmounted:move |event|{

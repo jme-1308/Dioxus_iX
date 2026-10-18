@@ -4,6 +4,7 @@ use crate::dropdown_inventory::{
     AttributeWrite, HostFacts, InventoryFacts, ItemKind, ItemRef, RovingState,
 };
 use crate::overlay_completion::CompletionQueue;
+use crate::overlay_descendant_focus::{DescendantJob, DescendantQueue};
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue, TriggerRestoreQueue};
 use crate::overlay_item_focus::ItemFocusJob;
@@ -136,6 +137,7 @@ struct Entry {
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
     item_visual: Option<Rc<dyn Fn() -> RootVisual>>,
+    descendant_focus: Option<DescendantFocusCallback>,
     suppress_trigger_restore: bool,
     callbacks: Callbacks,
     scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
@@ -163,6 +165,8 @@ struct Runtime {
     item_focus: ItemFocusQueue,
     item_focus_callbacks: BTreeMap<u64, ItemFocusCallback>,
     item_visual_deliveries: BTreeMap<u64, (ItemFocusJob, HostFacts)>,
+    descendant_focus: DescendantQueue,
+    descendant_visual: BTreeMap<u64, (DescendantJob, bool)>,
     item_captures: BTreeMap<String, (u64, BTreeMap<String, String>)>,
     inventories: BTreeMap<String, (u64, InventoryFacts)>,
     roving: RovingState,
@@ -188,6 +192,27 @@ struct ItemFocusCallback {
     callback: Rc<dyn Fn()>,
     visual: Option<HostFacts>,
 }
+type DescendantFocusCallback = Rc<dyn Fn(&InventoryFacts, bool, bool) -> Option<bool>>;
+
+#[derive(Deserialize)]
+struct DescendantQuery {
+    sequence: u64,
+    root: String,
+    generation: u64,
+    reference: String,
+    phase: String,
+    #[serde(default)]
+    facts: Option<crate::descendant_focus::DescendantFacts>,
+    #[serde(default)]
+    inventory: Option<InventoryFacts>,
+    #[serde(default)]
+    hosts: Vec<HostFacts>,
+    #[serde(default)]
+    attempt_path: Vec<String>,
+    #[serde(default)]
+    target: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct RootVisual {
     pub(crate) active: Option<String>,
@@ -274,6 +299,8 @@ impl RuntimeHandle {
             item_focus: ItemFocusQueue::default(),
             item_focus_callbacks: BTreeMap::new(),
             item_visual_deliveries: BTreeMap::new(),
+            descendant_focus: DescendantQueue::default(),
+            descendant_visual: BTreeMap::new(),
             item_captures: BTreeMap::new(),
             inventories: BTreeMap::new(),
             roving: RovingState::default(),
@@ -493,6 +520,10 @@ impl RuntimeHandle {
                 runtime.trigger_restores.remove_root(&id, old_generation);
                 runtime.completions.remove_root(&id, old_generation);
                 runtime.item_focus.remove_root(&id, old_generation);
+                runtime.descendant_focus.remove_root(&id, old_generation);
+                runtime
+                    .descendant_visual
+                    .retain(|_, (job, _)| job.root != id || job.generation != old_generation);
                 runtime
                     .item_visual_deliveries
                     .retain(|_, (job, _)| job.root != id || job.generation != old_generation);
@@ -538,6 +569,7 @@ impl RuntimeHandle {
                     anchor_intersection: None,
                     anchor_shape: None,
                     item_visual: None,
+                    descendant_focus: None,
                     suppress_trigger_restore,
                     callbacks,
                     scope,
@@ -634,6 +666,8 @@ impl RuntimeHandle {
                 state.item_focus.clear();
                 state.item_focus_callbacks.clear();
                 state.item_visual_deliveries.clear();
+                state.descendant_focus.clear();
+                state.descendant_visual.clear();
                 state.item_captures.clear();
                 state.inventories.clear();
                 state.item_cue_hosts.reset_captures();
@@ -1200,6 +1234,10 @@ impl RuntimeHandle {
             runtime.trigger_restores.remove_root(id, generation);
             runtime.completions.remove_root(id, generation);
             runtime.item_focus.remove_root(id, generation);
+            runtime.descendant_focus.remove_root(id, generation);
+            runtime
+                .descendant_visual
+                .retain(|_, (job, _)| job.root != id || job.generation != generation);
             runtime
                 .item_visual_deliveries
                 .retain(|_, (job, _)| job.root != id || job.generation != generation);
@@ -1239,12 +1277,18 @@ impl RuntimeHandle {
         }
         let owner = serde_json::to_string(&self.owner_id()).expect("overlay runtime owner");
         let bridge = dioxus::document::eval(
-            &crate::overlay_registry_dom::BRIDGE.replace("__OWNER__", &owner),
+            &crate::overlay_registry_dom::BRIDGE
+                .replace(
+                    "__DESCENDANT_PLUMBING__",
+                    crate::descendant_focus_dom::PLUMBING,
+                )
+                .replace("__OWNER__", &owner),
         );
         self.0.borrow_mut().bridge = Some(bridge);
         self.flush_completion_frames();
         self.flush_roving_writes();
         self.flush_item_focus();
+        self.flush_descendant_focus();
     }
     fn flush_item_focus(&self) {
         let jobs = self.0.borrow().item_focus.unsent();
@@ -1260,6 +1304,24 @@ impl RuntimeHandle {
                 break;
             }
             self.0.borrow_mut().item_focus.mark_sent(&job);
+        }
+    }
+    fn flush_descendant_focus(&self) {
+        let jobs = self.0.borrow().descendant_focus.unsent();
+        for job in jobs {
+            let sent = self.0.borrow().bridge.as_ref().is_some_and(|bridge| {
+                bridge
+                    .send(serde_json::json!({"descendant_focus":{
+                        "sequence":job.sequence,"root":job.root,"generation":job.generation,
+                        "focus_version":job.focus_version,"last":job.last,
+                        "allow_checked":job.allow_checked,"reference":job.reference
+                    }}))
+                    .is_ok()
+            });
+            if !sent {
+                break;
+            }
+            self.0.borrow_mut().descendant_focus.mark_sent(&job);
         }
     }
     #[cfg(test)]
@@ -2122,6 +2184,10 @@ impl RuntimeHandle {
             return;
         };
         if query.owner != self.owner_id() {
+            return;
+        }
+        if let Some(descendant) = query.descendant_focus {
+            self.query_descendant_focus(descendant, &event);
             return;
         }
         if query.item_cues_pending {
@@ -3179,6 +3245,59 @@ impl NodeHandle {
             runtime.unregister(&self.id, self.generation);
         }
     }
+    pub(crate) fn set_descendant_focus_handler(&self, handler: DescendantFocusCallback) {
+        if let Some(runtime) = self.runtime() {
+            let mut state = runtime.0.borrow_mut();
+            if let Some(entry) = state
+                .nodes
+                .get_mut(&self.id)
+                .filter(|entry| entry.generation == self.generation)
+            {
+                entry.descendant_focus = Some(handler);
+            }
+        }
+    }
+    pub(crate) fn queue_descendant_focus(
+        &self,
+        focus_version: u64,
+        last: bool,
+        allow_checked: bool,
+    ) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        let admitted = runtime
+            .with_owner(&self.id, self.generation, || {
+                let Some(entry) = runtime.entry(&self.id) else {
+                    return false;
+                };
+                if runtime.read_current(&self.id, &entry).is_none() {
+                    return false;
+                }
+                let mut state = runtime.0.borrow_mut();
+                let reference = state
+                    .item_root_captures
+                    .get(&self.id)
+                    .filter(|(generation, capture, _)| {
+                        *generation == self.generation && !capture.is_empty()
+                    })
+                    .map(|(_, capture, _)| capture.clone());
+                state.descendant_focus.admit(
+                    self.id.clone(),
+                    self.generation,
+                    focus_version,
+                    last,
+                    allow_checked,
+                    reference,
+                );
+                true
+            })
+            .unwrap_or(false);
+        if admitted {
+            runtime.flush_descendant_focus();
+        }
+        admitted
+    }
     pub(crate) fn set_item_visual_reader(&self, reader: Rc<dyn Fn() -> RootVisual>) {
         if let Some(runtime) = self.runtime() {
             let mut state = runtime.0.borrow_mut();
@@ -3208,6 +3327,13 @@ pub(crate) fn OverlayTransport(runtime: RuntimeHandle) -> Element {
         onchange:move |event| runtime.query(event),
     } }
 }
+
+#[path = "descendant_transport.rs"]
+mod descendant_transport;
+
+#[cfg(test)]
+#[path = "descendant_transport_tests.rs"]
+mod descendant_transport_tests;
 
 #[cfg(test)]
 #[path = "item_visual_transport_tests.rs"]
@@ -3344,6 +3470,8 @@ struct Query {
     sequence: u64,
     #[serde(default)]
     item_cues_pending: bool,
+    #[serde(default)]
+    descendant_focus: Option<DescendantQuery>,
     #[serde(default)]
     item_cue: Option<crate::item_visual::CueOffer>,
     #[serde(default)]

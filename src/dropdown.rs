@@ -61,6 +61,22 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         runtime,
     }
 }
+/// Preserve own checked content attributes where the interpreter otherwise
+/// writes only a native property. The marker carries Rust's literal value;
+/// native plumbing copies it without selecting focus or changing selection.
+pub(crate) fn checked_content_attribute(attributes: &[Attribute]) -> Option<String> {
+    attributes
+        .iter()
+        .rev()
+        .find(|attribute| attribute.name == "checked")
+        .and_then(|attribute| match &attribute.value {
+            dioxus::core::AttributeValue::Text(value) => Some(value.clone()),
+            dioxus::core::AttributeValue::Bool(true) => Some(String::new()),
+            dioxus::core::AttributeValue::Int(value) => Some(value.to_string()),
+            dioxus::core::AttributeValue::Float(value) => Some(value.to_string()),
+            _ => None,
+        })
+}
 pub(crate) fn item_host_id(attributes: &[Attribute], default: &str) -> String {
     attributes
         .iter()
@@ -585,17 +601,12 @@ impl DropdownContext {
             if !context.current(epoch) {
                 return;
             }
-            // Source opening uses focusFirst/LastDescendant, not focusItem's
-            // four-tag/opt-in inventory. Keep the existing guarded native
-            // descendant helper; its broader selectors/checked priority remain
-            // a separately recorded renderer adapter.
-            let mut state = context.state.borrow_mut();
-            state.focus_target = if last {
-                "last-native".into()
-            } else {
-                "first-native".into()
-            };
-            drop(state);
+            // Opening is an independently captured broad helper, not the
+            // arrow inventory or a renderer's latest first-native intent.
+            context.state.borrow_mut().focus_target = "none".into();
+            if let Some(node) = node {
+                node.queue_descendant_focus(epoch, last, allow_checked);
+            }
             context.notify();
             return;
         }
@@ -1204,6 +1215,22 @@ fn DropdownSurface(
                 },
             );
             *context.node.borrow_mut() = Some(node.clone());
+            let opening = context.clone();
+            node.set_descendant_focus_handler(Rc::new(move |facts, last, allow_checked| {
+                let (mode, checked) = {
+                    let state = opening.state.borrow();
+                    (
+                        state.settings.mode,
+                        !last && allow_checked && state.settings.focus_checked_item,
+                    )
+                };
+                if mode == DropdownNavigationMode::RovingTabindex {
+                    opening.initialize_roving(facts, last, checked);
+                    None
+                } else {
+                    Some(checked)
+                }
+            }));
             let projection = context.clone();
             node.set_item_visual_reader(Rc::new(move || {
                 let active = projection.active_dom_id();
@@ -1560,6 +1587,7 @@ pub fn DropdownItem(
         "data-ix-dropdown-owner":owner,"data-ix-dropdown-label":label.clone(),
         "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key,"data-ix-item-runtime":host_binding.runtime.owner_id(),
         "data-ix-item-focusable":(!blocked).to_string(),"checked":checked,
+        "data-ix-reflect-checked":serde_json::to_string(&checked.then_some("")).unwrap_or_default(),
         style:host_style,"data-ix-overlay-trigger":trigger_marker,
         "data-active":active.to_string(),"aria-disabled":blocked.to_string(),"disabled":blocked,
         "aria-label":compact.then_some(label.clone()),title:compact.then_some(label.clone()),
@@ -1591,6 +1619,7 @@ pub fn DropdownItem(
         {children}
         if checked{Icon {name:"single-check",size:16}}
         if dropdown.is_some(){Icon {name:"chevron-right-small",size:16}}
+        overlay_runtime::OverlayTransport {runtime:host_binding.runtime.clone()}
     }}
 }
 

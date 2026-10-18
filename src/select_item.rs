@@ -1,7 +1,7 @@
 //! Standalone source-host option; the options-driven Select model is separate.
 //!
 //! Copyright (c) 2023-2026 Siemens AG. SPDX-License-Identifier: MIT.
-use crate::dropdown::{item_host_id, use_item_host};
+use crate::dropdown::{checked_content_attribute, item_host_id, use_item_host};
 use dioxus::prelude::*;
 
 /// A rendered Select item can also participate in a generic Dropdown. Selection
@@ -27,6 +27,8 @@ pub fn SelectItem(
     let binding = use_item_host("select");
     let host_id = item_host_id(&attributes, &binding.host_id);
     let active = binding.active();
+    let checked_attribute =
+        serde_json::to_string(&checked_content_attribute(&attributes)).unwrap_or_default();
     let aria_label = attributes
         .iter()
         .rev()
@@ -66,13 +68,15 @@ pub fn SelectItem(
             "data-ix-item-runtime": binding.runtime.owner_id(),
             "data-ix-item-focusable": "true", "data-active": active.to_string(),
             "value": value, "label": label, "disabled": disabled,
+            "data-ix-reflect-checked": checked_attribute,
             onclick: move |event| onclick.call(event),
             ..attributes,
             div {
                 class: if selected { "ix-dropdown-item ix-select-item-option select-item-checked" } else { "ix-dropdown-item ix-select-item-option" },
                 role: "option", "aria-hidden": "true", "checked": selected, "disabled": disabled,
                 "data-active": active.to_string(),
-                "data-ix-item-part": "select-option", "data-ix-item-focusable": "false",
+                "data-ix-reflect-checked": serde_json::to_string(&selected.then_some("")).unwrap_or_default(),
+                "data-ix-item-part": "select-option", "data-ix-descendant-kind": "dropdown", "data-ix-item-focusable": "false",
                 onclick: move |_| { if !disabled { onitemclick.call(inner_value.clone()); } },
                 onkeydown: move |event: KeyboardEvent| {
                     if !disabled && (event.key() == Key::Enter || event.key() == Key::Character(" ".into())) {
