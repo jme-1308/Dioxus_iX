@@ -23,7 +23,7 @@ const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),clickTargets=new Map(),triggerKeyTargets=new Map(),navigationTargets=new Map(),handledBubbleKeys=new WeakSet();
 const navigationBindings=new Map();
-const tabFocusCaptures=new Map(),nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
+const nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
 const anchorObservers=new Map();
 const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map();let itemObjectSequence=0;
 const itemInventoryLeases=new Map();
@@ -488,22 +488,21 @@ function send(report,event){
       const el=facts.element;
       if(report.key==='Tab'&&['capture','bubble','fallback'].includes(report.phase)){
         const scheduleInput=transport();if(!scheduleInput)return;
-        tabFocusCaptures.set(report.sequence,{target:id,element:el});
         scheduleInput.value=JSON.stringify({owner,sequence:report.sequence,schedule_focus_target:id});
         if(!scheduleInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
           scheduleInput.value=JSON.stringify({owner,sequence:report.sequence,dispatch_focus_target:id});
           if(!scheduleInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
-            const command={sequence:report.sequence,target:id};
             const frame=requestAnimationFrame(()=>{
-              immediateTabFrames.delete(frame);if(alive)executeCapturedTab(command);
+              immediateTabFrames.delete(frame);if(!alive)return;
+              const input=transport();if(!input)return;
+              input.value=JSON.stringify({owner,sequence:report.sequence,pending_focus_target:id,focus_hosts:popoverAncestors(el)});
+              const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+              if(allowed&&el?.isConnected)el.focus();
             });
             immediateTabFrames.add(frame);
           }
-          // A deferred command arrives on the ordered cleanup channel. Direct
-          // jobs retain the original event's first native animation frame.
           break;
         }
-        tabFocusCaptures.delete(report.sequence);
       }
       const valid=()=>el?.isConnected&&(!facts.panel||(facts.panel.isConnected&&facts.panel.matches(':popover-open')&&facts.panel.getAttribute('data-surface-generation')===facts.generation));
       if(!valid())continue;
@@ -733,7 +732,8 @@ function syncExecution(){
         const ver=root.getAttribute('data-ix-overlay-focus-version')||'0',gen=root.getAttribute('data-ix-overlay-generation')||'0';
         const token=gen+':'+ver,spec=root.getAttribute('data-ix-overlay-focus-target')||'none';
         if(lastFocus.get(id)===token)continue;
-        lastFocus.set(id,token);if(spec==='none')continue;
+        lastFocus.set(id,token);
+        if(spec==='none'||(spec==='trigger'&&root.getAttribute('data-ix-dropdown-focus-owned')==='true'))continue;
         const list=hostFocusables(findHost(id));
         const dest=spec==='trigger'?findTrigger(id,root):spec==='first-native'?list[0]:spec==='last-native'?list[list.length-1]:
           spec.startsWith('index:')?list[Number(spec.slice(6))]:findElement(spec.startsWith('id:')?spec.slice(3):spec);
@@ -847,18 +847,7 @@ window.addEventListener('keydown',e=>send(collectFacts('key',e,'window'),e),{sig
 window.addEventListener('click',e=>send(collectFacts('click',e,'window'),e),{signal});
 document.addEventListener('pointerdown',e=>send(collectFacts('pointer',e),e),{capture:true,signal});
 document.addEventListener('focusin',event=>reportItemFocus(event.target,true),{capture:true,signal});
-document.addEventListener('focusin',event=>{
-  const item=event.composedPath().find(n=>n instanceof HTMLElement&&n.hasAttribute('data-ix-dropdown-item'));
-  if(item){
-    const id=item.getAttribute('data-ix-dropdown-owner');
-    const root=Array.from(registryElements('[data-ix-overlay-root]')).find(n=>n.getAttribute('data-ix-overlay-root')===id&&n.getAttribute('data-ix-overlay-owner')===owner);
-    if(!item.hasAttribute('data-ix-item-kind')&&root?.getAttribute('data-ix-overlay-focus-proxy')==='true'){
-      const trigger=findTrigger(id,root);
-      if(trigger&&trigger!==deepActive()&&visibleFocusable(trigger))trigger.focus();
-    }
-  }
-  reportObserve();
-},{signal});
+document.addEventListener('focusin',reportObserve,{signal});
 document.addEventListener('focusout',event=>{reportItemFocus(event.target,true);queueMicrotask(()=>{if(alive)reportObserve();});},{passive:true,signal});
 function itemCueMutation(change){
   if(change.type!=='attributes'||!(change.target instanceof HTMLElement))return false;
@@ -907,20 +896,6 @@ function observeRegistryScope(scope){observer.observe(scope===document?document.
 ]});}
 observeRegistryScope(document);discoverRegistryScopes(document);
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
-function queueTriggerRestore(command){
-  const root=Array.from(registryElements('[data-ix-overlay-root]')).find(node=>
-    node instanceof HTMLElement&&node.getAttribute('data-ix-overlay-owner')===owner&&node.getAttribute('data-ix-overlay-root')===command.root&&Number(node.getAttribute('data-ix-overlay-generation'))===command.generation);
-  nativeFocusCommands.push({kind:'trigger',command,root});scheduleNativeFocus();
-}
-function executeCapturedTab(command){
-  const capture=tabFocusCaptures.get(command.sequence);tabFocusCaptures.delete(command.sequence);
-  if(!capture||capture.target!==command.target)return;
-  const input=transport();if(!input)return;
-  const el=capture.element;
-  input.value=JSON.stringify({owner,sequence:command.sequence,pending_focus_target:command.target,focus_hosts:popoverAncestors(el)});
-  const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-  if(allowed&&el?.isConnected)el.focus();
-}
 const inventoryReader=(id,generation)=>{
   const root=Array.from(registryElements('[data-ix-overlay-root]')).find(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id&&Number(root.getAttribute('data-ix-overlay-generation'))===generation);
   if(!alive||!root)return null;
@@ -937,12 +912,11 @@ function scheduleNativeFocus(){
     let remaining=nativeFocusCommands.length;
     while(nativeFocusCommands.length&&remaining--){
       const job=nativeFocusCommands[0],command=job.command;
-      if(['trigger','descendant'].includes(job.kind)&&job.root?.isConnected&&job.root.getAttribute('data-ix-overlay-owner')===owner&&job.root.getAttribute('data-ix-overlay-root')===command.root&&Number(job.root.getAttribute('data-ix-overlay-generation'))===command.generation&&
+      if(job.root?.isConnected&&job.root.getAttribute('data-ix-overlay-owner')===owner&&job.root.getAttribute('data-ix-overlay-root')===command.root&&Number(job.root.getAttribute('data-ix-overlay-generation'))===command.generation&&
         Number(job.root.getAttribute('data-ix-overlay-focus-version')||'0')<command.focus_version)break;
-      // Waiting for one renderer commit must not let a later captured Tab exit
-      // overtake an earlier cleanup. Rust's channel supplies causal order.
+      // Descendant focus waits for its renderer commit and hide permission.
       syncExecution();
-      if(job.kind==='descendant'&&!job.hidden){
+      if(!job.hidden){
         const state=descendantHidesReady(job);
         if(state==='wait')break;
         if(state==='cancel'||!descendantQuery(command,job.reference,'hidden',{hide_before:command.hide_before})){
@@ -951,19 +925,8 @@ function scheduleNativeFocus(){
         job.hidden=true;
       }
       nativeFocusCommands.shift();
-      const input=transport();if(!input)continue;
-      if(job.kind==='descendant'){
-        executeDescendantFocus(job);
-      }else if(job.kind==='trigger'){
-        input.value=JSON.stringify({owner,sequence:0,trigger_restore_sequence:command.sequence,trigger_restore_root:command.root,trigger_restore_generation:command.generation});
-        const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})),root=job.root;
-        if(allowed&&root?.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===command.root&&Number(root.getAttribute('data-ix-overlay-generation'))===command.generation){
-          const trigger=findTrigger(command.root,root);
-          if(trigger?.isConnected)try{trigger.focus();reportItemFocus(trigger);}catch{}
-        }
-      }else{
-        executeCapturedTab(command);
-      }
+      if(!transport())continue;
+      executeDescendantFocus(job);
     }
     reportObserve();scheduleNativeFocus();
   });
@@ -973,15 +936,13 @@ try{
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
     if(command?.assignment_ack){acknowledgeTriggerAssignment(command.assignment_ack);reportObserve();}
     if(command?.navigation_config)configureNavigation(command.navigation_config);
-    if(command?.restore_trigger)queueTriggerRestore(command.restore_trigger);
-    if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
     if(command?.descendant_focus)queueDescendantFocus(command.descendant_focus);
     if(command?.item_cues)syncItemCues(null,true);
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
-  if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;tabFocusCaptures.clear();
+  if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;
   itemCaptureNodes.clear();
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);

@@ -265,6 +265,25 @@ impl TriggerDeclaration {
         }
         self.value = value.clone();
     }
+    fn refresh_mounted(&mut self) -> bool {
+        if !self.value.as_ref().is_some_and(|value| !value.is_empty()) {
+            return false;
+        }
+        // The ID may be unchanged while a keyed Dioxus control was replaced.
+        // Refresh both resolution and listener ownership for that new mount.
+        self.version = self.version.wrapping_add(1).max(1);
+        self.dispose_version = self.dispose_version.wrapping_add(1).max(1);
+        true
+    }
+    fn dispose_mounted(&mut self) -> bool {
+        if !self.value.as_ref().is_some_and(|value| !value.is_empty()) {
+            return false;
+        }
+        // Removal releases listeners without resolving the now-missing ID.
+        // A later explicit mount publishes its own fresh resolution version.
+        self.dispose_version = self.dispose_version.wrapping_add(1).max(1);
+        true
+    }
 }
 struct MenuState {
     alive: bool,
@@ -286,6 +305,11 @@ struct MenuState {
     declaration: TriggerDeclaration,
 }
 #[derive(Clone)]
+struct TriggerMount {
+    node: Rc<MountedData>,
+    blocked: Rc<Cell<bool>>,
+}
+#[derive(Clone)]
 struct DropdownContext {
     id: usize,
     open: Signal<bool>,
@@ -294,7 +318,7 @@ struct DropdownContext {
     state: Rc<RefCell<MenuState>>,
     entries: Rc<RefCell<BTreeMap<usize, MenuEntry>>>,
     node: Rc<RefCell<Option<NodeHandle>>>,
-    trigger: Rc<RefCell<Option<Rc<MountedData>>>>,
+    trigger: Rc<RefCell<Option<TriggerMount>>>,
     focus_task: Rc<RefCell<Option<dioxus::core::Task>>>,
 }
 impl DropdownContext {
@@ -424,6 +448,116 @@ impl DropdownContext {
             && state.focus_epoch == epoch
             && self.open.try_peek().is_ok_and(|open| *open)
     }
+    fn mount_trigger(&self, node: Rc<MountedData>, blocked: Rc<Cell<bool>>) {
+        let (changed, replaced) = {
+            let current = self.trigger.borrow();
+            (
+                current
+                    .as_ref()
+                    .is_none_or(|current| !Rc::ptr_eq(&current.node, &node)),
+                current
+                    .as_ref()
+                    .is_some_and(|current| !Rc::ptr_eq(&current.node, &node)),
+            )
+        };
+        if replaced {
+            self.invalidate_focus();
+        }
+        *self.trigger.borrow_mut() = Some(TriggerMount { node, blocked });
+        if changed {
+            let refresh = self.state.borrow_mut().declaration.refresh_mounted();
+            if refresh {
+                self.notify();
+            }
+        }
+    }
+    fn unmount_trigger(&self, node: &Rc<MountedData>) {
+        let owns = self
+            .trigger
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(&current.node, node));
+        if owns {
+            self.trigger.borrow_mut().take();
+            self.invalidate_focus();
+            let dispose = self.state.borrow_mut().declaration.dispose_mounted();
+            if dispose {
+                self.notify();
+            }
+        }
+    }
+    fn trigger_focus_current(
+        &self,
+        epoch: u64,
+        generation: u64,
+        expected_open: bool,
+        target: &Rc<MountedData>,
+    ) -> bool {
+        let state = self.state.borrow();
+        state.alive
+            && state.surface
+            && state.mounted
+            && state.generation == generation
+            && state.focus_epoch == epoch
+            && !state.blocked
+            && self.blocked.try_peek().is_ok_and(|blocked| !*blocked)
+            && self
+                .open
+                .try_peek()
+                .is_ok_and(|open| *open == expected_open)
+            && self
+                .node
+                .borrow()
+                .as_ref()
+                .is_some_and(|node| node.generation() == generation && node.is_registered())
+            && (if expected_open {
+                state.settings.mode == DropdownNavigationMode::ActiveDescendant
+                    && !state.settings.disable_focus_handling
+            } else {
+                !state.settings.disable_focus_trap
+            })
+            && self
+                .trigger
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(&current.node, target) && !current.blocked.get())
+    }
+    fn focus_trigger(&self, expected_open: bool) {
+        let epoch = self.invalidate_focus();
+        self.state.borrow_mut().focus_target = "trigger".into();
+        let generation = self.state.borrow().generation;
+        let target = self
+            .trigger
+            .borrow()
+            .as_ref()
+            .map(|current| Rc::downgrade(&current.node));
+        let node = self.node.borrow().clone();
+        if let (Some(target), Some(node)) = (target, node) {
+            let context = self.clone();
+            node.queue_completion(Rc::new(move || {
+                let Some(target) = target.upgrade() else {
+                    return;
+                };
+                if !context.trigger_focus_current(epoch, generation, expected_open, &target) {
+                    return;
+                }
+                let task_context = context.clone();
+                let task = spawn(async move {
+                    if task_context.trigger_focus_current(epoch, generation, expected_open, &target)
+                    {
+                        let _ = target.set_focus(true).await;
+                    }
+                    // No follow-up focus is published after the await. Keep a
+                    // reentrant newer intent's task intact while retiring ours.
+                    if task_context.state.borrow().focus_epoch == epoch {
+                        task_context.focus_task.borrow_mut().take();
+                    }
+                });
+                *context.focus_task.borrow_mut() = Some(task);
+            }));
+        }
+        self.notify();
+    }
     fn request(&self, open: bool, reason: Reason, restore_focus: bool) -> bool {
         if {
             let state = self.state.borrow();
@@ -467,7 +601,7 @@ impl DropdownContext {
         if let Some(task) = task {
             task.cancel();
         }
-        let (changed, generation, trigger_cleanup) = {
+        let (changed, generation, restore_trigger) = {
             let mut state = self.state.borrow_mut();
             if !state.alive || !state.surface {
                 return;
@@ -484,18 +618,12 @@ impl DropdownContext {
                     "none".into()
                 };
             }
-            let trigger_cleanup = (!change.open
-                && change.restore_focus
-                && !state.settings.disable_focus_trap
-                && matches!(
-                    change.reason,
-                    Reason::AnchorVisibility
-                        | Reason::AnchorVisibilityParent
-                        | Reason::TriggerOther
-                        | Reason::Left
-                ))
-            .then_some(state.focus_epoch);
-            (changed, state.generation, trigger_cleanup)
+            let restore_trigger =
+                !change.open && change.restore_focus && !state.settings.disable_focus_trap;
+            if change.open {
+                state.focus_target = "none".into();
+            }
+            (changed, state.generation, restore_trigger)
         };
         let mut open = self.open;
         let Ok(mut current) = open.try_write() else {
@@ -514,13 +642,8 @@ impl DropdownContext {
                 node.clear_navigation();
             }
         }
-        if let Some(version) = trigger_cleanup
-            && let Some(node) = self.node.borrow().clone()
-            && node.queue_trigger_restore(version)
-        {
-            // Native cleanup is an independently queued source task, not the
-            // latest rendered focus intent. A same-owner reopen cannot erase it.
-            self.state.borrow_mut().focus_target = "none".into();
+        if restore_trigger {
+            self.focus_trigger(false);
         }
         self.notify();
         let completion_node = if changed {
@@ -1203,6 +1326,61 @@ impl PartialEq for DropdownContext {
     }
 }
 
+/// Register a custom Dioxus trigger for Dropdown focus restoration.
+///
+/// Attach this handler to the stable element referenced by `Dropdown.trigger`.
+/// Its ID still supplies click/key discovery; this hook supplies the mounted
+/// focus handle and releases it with the calling component's scope. Use a new
+/// component key when replacing the trigger or its controller. ID-only triggers
+/// remain usable for discovery but do not receive programmatic trigger focus.
+pub fn use_dropdown_trigger_mount(dropdown: DropdownHandle) -> EventHandler<MountedEvent> {
+    use_trigger_mount(dropdown.try_context(), false)
+}
+fn use_trigger_mount(
+    context: Option<DropdownContext>,
+    disabled: bool,
+) -> EventHandler<MountedEvent> {
+    let blocked = use_hook(|| Rc::new(Cell::new(disabled)));
+    blocked.set(disabled);
+    let owned = use_hook(|| Rc::new(RefCell::new(None::<(DropdownContext, Rc<MountedData>)>)));
+    let cancel_disabled = owned
+        .borrow()
+        .as_ref()
+        .filter(|(context, node)| {
+            disabled
+                && context
+                    .trigger
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(&current.node, node))
+                && context.state.borrow().focus_target == "trigger"
+        })
+        .map(|(context, _)| context.clone());
+    if let Some(context) = cancel_disabled {
+        context.invalidate_focus();
+    }
+    let cleanup = owned.clone();
+    use_drop(move || {
+        if let Some((context, node)) = cleanup.borrow_mut().take() {
+            context.unmount_trigger(&node);
+        }
+    });
+    use_callback(move |event: MountedEvent| {
+        let node = event.data();
+        if let Some((previous, mounted)) = owned.borrow_mut().take() {
+            let same = context.as_ref().is_some_and(|context| context == &previous)
+                && Rc::ptr_eq(&mounted, &node);
+            if !same {
+                previous.unmount_trigger(&mounted);
+            }
+        }
+        if let Some(context) = &context {
+            context.mount_trigger(node.clone(), blocked.clone());
+            *owned.borrow_mut() = Some((context.clone(), node));
+        }
+    })
+}
+
 /// External native trigger for a separately rendered persistent surface.
 #[component]
 pub fn DropdownTrigger(
@@ -1218,7 +1396,7 @@ pub fn DropdownTrigger(
     let context = dropdown.context();
     let _ = (context.revision)();
     let blocked = disabled || loading || (context.blocked)();
-    let mount = context.trigger.clone();
+    let mount = use_trigger_mount(Some(context.clone()), blocked);
     let click = context.clone();
     let key = context.clone();
     let id = context.node_id();
@@ -1237,7 +1415,7 @@ pub fn DropdownTrigger(
         r#type:"button",disabled:blocked,"aria-label":aria_label,"aria-busy":loading.to_string(),
         "aria-haspopup":"menu","aria-expanded":dropdown.is_open().to_string(),"aria-controls":host_id,"aria-activedescendant":active_id,
         "data-ix-overlay-trigger":id,style:"anchor-name:--ix-dropdown-anchor-{context.id}",
-        onmounted:move |event| *mount.borrow_mut()=Some(event.data()),
+        onmounted:mount,
         onclick:move |event:MouseEvent| {if !blocked&&!click.state.borrow().blocked&&event.default_action_enabled()&&click.trigger_click_allowed(){let previous=*click.open.peek();click.request_from_trigger(!previous,Reason::Trigger,click.keyboard_mode());}},
         onkeydown:move |event:KeyboardEvent| {if !key.native_key_route(){fallback_key(&key,event,true);}},
         if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
@@ -1526,9 +1704,7 @@ fn DropdownSurface(
                     if mode == DropdownNavigationMode::RovingTabindex {
                         configure.focus_edge(false);
                     } else if !configure.state.borrow().settings.disable_focus_handling {
-                        let mut state = configure.state.borrow_mut();
-                        state.focus_target = "trigger".into();
-                        state.focus_epoch = state.focus_epoch.wrapping_add(1);
+                        configure.focus_trigger(true);
                     }
                 }
                 configure.notify();
@@ -1559,7 +1735,7 @@ fn DropdownSurface(
     let aria_name = aria_label.unwrap_or_else(|| label.clone());
     let mount_context = context.clone();
     let mounted_node = node.clone();
-    let mount_trigger = context.trigger.clone();
+    let mount_trigger = use_trigger_mount((!external).then(|| context.clone()), blocked);
     let click_context = context.clone();
     let key_context = context.clone();
     let runtime_owner = runtime.owner_id();
@@ -1581,13 +1757,14 @@ fn DropdownSurface(
         "aria-activedescendant":if settings.mode==DropdownNavigationMode::ActiveDescendant&&open{active_id.clone()}else{None},
         "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime_owner,"data-ix-overlay-trigger":trigger_marker,
         "data-ix-overlay-generation":generation.to_string(),"data-ix-overlay-open":open.to_string(),
+        "data-ix-dropdown-focus-owned":"true",
         "data-ix-overlay-revision":node.render_revision().to_string(),
         "data-ix-overlay-top-layer":enable_top_layer.to_string(),"data-ix-overlay-mode":settings.mode.as_str(),
         "data-ix-overlay-trigger-visibility-check":(!settings.suppress_trigger_visibility_check).to_string(),
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,"data-ix-overlay-focus-target":focus_target,"data-ix-overlay-focus-version":focus_version.to_string(),
         style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
-        onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;if !external{*mount_trigger.borrow_mut()=Some(event.data());}mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.configure_navigation(state.settings.mode.as_str(),!state.settings.disable_focus_handling);drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}},
+        onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;mount_trigger.call(event.clone());mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.configure_navigation(state.settings.mode.as_str(),!state.settings.disable_focus_handling);drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}},
         onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}},
         onkeydown:move |event:KeyboardEvent|{if !key_context.native_key_route(){fallback_key(&key_context,event,!external);}},
         if !external {button {class:"ix-dropdown-trigger ix-button ix-button-{variant.as_str()}",r#type:"button",disabled:blocked,"aria-hidden":"true",inert:true,tabindex:-1,
@@ -1771,7 +1948,7 @@ pub fn DropdownItem(
     let mount_context = context.clone();
     let mounted_host = host_binding.clone();
     let mounted_id = host_id.clone();
-    let linked_mount = linked.clone();
+    let linked_mount = use_trigger_mount(linked.clone(), blocked);
     let key_context = context.clone();
     let click_label = label.clone();
     let key_label = label.clone();
@@ -1811,7 +1988,7 @@ pub fn DropdownItem(
         "aria-controls":linked.as_ref().map(DropdownContext::host_id),
         "aria-checked":(checked||checkable).then_some(checked.to_string()),
         onmounted:move |event|{mounted_host.mount(&mounted_id,event.data());if let Some(context)=&mount_context{if let Some(entry)=context.entries.borrow_mut().get_mut(&id){entry.mounted=Some(event.data());}}
-            if let Some(linked)=&linked_mount{*linked.trigger.borrow_mut()=Some(event.data());}},
+            linked_mount.call(event);},
         onclick:move |event:MouseEvent| {
             if disabled||dropdown.and_then(DropdownHandle::try_context).is_some_and(|child|child.state.borrow().blocked){event.prevent_default();return;}
             onitemclick.call(DropdownItemClickEvent {label:click_label.clone(),prevented:Rc::new(Cell::new(false))});
@@ -2062,7 +2239,7 @@ mod tests {
         (@data Keyboard,$event:ident)=>{{let (key,modifiers)=$event.downcast::<(Key,Modifiers)>().unwrap();dioxus::html::KeyboardData::new(TestKeyboard(key.clone(),*modifiers))}};
         (@data Form,$event:ident)=>{dioxus::html::FormData::new(TestForm($event.downcast::<String>().unwrap().clone()))};
         (@data Focus,$event:ident)=>{dioxus::html::FocusData::new(TestFocus)};
-        (@data Mounted,$event:ident)=>{MountedData::new(())};
+        (@data Mounted,$event:ident)=>{if let Some(mock)=$event.downcast::<TriggerFocusMount>() {MountedData::new(mock.clone())}else{MountedData::new(())}};
         (@data $other:ident,$event:ident)=>{panic!("Unexpected Dropdown test event")};
     }
     dioxus::html::with_html_event_groups!(converter);
@@ -3583,5 +3760,372 @@ mod tests {
         assert_eq!(menu_target(&entries, &[3, 2, 1], None, "ArrowUp"), Some(1));
         assert_eq!(menu_target(&entries, &[2, 99], None, "Home"), None);
         assert_eq!(menu_target(&entries, &[4, 1, 2, 3], Some(4), "g"), Some(3));
+    }
+    #[derive(Clone, Default)]
+    struct TriggerFocusMount {
+        name: String,
+        calls: Rc<RefCell<Vec<String>>>,
+        pending: Rc<Cell<bool>>,
+        started: Rc<Cell<bool>>,
+        dropped: Rc<Cell<bool>>,
+        waiter: Rc<RefCell<Option<std::task::Waker>>>,
+    }
+    struct TriggerFocusAttempt(Rc<Cell<bool>>);
+    impl Drop for TriggerFocusAttempt {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    impl dioxus::html::RenderedElementBacking for TriggerFocusMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            let mock = self.clone();
+            let guard = TriggerFocusAttempt(self.dropped.clone());
+            Box::pin(async move {
+                let _guard = guard;
+                mock.started.set(true);
+                std::future::poll_fn(|cx| {
+                    if mock.pending.get() {
+                        *mock.waiter.borrow_mut() = Some(cx.waker().clone());
+                        std::task::Poll::Pending
+                    } else {
+                        std::task::Poll::Ready(())
+                    }
+                })
+                .await;
+                mock.calls.borrow_mut().push(mock.name.clone());
+                Ok(())
+            })
+        }
+    }
+    fn mount_trigger_mock(h: &mut Harness, label: &str) -> TriggerFocusMount {
+        let mock = TriggerFocusMount {
+            name: label.into(),
+            ..Default::default()
+        };
+        dispatch(&h.dom, "mounted", h.target(label), mock.clone());
+        h.settle();
+        mock
+    }
+    #[test]
+    fn mounted_trigger_escape_and_explicit_close_run_as_dioxus_effects_in_both_modes() {
+        let _guard = crate::test_event_converter_guard();
+        for mode in [
+            DropdownNavigationMode::ActiveDescendant,
+            DropdownNavigationMode::RovingTabindex,
+        ] {
+            let mut h = Harness::with_settings(Fixture {
+                mode,
+                ..Default::default()
+            });
+            let mock = mount_trigger_mock(&mut h, "Menu");
+            let context = h.context();
+            h.click("Menu");
+            h.key("Menu", Key::Escape);
+            assert!(!*context.open.peek());
+            assert_eq!(*mock.calls.borrow(), ["Menu"]);
+            h.click("Menu");
+            h.dom
+                .in_runtime(|| assert!(context.request(false, Reason::Trigger, true)));
+            assert_eq!(
+                mock.calls.borrow().len(),
+                1,
+                "admission never focuses synchronously"
+            );
+            h.settle();
+            assert_eq!(*mock.calls.borrow(), ["Menu", "Menu"]);
+            assert!(h.html().contains(r#"data-ix-dropdown-focus-owned="true""#));
+        }
+    }
+    #[test]
+    fn native_observed_cleanup_and_open_active_descendant_mode_change_focus_the_mount() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        let mock = mount_trigger_mock(&mut h, "Menu");
+        h.click("Menu");
+        let context = h.context();
+        let node = context.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"document":format!("trigger-focus-test-{}", runtime.owner_id()),"sequence":1,
+            "kind":"modality","input_kind":"keydown","key":"Tab",
+            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
+                "root_capture":"mounted-trigger-root","trigger_capture":"mounted-trigger-control"}]}).to_string());
+        assert!(context.native_key_route());
+        assert!(
+            runtime.keyboard_mode(),
+            "ordinary cleanup reads document modality, so the fixture must attach its document"
+        );
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::AnchorVisibility, true)));
+        h.settle();
+        assert_eq!(*mock.calls.borrow(), ["Menu"]);
+        h.click("Menu");
+        h.config.borrow_mut().mode = DropdownNavigationMode::RovingTabindex;
+        h.update();
+        h.config.borrow_mut().mode = DropdownNavigationMode::ActiveDescendant;
+        h.update();
+        assert!(*context.open.peek());
+        assert_eq!(*mock.calls.borrow(), ["Menu", "Menu"]);
+    }
+    #[test]
+    fn mounted_trigger_outside_tab_and_stale_close_requests_preserve_the_destination() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            mode: DropdownNavigationMode::RovingTabindex,
+            ..Default::default()
+        });
+        let mock = mount_trigger_mock(&mut h, "Menu");
+        let context = h.context();
+        h.click("Menu");
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Outside, false)));
+        h.settle();
+        assert!(mock.calls.borrow().is_empty());
+        h.click("Menu");
+        h.key("Menu", Key::Tab);
+        assert!(!*context.open.peek());
+        assert!(mock.calls.borrow().is_empty());
+        h.dom.in_runtime(|| {
+            assert!(context.request(true, Reason::Trigger, false));
+            assert!(context.request(false, Reason::Trigger, true));
+            assert!(context.request(true, Reason::Trigger, false));
+        });
+        h.settle();
+        assert!(
+            mock.calls.borrow().is_empty(),
+            "reopen cancels the queued close focus"
+        );
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Trigger, true)));
+        let replacement = mount_trigger_mock(&mut h, "Menu");
+        assert!(mock.calls.borrow().is_empty());
+        assert!(
+            replacement.calls.borrow().is_empty(),
+            "a stale request cannot focus the replacement mount"
+        );
+    }
+    #[test]
+    fn trigger_focus_cancels_pending_tasks_and_rejects_disabled_loading_and_dropped_surfaces() {
+        let _guard = crate::test_event_converter_guard();
+        for loading in [false, true] {
+            let mut h = Harness::new();
+            let mock = mount_trigger_mock(&mut h, "Menu");
+            let context = h.context();
+            h.click("Menu");
+            h.dom
+                .in_runtime(|| assert!(context.request(false, Reason::Trigger, true)));
+            if loading {
+                h.config.borrow_mut().loading = true;
+            } else {
+                h.config.borrow_mut().blocked = true;
+            }
+            h.update();
+            assert!(mock.calls.borrow().is_empty());
+        }
+        let mut h = Harness::new();
+        let mock = mount_trigger_mock(&mut h, "Menu");
+        mock.pending.set(true);
+        let context = h.context();
+        h.click("Menu");
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Trigger, true)));
+        h.settle();
+        assert!(mock.started.get());
+        assert!(!mock.dropped.get());
+        h.dom.in_runtime(|| context.invalidate_focus());
+        assert!(
+            mock.dropped.get(),
+            "a newer focus epoch cancels the pending mounted operation"
+        );
+        mock.pending.set(false);
+        mock.waiter.borrow_mut().take().unwrap().wake();
+        h.settle();
+        assert!(mock.calls.borrow().is_empty());
+        let dropping = mount_trigger_mock(&mut h, "Menu");
+        dropping.pending.set(true);
+        h.click("Menu");
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Trigger, true)));
+        h.settle();
+        assert!(dropping.started.get());
+        h.config.borrow_mut().visible = false;
+        h.update();
+        assert!(dropping.dropped.get());
+        assert!(dropping.calls.borrow().is_empty());
+        assert!(!context.state.borrow().surface);
+    }
+    #[test]
+    fn linked_item_and_external_trigger_focus_use_the_current_registered_mount() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        let linked = h.config.borrow().linked.get().unwrap();
+        let context = linked.context();
+        let item = mount_trigger_mock(&mut h, "Linked");
+        h.dom.in_runtime(|| {
+            assert!(context.request(true, Reason::Keyboard, false));
+            assert!(context.request(false, Reason::Left, true));
+        });
+        h.settle();
+        assert_eq!(*item.calls.borrow(), ["Linked"]);
+        let external = mount_trigger_mock(&mut h, "External trigger");
+        h.dom.in_runtime(|| {
+            assert!(context.request(true, Reason::Trigger, false));
+            assert!(context.request(false, Reason::Trigger, true));
+        });
+        h.settle();
+        assert_eq!(*external.calls.borrow(), ["External trigger"]);
+        assert_eq!(item.calls.borrow().len(), 1);
+    }
+    #[derive(Clone, Default)]
+    struct CustomTriggerFixture(Rc<CustomTriggerState>);
+    #[derive(Default)]
+    struct CustomTriggerState {
+        dropdown: Cell<Option<DropdownHandle>>,
+        first: Cell<Option<Signal<bool>>>,
+        second: Cell<Option<Signal<bool>>>,
+    }
+    #[component]
+    fn CustomTriggerControl(dropdown: DropdownHandle, name: String) -> Element {
+        let mounted = use_dropdown_trigger_mount(dropdown);
+        rsx! { button { id: name.clone(), "data-ix-dropdown-label":name, onmounted:mounted, "Custom trigger" } }
+    }
+    fn custom_trigger_fixture(fixture: CustomTriggerFixture) -> Element {
+        let dropdown = use_dropdown();
+        let first = use_signal(|| true);
+        let second = use_signal(|| true);
+        fixture.0.dropdown.set(Some(dropdown));
+        fixture.0.first.set(Some(first));
+        fixture.0.second.set(Some(second));
+        rsx! {
+            if first() { CustomTriggerControl { dropdown, name:"first" } }
+            if second() { CustomTriggerControl { dropdown, name:"second" } }
+            Dropdown { controller:dropdown, trigger:Some("second".into()), label:"Custom popup", DropdownItem { label:"Custom child" } }
+        }
+    }
+    #[test]
+    fn custom_trigger_scope_cleanup_preserves_newer_registration_and_releases_removed_current_mount()
+     {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(Converter));
+        let fixture = CustomTriggerFixture::default();
+        let mut dom = VirtualDom::new_with_props(custom_trigger_fixture, fixture.clone());
+        let edits = dom.rebuild_to_vec();
+        let mut h = Harness {
+            dom,
+            config: Rc::new(RefCell::new(Fixture::default())),
+            attrs: BTreeMap::new(),
+            listeners: BTreeMap::new(),
+        };
+        h.collect(edits);
+        for target in h.listeners.get("mounted").cloned().unwrap_or_default() {
+            dispatch(&h.dom, "mounted", target, ());
+        }
+        h.settle();
+        let first = mount_trigger_mock(&mut h, "first");
+        let second = mount_trigger_mock(&mut h, "second");
+        let context = fixture.0.dropdown.get().unwrap().context();
+        let previous_binding = {
+            let state = context.state.borrow();
+            (state.declaration.version, state.declaration.dispose_version)
+        };
+        let previous_second = second;
+        let second = mount_trigger_mock(&mut h, "second");
+        let replacement_binding = {
+            let state = context.state.borrow();
+            (state.declaration.version, state.declaration.dispose_version)
+        };
+        assert!(
+            replacement_binding.0 > previous_binding.0,
+            "a new mounted handle for the same declared ID must refresh native resolution"
+        );
+        assert!(
+            replacement_binding.1 > previous_binding.1,
+            "the replacement releases the old native event binding"
+        );
+        assert!(previous_second.calls.borrow().is_empty());
+        let current = context.trigger.borrow().clone().unwrap();
+        context.mount_trigger(current.node.clone(), current.blocked.clone());
+        drop(current);
+        h.settle();
+        assert_eq!(
+            {
+                let state = context.state.borrow();
+                (state.declaration.version, state.declaration.dispose_version)
+            },
+            replacement_binding,
+            "registering the same handle and rerendering must not cause an event rebind loop"
+        );
+        assert!(h.html().contains(&format!(
+            r#"data-ix-overlay-trigger-version="{}""#,
+            replacement_binding.0
+        )));
+        h.dom
+            .in_runtime(|| fixture.0.first.get().unwrap().set(false));
+        h.settle();
+        assert_eq!(
+            {
+                let state = context.state.borrow();
+                (state.declaration.version, state.declaration.dispose_version)
+            },
+            replacement_binding,
+            "cleanup from the older trigger scope cannot dispose the newer binding"
+        );
+        h.dom.in_runtime(|| {
+            assert!(context.request(true, Reason::Trigger, false));
+            assert!(context.request(false, Reason::Trigger, true));
+        });
+        h.settle();
+        assert!(first.calls.borrow().is_empty());
+        assert_eq!(
+            *second.calls.borrow(),
+            ["second"],
+            "unmounting the earlier binding cannot clear its replacement"
+        );
+        let target = Rc::downgrade(&context.trigger.borrow().as_ref().unwrap().node);
+        h.dom.in_runtime(|| {
+            assert!(context.request(true, Reason::Trigger, false));
+            assert!(context.request(false, Reason::Trigger, true));
+            fixture.0.second.get().unwrap().set(false);
+        });
+        h.settle();
+        assert!(context.trigger.borrow().is_none());
+        assert_eq!(
+            context.state.borrow().declaration.version,
+            replacement_binding.0
+        );
+        assert!(
+            context.state.borrow().declaration.dispose_version > replacement_binding.1,
+            "removal of the current scope disposes the native listener without a new missing-ID lookup"
+        );
+        assert!(
+            target.upgrade().is_none(),
+            "removed custom scope releases its current handle"
+        );
+        assert_eq!(second.calls.borrow().len(), 1);
+        let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
+        h.dom.in_runtime(|| {
+            assert!(context.request(true, Reason::Trigger, false));
+            assert!(context.request(false, Reason::Trigger, true));
+        });
+        assert_eq!(
+            runtime.pending_completions(),
+            2,
+            "an ID-only trigger queues changed notifications but no trigger focus effect"
+        );
+        h.settle();
+        assert_eq!(second.calls.borrow().len(), 1);
     }
 }

@@ -2396,96 +2396,6 @@ fn suppression_stops_at_closed_cached_intermediate_and_pointer_hide_consumes_reg
 }
 
 #[test]
-fn trigger_restore_queries_are_independent_consume_once_and_registration_lifetime_guarded() {
-    let fixture = Fixture::new("anchor-restore-query", 732);
-    let dom = build(&fixture);
-    let nodes = anchor_focus_nodes(&[(&fixture, &[])]);
-    let document = "anchor trigger restore query document";
-    prepare_anchor_focus(&[(&dom, &fixture)], document, &nodes);
-    assert!(
-        !fixture.node().queue_trigger_restore(1),
-        "no native bridge means component keeps its fallback command"
-    );
-    let runtime = fixture.runtime();
-    let job = runtime
-        .0
-        .borrow_mut()
-        .trigger_restores
-        .admit("anchor-restore-query".into(), 1, 7);
-    let query = |sequence, root, generation| {
-        serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-        "trigger_restore_sequence":sequence,"trigger_restore_root":root,"trigger_restore_generation":generation})
-    };
-    for value in [
-        query(job.sequence + 1, "anchor-restore-query", 1),
-        query(job.sequence, "wrong", 1),
-        query(job.sequence, "anchor-restore-query", 2),
-    ] {
-        let event = trap_form(value);
-        dom.in_scope(fixture.scope(), || runtime.query(event.clone()));
-        assert!(event.default_action_enabled());
-    }
-    dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(false, Reason::Trigger, false));
-        assert!(fixture.node().request(true, Reason::Trigger, false));
-    });
-    deliver_trap(
-        &dom,
-        &fixture,
-        anchor_focus_report(&fixture, document, 3, "observe", &nodes),
-    );
-    let event = trap_form(query(job.sequence, "anchor-restore-query", 1));
-    dom.in_scope(fixture.scope(), || runtime.query(event.clone()));
-    assert!(
-        !event.default_action_enabled(),
-        "newer ACK/revision/reopen does not revoke source cleanup RAF"
-    );
-    let repeat = trap_form(query(job.sequence, "anchor-restore-query", 1));
-    dom.in_scope(fixture.scope(), || runtime.query(repeat.clone()));
-    assert!(repeat.default_action_enabled());
-    let late = runtime
-        .0
-        .borrow_mut()
-        .trigger_restores
-        .admit("anchor-restore-query".into(), 1, 8);
-    fixture.0.borrow().veto.set(true);
-    dom.in_scope(fixture.scope(), || {
-        assert!(!runtime.close_and_release_focus("anchor-restore-query"))
-    });
-    assert!(trigger_suppressed(&fixture));
-    fixture.0.borrow().veto.set(false);
-    let old_node = fixture.node();
-    dom.in_scope(fixture.scope(), || {
-        let callbacks = runtime.entry("anchor-restore-query").unwrap().callbacks;
-        let node = runtime.register(
-            "anchor-restore-query".into(),
-            2,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-            callbacks,
-        );
-        fixture.0.borrow_mut().node = Some(node);
-    });
-    assert!(!trigger_suppressed(&fixture));
-    assert!(!old_node.queue_trigger_restore(9));
-    let stale = trap_form(query(late.sequence, "anchor-restore-query", 1));
-    dom.in_scope(fixture.scope(), || runtime.query(stale.clone()));
-    assert!(stale.default_action_enabled());
-    let dropped =
-        runtime
-            .0
-            .borrow_mut()
-            .trigger_restores
-            .admit("anchor-restore-query".into(), 2, 10);
-    let event = trap_form(query(dropped.sequence, "anchor-restore-query", 2));
-    drop(dom);
-    let caller = Fixture::new("anchor-restore-dropped-caller", 733);
-    let dom_caller = build(&caller);
-    dom_caller.in_scope(caller.scope(), || runtime.query(event.clone()));
-    assert!(event.default_action_enabled());
-}
-
-#[test]
 fn ordinary_negative_cleanup_reads_modality_after_child_before_callbacks() {
     let root = Fixture::new("anchor-mode-root", 734);
     let child = Fixture::new("anchor-mode-child", 735);
@@ -2563,7 +2473,7 @@ fn dropdown_suppression_does_not_mark_or_change_cross_type_popover_restoration()
 }
 
 #[test]
-fn tab_dispatch_preserves_immediate_veto_frames_and_isolates_failed_deferred_delivery() {
+fn tab_dispatch_preserves_immediate_veto_frames_and_consumes_each_exit_once() {
     let fixture = Fixture::new("deferred-exit-routing", 738);
     let dom = build_deferred_exit_fixture(&fixture, Rc::new(Cell::new(false)));
     let document = "deferred dispatch routing document";
@@ -2610,7 +2520,7 @@ fn tab_dispatch_preserves_immediate_veto_frames_and_isolates_failed_deferred_del
                 None
             )
             .default_action_enabled(),
-            "each vetoed Tab keeps synchronous native RAF admission without earlier cleanup"
+            "each vetoed Tab permits immediate native frame admission"
         );
         assert!(
             deferred_query(
@@ -2634,25 +2544,29 @@ fn tab_dispatch_preserves_immediate_veto_frames_and_isolates_failed_deferred_del
             .default_action_enabled(),
         "unarmed admission cannot dispatch"
     );
-    let runtime = fixture.runtime();
-    runtime
-        .0
-        .borrow_mut()
-        .trigger_restores
-        .admit("deferred-exit-routing".into(), 1, 7);
     assert!(
         !deferred_query(&dom, &fixture, 4, "schedule_focus_target", "after", None)
             .default_action_enabled(),
-        "arming remains independent of queued cleanup"
+        "the next Tab exit can arm independently"
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 4, "dispatch_focus_target", "after", None)
+            .default_action_enabled(),
+        "an armed Tab exit permits immediate native frame admission"
     );
     assert!(
         deferred_query(&dom, &fixture, 4, "dispatch_focus_target", "after", None)
             .default_action_enabled(),
-        "deferred dispatch does not authorize immediate RAF; absent bridge fails its own job"
+        "dispatch cannot schedule the same exit twice"
+    );
+    assert!(
+        !deferred_query(&dom, &fixture, 4, "pending_focus_target", "after", None)
+            .default_action_enabled()
     );
     assert!(
         deferred_query(&dom, &fixture, 4, "pending_focus_target", "after", None)
-            .default_action_enabled()
+            .default_action_enabled(),
+        "pending execution consumes the exit once"
     );
     for sequence in [2, 3] {
         assert!(
@@ -2665,7 +2579,7 @@ fn tab_dispatch_preserves_immediate_veto_frames_and_isolates_failed_deferred_del
                 None
             )
             .default_action_enabled(),
-            "failed deferred delivery preserves independently routed immediate source jobs"
+            "consuming a later exit preserves independently admitted earlier exits"
         );
     }
 }

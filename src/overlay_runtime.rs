@@ -6,7 +6,7 @@ use crate::overlay_descendant_focus::{
     DescendantHide, DescendantJob, DescendantPurpose, DescendantQueue,
 };
 use crate::overlay_domain::{Domain, DomainCallbacks};
-use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue, TriggerRestoreQueue};
+use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -182,7 +182,6 @@ struct Runtime {
     capture_block: Vec<(String, u64)>,
     ack: Ack,
     pending_focus: PendingFocusQueue,
-    trigger_restores: TriggerRestoreQueue,
     completions: CompletionQueue,
     item_mounts: BTreeMap<String, ItemMount>,
     owned_item_focus: BTreeMap<String, OwnedItemFocus>,
@@ -294,7 +293,6 @@ type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.pending_focus.clear();
-        self.trigger_restores.clear();
         self.completions.clear();
 
         self.inventories.clear();
@@ -335,7 +333,6 @@ impl RuntimeHandle {
             capture_block: Vec::new(),
             ack: Ack::default(),
             pending_focus: PendingFocusQueue::default(),
-            trigger_restores: TriggerRestoreQueue::default(),
             completions: CompletionQueue::default(),
             item_mounts: BTreeMap::new(),
             owned_item_focus: BTreeMap::new(),
@@ -775,7 +772,6 @@ impl RuntimeHandle {
                 && old_generation != generation
             {
                 runtime.pending_focus.remove_root(&id, old_generation);
-                runtime.trigger_restores.remove_root(&id, old_generation);
                 runtime.completions.remove_root(&id, old_generation);
 
                 runtime.descendant_focus.remove_root(&id, old_generation);
@@ -927,7 +923,6 @@ impl RuntimeHandle {
         let (ids, categories) = {
             let mut state = self.0.borrow_mut();
             state.pending_focus.clear();
-            state.trigger_restores.clear();
             // Adopting another document cancels old-document native work.
             if !state.document.is_empty() {
                 state.descendant_focus.clear();
@@ -1545,7 +1540,6 @@ impl RuntimeHandle {
             .is_some_and(|entry| entry.generation == generation)
         {
             runtime.pending_focus.remove_root(id, generation);
-            runtime.trigger_restores.remove_root(id, generation);
             runtime.completions.remove_root(id, generation);
 
             runtime.descendant_focus.remove_root(id, generation);
@@ -2828,34 +2822,6 @@ impl RuntimeHandle {
             }
             return;
         }
-        if let Some(sequence) = query.trigger_restore_sequence {
-            let (Some(root), Some(generation)) =
-                (query.trigger_restore_root, query.trigger_restore_generation)
-            else {
-                return;
-            };
-            let job = self
-                .0
-                .borrow_mut()
-                .trigger_restores
-                .take(sequence, &root, generation);
-            if job.is_some()
-                && self
-                    .with_owner(&root, generation, || {
-                        let entry = self.entry(&root)?;
-                        (entry.generation == generation)
-                            .then(|| self.read_current(&root, &entry))
-                            .flatten()
-                    })
-                    .flatten()
-                    .is_some()
-            {
-                // A source cleanup RAF survives later same-owner reopen and
-                // newer reports. Only this registration's lifetime authorizes it.
-                event.prevent_default();
-            }
-            return;
-        }
         if let Some(target) = query.schedule_focus_target {
             let armed = self
                 .0
@@ -2868,33 +2834,13 @@ impl RuntimeHandle {
             return;
         }
         if let Some(target) = query.dispatch_focus_target {
-            let route = {
-                let mut state = self.0.borrow_mut();
-                let has_pending_trigger = !state.trigger_restores.is_empty();
-                state
-                    .pending_focus
-                    .route(query.sequence, &target, has_pending_trigger)
-            };
-            if route == Some(false) {
-                // Preserve the source's synchronous RAF scheduling when no
-                // earlier queued cleanup requires native command ordering.
+            let routed = self
+                .0
+                .borrow_mut()
+                .pending_focus
+                .route(query.sequence, &target);
+            if routed {
                 event.prevent_default();
-            } else if route == Some(true) {
-                let sent = self.0.borrow().bridge.as_ref().is_some_and(|bridge| {
-                    bridge
-                        .send(serde_json::json!({
-                            "tab_focus":{"sequence":query.sequence,"target":target}
-                        }))
-                        .is_ok()
-                });
-                if !sent {
-                    // Only this routed admission failed to enter the native
-                    // FIFO; independent source jobs remain retained.
-                    self.0
-                        .borrow_mut()
-                        .pending_focus
-                        .take(query.sequence, &target);
-                }
             }
             return;
         }
@@ -3306,46 +3252,6 @@ impl NodeHandle {
                     }
                 });
                 true
-            })
-            .unwrap_or(false)
-    }
-    pub(crate) fn queue_trigger_restore(&self, focus_version: u64) -> bool {
-        let Some(runtime) = self.runtime() else {
-            return false;
-        };
-        runtime
-            .with_owner(&self.id, self.generation, || {
-                let Some(entry) = runtime
-                    .entry(&self.id)
-                    .filter(|entry| entry.generation == self.generation)
-                else {
-                    return false;
-                };
-                if runtime.read_current(&self.id, &entry).is_none() {
-                    return false;
-                }
-                let mut state = runtime.0.borrow_mut();
-                if state.document.is_empty() || state.bridge.is_none() {
-                    return false;
-                }
-                let job =
-                    state
-                        .trigger_restores
-                        .admit(self.id.clone(), self.generation, focus_version);
-                let sent = state.bridge.as_ref().is_some_and(|bridge| {
-                    bridge
-                        .send(serde_json::json!({
-                            "restore_trigger":{"sequence":job.sequence,"root":job.root,
-                                "generation":job.generation,"focus_version":job.focus_version}
-                        }))
-                        .is_ok()
-                });
-                if !sent {
-                    state
-                        .trigger_restores
-                        .take(job.sequence, &self.id, self.generation);
-                }
-                sent
             })
             .unwrap_or(false)
     }
@@ -3825,12 +3731,6 @@ struct Query {
     /// Current Popover ancestors of the captured native destination object.
     #[serde(default)]
     focus_hosts: Vec<String>,
-    #[serde(default)]
-    trigger_restore_sequence: Option<u64>,
-    #[serde(default)]
-    trigger_restore_root: Option<String>,
-    #[serde(default)]
-    trigger_restore_generation: Option<u64>,
 }
 
 #[cfg(test)]
@@ -5643,6 +5543,13 @@ mod tests {
         );
         runtime.query(schedule.clone());
         assert!(!schedule.default_action_enabled());
+        let dispatch_value = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"dispatch_focus_target":"after"});
+        let dispatch = event(dispatch_value.clone());
+        runtime.query(dispatch.clone());
+        assert!(!dispatch.default_action_enabled());
+        let repeat_dispatch = event(dispatch_value);
+        runtime.query(repeat_dispatch.clone());
+        assert!(repeat_dispatch.default_action_enabled());
         let value = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"pending_focus_target":"after"});
         let first = event(value.clone());
         runtime.query(first.clone());
