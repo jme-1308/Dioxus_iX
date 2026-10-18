@@ -39,6 +39,7 @@ pub(crate) enum Reason {
     Left,
     Inside,
     Outside,
+    AnchorVisibility,
     Parent,
     Configuration,
     Drop,
@@ -90,6 +91,7 @@ struct Entry {
     before_operation: Option<u64>,
     kind: OverlayKind,
     behavior: CloseBehavior,
+    trigger_visibility_check: bool,
     callbacks: Callbacks,
     scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
 }
@@ -213,6 +215,7 @@ impl RuntimeHandle {
                     before_operation: None,
                     kind,
                     behavior,
+                    trigger_visibility_check: kind.is_dropdown(),
                     callbacks,
                     scope,
                 },
@@ -781,6 +784,7 @@ impl RuntimeHandle {
                 "key" if report.phase == "trap" => self.popover_tab(report),
                 "key" => self.key(report),
                 "click" => self.click(report),
+                "anchor-visibility" => self.anchor_visibility(report),
                 _ => KeyDecision::default(),
             }
         };
@@ -856,11 +860,10 @@ impl RuntimeHandle {
             ) else {
                 continue;
             };
-            let Some(target) = crate::popover_focus::tab_boundary_target(
-                &node.tab_candidates,
-                &excluded,
-                report.shift,
-            ) else {
+            let candidates = self.source_tab_candidates(report, &node.tab_candidates);
+            let Some(target) =
+                crate::popover_focus::tab_boundary_target(&candidates, &excluded, report.shift)
+            else {
                 continue;
             };
             self.0.borrow_mut().ack.focus = Some((
@@ -887,13 +890,75 @@ impl RuntimeHandle {
             .chain(report.triggers.iter())
             .find_map(|id| {
                 let entry = self.entry(id)?;
-                if entry.kind != OverlayKind::Dropdown {
-                    return None;
-                }
                 report.nodes.iter().find(|node| {
-                    node.id == *id && node.connected && node.generation == entry.generation
+                    node.id == *id
+                        && node.connected
+                        && node.generation == entry.generation
+                        && (entry.kind == OverlayKind::Dropdown
+                            || (entry.kind == OverlayKind::Header
+                                && report.key == "Tab"
+                                && node.on_trigger))
                 })
             })
+    }
+    fn reported_kind(&self, report: &Report, id: &str) -> Option<OverlayKind> {
+        let node = report
+            .nodes
+            .iter()
+            .find(|node| node.id == id && node.connected)?;
+        self.entry(id)
+            .filter(|entry| entry.generation == node.generation)
+            .map(|entry| entry.kind)
+            .or_else(|| self.domain()?.node_kind(id, node.generation))
+    }
+    /// Header's internal controls are native light-DOM buttons in this port,
+    /// but live inside the source Header shadow root. Ordinary source queries
+    /// do not enter that shadow root. Keep the renderer projection in Rust;
+    /// the captured trigger remains separately available for reverse exits.
+    fn source_tab_candidates(
+        &self,
+        report: &Report,
+        candidates: &[crate::popover_focus::TabCandidate],
+    ) -> Vec<crate::popover_focus::TabCandidate> {
+        let controls = report
+            .nodes
+            .iter()
+            .filter(|node| self.reported_kind(report, &node.id) == Some(OverlayKind::Header))
+            .flat_map(|node| node.header_controls.iter())
+            .collect::<Vec<_>>();
+        candidates
+            .iter()
+            .filter(|candidate| !controls.contains(&&candidate.target))
+            .cloned()
+            .collect()
+    }
+    fn source_document_order(&self, report: &Report) -> Vec<String> {
+        let Some(candidates) = &report.document_tab_candidates else {
+            // Compatibility for pre-native reports and focused transport tests.
+            let controls = report
+                .nodes
+                .iter()
+                .filter(|node| self.reported_kind(report, &node.id) == Some(OverlayKind::Header))
+                .flat_map(|node| node.header_controls.iter())
+                .collect::<Vec<_>>();
+            return report
+                .tab_order
+                .iter()
+                .filter(|target| !controls.contains(target))
+                .cloned()
+                .collect();
+        };
+        let candidates = self
+            .source_tab_candidates(report, candidates)
+            .into_iter()
+            .filter(|candidate| {
+                !candidate.hosts.iter().any(|host| {
+                    self.reported_kind(report, host)
+                        .is_some_and(OverlayKind::is_dropdown)
+                })
+            })
+            .collect::<Vec<_>>();
+        crate::popover_focus::tab_order_targets(&candidates)
     }
     fn key(&self, report: &Report) -> KeyDecision {
         let Some(owner) = self.key_owner(report) else {
@@ -977,8 +1042,8 @@ impl RuntimeHandle {
                 }
                 let target = if report.shift
                     && report.hosts.iter().any(|host| {
-                        self.entry(host)
-                            .is_some_and(|entry| entry.kind == OverlayKind::Dropdown)
+                        self.reported_kind(report, host)
+                            .is_some_and(OverlayKind::is_dropdown)
                     }) {
                     (!node.trigger_id.is_empty()).then(|| node.trigger_id.clone())
                 } else {
@@ -994,16 +1059,18 @@ impl RuntimeHandle {
                             } else {
                                 excluded
                             };
+                            let candidates =
+                                self.source_tab_candidates(report, &parent_node.tab_candidates);
                             crate::popover_focus::tab_adjacent_target(
-                                &parent_node.tab_candidates,
+                                &candidates,
                                 &excluded,
                                 &node.trigger_id,
                                 report.shift,
                             )
                         })
                         .or_else(|| {
-                            report
-                                .tab_order
+                            let order = self.source_document_order(report);
+                            order
                                 .iter()
                                 .position(|id| id == &node.trigger_id)
                                 .and_then(|index| {
@@ -1012,7 +1079,7 @@ impl RuntimeHandle {
                                     } else {
                                         index.checked_add(1)
                                     }?;
-                                    report.tab_order.get(next).cloned()
+                                    order.get(next).cloned()
                                 })
                         })
                 }?;
@@ -1044,6 +1111,51 @@ impl RuntimeHandle {
             }
         }
         decision
+    }
+    fn anchor_visibility(&self, report: &Report) -> KeyDecision {
+        let Some(fact) = report
+            .anchor_visibility
+            .as_ref()
+            .filter(|fact| !fact.intersecting)
+        else {
+            return KeyDecision::default();
+        };
+        let Some(node) = report.nodes.iter().find(|node| {
+            node.id == fact.root && node.generation == fact.generation && node.connected
+        }) else {
+            return KeyDecision::default();
+        };
+        let expected = if node.anchor_id.is_empty() {
+            &node.trigger_id
+        } else {
+            &node.anchor_id
+        };
+        if expected.is_empty() || expected != &fact.target {
+            return KeyDecision::default();
+        }
+        let Some(entry) = self.entry(&fact.root).filter(|entry| {
+            entry.generation == fact.generation
+                && entry.kind.is_dropdown()
+                && entry.trigger_visibility_check
+        }) else {
+            return KeyDecision::default();
+        };
+        self.with_owner(&fact.root, fact.generation, || {
+            if self.read_current(&fact.root, &entry) == Some(true) {
+                // A real native observer delivery is a separate dismissal
+                // request in the registered owner's scope. Veto retains it.
+                self.request(
+                    &fact.root,
+                    fact.generation,
+                    Change {
+                        open: false,
+                        reason: Reason::AnchorVisibility,
+                        restore_focus: false,
+                    },
+                );
+            }
+        });
+        KeyDecision::default()
     }
     fn click(&self, report: &Report) -> KeyDecision {
         if report.phase == "capture" {
@@ -1290,6 +1402,24 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    pub(crate) fn set_trigger_visibility_check(&self, enabled: bool) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        let mut state = runtime.0.borrow_mut();
+        if let Some(entry) = state.nodes.get_mut(&self.id)
+            && entry.generation == self.generation
+        {
+            entry.trigger_visibility_check = enabled;
+        }
+    }
+    pub(crate) fn has_popover_ancestor(&self) -> bool {
+        self.is_registered()
+            && self
+                .runtime()
+                .and_then(|runtime| runtime.domain())
+                .is_some_and(|domain| domain.has_popover_ancestor(&self.id))
+    }
     pub(crate) fn runtime(&self) -> Option<RuntimeHandle> {
         self.runtime.upgrade().map(RuntimeHandle)
     }
@@ -1499,6 +1629,10 @@ struct Report {
     #[serde(default)]
     tab_order: Vec<String>,
     #[serde(default)]
+    document_tab_candidates: Option<Vec<crate::popover_focus::TabCandidate>>,
+    #[serde(default)]
+    anchor_visibility: Option<AnchorVisibility>,
+    #[serde(default)]
     focus_targets: Vec<String>,
     #[serde(default)]
     active_hosts: Vec<String>,
@@ -1519,6 +1653,10 @@ struct NodeFacts {
     #[serde(default)]
     trigger_id: String,
     #[serde(default)]
+    anchor_id: String,
+    #[serde(default)]
+    header_controls: Vec<String>,
+    #[serde(default)]
     items: Vec<usize>,
     #[serde(default)]
     focused_item: Option<usize>,
@@ -1534,6 +1672,13 @@ struct NodeFacts {
     trap_enabled: bool,
     #[serde(default)]
     tab_candidates: Vec<crate::popover_focus::TabCandidate>,
+}
+#[derive(Deserialize)]
+struct AnchorVisibility {
+    root: String,
+    generation: u64,
+    target: String,
+    intersecting: bool,
 }
 #[derive(Deserialize)]
 struct Query {

@@ -1086,3 +1086,661 @@ fn deferred_exit_projects_current_destination_popover_visibility_without_canceli
         "successful execution consumes once"
     );
 }
+
+struct HeaderExitFixture {
+    child: Fixture,
+    header: NodeHandle,
+    header_open: Rc<Cell<bool>>,
+    header_veto: Rc<Cell<bool>>,
+    order: Rc<RefCell<Vec<String>>>,
+}
+
+fn build_header_exit_fixture(child: &Fixture) -> (VirtualDom, HeaderExitFixture) {
+    let dom = build_deferred_exit_fixture(child, Rc::new(Cell::new(false)));
+    let header_open = Rc::new(Cell::new(false));
+    let header_veto = Rc::new(Cell::new(false));
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let header = dom.in_scope(child.scope(), || {
+        let runtime = child.runtime();
+        let entry = runtime.entry(child.node().id()).unwrap();
+        let mut callbacks = entry.callbacks;
+        let before = callbacks.before.clone();
+        let before_order = order.clone();
+        callbacks.before = Rc::new(move |change| {
+            before_order
+                .borrow_mut()
+                .push(format!("child:before:{}", change.open));
+            before(change)
+        });
+        let apply = callbacks.apply.clone();
+        let apply_order = order.clone();
+        callbacks.apply = Rc::new(move |change| {
+            apply_order
+                .borrow_mut()
+                .push(format!("child:apply:{}", change.open));
+            apply(change);
+        });
+        let node = runtime.register(
+            child.node().id().into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        child.0.borrow_mut().node = Some(node);
+        let owner = child.0.borrow().owner.clone().unwrap();
+        let scope = child.scope();
+        let token = child.0.borrow().token;
+        let read_owner = owner.clone();
+        let before_owner = owner.clone();
+        let read = header_open.clone();
+        let apply = header_open.clone();
+        let veto = header_veto.clone();
+        let before_order = order.clone();
+        let apply_order = order.clone();
+        runtime.register(
+            "source-header-overflow".into(),
+            1,
+            OverlayKind::Header,
+            CloseBehavior::Both,
+            Callbacks {
+                read: Rc::new(move || {
+                    assert_owner(&read_owner, scope, token);
+                    Some(read.get())
+                }),
+                before: Rc::new(move |change| {
+                    assert_owner(&before_owner, scope, token);
+                    before_order
+                        .borrow_mut()
+                        .push(format!("header:before:{}", change.open));
+                    !veto.get()
+                }),
+                apply: Rc::new(move |change| {
+                    assert_owner(&owner, scope, token);
+                    apply_order
+                        .borrow_mut()
+                        .push(format!("header:apply:{}", change.open));
+                    apply.set(change.open);
+                }),
+                key: None,
+            },
+        )
+    });
+    (
+        dom,
+        HeaderExitFixture {
+            child: child.clone(),
+            header,
+            header_open,
+            header_veto,
+            order,
+        },
+    )
+}
+
+fn header_exit_nodes(
+    fixture: &HeaderExitFixture,
+    parent: &Fixture,
+    nested: bool,
+) -> Vec<serde_json::Value> {
+    let parent_id = parent.0.borrow().id;
+    vec![
+        serde_json::json!({
+            "id":fixture.child.0.borrow().id,"generation":1,"connected":true,
+            "discovery_ready":true,"trigger_ancestors":if nested {vec![fixture.header.id(),parent_id]} else {vec![parent_id]},
+            "mode":"active-descendant","trigger_id":"header-child-trigger",
+            "inside":true,"on_trigger":true,"tab_candidates":[]
+        }),
+        serde_json::json!({
+            "id":fixture.header.id(),"generation":1,"connected":true,"discovery_ready":true,
+            "trigger_ancestors":[parent_id],"trigger_id":"header-more",
+            "header_controls":["header-more","header-menu"],"tab_candidates":[]
+        }),
+        trap_node(
+            parent_id,
+            &[],
+            &[
+                ("parent-before", &[parent_id], false),
+                ("header-menu", &[parent_id], false),
+                ("header-default", &[fixture.header.id(), parent_id], false),
+                (
+                    "header-child-trigger",
+                    &[fixture.header.id(), parent_id],
+                    false,
+                ),
+                ("header-overflow", &[fixture.header.id(), parent_id], false),
+                ("header-more", &[parent_id], false),
+                ("parent-after", &[parent_id], false),
+            ],
+        ),
+    ]
+}
+
+fn observe_header_exit(
+    dom: &VirtualDom,
+    fixture: &HeaderExitFixture,
+    parent: &Fixture,
+    document: &str,
+    sequence: u64,
+    nested: bool,
+) {
+    let value = serde_json::json!({
+        "owner":fixture.child.runtime().owner_id(),"document":document,"sequence":sequence,
+        "kind":"observe","nodes":header_exit_nodes(fixture,parent,nested)
+    });
+    assert!(deliver_trap(dom, &fixture.child, value).default_action_enabled());
+}
+
+fn prepare_header_exit(
+    dom_parent: &VirtualDom,
+    parent: &Fixture,
+    dom_child: &VirtualDom,
+    fixture: &HeaderExitFixture,
+    document: &str,
+    retained: bool,
+) -> u64 {
+    attach(dom_parent, parent, document);
+    attach(dom_child, &fixture.child, document);
+    observe(
+        dom_parent,
+        parent,
+        document,
+        1,
+        0,
+        false,
+        &[parent.0.borrow().id],
+    );
+    observe_header_exit(dom_child, fixture, parent, document, 1, !retained);
+    present(dom_parent, parent);
+    dom_child.in_scope(fixture.child.scope(), || {
+        assert!(fixture.header.request(true, Reason::Trigger, false));
+    });
+    present(dom_child, &fixture.child);
+    if retained {
+        // Same registered instances: Large initially projects the default-slot
+        // trigger outside Header overflow, then Small moves its live ancestry.
+        observe_header_exit(dom_child, fixture, parent, document, 2, true);
+    }
+    fixture.order.borrow_mut().clear();
+    if retained { 3 } else { 2 }
+}
+
+fn header_exit_report(
+    fixture: &HeaderExitFixture,
+    parent: &Fixture,
+    document: &str,
+    sequence: u64,
+    shift: bool,
+) -> serde_json::Value {
+    let parent_id = parent.0.borrow().id;
+    let candidates = [
+        ("parent-before", vec![parent_id]),
+        ("header-menu", vec![parent_id]),
+        ("header-default", vec![fixture.header.id(), parent_id]),
+        ("header-child-trigger", vec![fixture.header.id(), parent_id]),
+        ("header-overflow", vec![fixture.header.id(), parent_id]),
+        ("header-more", vec![parent_id]),
+        ("parent-after", vec![parent_id]),
+    ];
+    serde_json::json!({
+        "owner":fixture.child.runtime().owner_id(),"document":document,"sequence":sequence,
+        "kind":"key","phase":"bubble","key":"Tab","shift":shift,
+        "hosts":[fixture.header.id(),parent_id],"triggers":[fixture.child.0.borrow().id],
+        "active_hosts":[fixture.header.id(),parent_id],"active_popover":parent_id,
+        "nodes":header_exit_nodes(fixture,parent,true),
+        "tab_order":candidates.iter().map(|(target,_)|*target).collect::<Vec<_>>(),
+        "document_tab_candidates":candidates.iter().map(|(target,hosts)|serde_json::json!({
+            "target":target,"hosts":hosts,"tab_index":0,"active":*target=="header-child-trigger"
+        })).collect::<Vec<_>>()
+    })
+}
+
+#[test]
+fn header_cached_root_veto_is_owner_scoped_and_child_veto_is_requested_once_synchronously() {
+    let parent = Fixture::new("header-veto-parent", 701);
+    let child = Fixture::new("header-veto-child", 702);
+    let dom_parent = build_popover_fixture(&parent);
+    let (dom_child, fixture) = build_header_exit_fixture(&child);
+    prepare_header_exit(
+        &dom_parent,
+        &parent,
+        &dom_child,
+        &fixture,
+        "header cached veto document",
+        false,
+    );
+    let domain = child.runtime().domain().unwrap();
+    assert_eq!(
+        domain.cached_root(child.node().id()).as_deref(),
+        Some(fixture.header.id())
+    );
+    assert!(
+        domain.owns_topmost(fixture.header.id()),
+        "Header and child have the same source Dropdown kind"
+    );
+    fixture.header_veto.set(true);
+    dom_parent.in_scope(parent.scope(), || {
+        assert!(!domain.dismiss_root(child.node().id(), Reason::Keyboard, false));
+        assert_eq!(consume_context::<OwnerToken>().0, 701);
+    });
+    assert_eq!(*fixture.order.borrow(), ["header:before:false"]);
+    assert!(fixture.header_open.get() && child.open());
+    assert_eq!(
+        domain.cached_root(child.node().id()).as_deref(),
+        Some(fixture.header.id())
+    );
+
+    fixture.order.borrow_mut().clear();
+    fixture.header_veto.set(false);
+    child.0.borrow().veto.set(true);
+    dom_parent.in_scope(parent.scope(), || {
+        assert!(domain.dismiss_root(child.node().id(), Reason::Keyboard, false));
+        assert_eq!(consume_context::<OwnerToken>().0, 701);
+    });
+    assert_eq!(
+        *fixture.order.borrow(),
+        [
+            "header:before:false",
+            "child:before:false",
+            "header:apply:false"
+        ]
+    );
+    assert!(!fixture.header_open.get() && child.open());
+    assert!(domain.cached_children(fixture.header.id()).is_empty());
+    assert!(parent.open());
+    // Source's later second child veto is caused by native trigger visibility;
+    // direct Rust dismissal must not manufacture it via a cross-type pass.
+}
+
+#[test]
+fn header_retained_relocation_preserves_child_cached_root_and_same_type_cascade_boundary() {
+    let parent = Fixture::new("header-retained-parent", 703);
+    let child = Fixture::new("header-retained-child", 704);
+    let dom_parent = build_popover_fixture(&parent);
+    let (dom_child, fixture) = build_header_exit_fixture(&child);
+    prepare_header_exit(
+        &dom_parent,
+        &parent,
+        &dom_child,
+        &fixture,
+        "header retained root document",
+        true,
+    );
+    let domain = child.runtime().domain().unwrap();
+    assert_eq!(
+        domain.cached_root(child.node().id()).as_deref(),
+        Some(child.node().id())
+    );
+    assert_eq!(
+        domain.live_ancestors(child.node().id()),
+        [fixture.header.id(), parent.0.borrow().id]
+    );
+    assert!(domain.popover_focus_parent(child.node().id()).is_none());
+    dom_parent.in_scope(parent.scope(), || {
+        assert!(domain.request(
+            fixture.header.id(),
+            Change {
+                open: false,
+                reason: Reason::Trigger,
+                restore_focus: false
+            }
+        ));
+    });
+    assert_eq!(
+        *fixture.order.borrow(),
+        ["header:before:false", "header:apply:false"]
+    );
+    assert!(
+        child.open(),
+        "uncached same-type live child is not a cross-type child"
+    );
+    fixture.order.borrow_mut().clear();
+    dom_child.in_scope(child.scope(), || {
+        assert!(fixture.header.request(true, Reason::Trigger, false));
+    });
+    fixture.order.borrow_mut().clear();
+    dom_parent.in_scope(parent.scope(), || {
+        assert!(domain.dismiss_root(child.node().id(), Reason::Keyboard, false));
+    });
+    assert_eq!(
+        *fixture.order.borrow(),
+        ["child:before:false", "child:apply:false"]
+    );
+    assert!(fixture.header_open.get() && !child.open() && parent.open());
+}
+
+#[test]
+fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owners() {
+    let parent = Fixture::new("header-trap-parent", 705);
+    let child = Fixture::new("header-trap-child", 706);
+    let dom_parent = build_popover_fixture(&parent);
+    let (dom_child, fixture) = build_header_exit_fixture(&child);
+    prepare_header_exit(
+        &dom_parent,
+        &parent,
+        &dom_child,
+        &fixture,
+        "header focus owner document",
+        false,
+    );
+    let domain = child.runtime().domain().unwrap();
+    assert_eq!(
+        domain.node_kind(fixture.header.id(), 1),
+        Some(OverlayKind::Header)
+    );
+    assert_eq!(domain.node_kind(fixture.header.id(), 2), None);
+    assert_eq!(
+        domain.node_kind(parent.0.borrow().id, 1),
+        Some(OverlayKind::Popover)
+    );
+    let mut parent_open = parent.0.borrow().open.unwrap();
+    dom_parent.in_scope(parent.scope(), || parent_open.set(false));
+    assert!(
+        !domain.has_popover_ancestor(child.node().id()),
+        "live ancestry refreshes another owner's authoritative presence"
+    );
+    dom_parent.in_scope(parent.scope(), || parent_open.set(true));
+    assert!(domain.has_popover_ancestor(child.node().id()));
+    dom_child.in_scope(child.scope(), || {
+        // Reopen Header after the parent presence check so Header is again
+        // the last presented source overlay, with its child closed.
+        assert!(fixture.header.request(false, Reason::Trigger, false));
+        assert!(fixture.header.request(true, Reason::Trigger, false));
+    });
+    let parent_id = parent.0.borrow().id;
+    let mut nodes = header_exit_nodes(&fixture, &parent, true);
+    nodes.last_mut().unwrap()["tab_candidates"] = serde_json::json!([
+        {"target":"header-menu","hosts":[parent_id],"tab_index":0,"active":false},
+        {"target":"parent-before","hosts":[parent_id],"tab_index":0,"active":false},
+        {"target":"parent-after","hosts":[parent_id],"tab_index":0,"active":false},
+        {"target":"header-overflow","hosts":[fixture.header.id(),parent_id],"tab_index":0,"active":true},
+        {"target":"header-more","hosts":[parent_id],"tab_index":0,"active":false}
+    ]);
+    let mut report = trap_report(&parent, "header focus owner document", 2, nodes);
+    report["shift"] = false.into();
+    report["active_hosts"] = serde_json::json!([fixture.header.id(), parent_id]);
+    assert!(
+        deliver_trap(&dom_parent, &parent, report.clone()).default_action_enabled(),
+        "focused topmost Header owns its original Tab"
+    );
+    assert!(trap_query(&dom_parent, &parent, 2, "parent-before").default_action_enabled());
+    report["sequence"] = 3.into();
+    report["active_hosts"] = serde_json::json!([parent_id]);
+    report["nodes"].as_array_mut().unwrap().last_mut().unwrap()["tab_candidates"][2]["active"] =
+        true.into();
+    report["nodes"].as_array_mut().unwrap().last_mut().unwrap()["tab_candidates"][3]["active"] =
+        false.into();
+    assert!(
+        !deliver_trap(&dom_parent, &parent, report).default_action_enabled(),
+        "parent last wraps with open Header host excluded"
+    );
+    assert!(!trap_query(&dom_parent, &parent, 3, "parent-before").default_action_enabled());
+    assert!(fixture.header_open.get() && parent.open());
+}
+
+#[test]
+fn header_fresh_and_retained_tab_use_source_shadow_projection_and_captured_reverse_trigger() {
+    for (retained, shift, token) in [
+        (false, false, 707),
+        (false, true, 709),
+        (true, false, 711),
+        (true, true, 713),
+    ] {
+        let parent = Fixture::new("header-exit-parent", token);
+        let child = Fixture::new("header-exit-child", token + 1);
+        let dom_parent = build_popover_fixture(&parent);
+        let (dom_child, fixture) = build_header_exit_fixture(&child);
+        let document = format!("header source exit document {retained} {shift}");
+        let sequence = prepare_header_exit(
+            &dom_parent,
+            &parent,
+            &dom_child,
+            &fixture,
+            &document,
+            retained,
+        );
+        let input = deliver_trap(
+            &dom_child,
+            &child,
+            header_exit_report(&fixture, &parent, &document, sequence, shift),
+        );
+        assert_eq!(
+            !input.default_action_enabled(),
+            shift,
+            "only the precomputed reverse trigger supplies an exit target"
+        );
+        assert_eq!(fixture.header_open.get(), retained);
+        assert!(!child.open() && parent.open());
+        if shift {
+            let target = if retained {
+                "header-child-trigger"
+            } else {
+                "header-more"
+            };
+            assert!(
+                !deferred_query(
+                    &dom_child,
+                    &child,
+                    sequence,
+                    "schedule_focus_target",
+                    target,
+                    None
+                )
+                .default_action_enabled()
+            );
+            assert!(
+                !deferred_query(
+                    &dom_child,
+                    &child,
+                    sequence,
+                    "pending_focus_target",
+                    target,
+                    None
+                )
+                .default_action_enabled()
+            );
+            assert!(
+                deferred_query(
+                    &dom_child,
+                    &child,
+                    sequence,
+                    "pending_focus_target",
+                    target,
+                    None
+                )
+                .default_action_enabled()
+            );
+        } else {
+            for target in [
+                "header-more",
+                "header-overflow",
+                "parent-after",
+                "parent-before",
+            ] {
+                assert!(
+                    deferred_query(
+                        &dom_child,
+                        &child,
+                        sequence,
+                        "schedule_focus_target",
+                        target,
+                        None
+                    )
+                    .default_action_enabled(),
+                    "missing source-shadow current target admits no guessed adjacent focus"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn header_reverse_jobs_survive_root_veto_and_newer_reports_but_not_dropped_owner() {
+    let parent = Fixture::new("header-queued-parent", 715);
+    let child = Fixture::new("header-queued-child", 716);
+    let dom_parent = build_popover_fixture(&parent);
+    let (dom_child, fixture) = build_header_exit_fixture(&child);
+    let document = "header queued owner document";
+    prepare_header_exit(&dom_parent, &parent, &dom_child, &fixture, document, false);
+    fixture.header_veto.set(true);
+    for sequence in [2, 3] {
+        assert!(
+            !deliver_trap(
+                &dom_child,
+                &child,
+                header_exit_report(&fixture, &parent, document, sequence, true)
+            )
+            .default_action_enabled()
+        );
+        assert!(
+            !deferred_query(
+                &dom_child,
+                &child,
+                sequence,
+                "schedule_focus_target",
+                "header-more",
+                None
+            )
+            .default_action_enabled()
+        );
+    }
+    assert_eq!(
+        *fixture.order.borrow(),
+        ["header:before:false", "header:before:false"]
+    );
+    assert!(fixture.header_open.get() && child.open());
+    observe_header_exit(&dom_child, &fixture, &parent, document, 4, true);
+    assert!(
+        !deferred_query(
+            &dom_child,
+            &child,
+            2,
+            "pending_focus_target",
+            "header-more",
+            None
+        )
+        .default_action_enabled(),
+        "newer independent job and ACK do not revoke the first captured reverse trigger"
+    );
+    // Retain the overlay RuntimeHandle but drop its actual Dioxus owner. A
+    // remaining value-only job cannot recover the dead registered scope.
+    drop(dom_child);
+    assert!(child.0.borrow().owner.as_ref().unwrap().upgrade().is_none());
+    let event = trap_form(serde_json::json!({
+        "owner":child.runtime().owner_id(),"sequence":3,"pending_focus_target":"header-more"
+    }));
+    dom_parent.in_scope(parent.scope(), || child.runtime().query(event.clone()));
+    assert!(
+        event.default_action_enabled(),
+        "dropped owner cannot authorize the remaining independent job"
+    );
+}
+
+#[test]
+fn header_child_veto_retries_only_on_matching_admitted_native_visibility_delivery() {
+    let parent = Fixture::new("header-visibility-parent", 717);
+    let child = Fixture::new("header-visibility-child", 718);
+    let dom_parent = build_popover_fixture(&parent);
+    let (dom_child, fixture) = build_header_exit_fixture(&child);
+    let document = "header child native visibility document";
+    prepare_header_exit(&dom_parent, &parent, &dom_child, &fixture, document, false);
+    child.0.borrow().veto.set(true);
+    dom_child.in_scope(child.scope(), || {
+        assert!(fixture.header.request(false, Reason::Keyboard, false));
+    });
+    let synchronous = vec![
+        "header:before:false".to_string(),
+        "child:before:false".to_string(),
+        "header:apply:false".to_string(),
+    ];
+    assert_eq!(*fixture.order.borrow(), synchronous);
+    assert!(!fixture.header_open.get() && child.open());
+    observe_header_exit(&dom_child, &fixture, &parent, document, 2, true);
+    assert_eq!(
+        *fixture.order.borrow(),
+        synchronous,
+        "ordinary native topology observations do not invent another dismissal"
+    );
+    let visibility = |sequence, generation, target, intersecting| {
+        let mut nodes = header_exit_nodes(&fixture, &parent, true);
+        nodes[0]["anchor_id"] = "header-child-anchor".into();
+        serde_json::json!({
+            "owner":child.runtime().owner_id(),"document":document,"sequence":sequence,
+            "kind":"anchor-visibility","nodes":nodes,
+            "anchor_visibility":{"root":child.0.borrow().id,"generation":generation,
+                "target":target,"intersecting":intersecting}
+        })
+    };
+    for report in [
+        visibility(3, 1, "header-child-anchor", true),
+        visibility(4, 1, "header-child-trigger", false),
+        visibility(5, 2, "header-child-anchor", false),
+    ] {
+        assert!(deliver_trap(&dom_child, &child, report).default_action_enabled());
+        assert_eq!(
+            *fixture.order.borrow(),
+            synchronous,
+            "positive, wrong-anchor and stale-generation facts do not request close"
+        );
+    }
+    fixture.child.node().set_trigger_visibility_check(false);
+    assert!(
+        deliver_trap(
+            &dom_child,
+            &child,
+            visibility(6, 1, "header-child-anchor", false)
+        )
+        .default_action_enabled()
+    );
+    assert_eq!(
+        *fixture.order.borrow(),
+        synchronous,
+        "explicit source visibility suppression vetoes admission"
+    );
+    fixture.child.node().set_trigger_visibility_check(true);
+    assert!(
+        deliver_trap(
+            &dom_child,
+            &child,
+            visibility(7, 1, "header-child-anchor", false)
+        )
+        .default_action_enabled()
+    );
+    let mut after_delivery = synchronous;
+    after_delivery.push("child:before:false".into());
+    assert_eq!(
+        *fixture.order.borrow(),
+        after_delivery,
+        "one real false observer delivery supplies the later vetoed request"
+    );
+    assert!(
+        child.open(),
+        "the later native visibility request still honors the child veto"
+    );
+    // A separate legitimate observer event may ask again while veto retains
+    // the child; it is not a replay of the original synchronous cascade.
+    assert!(
+        deliver_trap(
+            &dom_child,
+            &child,
+            visibility(8, 1, "header-child-anchor", false)
+        )
+        .default_action_enabled()
+    );
+    after_delivery.push("child:before:false".into());
+    assert_eq!(*fixture.order.borrow(), after_delivery);
+    dom_child.in_scope(child.scope(), || child.node().unregister());
+    assert!(
+        deliver_trap(
+            &dom_child,
+            &child,
+            visibility(9, 1, "header-child-anchor", false)
+        )
+        .default_action_enabled()
+    );
+    assert_eq!(
+        *fixture.order.borrow(),
+        after_delivery,
+        "dropped registration cannot receive a late native visibility request"
+    );
+}

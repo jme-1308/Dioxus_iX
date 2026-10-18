@@ -20,6 +20,7 @@ const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),handledBubbleKeys=new WeakSet();
 const pendingFocusFrames=new Set();
+const anchorObservers=new Map();
 const lastFocus=new Map(),nativeIds=new WeakMap(),nativeNodes=new Map();let nativeSequence=0;
 function nativeId(el){if(!(el instanceof HTMLElement))return '';if(el.id)return el.id;let id=nativeIds.get(el);if(!id){id=owner+'-native-'+(++nativeSequence);nativeIds.set(el,id);}nativeNodes.set(id,el);return id;}
 function findElement(id){const el=document.getElementById(id)||nativeNodes.get(id);return el instanceof HTMLElement&&el.isConnected?el:null;}
@@ -148,14 +149,17 @@ function pathIds(path,attr,pred){
   }
   return out;
 }
-function documentTabOrder(){
+function documentTabCandidates(){
   if(!document.body)return [];
   const raw=Array.from(document.body.querySelectorAll(focusableSelector)).filter(el=>{
-    if(!(el instanceof HTMLElement)||!visibleFocusable(el))return false;
-    const h=nearestHost(el);
-    return !h||isHeaderPopupHost(h);
+    return el instanceof HTMLElement&&visibleFocusable(el);
   });
-  return sortByTabOrder(raw).map(nativeId).filter(Boolean);
+  return raw.map(el=>({target:nativeId(el),tab_index:el.tabIndex,hosts:hostAncestors(el),active:false}));
+}
+function headerControls(root){
+  const header=root.closest('header.ix-application-header');if(!header)return [];
+  return Array.from(header.querySelectorAll('[data-header-more-button],[data-header-menu-toggle],[data-app-switch-opener],.ix-application-header-leading > .ix-app-icon-button'))
+    .filter(el=>el instanceof HTMLElement&&el.closest('header.ix-application-header')===header).map(nativeId);
 }
 function collectFacts(kind,event,phase=''){
   const active=deepActive(),path=event?.composedPath?.()||[];
@@ -190,18 +194,20 @@ function collectFacts(kind,event,phase=''){
     nodes.push({
       id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
       trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
+      header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       items:itemsWithEl.map(e=>e.num),focused_item,
       focusable_ids:focusables.map(nativeId).filter(Boolean),
       focus_count:focusables.length,focused_index,on_trigger,inside,
       trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
     });
   }
+  const document_tab_candidates=documentTabCandidates();
   return {
     owner,document:nativeDocument.identity,window_sequence:phase==='window'?windowSequence(event):0,sequence:++sequence,kind,phase,input_kind:event?.type||'',
     key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,ctrl:!!event?.ctrlKey,meta:!!event?.metaKey,
     default_prevented:!!event?.defaultPrevented,
     target_id:nativeId(target),active_id:nativeId(active),
-    hosts,triggers,anchors,nodes,active_categories,tab_order:documentTabOrder(),candidate_ids,
+    hosts,triggers,anchors,nodes,active_categories,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||'',
     focus_targets:nodes.flatMap(node=>node.tab_candidates.map(candidate=>candidate.target))
   };
@@ -329,6 +335,30 @@ function syncKeyTargets(){
   for(const id of lastFocus.keys())if(!currentIds.has(id))lastFocus.delete(id);
   for(const [target,listener]of keyTargets)if(!wanted.has(target)){target.removeEventListener('keydown',listener);keyTargets.delete(target);}
 }
+function syncAnchorObservers(){
+  const wanted=new Set();
+  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
+    if(!(root instanceof HTMLElement)||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner)continue;
+    if(!root.hasAttribute('data-ix-overlay-mode')||root.getAttribute('data-ix-overlay-open')!=='true'||root.getAttribute('data-ix-overlay-trigger-visibility-check')==='false')continue;
+    const id=root.getAttribute('data-ix-overlay-root'),target=findAnchor(root)||findTrigger(id,root),generation=root.getAttribute('data-ix-overlay-generation')||'0';
+    if(!id||!(target instanceof HTMLElement)||typeof IntersectionObserver==='undefined')continue;
+    wanted.add(id);const previous=anchorObservers.get(id);
+    if(previous?.root===root&&previous.target===target&&previous.generation===generation)continue;
+    previous?.observer.disconnect();
+    const binding={root,target,generation,observer:null};
+    binding.observer=new IntersectionObserver(entries=>{
+      if(!alive||anchorObservers.get(id)!==binding||!root.isConnected||!target.isConnected)return;
+      for(const entry of entries){
+        if(entry.target!==target)continue;
+        const report=collectFacts('anchor-visibility',null,'visibility');
+        report.anchor_visibility={root:id,generation:Number(generation),target:nativeId(target),intersecting:entry.isIntersecting};
+        send(report,null);
+      }
+    },{threshold:[0,0.5,1]});
+    anchorObservers.set(id,binding);binding.observer.observe(target);
+  }
+  for(const [id,binding]of anchorObservers)if(!wanted.has(id)){binding.observer.disconnect();anchorObservers.delete(id);}
+}
 function reportObserve(){
   if(!alive)return;
   for(const [id,node] of nativeNodes)if(!node.isConnected)nativeNodes.delete(id);
@@ -336,8 +366,9 @@ function reportObserve(){
   if(!transport())return;
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   syncExecution();
+  syncAnchorObservers();
   const report=collectFacts('observe',null);
-  const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,tab_order:report.tab_order});
+  const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
   if(sig!==lastSignature){lastSignature=sig;send(report,null);}
 }
 document.addEventListener('keydown',e=>send(collectFacts('key',e,'capture'),e),{capture:true,signal});
@@ -365,11 +396,12 @@ document.addEventListener('focusout',()=>queueMicrotask(()=>{if(alive)reportObse
 const observer=new MutationObserver(reportObserve);
 observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
-  'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
+  'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
 ]});
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 try{reportObserve();await dioxus.recv();}finally{
   alive=false;listeners.abort();keyTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
+  for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   for(const frame of pendingFocusFrames)cancelAnimationFrame(frame);pendingFocusFrames.clear();
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');

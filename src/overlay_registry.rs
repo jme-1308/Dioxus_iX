@@ -19,6 +19,13 @@ pub(crate) enum OverlayKind {
     Popover,
 }
 
+impl OverlayKind {
+    /// Header overflow is an actual Dropdown in the source coordinator.
+    pub(crate) fn is_dropdown(self) -> bool {
+        matches!(self, Self::Header | Self::Dropdown)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) enum CloseBehavior {
     #[default]
@@ -361,16 +368,15 @@ impl Registry {
     }
 
     pub(crate) fn live_parent(&self, id: &str) -> Option<String> {
-        self.parent_matching(id, false)
+        self.parent_matching(id)
     }
 
-    /// Header participates in this port's controller adapter, but it is not a
-    /// source OverlayCoordinator entry for Popover focus arbitration.
+    /// Focus uses the live source coordinator chain, including Header overflow.
     pub(crate) fn focus_parent(&self, id: &str) -> Option<String> {
-        self.parent_matching(id, true)
+        self.parent_matching(id)
     }
 
-    fn parent_matching(&self, id: &str, skip_header: bool) -> Option<String> {
+    fn parent_matching(&self, id: &str) -> Option<String> {
         let node = self.nodes.get(id)?;
         if !node.connected {
             return None;
@@ -380,7 +386,6 @@ impl Registry {
                 && let Some(anc) = self.nodes.get(ancestor_id)
                 && anc.connected
                 && anc.open
-                && (!skip_header || anc.kind != OverlayKind::Header)
             {
                 return Some(ancestor_id.clone());
             }
@@ -499,7 +504,7 @@ impl Registry {
             anc_id != child_id
                 && self.nodes.get(anc_id).is_some_and(|node| {
                     Some(node.kind) == kind
-                        || (kind == Some(OverlayKind::Dropdown) && node.kind == OverlayKind::Header)
+                        || kind.is_some_and(|kind| kind.is_dropdown() && node.kind.is_dropdown())
                 })
         });
         let Some(parent_id) = nearest else {
@@ -790,7 +795,9 @@ mod tests {
         reg.set_open("sub", true);
         assert_eq!(reg.cached_root("sub").as_deref(), Some("child"));
         assert_eq!(reg.live_parent("child").as_deref(), Some("header"));
+        assert_eq!(reg.focus_parent("child").as_deref(), Some("header"));
         assert_eq!(reg.live_ancestors("sub"), vec!["child", "header"]);
+        assert_eq!(reg.focus_ancestors("sub"), vec!["child", "header"]);
         assert!(reg.path_in_hierarchy("header", &["sub".into()], &[]));
         assert!(reg.child_path("header", &[], &["child".into()]));
     }

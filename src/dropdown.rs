@@ -89,6 +89,7 @@ struct Settings {
     behavior: DropdownCloseBehavior,
     disable_focus_handling: bool,
     disable_focus_trap: bool,
+    suppress_trigger_visibility_check: bool,
     focus_checked_item: bool,
     before: EventHandler<DropdownChangeEvent>,
     changed: EventHandler<bool>,
@@ -787,6 +788,9 @@ pub fn Dropdown(
     #[props(default)] enable_top_layer: bool,
     #[props(default)] disable_focus_handling: bool,
     #[props(default)] disable_focus_trap: bool,
+    /// Keep the menu open when its native anchor leaves the viewport or hides.
+    #[props(default)]
+    suppress_trigger_visibility_check: bool,
     #[props(default)] focus_checked_item: bool,
     #[props(default)] onbeforechange: EventHandler<DropdownChangeEvent>,
     #[props(default)] onchange: EventHandler<bool>,
@@ -800,6 +804,7 @@ pub fn Dropdown(
         behavior: close_behavior,
         disable_focus_handling,
         disable_focus_trap,
+        suppress_trigger_visibility_check,
         focus_checked_item,
         before: onbeforechange,
         changed: onchange,
@@ -887,6 +892,7 @@ fn DropdownSurface(
         }
     });
     node.set_close_behavior(settings.behavior.into());
+    node.set_trigger_visibility_check(!settings.suppress_trigger_visibility_check);
     use_context_provider(|| context.clone());
     let drop_context = context.clone();
     let drop_node = node.clone();
@@ -968,6 +974,7 @@ fn DropdownSurface(
         "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime_owner,"data-ix-overlay-trigger":trigger_marker,
         "data-ix-overlay-generation":generation.to_string(),"data-ix-overlay-open":open.to_string(),
         "data-ix-overlay-top-layer":enable_top_layer.to_string(),"data-ix-overlay-mode":settings.mode.as_str(),
+        "data-ix-overlay-trigger-visibility-check":(!settings.suppress_trigger_visibility_check).to_string(),
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,"data-ix-overlay-focus-target":focus_target,"data-ix-overlay-focus-version":focus_version.to_string(),
         style:if external{format!("--ix-dropdown-area:{}",placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,placement.area())},

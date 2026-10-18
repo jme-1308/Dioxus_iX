@@ -1,7 +1,7 @@
 //! Stable arbitrary-content Header presentation. Native code reports DOM facts;
 //! Rust owns presence, open state, cancellation, keyboard choices and focus intent.
 use crate::overlay_registry::{CloseBehavior, OverlayKind};
-use crate::overlay_runtime::{self, Callbacks, Change, NodeHandle, Reason};
+use crate::overlay_runtime::{self, Callbacks, Change, KeyDecision, KeyFacts, NodeHandle, Reason};
 use dioxus::prelude::*;
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -91,10 +91,16 @@ impl Model {
         if self.small == small && self.top_layer == top_layer {
             return false;
         }
-        let closed = self.open;
+        // Source retains the same overflow Dropdown and its opening-time
+        // child cache when slots move across a breakpoint. Only a top-layer
+        // configuration change keeps this adapter's prior forced-close policy.
+        let layer_changed = self.top_layer != top_layer;
+        let closed = self.open && layer_changed;
         self.small = small;
         self.top_layer = top_layer;
-        self.open = false;
+        if layer_changed {
+            self.open = false;
+        }
         self.generation = self.generation.wrapping_add(1);
         self.sequence = 0;
         self.stop = false;
@@ -124,12 +130,18 @@ struct Decision {
     request: Option<bool>,
     focus: Option<String>,
 }
-fn decide(model: &mut Model, report: &Report) -> Decision {
+fn decide(model: &mut Model, report: &Report, popover_ancestor: bool) -> Decision {
     let mut decision = Decision::default();
     match report.kind.as_str() {
         "pointer" => model.keyboard = false,
         "key" if !report.default_prevented => {
             model.keyboard = true;
+            // Inside a Popover, the source Header Dropdown's local query has
+            // no eligible controls. More Tab instead belongs to the shared
+            // trigger callback below, including its no-target/default case.
+            if report.key == "Tab" && popover_ancestor {
+                return decision;
+            }
             if report.more
                 && matches!(
                     report.key.as_str(),
@@ -194,6 +206,39 @@ fn decide(model: &mut Model, report: &Report) -> Decision {
     decision
 }
 
+fn releases_more_tab(model: &Model, facts: &KeyFacts) -> bool {
+    model.alive
+        && model.mounted
+        && model.open
+        && !facts.default_prevented
+        && facts.key == "Tab"
+        && facts.on_trigger
+        && facts.popover_ancestor
+}
+
+fn header_tab_key(
+    model: &Rc<RefCell<Model>>,
+    slot: &Rc<RefCell<Option<NodeHandle>>>,
+    facts: &KeyFacts,
+) -> KeyDecision {
+    if !releases_more_tab(&model.borrow(), facts) {
+        return KeyDecision::default();
+    }
+    let Some(node) = slot.borrow().clone().filter(NodeHandle::is_registered) else {
+        return KeyDecision::default();
+    };
+    let Some(runtime) = node.runtime() else {
+        return KeyDecision::default();
+    };
+    // A NodeHandle holds only a weak runtime reference. Resolve it after the
+    // callback borrow, and keep release intent even if the close is vetoed.
+    runtime.dismiss_root(node.id(), Reason::Keyboard, false);
+    KeyDecision {
+        release_focus: true,
+        ..KeyDecision::default()
+    }
+}
+
 #[derive(Clone)]
 struct Controller {
     model: Rc<RefCell<Model>>,
@@ -212,6 +257,10 @@ impl Controller {
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
+        // Domain presence reads can enter this owner; do not hold Model's
+        // mutable borrow while computing source-aware ancestry.
+        let popover_ancestor =
+            report.kind == "key" && report.key == "Tab" && self.node.has_popover_ancestor();
         let (decision, generation, previous, forced_close) = {
             let mut model = self.model.borrow_mut();
             if !model.accepts(&report) {
@@ -243,7 +292,7 @@ impl Controller {
                     ..Decision::default()
                 }
             } else {
-                decide(&mut model, &report)
+                decide(&mut model, &report, popover_ancestor)
             };
             model.stop = decision.stop;
             (decision, model.generation, model.open, forced_close)
@@ -322,10 +371,13 @@ pub(crate) fn HeaderLayout(
     let model = use_hook(|| Rc::new(RefCell::new(Model::new(small, enable_top_layer))));
     let revision = use_signal(|| 0_u64);
     let runtime = overlay_runtime::use_overlay_runtime();
+    let node_slot = use_hook(|| Rc::new(RefCell::new(None::<NodeHandle>)));
     let node = {
         let read = model.clone();
         let before = model.clone();
         let apply = model.clone();
+        let key_model = model.clone();
+        let key_slot = node_slot.clone();
         let owner = model.borrow().owner.clone();
         runtime.register(
             owner,
@@ -369,14 +421,18 @@ pub(crate) fn HeaderLayout(
                     }
                     onchange.call(change.open);
                 }),
-                key: None,
+                key: Some(Rc::new(move |facts| {
+                    header_tab_key(&key_model, &key_slot, facts)
+                })),
             },
         )
     };
+    *node_slot.borrow_mut() = Some(node.clone());
 
     let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    // Configuration changes close the old presentation without replacing children.
-    // This is configuration reconciliation, not a user request that can be vetoed.
+    // A slot projection preserves presence and the admitted child cache. A
+    // top-layer change still closes through bounded configuration reconciliation,
+    // rather than a vetoable user request. Both invalidate private focus tasks.
     if model.borrow_mut().sync_mode(small, enable_top_layer) {
         node.sync_open(false);
         let changed_node = node.clone();
@@ -396,10 +452,12 @@ pub(crate) fn HeaderLayout(
     let cleanup_model = model.clone();
     let cleanup_bridge = bridge.clone();
     let cleanup_node = node.clone();
+    let cleanup_slot = node_slot.clone();
     use_drop(move || {
         cleanup_model.borrow_mut().invalidate();
         cleanup_node.close_children(Reason::Drop);
         cleanup_node.unregister();
+        cleanup_slot.borrow_mut().take();
         if let Some(bridge) = cleanup_bridge.borrow_mut().take() {
             let _ = bridge.send("finish");
         }
@@ -432,6 +490,7 @@ pub(crate) fn HeaderLayout(
             "data-ix-overlay-owner":runtime_owner,
             "data-ix-overlay-root":owner.clone(),"data-ix-overlay-generation":"1",
             "data-ix-overlay-open":open.to_string(),"data-ix-overlay-ready":discovery_ready.to_string(),
+            "data-ix-overlay-mode":"active-descendant",
             "data-small":small.to_string(),"data-open":open.to_string(),"data-top-layer":enable_top_layer.to_string(),
             "data-generation":generation,"data-focus-version":focus_version,"data-focus-target":focus,
             onmounted:move |_| {
@@ -525,7 +584,7 @@ mod tests {
             let mut fact = report(&model, "key");
             fact.more = true;
             fact.key = key.into();
-            let decision = decide(&mut model, &fact);
+            let decision = decide(&mut model, &fact, false);
             assert!(decision.prevent);
             assert_eq!(decision.request, Some(true));
             assert!(!decision.stop);
@@ -534,7 +593,7 @@ mod tests {
         let mut trigger = report(&model, "key");
         trigger.more = true;
         trigger.key = "Enter".into();
-        let decision = decide(&mut model, &trigger);
+        let decision = decide(&mut model, &trigger, false);
         assert!(!decision.prevent);
         assert_eq!(
             decision.request, None,
@@ -542,26 +601,131 @@ mod tests {
         );
         model.open = false;
         trigger.alt = true;
-        let decision = decide(&mut model, &trigger);
+        let decision = decide(&mut model, &trigger, false);
         assert!(!decision.prevent);
         assert_eq!(decision.request, Some(true));
         assert_eq!(decision.focus, None);
         model.open = true;
         let mut fact = report(&model, "key");
         fact.key = "Escape".into();
-        let decision = decide(&mut model, &fact);
+        let decision = decide(&mut model, &fact, false);
         assert!(!decision.prevent && decision.stop);
         assert_eq!(decision.request, Some(false));
         assert_eq!(decision.focus.as_deref(), Some("more"));
         fact.key = "Tab".into();
         fact.focused_index = Some(1);
-        assert!(!decide(&mut model, &fact).prevent);
+        assert!(!decide(&mut model, &fact, false).prevent);
         fact.focused_index = Some(5);
-        assert_eq!(decide(&mut model, &fact).focus.as_deref(), Some("index:0"));
+        assert_eq!(
+            decide(&mut model, &fact, false).focus.as_deref(),
+            Some("index:0"),
+        );
         fact.shift = true;
         fact.focused_index = Some(0);
-        assert_eq!(decide(&mut model, &fact).focus.as_deref(), Some("index:5"));
+        assert_eq!(
+            decide(&mut model, &fact, false).focus.as_deref(),
+            Some("index:5"),
+        );
     }
+    #[test]
+    fn popover_content_tab_does_not_use_standalone_header_wrap_or_more_focus() {
+        let mut model = Model::new(true, true);
+        model.open = true;
+        model.presence = [true; 4];
+        for more in [false, true] {
+            for shift in [false, true] {
+                for index in [None, Some(0), Some(5)] {
+                    let mut fact = report(&model, "key");
+                    fact.key = "Tab".into();
+                    fact.more = more;
+                    fact.shift = shift;
+                    fact.focused_index = index;
+                    let result = decide(&mut model, &fact, true);
+                    assert!(!result.prevent && !result.stop);
+                    assert_eq!(result.request, None);
+                    assert_eq!(result.focus, None);
+                    assert!(model.open, "capture cannot close or redirect More Tab");
+                }
+            }
+        }
+        let mut ordinary = report(&model, "key");
+        ordinary.key = "Tab".into();
+        ordinary.focused_index = Some(5);
+        assert_eq!(
+            decide(&mut model, &ordinary, false).focus.as_deref(),
+            Some("index:0"),
+            "standalone Header boundary behavior is retained"
+        );
+    }
+
+    #[test]
+    fn only_live_open_more_tab_in_popover_enters_shared_release_policy() {
+        let mut model = Model::new(true, true);
+        model.open = true;
+        model.mounted = true;
+        let mut facts = KeyFacts {
+            key: "Tab".into(),
+            on_trigger: true,
+            popover_ancestor: true,
+            ..KeyFacts::default()
+        };
+        assert!(releases_more_tab(&model, &facts));
+        facts.on_trigger = false;
+        facts.inside = true;
+        assert!(
+            !releases_more_tab(&model, &facts),
+            "ordinary content is not More"
+        );
+        facts.on_trigger = true;
+        facts.popover_ancestor = false;
+        assert!(!releases_more_tab(&model, &facts));
+        facts.popover_ancestor = true;
+        facts.default_prevented = true;
+        assert!(!releases_more_tab(&model, &facts));
+        facts.default_prevented = false;
+        facts.key = "Escape".into();
+        assert!(!releases_more_tab(&model, &facts));
+        facts.key = "Tab".into();
+        model.open = false;
+        assert!(!releases_more_tab(&model, &facts));
+        model.open = true;
+        model.invalidate();
+        assert!(!releases_more_tab(&model, &facts));
+    }
+
+    #[test]
+    fn small_projection_preserves_opening_without_reusing_private_focus_work() {
+        let mut model = Model::new(false, true);
+        model.mounted = true;
+        model.open = true;
+        model.presence = [true; 4];
+        model.sequence = 42;
+        model.stop = true;
+        model.focus("last".into());
+        let previous = report(&model, "presence");
+        let version = model.focus_version;
+        assert!(
+            !model.sync_mode(true, true),
+            "slot movement must not request close"
+        );
+        assert!(model.open && model.small && model.more_visible());
+        assert!(
+            !model.accepts(&previous),
+            "old physical host generation is stale"
+        );
+        assert_eq!(model.sequence, 0);
+        assert!(!model.stop);
+        assert_eq!(model.focus, "none");
+        assert_eq!(model.focus_version, version.wrapping_add(1));
+        assert!(!model.sync_mode(true, true), "same props are inert");
+        assert!(model.open);
+        assert!(
+            model.sync_mode(true, false),
+            "top-layer configuration remains separate"
+        );
+        assert!(!model.open);
+    }
+
     #[test]
     fn presence_and_owner_reconciliation_reject_stale_native_work() {
         let mut model = Model::new(false, false);
@@ -593,14 +757,17 @@ mod tests {
         model.presence = [true; 4];
         let mut fact = report(&model, "click");
         fact.background = true;
-        assert!(decide(&mut model, &fact).prevent);
-        assert_eq!(decide(&mut model, &fact).request, None);
+        assert!(decide(&mut model, &fact, false).prevent);
+        assert_eq!(decide(&mut model, &fact, false).request, None);
         fact.background = false;
-        assert_eq!(decide(&mut model, &fact).request, Some(false));
-        assert_eq!(decide(&mut model, &fact).focus, None);
+        assert_eq!(decide(&mut model, &fact, false).request, Some(false));
+        assert_eq!(decide(&mut model, &fact, false).focus, None);
         model.keyboard = true;
-        assert_eq!(decide(&mut model, &fact).focus.as_deref(), Some("more"));
+        assert_eq!(
+            decide(&mut model, &fact, false).focus.as_deref(),
+            Some("more")
+        );
         fact.default_prevented = true;
-        assert_eq!(decide(&mut model, &fact).request, None);
+        assert_eq!(decide(&mut model, &fact, false).request, None);
     }
 }

@@ -157,6 +157,17 @@ impl Domain {
         self.0.borrow().entries.get(id).cloned()
     }
 
+    /// Resolve raw document facts against the current registered generation,
+    /// including nodes owned by another renderer runtime in this document.
+    pub(crate) fn node_kind(&self, id: &str, generation: u64) -> Option<OverlayKind> {
+        self.0
+            .borrow()
+            .entries
+            .get(id)
+            .filter(|entry| entry.generation == generation)
+            .map(|entry| entry.kind)
+    }
+
     fn current(&self, id: &str, snapshot: &Entry) -> bool {
         self.0.borrow().entries.get(id).is_some_and(|entry| {
             entry.generation == snapshot.generation && entry.incarnation == snapshot.incarnation
@@ -523,10 +534,7 @@ impl Domain {
         let Some(top) = state.presented().into_iter().rev().find(|id| {
             state.registry.is_open(id)
                 && state.registry.is_connected(id)
-                && state
-                    .entries
-                    .get(id)
-                    .is_some_and(|entry| entry.kind != OverlayKind::Header)
+                && state.entries.contains_key(id)
         }) else {
             return Some(Vec::new());
         };
@@ -554,7 +562,9 @@ impl Domain {
                 .entries
                 .get(&top)
                 .zip(state.entries.get(id))
-                .is_some_and(|(top, owner)| top.kind == owner.kind);
+                .is_some_and(|(top, owner)| {
+                    top.kind == owner.kind || top.kind.is_dropdown() && owner.kind.is_dropdown()
+                });
             same_kind
                 && (top == id
                     || state
@@ -582,6 +592,7 @@ impl Domain {
     }
 
     pub(crate) fn has_popover_ancestor(&self, id: &str) -> bool {
+        self.refresh();
         let state = self.0.borrow();
         state.registry.focus_ancestors(id).iter().any(|ancestor| {
             state
@@ -630,11 +641,11 @@ impl Domain {
                 .into_iter()
                 .rev()
                 .filter(|child| {
-                    state
-                        .entries
-                        .get(child)
-                        .is_some_and(|entry| Some(entry.kind) != kind)
-                        && state.registry.live_parent(child).as_deref() == Some(id)
+                    state.entries.get(child).is_some_and(|entry| {
+                        kind.is_some_and(|kind| {
+                            entry.kind != kind && !(entry.kind.is_dropdown() && kind.is_dropdown())
+                        })
+                    }) && state.registry.live_parent(child).as_deref() == Some(id)
                 })
                 .collect::<Vec<_>>()
         };

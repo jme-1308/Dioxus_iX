@@ -55,6 +55,24 @@ pub(crate) struct TabCandidate {
     pub(crate) active: bool,
 }
 
+/// Source document queries use the same positive-index ordering as traps.
+/// Eligibility and source DOM projection have already been applied by Rust.
+pub(crate) fn tab_order_targets(candidates: &[TabCandidate]) -> Vec<String> {
+    let mut ordered = candidates.iter().enumerate().collect::<Vec<_>>();
+    ordered.sort_by_key(|(index, candidate)| {
+        let positive = candidate.tab_index > 0;
+        (
+            !positive,
+            if positive { candidate.tab_index } else { 0 },
+            *index,
+        )
+    });
+    ordered
+        .into_iter()
+        .map(|(_, candidate)| candidate.target.clone())
+        .collect()
+}
+
 /// Only authorize a boundary wrap. Interior and unknown focus keep the original
 /// native Tab default, and an empty trap never invents a panel-focus fallback.
 pub(crate) fn tab_boundary_target(
