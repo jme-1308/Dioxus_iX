@@ -85,6 +85,7 @@ struct Model {
     focused_control: Option<CapturedFocus>,
     preserve: Option<CapturedFocus>,
     stop: bool,
+    changed: Option<EventHandler<bool>>,
 }
 impl Model {
     fn new(small: bool, top_layer: bool) -> Self {
@@ -107,6 +108,7 @@ impl Model {
             focused_control: None,
             preserve: None,
             stop: false,
+            changed: None,
         }
     }
     fn more_visible(&self) -> bool {
@@ -220,6 +222,25 @@ impl Model {
         self.focused_control = None;
         self.preserve = None;
     }
+}
+
+fn queue_changed(model: &Rc<RefCell<Model>>, node: &NodeHandle, open: bool) {
+    let current = model.clone();
+    // Breakpoint/focus generations do not replace the source Dropdown. Its
+    // admitted payload survives those updates; the registered node owns actual
+    // teardown/replacement cancellation, and delivery reads the current handler.
+    node.queue_completion(Rc::new(move || {
+        let handler = {
+            let model = current.borrow();
+            if !model.alive {
+                return;
+            }
+            model.changed
+        };
+        if let Some(handler) = handler {
+            handler.call(open);
+        }
+    }));
 }
 
 #[derive(Default)]
@@ -471,6 +492,7 @@ pub(crate) fn HeaderLayout(
     #[props(default)] onchange: EventHandler<bool>,
 ) -> Element {
     let model = use_hook(|| Rc::new(RefCell::new(Model::new(small, enable_top_layer))));
+    model.borrow_mut().changed = Some(onchange);
     let revision = use_signal(|| 0_u64);
     let runtime = overlay_runtime::use_overlay_runtime();
     let node_slot = use_hook(|| Rc::new(RefCell::new(None::<NodeHandle>)));
@@ -480,6 +502,7 @@ pub(crate) fn HeaderLayout(
         let apply = model.clone();
         let key_model = model.clone();
         let key_slot = node_slot.clone();
+        let completion_slot = node_slot.clone();
         let owner = model.borrow().owner.clone();
         runtime.register(
             owner,
@@ -509,19 +532,23 @@ pub(crate) fn HeaderLayout(
                     !request.default_prevented() && model.alive && model.generation == generation
                 }),
                 apply: Rc::new(move |change: Change| {
-                    {
+                    let changed = {
                         let mut model = apply.borrow_mut();
                         if !model.alive {
                             return;
                         }
+                        let changed = model.open != change.open;
                         model.open = change.open;
                         model.apply_focus(change.restore_focus);
-                    }
+                        changed
+                    };
                     let mut revision = revision;
                     if let Ok(mut value) = revision.try_write() {
                         *value = value.wrapping_add(1);
                     }
-                    onchange.call(change.open);
+                    if changed && let Some(node) = completion_slot.borrow().clone() {
+                        queue_changed(&apply, &node, change.open);
+                    }
                 }),
                 key: Some(Rc::new(move |facts| {
                     header_tab_key(&key_model, &key_slot, facts)
@@ -538,6 +565,7 @@ pub(crate) fn HeaderLayout(
     // rather than a vetoable user request. Both invalidate private focus tasks.
     if model.borrow_mut().sync_mode(small, enable_top_layer) {
         node.sync_open(false);
+        queue_changed(&model, &node, false);
         let changed_node = node.clone();
         let current = model.clone();
         let generation = current.borrow().generation;
@@ -548,7 +576,6 @@ pub(crate) fn HeaderLayout(
             };
             if valid {
                 changed_node.close_children(Reason::Configuration);
-                onchange.call(false);
             }
         });
     }

@@ -2051,8 +2051,11 @@ pub enum MenuOverlayKind {
 }
 
 /// Rust request adapter for the Header's private overflow presentation.
-/// This is not the source bubbling CustomEvent stream; accepted changes are
-/// reported by `onoverflowchange`, with no source event-count equivalence.
+/// Requests run synchronously; veto prevents the change and its notification.
+/// Each changed value is reported by `onoverflowchange` on a native frame,
+/// using its captured boolean and the current handler. Newer state may differ;
+/// dropping the scope cancels pending delivery. This typed request adapter is
+/// not the source bubbling CustomEvent stream or its event-count contract.
 #[derive(Clone)]
 pub struct HeaderOverflowEvent {
     pub open: bool,
@@ -2805,10 +2808,14 @@ pub fn ApplicationHeader(
     /// Use native top-layer rendering for the responsive overflow surface.
     #[props(default)]
     enable_top_layer: bool,
-    /// Rust request adapter before private overflow state changes; may veto.
+    /// Synchronous Rust request adapter before private overflow state changes.
+    /// Veto prevents the change and creates no completion notification.
     #[props(default)]
     onbeforeoverflowchange: EventHandler<HeaderOverflowEvent>,
-    /// Accepted overflow-state changes, not source bubbling event counts.
+    /// Each changed value, delivered on a native frame to the current handler.
+    /// The boolean is captured at the change and may differ from newer state.
+    /// Dropping this scope cancels pending delivery; source bubbling event
+    /// counts are not part of this typed callback contract.
     #[props(default)]
     onoverflowchange: EventHandler<bool>,
     /// Leading-content compatibility slot; source default content uses actions.
@@ -7223,6 +7230,10 @@ mod tests {
         overflow_veto: bool,
         overflow_requests: Vec<(bool, bool)>,
         overflow_changes: Vec<bool>,
+        overflow_listener_revision: usize,
+        overflow_deliveries: Vec<(usize, bool)>,
+        overflow_reentrant: Option<Rc<dyn Fn(bool)>>,
+        overlay_runtime: Option<crate::overlay_runtime::RuntimeHandle>,
         overflow_peers: Option<HeaderPeerCapture>,
         show_menu: bool,
         sidebar: bool,
@@ -7272,11 +7283,13 @@ mod tests {
         let mut authority = use_signal(|| settings.borrow().initial.clone());
         let menu_expanded = use_signal(|| false);
         let show_authority = use_signal(|| settings.borrow().show_menu);
+        let overlay_runtime = crate::overlay_runtime::use_overlay_runtime();
         {
             let mut state = settings.borrow_mut();
             state.authority = Some(authority);
             state.menu_expanded = Some(menu_expanded);
             state.show_authority = Some(show_authority);
+            state.overlay_runtime = Some(overlay_runtime);
             state.update = Some(dioxus::core::schedule_update());
         }
         let requested = settings.clone();
@@ -7287,13 +7300,22 @@ mod tests {
         let overflow_requested = settings.clone();
         let overflow_changed = settings.clone();
         let state = settings.borrow();
+        let overflow_listener_revision = state.overflow_listener_revision;
         let header = rsx! {ApplicationHeader {
             show_menu:show_authority,enable_top_layer:state.slot_top_layer,
             onbeforeoverflowchange:move |event:HeaderOverflowEvent| {
                 let veto={let mut state=overflow_requested.borrow_mut();state.overflow_requests.push((event.previous,event.open));state.overflow_veto};
                 if veto {event.prevent_default();}
             },
-            onoverflowchange:move |open|overflow_changed.borrow_mut().overflow_changes.push(open),
+            onoverflowchange:move |open| {
+                let reentrant = {
+                    let mut state = overflow_changed.borrow_mut();
+                    state.overflow_changes.push(open);
+                    state.overflow_deliveries.push((overflow_listener_revision, open));
+                    state.overflow_reentrant.clone()
+                };
+                if let Some(reentrant) = reentrant { reentrant(open); }
+            },
             onmenutoggle:move |value|menu_requested.borrow_mut().menu_events.push((value,*menu_expanded.peek())),
             name:state.name.clone(),name_suffix:state.suffix.clone(),app_icon:state.named_icon.clone(),
             app_icon_src:state.image.clone(),app_icon_alt:state.image_alt.clone(),app_icon_outline:state.outline,
@@ -7386,6 +7408,10 @@ mod tests {
                 overflow_veto: false,
                 overflow_requests: vec![],
                 overflow_changes: vec![],
+                overflow_listener_revision: 0,
+                overflow_deliveries: vec![],
+                overflow_reentrant: None,
+                overlay_runtime: None,
                 overflow_peers: None,
                 show_menu: false,
                 sidebar: false,
@@ -7500,7 +7526,7 @@ mod tests {
                 }
             }
         }
-        fn settle(&mut self) {
+        fn render_now(&mut self) {
             for _ in 0..5 {
                 let mounts = std::mem::take(&mut self.mounts);
                 for target in mounts {
@@ -7513,6 +7539,33 @@ mod tests {
                 }
                 let mutations = self.dom.render_immediate_to_vec();
                 self.collect(mutations);
+            }
+        }
+        /// A frame snapshot uses the real registered transport. Jobs admitted
+        /// reentrantly by a callback are delivered in a later snapshot.
+        fn completion_frame(&mut self) -> usize {
+            let runtime = self.settings.borrow().overlay_runtime.clone().unwrap();
+            let frames = runtime.pending_completion_frames();
+            let count = frames.len();
+            for (sequence, root, generation) in frames {
+                menu_dispatch(
+                    &self.dom,
+                    "change",
+                    self.overlay_input.unwrap(),
+                    serde_json::json!({
+                        "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
+                        "completion_root":root,"completion_generation":generation
+                    })
+                    .to_string(),
+                );
+            }
+            self.render_now();
+            count
+        }
+        fn settle(&mut self) {
+            for _ in 0..5 {
+                self.render_now();
+                self.completion_frame();
             }
         }
         fn navigation(&self) -> AppSwitchNavigation {
@@ -7640,15 +7693,7 @@ mod tests {
             first
         }
         fn header_peer_frame(&mut self) -> usize {
-            let peers = self.settings.borrow().overflow_peers.clone().unwrap();
-            let runtime = peers.0.borrow().runtime.clone().unwrap();
-            let frames = runtime.pending_completion_frames();
-            let count = frames.len();
-            for (sequence, root, generation) in frames {
-                menu_dispatch(&self.dom,"change",self.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,"completion_root":root,"completion_generation":generation}).to_string());
-            }
-            self.settle();
-            count
+            self.completion_frame()
         }
         fn seed_header_peers(&mut self) -> HeaderPeerCapture {
             let peers = self.settings.borrow().overflow_peers.clone().unwrap();
@@ -7661,7 +7706,7 @@ mod tests {
                     handle.open();
                 }
             });
-            self.settle();
+            self.render_now();
             assert_eq!(self.header_peer_frame(), 4);
             assert!(handles.into_iter().all(crate::DropdownHandle::is_open));
             peers.0.borrow_mut().requests.clear();
@@ -8030,6 +8075,228 @@ mod tests {
     }
 
     #[test]
+    fn header_completion_keeps_each_payload_and_resolves_current_committed_listener() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut h = AppSwitchHarness::new(None, false);
+        h.header_raw(
+            h.header_message(1, "presence", serde_json::json!({})),
+            false,
+        );
+        for sequence in 2..=4 {
+            h.header_raw(
+                h.header_message(sequence, "click", serde_json::json!({"more":true})),
+                false,
+            );
+        }
+        h.render_now();
+        assert_eq!(
+            h.settings.borrow().overflow_requests,
+            [(false, true), (true, false), (false, true)]
+        );
+        assert_eq!(h.header_root_attrs()["data-open"], "true");
+        assert!(
+            h.settings.borrow().overflow_changes.is_empty(),
+            "request return and render are not a native frame"
+        );
+        h.settings.borrow_mut().overflow_listener_revision = 7;
+        h.settings.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert!(h.settings.borrow().overflow_deliveries.is_empty());
+        assert_eq!(h.completion_frame(), 3);
+        assert_eq!(h.settings.borrow().overflow_changes, [true, false, true]);
+        assert_eq!(
+            h.settings.borrow().overflow_deliveries,
+            [(7, true), (7, false), (7, true)]
+        );
+        assert_eq!(
+            h.header_root_attrs()["data-open"],
+            "true",
+            "captured false payload does not rewrite current state"
+        );
+        assert_eq!(h.completion_frame(), 0);
+    }
+
+    #[test]
+    fn header_completion_reentrant_observer_writes_wait_for_separate_frame_snapshots() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut h = AppSwitchHarness::new(None, false);
+        h.header_raw(
+            h.header_message(1, "presence", serde_json::json!({})),
+            false,
+        );
+        let actions = [
+            h.header_message(3, "click", serde_json::json!({"more":true}))
+                .to_string(),
+            h.header_message(4, "click", serde_json::json!({"more":true}))
+                .to_string(),
+        ];
+        let owner_runtime = h.dom.in_scope(ScopeId::ROOT, || {
+            dioxus::core::Runtime::try_current().unwrap()
+        });
+        let weak_runtime = Rc::downgrade(&owner_runtime);
+        let target = h.header_input.unwrap();
+        let step = Rc::new(Cell::new(0_usize));
+        let observed_step = step.clone();
+        h.settings.borrow_mut().overflow_reentrant = Some(Rc::new(move |open| {
+            let index = step.get();
+            if index >= 2 || open != (index == 0) {
+                return;
+            }
+            step.set(index + 1);
+            let runtime = weak_runtime.upgrade().unwrap();
+            let data: Rc<dyn std::any::Any> = Rc::new(dioxus::html::PlatformEventData::new(
+                Box::new(actions[index].clone()),
+            ));
+            runtime.handle_event("input", Event::new(data, true), target);
+        }));
+        h.header_raw(
+            h.header_message(2, "click", serde_json::json!({"more":true})),
+            false,
+        );
+        h.render_now();
+        assert!(h.settings.borrow().overflow_changes.is_empty());
+        assert_eq!(h.completion_frame(), 1);
+        assert_eq!(h.settings.borrow().overflow_changes, [true]);
+        assert_eq!(observed_step.get(), 1);
+        assert_eq!(h.header_root_attrs()["data-open"], "false");
+        assert_eq!(h.completion_frame(), 1);
+        assert_eq!(h.settings.borrow().overflow_changes, [true, false]);
+        assert_eq!(observed_step.get(), 2);
+        assert_eq!(h.header_root_attrs()["data-open"], "true");
+        assert_eq!(h.completion_frame(), 1);
+        assert_eq!(h.settings.borrow().overflow_changes, [true, false, true]);
+        assert_eq!(
+            h.settings.borrow().overflow_requests,
+            [(false, true), (true, false), (false, true)]
+        );
+        assert_eq!(h.completion_frame(), 0);
+    }
+
+    #[test]
+    fn header_completion_survives_mode_generations_and_captured_configuration_close() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut h = AppSwitchHarness::new(None, false);
+        h.header_raw(
+            h.header_message(1, "presence", serde_json::json!({})),
+            false,
+        );
+        h.header_raw(
+            h.header_message(2, "click", serde_json::json!({"more":true})),
+            false,
+        );
+        h.render_now();
+        let registration = h.header_rendered_root_attribute("data-ix-overlay-generation");
+        let private = h.header_root_attrs()["data-generation"].clone();
+        h.settings.borrow_mut().breakpoint = ApplicationBreakpoint::Small;
+        h.settings.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert_ne!(h.header_root_attrs()["data-generation"], private);
+        assert_eq!(
+            h.header_root_attrs()["data-open"],
+            "true",
+            "breakpoint alone retains admitted visibility"
+        );
+        assert_eq!(
+            h.header_rendered_root_attribute("data-ix-overlay-generation"),
+            registration
+        );
+        h.settings.borrow_mut().slot_top_layer = true;
+        h.settings.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert_eq!(
+            h.header_root_attrs()["data-open"],
+            "false",
+            "top-layer reconciliation remains its explicit configuration adapter"
+        );
+        {
+            let mut settings = h.settings.borrow_mut();
+            settings.breakpoint = ApplicationBreakpoint::Large;
+            settings.overflow_listener_revision = 3;
+        }
+        h.settings.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert_eq!(
+            h.header_rendered_root_attribute("data-ix-overlay-generation"),
+            registration
+        );
+        assert!(h.settings.borrow().overflow_changes.is_empty());
+        assert_eq!(
+            h.settings.borrow().overflow_requests,
+            [(false, true)],
+            "configuration does not invent a user request"
+        );
+        assert_eq!(h.completion_frame(), 2);
+        assert_eq!(
+            h.settings.borrow().overflow_deliveries,
+            [(3, true), (3, false)],
+            "private focus generations cannot revoke registration-owned payloads"
+        );
+        assert_eq!(h.completion_frame(), 0);
+    }
+
+    #[test]
+    fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut h = AppSwitchHarness::new(None, false);
+        h.header_raw(
+            h.header_message(1, "presence", serde_json::json!({})),
+            false,
+        );
+        h.header_raw(
+            h.header_message(2, "click", serde_json::json!({"more":true})),
+            false,
+        );
+        h.render_now();
+        let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
+        let old_root = h.header_root_attrs()["id"].clone();
+        let pending = runtime.pending_completion_frames();
+        assert_eq!(pending.len(), 1);
+        h.settings.borrow_mut().visible = false;
+        h.settings.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert!(runtime.pending_completion_frames().is_empty());
+        assert!(h.settings.borrow().overflow_changes.is_empty());
+        {
+            let mut settings = h.settings.borrow_mut();
+            settings.visible = true;
+            settings.overflow_listener_revision = 9;
+        }
+        h.settings.borrow().update.clone().unwrap()();
+        h.render_now();
+        assert_ne!(h.header_root_attrs()["id"], old_root);
+        h.header_raw(
+            h.header_message(1, "presence", serde_json::json!({})),
+            false,
+        );
+        h.header_raw(
+            h.header_message(2, "click", serde_json::json!({"more":true})),
+            false,
+        );
+        h.render_now();
+        let (sequence, root, generation) = &pending[0];
+        assert_eq!(
+            menu_dispatch(
+                &h.dom,
+                "change",
+                h.overlay_input.unwrap(),
+                serde_json::json!({
+                    "owner":runtime.owner_id(),"sequence":0,"completion_sequence":sequence,
+                    "completion_root":root,"completion_generation":generation
+                })
+                .to_string()
+            ),
+            (false, false)
+        );
+        assert!(
+            h.settings.borrow().overflow_changes.is_empty(),
+            "late old token cannot consume or invoke a new owner"
+        );
+        assert_eq!(h.completion_frame(), 1);
+        assert_eq!(h.settings.borrow().overflow_deliveries, [(9, true)]);
+        assert_eq!(h.completion_frame(), 0);
+    }
+
+    #[test]
     fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoed() {
         let _event_converter_guard = crate::test_event_converter_guard();
         for (previous, veto) in [(false, false), (false, true), (true, false), (true, true)] {
@@ -8083,22 +8350,25 @@ mod tests {
                 [(0, false), (1, false)],
                 "query cannot run the post-phase twice"
             );
-            h.settle();
+            h.render_now();
             assert_eq!(
                 h.header_root_attrs()["data-open"],
                 (if veto { previous } else { !previous }).to_string()
             );
-            assert_eq!(
-                h.settings.borrow().overflow_changes,
-                if veto { vec![] } else { vec![!previous] },
-                "Header accepted-state callback remains its existing synchronous adapter"
+            assert!(
+                h.settings.borrow().overflow_changes.is_empty(),
+                "Header completion also waits for the native frame"
             );
             let handles = peers.0.borrow().handles.unwrap();
             assert_eq!(
                 handles.map(crate::DropdownHandle::is_open),
                 [false, false, true, true]
             );
-            assert_eq!(h.header_peer_frame(), 2);
+            assert_eq!(h.header_peer_frame(), if veto { 2 } else { 3 });
+            assert_eq!(
+                h.settings.borrow().overflow_changes,
+                if veto { vec![] } else { vec![!previous] }
+            );
             assert_eq!(peers.0.borrow().completions, [(0, false), (1, false)]);
             assert_eq!(h.header_peer_frame(), 0);
         }
@@ -8134,8 +8404,9 @@ mod tests {
             );
             assert_eq!(h.header_raw(message, true), (false, false));
             assert_eq!(peers.0.borrow().requests.len(), 2);
-            h.settle();
+            h.render_now();
             assert_eq!(h.header_root_attrs()["data-open"], (!veto).to_string());
+            assert!(h.settings.borrow().overflow_changes.is_empty());
             assert_eq!(
                 peers
                     .0
@@ -8145,7 +8416,7 @@ mod tests {
                     .map(crate::DropdownHandle::is_open),
                 [false, false, true, true]
             );
-            assert_eq!(h.header_peer_frame(), 2);
+            assert_eq!(h.header_peer_frame(), if veto { 2 } else { 3 });
         }
     }
 

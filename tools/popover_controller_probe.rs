@@ -4,7 +4,7 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 use serde_json::{Value, json};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -104,10 +104,12 @@ enum FocusMode {
     HostMoreChild,
     HostMoreHeader,
     HostMoreHeaderChild,
+    HeaderFrameSmall,
+    HeaderFrameLarge,
 }
 
 impl FocusMode {
-    const ALL: [Self; 39] = [
+    const ALL: [Self; 41] = [
         Self::Default,
         Self::Priority,
         Self::HeaderOnly,
@@ -147,6 +149,8 @@ impl FocusMode {
         Self::HostMoreChild,
         Self::HostMoreHeader,
         Self::HostMoreHeaderChild,
+        Self::HeaderFrameSmall,
+        Self::HeaderFrameLarge,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -189,6 +193,8 @@ impl FocusMode {
             Self::HostMoreChild => "host-more-child",
             Self::HostMoreHeader => "host-more-header",
             Self::HostMoreHeaderChild => "host-more-header-child",
+            Self::HeaderFrameSmall => "header-frame-small",
+            Self::HeaderFrameLarge => "header-frame-large",
         }
     }
     fn from_key(value: &str) -> Self {
@@ -224,6 +230,9 @@ impl FocusMode {
                 | Self::HostMoreHeader
                 | Self::HostMoreHeaderChild
         )
+    }
+    fn is_header_frame(self) -> bool {
+        matches!(self, Self::HeaderFrameSmall | Self::HeaderFrameLarge)
     }
     fn is_header(self) -> bool {
         matches!(
@@ -282,7 +291,7 @@ fn Probe() -> Element {
             button { id: "popover-topology-hover", onclick: move |_| { nested_child_host.set(true); hover_parent.set(true); focus_mode.set(FocusMode::Default); generation += 1; }, "Fresh hover parent trigger" }
             input { id: "popover-topology", r#type: "hidden", oninput: move |event| { let value = event.value(); nested_child_host.set(value != "sibling"); hover_parent.set(value == "hover"); focus_mode.set(FocusMode::Default); generation += 1; } }
             div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
-                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor() && !mode.is_trigger_others() && *mode != FocusMode::CompletionFrame && !mode.is_host_more()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
+                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor() && !mode.is_trigger_others() && *mode != FocusMode::CompletionFrame && !mode.is_host_more() && !mode.is_header_frame()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
             }
             input { id: "popover-focus-mode", r#type: "hidden", oninput: move |event| { focus_mode.set(FocusMode::from_key(&event.value())); nested_child_host.set(true); hover_parent.set(false); generation += 1; } }
             button { id: "popover-before", "Before opening focus target" }
@@ -297,6 +306,7 @@ fn Probe() -> Element {
             }
             button { id: "popover-focus-mode-completion-frame", onclick: move |_| { focus_mode.set(FocusMode::CompletionFrame); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, "Fresh completion frame" }
             div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0", for mode in FocusMode::ALL.into_iter().filter(|mode| mode.is_host_more()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh host / More: {}", mode.key())} } } }
+            div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0", for mode in FocusMode::ALL.into_iter().filter(|mode| mode.is_header_frame()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh Header frame: {}", mode.key())} } } }
         }
     } }
 }
@@ -380,7 +390,7 @@ fn Fixture(
                 button { id: "popover-focus-remove-body", onclick: move |_| dynamic_body.set(false), "Remove parent body control" }
             }
             if focus_mode != FocusMode::NoTrigger { PopoverTrigger { popover: handles[0], trigger_mode: if hover_parent { PopoverTriggerMode::Hover } else { PopoverTriggerMode::Click }, "Parent native trigger" } }
-            if focus_mode.is_header() {
+            if focus_mode.is_header_frame() { HeaderFrameProbe { initial_small: focus_mode == FocusMode::HeaderFrameSmall, Panel { index: 0 } } } else if focus_mode.is_header() {
                 HeaderProbeOwner { host_more: matches!(focus_mode, FocusMode::HostMoreHeader | FocusMode::HostMoreHeaderChild), initial_small: !matches!(focus_mode, FocusMode::HeaderHistoryChild | FocusMode::HeaderLargeIsolated), with_child: !matches!(focus_mode, FocusMode::HeaderSmallIsolated | FocusMode::HeaderLargeIsolated | FocusMode::HeaderSmallNoOverflow | FocusMode::HostMoreHeader), permanent_overflow: !matches!(focus_mode, FocusMode::HeaderSmallNoOverflow | FocusMode::HeaderSmallChildNoOverflow), Panel { index: 0 } }
             } else { Panel { index: 0 } }
             if !nested_child_host || (focus_mode != FocusMode::Default && focus_mode != FocusMode::Excluded && focus_mode != FocusMode::TabNested) { Panel { index: 1 } }
@@ -441,7 +451,8 @@ fn Panel(index: usize) -> Element {
 #[component]
 fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
     let ProbeContext { handles, rows, .. } = use_context();
-    let hide_close = mode.is_header()
+    let hide_close = mode.is_header_frame()
+        || mode.is_header()
         || matches!(
             mode,
             FocusMode::Static
@@ -488,6 +499,11 @@ fn FocusContents(mode: FocusMode, dynamic_body: Signal<bool>) -> Element {
         FocusMode::CachedAdd | FocusMode::CachedRemove => {
             rsx! { if dynamic_body() { button { id: "popover-focus-body", "Dynamic body action" } } p { "Dynamic content changes through Rust fixture state." } }
         }
+        FocusMode::HeaderFrameSmall | FocusMode::HeaderFrameLarge => rsx! {
+            button { id: "header-frame-parent-before", "Parent before Header frame" }
+            HeaderFrameContents {}
+            button { id: "header-frame-parent-after", "Parent after Header frame" }
+        },
         FocusMode::HostMoreHeader
         | FocusMode::HostMoreHeaderChild
         | FocusMode::HeaderSmallIsolated
@@ -752,6 +768,195 @@ fn HostMoreSurface(index: usize) -> Element {
                     button { id: "host-more-action-{role}", {format!("Host More {role} action")} }
                     if index == 0 && mode == FocusMode::HostMoreChild { span { id: "host-more-child-trigger-slot", DropdownTrigger { dropdown: handles[5], aria_label: "Host More child trigger", "Host More child trigger" } } }
                 }
+            }
+        }
+    }
+}
+
+// Excluded fixture application intent stays in Rust. This eval only executes
+// the requested number of clicks on the current actual native More object.
+fn header_frame_more(rows: Signal<Vec<Value>>, epoch: usize, count: usize, reason: &'static str) {
+    record(
+        rows,
+        "header-frame-native-more-intent",
+        "header-frame",
+        json!({"epoch":epoch,"count":count,"reason":reason}),
+    );
+    spawn(async move {
+        let eval = dioxus::document::eval(
+            r#"
+const command=await dioxus.recv(),owner=document.getElementById('header-frame-probe'),surface=document.getElementById('header-frame-surface'),more=surface?.querySelector('[data-header-more-button]');
+if(!owner?.isConnected||!surface?.isConnected||surface.dataset.epoch!==String(command.epoch)||!more?.isConnected)return {executed:0,currentOwner:false};
+const rows=[];for(let index=0;index<command.count;index++){
+ if(!owner.isConnected||!surface.isConnected||document.getElementById('header-frame-surface')!==surface||!more.isConnected)break;
+ const event=new MouseEvent('click',{bubbles:true,cancelable:true,composed:true,button:0});more.dispatchEvent(event);
+ rows.push({index,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,target:{id:more.id,tag:more.tagName},publishedOpen:surface.querySelector('.ix-header-layout')?.dataset.open});
+}
+return {executed:rows.length,currentOwner:true,events:rows,adapter:'Native dispatch return is not a Rust-handler or completion acknowledgement'};
+"#,
+        );
+        let _ = eval.send(json!({"epoch":epoch,"count":count}));
+        let result = eval.join::<Value>().await;
+        if rows.try_peek().is_ok() {
+            record(
+                rows,
+                "header-frame-native-more-return",
+                "header-frame",
+                json!({"epoch":epoch,"count":count,"reason":reason,"nativeResult":result.ok()}),
+            );
+        }
+    });
+}
+
+#[derive(Clone, Copy)]
+struct HeaderFrameContext {
+    visible: Signal<bool>,
+    epoch: Signal<usize>,
+    handler_version: Signal<usize>,
+    small: Signal<bool>,
+    request_observed_open: Signal<bool>,
+    callback_count: Signal<usize>,
+    reentrant: Signal<bool>,
+    reentrant_step: Signal<usize>,
+}
+
+#[component]
+fn HeaderFrameProbe(initial_small: bool, children: Element) -> Element {
+    let ProbeContext { rows, .. } = use_context();
+    let mut visible = use_signal(|| true);
+    let mut epoch = use_signal(|| 0_usize);
+    let mut handler_version = use_signal(|| 0_usize);
+    let mut small = use_signal(|| initial_small);
+    let request_observed_open = use_signal(|| false);
+    let callback_count = use_signal(|| 0_usize);
+    let mut reentrant = use_signal(|| false);
+    let reentrant_step = use_signal(|| 0_usize);
+    let mut returned = use_signal(|| 0_usize);
+    use_context_provider(|| HeaderFrameContext {
+        visible,
+        epoch,
+        handler_version,
+        small,
+        request_observed_open,
+        callback_count,
+        reentrant,
+        reentrant_step,
+    });
+    rsx! {
+        section { id: "header-frame-probe", "data-initial-small": initial_small.to_string(), "data-small": small().to_string(), "data-surface-visible": visible().to_string(), "data-epoch": epoch().to_string(), "data-handler-version": handler_version().to_string(), "data-request-observed-open": request_observed_open().to_string(), "data-callback-count": callback_count().to_string(), "data-reentrant-step": reentrant_step().to_string(), "data-returned": returned().to_string(),
+            input { id: "header-frame-command", r#type: "hidden", oninput: move |event| {
+                let action = event.value();record(rows, "header-frame-command", "header-frame", json!({"action":action,"epoch":epoch(),"handler":handler_version()}));
+                match action.as_str() {
+                    "burst" => header_frame_more(rows, epoch(), 3, "Rust-public-fixture-burst"),
+                    "replace-handler" => handler_version.set(1),
+                    "enable-reentrant" => reentrant.set(true),
+                    "small" => small.set(true),
+                    "large" => small.set(false),
+                    "drop" => visible.set(false),
+                    "mount" => visible.set(true),
+                    "replace-surface" => { epoch += 1;handler_version.set(1); },
+                    _ => {},
+                }
+                record(rows, "header-frame-command-return", "header-frame", json!({"action":action,"epoch":epoch(),"handler":handler_version(),"small":small(),"surfaceVisible":visible()}));returned += 1;
+            } }
+            {children}
+            div { style: "display:flex;gap:4px;flex-wrap:wrap;margin:8px 0",
+                for action in ["burst", "replace-handler", "enable-reentrant", "small", "large", "drop", "mount", "replace-surface"] {
+                    button { id: "header-frame-control-{action}", tabindex: "-1", onmousedown: move |event| event.prevent_default(), onclick: move |event| {
+                        event.stop_propagation();
+                        #[cfg(feature = "web")]
+                        { let data = event.data();if let Some(native) = data.downcast::<web_sys::MouseEvent>() { native.stop_propagation(); } }
+                        record(rows, "header-frame-command", "header-frame", json!({"action":action,"origin":"visible-Rust-control","epoch":epoch(),"handler":handler_version()}));
+                        match action {
+                            "burst" => header_frame_more(rows, epoch(), 3, "Rust-visible-fixture-burst"),
+                            "replace-handler" => handler_version.set(1),
+                            "enable-reentrant" => reentrant.set(true),
+                            "small" => small.set(true),
+                            "large" => small.set(false),
+                            "drop" => visible.set(false),
+                            "mount" => visible.set(true),
+                            _ => { epoch += 1;handler_version.set(1); },
+                        }
+                        record(rows, "header-frame-command-return", "header-frame", json!({"action":action,"epoch":epoch(),"handler":handler_version(),"small":small(),"surfaceVisible":visible()}));returned += 1;
+                    }, "Header frame: {action}" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn HeaderFrameContents() -> Element {
+    let HeaderFrameContext {
+        visible,
+        epoch,
+        handler_version,
+        ..
+    } = use_context();
+    rsx! { if visible() { for current in [epoch()] { HeaderFrameSurface { key: "{current}", epoch: current, handler: handler_version() } } } }
+}
+
+#[component]
+fn HeaderFrameSurface(epoch: usize, handler: usize) -> Element {
+    let ProbeContext { rows, .. } = use_context();
+    let HeaderFrameContext {
+        visible,
+        epoch: current_epoch,
+        handler_version,
+        small,
+        mut request_observed_open,
+        mut callback_count,
+        reentrant,
+        mut reentrant_step,
+    } = use_context();
+    let rendered_handler = use_hook(|| Rc::new(Cell::new(None::<usize>)));
+    if rendered_handler.replace(Some(handler)) != Some(handler) {
+        dioxus::core::queue_effect(move || {
+            let selected = handler_version.try_peek().ok().map(|value| *value);
+            if rows.try_peek().is_ok() {
+                record(
+                    rows,
+                    "header-frame-prop-render-committed",
+                    "header-frame",
+                    json!({"epoch":epoch,"renderedHandler":handler,"signalHandlerAtEffect":selected,"observation":"HeaderFrameSurface plain handler prop rendered and queued effect ran; not a private HeaderLayout Model observation"}),
+                );
+            }
+        });
+    }
+    let callback_rendered_handler = rendered_handler.clone();
+    use_drop(move || {
+        record(
+            rows,
+            "header-frame-surface-drop",
+            "header-frame",
+            json!({"epoch":epoch,"handler":handler}),
+        )
+    });
+    rsx! {
+        div { id: "header-frame-surface", "data-epoch": epoch.to_string(), "data-handler": handler.to_string(), style: "width:640px;max-width:100%;height:240px",
+            onmounted: move |_| record(rows, "header-frame-surface-mounted", "header-frame", json!({"epoch":epoch,"handler":handler})),
+            Application { force_breakpoint: if small() { ApplicationBreakpoint::Small } else { ApplicationBreakpoint::Large },
+                header: rsx! { ApplicationHeader { name: "Header completion fixture", aria_label_more_menu_icon_button: "Header completion More", enable_top_layer: true,
+                    onbeforeoverflowchange: move |event: HeaderOverflowEvent| {
+                        record(rows, "header-frame-request", "header-frame", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented(),"epoch":epoch,"handler":handler}));
+                        // This no-veto fixture observes its public typed admission.
+                        // Header exposes no private/current-open getter.
+                        request_observed_open.set(event.open);
+                    },
+                    onoverflowchange: move |open| {
+                        let step = reentrant_step();
+                        record(rows, "header-frame-event", "header-frame", json!({"open":open,"requestObservedOpen":request_observed_open(),"epoch":epoch,"handler":handler,"currentEpoch":current_epoch(),"currentHandler":handler_version(),"latestSurfaceRenderedHandler":callback_rendered_handler.get(),"surfaceVisible":visible(),"reentrantStep":step,"observation":"requestObservedOpen is consumer public-request state, not private Header Model read or native callback-time DOM"}));
+                        callback_count += 1;
+                        if reentrant() && ((step == 0 && open) || (step == 1 && !open)) {
+                            reentrant_step += 1;
+                            record(rows, "header-frame-reentrant-action", "header-frame", json!({"openIntent":!open,"step":step,"epoch":epoch,"nativeExecution":"actual registered More click requested by Rust callback policy"}));
+                            header_frame_more(rows, epoch, 1, "Rust-bounded-completion-reentrant-toggle");
+                        }
+                    },
+                    actions: rsx! { button { id: "header-frame-default-action", "Header completion default action" } },
+                    overflow: rsx! { button { id: "header-frame-overflow-action", "Header completion permanent overflow" } },
+                } },
+                p { "Actual retained ApplicationHeader inside the open parent Popover; callback intent remains in Rust." }
             }
         }
     }
@@ -1267,8 +1472,8 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[],triggerOthersCases=[],completionFrameCases=[],hostMoreCases=[];
-let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null,activeTriggerOthers=null,readFailureTriggerOthers=()=>null,activeCompletionFrame=null,readFailureCompletionFrame=()=>null,activeHostMore=null,readFailureHostMore=()=>null;
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[],triggerOthersCases=[],completionFrameCases=[],hostMoreCases=[],headerFrameCases=[];
+let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null,activeTriggerOthers=null,readFailureTriggerOthers=()=>null,activeCompletionFrame=null,readFailureCompletionFrame=()=>null,activeHostMore=null,readFailureHostMore=()=>null,activeHeaderFrame=null,readFailureHeaderFrame=()=>null;
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -1783,6 +1988,40 @@ try {
  };
  for(const sourceCase of [110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125])await hostMoreRun(sourceCase);
  assert(hostMoreCases.length===16,'all sixteen host-content and actual Header More diagnostics complete matched public/native setup');
- return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,hostMoreCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,hostMoreCases,activeHostMore,failureHostMore:readFailureHostMore(),activeCompletionFrame,failureCompletionFrame:readFailureCompletionFrame(),activeTriggerOthers,failureTriggerOthers:readFailureTriggerOthers(),activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
+ const headerFrameRun=async(sourceCase)=>{
+  const labels={126:'Header source internal public show burst versus Rust native-More intent adapter',127:'three same-native-turn actual Header More clicks',128:'actual Header current callback prop replacement before frame',129:'Rust-owned bounded completion-driven actual More close reopen',130:'actual Header Large opening then public Small mode before frame',131:'Rust Header scope unmount and new actual Application remount',132:'Rust Header keyed Application replacement with same public wrapper ID'};
+  await freshFocus(sourceCase===130?'header-frame-large':'header-frame-small','source'+sourceCase+' '+labels[sourceCase]);await command('show','parent');
+  const nodes=()=>{const owner=get('header-frame-probe'),surface=get('header-frame-surface'),application=surface?.querySelector('.ix-application'),header=application?.querySelector('.ix-application-header'),root=header?.querySelector('.ix-header-layout'),more=root?.querySelector('[data-header-more-button]'),small=root?.querySelector('[data-header-popup-host="small"]'),large=root?.querySelector('[data-header-popup-host="large"]');return{owner,surface,application,header,root,more,small,large,activeHost:root?.dataset.small==='true'?small:large,defaultAction:get('header-frame-default-action'),overflowAction:get('header-frame-overflow-action')};};
+  activeHeaderFrame={sourceCase,label:scenario,timeline:[]};readFailureHeaderFrame=()=>Object.fromEntries(Object.entries(nodes()).map(([key,node])=>[key,node?{...describe(node),connected:node.isConnected,data:{...node.dataset},geometry:geometry(node)}:null]));
+  const bound=()=>{const n=nodes();return n.owner&&n.surface&&n.application&&n.header&&n.more&&n.root?.dataset.ixOverlayOwner&&n.root.dataset.ixOverlayReady!=='false'&&n.root.querySelector('input[data-ix-overlay-transport][data-ix-overlay-native="true"]');};await wait(bound,'actual Header frame stable component/native bindings');await settle();
+  const outside=get('popover-outside');outside.focus();await settle();const pointer=new MouseEvent('mousedown',{bubbles:true,cancelable:true,composed:true,button:0});outside.dispatchEvent(pointer);driverJournal.push({scenario,kind:'Header-frame-actual-outside-mousedown-only',target:describe(outside),trusted:pointer.isTrusted,clickDispatched:false});await settle();nodes().more.focus();await settle();assert(document.activeElement===nodes().more,'actual Header More focus seed before completion history');assert(nodes().root.dataset.open==='false'&&!nodes().activeHost.matches(':popover-open'),'actual Header root logical/native closed before completion history');
+  const initial=nodes(),start=logs().length,timeline=[],frames=[],listeners=new AbortController();let frameSequence=0;
+  const element=node=>node?{...describe(node),connected:node.isConnected,attributes:Object.fromEntries(Array.from(node.attributes).filter(a=>a.name.startsWith('data-')||['popover','hidden','inert','aria-expanded'].includes(a.name)).map(a=>[a.name,a.value])),nativeOpen:node.hasAttribute('popover')?node.matches(':popover-open'):null,geometry:geometry(node)}:null;
+  const facts=()=>{const n=nodes();return{owner:n.owner?{...n.owner.dataset}:null,elements:Object.fromEntries(Object.entries(n).map(([key,node])=>[key,element(node)])),originalElements:Object.fromEntries(Object.entries(initial).map(([key,node])=>[key,{element:element(node),sameCurrentObject:n[key]===node,sameCurrentPublicId:node?.id?get(node.id)===node:null}])),active:describe(document.activeElement),parent:{logical:read().parent,native:native('parent')?.matches(':popover-open')??false,object:describe(native('parent'))},callbacks:logs().slice(start),lastObservedNativeFrame:frames.at(-1)??null};};
+  const phase=(name,extra={})=>{const row={phase:name,time:performance.now(),facts:facts(),...extra};timeline.push(row);return row;};activeHeaderFrame={sourceCase,timeline};readFailureHeaderFrame=facts;
+  const frame=label=>new Promise(resolve=>requestAnimationFrame(time=>{const marker={sequence:++frameSequence,label,frameTime:time};frames.push(marker);resolve(phase('unmodified-native-Header-frame-observer',{marker}));}));
+  const commandInput=action=>{driverJournal.push({scenario,kind:'actual-Rust-Header-fixture-command',action,publicHeaderHandle:false});phase('before-public-fixture-command-native-dispatch',{action});input('header-frame-command',action);phase('public-fixture-command-native-dispatch-return',{action,IPC:'Dispatch return does not acknowledge the Rust input handler or a committed public prop'});};
+  const click=(label,index=0)=>{const more=nodes().more,event=new MouseEvent('click',{bubbles:true,cancelable:true,composed:true,button:0});more.addEventListener('click',actual=>{if(actual===event)phase('actual-More-target-bubble',{label,index,target:describe(more),defaultPrevented:event.defaultPrevented,trusted:event.isTrusted});},{once:true,passive:true,signal:listeners.signal});driverJournal.push({scenario,kind:'actual-Header-frame-More-native-click',label,index,target:describe(more),trusted:event.isTrusted,noMousedown:true});phase('before-actual-More-click',{label,index,target:describe(more)});more.dispatchEvent(event);phase('actual-More-click-native-dispatch-return',{label,index,defaultPrevented:event.defaultPrevented,trusted:event.isTrusted,IPC:'Native click return is not completion or Rust state publication'});};
+  try{
+   for(const host of [initial.small,initial.large])for(const type of ['beforetoggle','toggle'])host.addEventListener(type,event=>phase('original-Header-native-'+type,{oldState:event.oldState,newState:event.newState,target:describe(event.target)}),{passive:true,signal:listeners.signal});
+   for(const type of ['focusin','focusout'])document.addEventListener(type,event=>phase('native-'+type,{target:describe(event.target),relatedTarget:describe(event.relatedTarget)}),{capture:true,passive:true,signal:listeners.signal});
+   document.addEventListener('change',event=>{if(!(event.target instanceof HTMLInputElement)||!event.target.matches('[data-ix-overlay-transport]'))return;let report;try{report=JSON.parse(event.target.value);}catch{return;}if(report?.completion_sequence)phase('actual-shared-completion-native-frame-ACK-before-Rust-processing',{report:{owner:report.owner,sequence:report.sequence,completion_sequence:report.completion_sequence,completion_root:report.completion_root,completion_generation:report.completion_generation},rootAtNativeACK:element(nodes().root),limit:'This passive native ACK capture observes current native root data; it is not a direct timestamp/read of Rust consumer entry'});},{capture:true,passive:true,signal:listeners.signal});
+   document.addEventListener('input',event=>{if(!(event.target instanceof HTMLInputElement)||!event.target.matches('[data-header-layout-observer]'))return;let report;try{report=JSON.parse(event.target.value);}catch{return;}if(['click','presence','key'].includes(report?.kind))phase('actual-native-Header-layout-report',{report:{owner:report.owner,generation:report.generation,sequence:report.sequence,kind:report.kind,connected:report.connected,more:report.more,inside:report.inside,background:report.background,default_prevented:report.default_prevented}});},{capture:true,passive:true,signal:listeners.signal});
+   phase('fresh-ready-before-Header-completion-operation',{sourceInitialMode:sourceCase===130?'lg':'sm',publicDefaults:'topLayer/permanent overflow; ordinary Header defaults, no Child'});
+   if(sourceCase===129){const before=Number(nodes().owner.dataset.returned);commandInput('enable-reentrant');await wait(()=>Number(nodes().owner?.dataset.returned)>before,'actual Rust bounded Header callback policy enabled');await settle();}
+   const before=frame('queued-before-Header-completion-input');
+   if(sourceCase===126)commandInput('burst');
+   else if(sourceCase===127)for(let index=0;index<3;index++)click('three-same-native-turn-More',index);
+   else{click('initial-More-opening');if(sourceCase===128)commandInput('replace-handler');if(sourceCase===130)commandInput('small');if(sourceCase===131)commandInput('drop');if(sourceCase===132)commandInput('replace-surface');}
+   phase('synchronous-native-operation-return');queueMicrotask(()=>phase('queued-driver-microtask-after-Header-input'));await Promise.all([before,frame('queued-after-Header-completion-input')]);
+   if(sourceCase===131){await wait(()=>!initial.application.isConnected&&!nodes().surface,'actual Header Application scope unmounted before remount');phase('old-Header-Application-actually-disconnected');commandInput('mount');await wait(bound,'actual new Header Application/More native bindings after scope remount');assert(nodes().application!==initial.application&&nodes().header!==initial.header&&nodes().more!==initial.more,'Rust scoped Header remount creates distinct actual Application Header and More');phase('actual-Rust-Header-new-scope-remount',{lifecycleAdapter:'Source reconnects SAME actual Application/Header; Rust scope destruction creates new native owner and nodes'});}
+   if(sourceCase===132){await wait(()=>bound()&&nodes().application!==initial.application&&!initial.application.isConnected,'actual old Header disconnected and new keyed Application registered');assert(nodes().surface.id===initial.surface.id&&nodes().surface!==initial.surface,'Header replacement retains fixture public wrapper ID with distinct actual wrapper');phase('actual-Rust-keyed-Header-Application-replacement',{samePublicWrapperId:true,publicIdAdapter:'Application/Header components expose structural nodes without public id props; source names actual custom App/Header IDs'});}
+   for(let index=1;index<=8;index++)await frame('bounded-Header-observation-frame-'+index);phase('after-eight-native-Header-observation-frames');await settle();await frame('settled-Header-observer-one');await frame('settled-Header-observer-two');
+   const settled=phase('settled-Header-completion-history'),entry={sourceCase,label:scenario,input:{operation:labels[sourceCase],sourceInternalPropertyVsRustMoreIntentAdapter:sourceCase===126,lifetimeAdapter:[131,132].includes(sourceCase),currentStateObservation:'Rust callback requestObservedOpen is public request-consumer history; native root state independently captured at passive frame ACK and observer/publication, no private Model getter',initialMode:sourceCase===130?'lg':'sm',applicationPolicy:'Rust owns bounded two reentrant toggles; native eval executes only requested actual More clicks'},timeline,frames,settled,callbacks:logs().slice(start),classification:'raw actual Header notification payload/current-handler/frame/mode/lifetime observations; no immediate completion or first-RAF equality asserted',limits:['Source internal public show property has zero requests; Rust Header has no visibility handle and126 uses actual More toggles as an explicit API adapter','Desktop commands/More inputs cross IPC and may commit through separate deliveries; after native dispatch does not mean after Rust handler or prop commit','Request-observed callback state is not a private Header state read; raw native ACK/root/visibility facts stay separate from consumer execution timestamps','Mode-private generation and active native popup selection are recorded independently from registered owner/generation','Source131 same native App reconnect and132 retained detached old custom host differ from canceled Rust scopes/new native owners and structural node IDs','No physical input, full local event-loop chronology, Brand geometry, AT or full Header/platform parity']};headerFrameCases.push(entry);save({phase:'raw-Header-completion-frame-history',headerFrame:entry});activeHeaderFrame=null;
+  }finally{listeners.abort();}
+ };
+ for(const sourceCase of [126,127,128,129,130,131,132])await headerFrameRun(sourceCase);
+ assert(headerFrameCases.length===7,'all seven actual Header frame histories complete public/native setup');
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,hostMoreCases,headerFrameCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,completionFrameCases,hostMoreCases,headerFrameCases,activeHeaderFrame,failureHeaderFrame:readFailureHeaderFrame(),activeHostMore,failureHostMore:readFailureHostMore(),activeCompletionFrame,failureCompletionFrame:readFailureCompletionFrame(),activeTriggerOthers,failureTriggerOthers:readFailureTriggerOthers(),activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
 "#;
