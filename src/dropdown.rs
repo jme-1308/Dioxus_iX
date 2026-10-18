@@ -241,7 +241,7 @@ impl DropdownContext {
         if let Some(task) = task {
             task.cancel();
         }
-        let (changed, restore) = {
+        let (changed, restore, trigger_cleanup) = {
             let mut state = self.state.borrow_mut();
             if !state.alive || !state.surface {
                 return;
@@ -258,7 +258,15 @@ impl DropdownContext {
                     "none".into()
                 };
             }
-            (changed, state.settings.changed)
+            let trigger_cleanup = (!change.open
+                && change.restore_focus
+                && !state.settings.disable_focus_trap
+                && matches!(
+                    change.reason,
+                    Reason::AnchorVisibility | Reason::AnchorVisibilityParent
+                ))
+            .then_some(state.focus_epoch);
+            (changed, state.settings.changed, trigger_cleanup)
         };
         let mut open = self.open;
         let Ok(mut current) = open.try_write() else {
@@ -266,6 +274,14 @@ impl DropdownContext {
         };
         *current = change.open;
         drop(current);
+        if let Some(version) = trigger_cleanup
+            && let Some(node) = self.node.borrow().clone()
+            && node.queue_trigger_restore(version)
+        {
+            // Native cleanup is an independently queued source task, not the
+            // latest rendered focus intent. A same-owner reopen cannot erase it.
+            self.state.borrow_mut().focus_target = "none".into();
+        }
         self.notify();
         // All state is normalized before callbacks; no post-callback write may
         // overwrite a nested controller command or a teardown.
@@ -429,7 +445,7 @@ impl DropdownContext {
                     if let Some(runtime) = node.runtime() {
                         // The runtime owns cached-root routing; current node's
                         // close policy is not a lexical Rust-parent shortcut.
-                        runtime.dismiss_root(node.id(), Reason::Keyboard, false);
+                        runtime.close_and_release_focus(node.id());
                     }
                 }
             } else if no_trap {

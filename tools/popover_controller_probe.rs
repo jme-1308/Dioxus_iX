@@ -91,10 +91,13 @@ enum FocusMode {
     AnchorBottomEnd,
     AnchorSuppressed,
     AnchorNested,
+    AnchorFocus,
+    AnchorFocusPointer,
+    AnchorFocusNoTrap,
 }
 
 impl FocusMode {
-    const ALL: [Self; 26] = [
+    const ALL: [Self; 29] = [
         Self::Default,
         Self::Priority,
         Self::HeaderOnly,
@@ -121,6 +124,9 @@ impl FocusMode {
         Self::AnchorBottomEnd,
         Self::AnchorSuppressed,
         Self::AnchorNested,
+        Self::AnchorFocus,
+        Self::AnchorFocusPointer,
+        Self::AnchorFocusNoTrap,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -150,6 +156,9 @@ impl FocusMode {
             Self::AnchorBottomEnd => "anchor-bottom-end",
             Self::AnchorSuppressed => "anchor-suppressed",
             Self::AnchorNested => "anchor-nested",
+            Self::AnchorFocus => "anchor-focus",
+            Self::AnchorFocusPointer => "anchor-focus-pointer",
+            Self::AnchorFocusNoTrap => "anchor-focus-no-trap",
         }
     }
     fn from_key(value: &str) -> Self {
@@ -166,6 +175,9 @@ impl FocusMode {
                 | Self::AnchorBottomEnd
                 | Self::AnchorSuppressed
                 | Self::AnchorNested
+                | Self::AnchorFocus
+                | Self::AnchorFocusPointer
+                | Self::AnchorFocusNoTrap
         )
     }
     fn is_header(self) -> bool {
@@ -560,7 +572,15 @@ fn AnchorProbe(mode: FocusMode) -> Element {
     let child = use_dropdown();
     let mut root_point = use_signal(|| (70_i32, 60_i32));
     let mut child_point = use_signal(|| (70_i32, 60_i32));
-    let nested = mode == FocusMode::AnchorNested;
+    let mut root_veto = use_signal(|| false);
+    let mut child_veto = use_signal(|| false);
+    let mut child_roving = use_signal(|| mode == FocusMode::AnchorFocus);
+    let mut child_disable_trap = use_signal(|| mode == FocusMode::AnchorFocusNoTrap);
+    let focus_case = matches!(
+        mode,
+        FocusMode::AnchorFocus | FocusMode::AnchorFocusPointer | FocusMode::AnchorFocusNoTrap
+    );
+    let nested = mode == FocusMode::AnchorNested || focus_case;
     let suppressed = mode == FocusMode::AnchorSuppressed;
     let placement = match mode {
         FocusMode::AnchorRightStart | FocusMode::AnchorSuppressed => DropdownPlacement::RightStart,
@@ -568,7 +588,7 @@ fn AnchorProbe(mode: FocusMode) -> Element {
         _ => DropdownPlacement::BottomStart,
     };
     rsx! {
-        section { id: "popover-anchor-probe", "data-root-open": root.is_open().to_string(), "data-child-open": child.is_open().to_string(), "data-nested": nested.to_string(), "data-suppressed": suppressed.to_string(), "data-placement": placement.as_str(), "data-root-x": root_point().0.to_string(), "data-root-y": root_point().1.to_string(), "data-child-x": child_point().0.to_string(), "data-child-y": child_point().1.to_string(),
+        section { id: "popover-anchor-probe", "data-root-open": root.is_open().to_string(), "data-child-open": child.is_open().to_string(), "data-nested": nested.to_string(), "data-suppressed": suppressed.to_string(), "data-placement": placement.as_str(), "data-root-veto": root_veto().to_string(), "data-child-veto": child_veto().to_string(), "data-child-roving": child_roving().to_string(), "data-child-disable-trap": child_disable_trap().to_string(), "data-root-x": root_point().0.to_string(), "data-root-y": root_point().1.to_string(), "data-child-x": child_point().0.to_string(), "data-child-y": child_point().1.to_string(),
             style { {r#"
 #popover-anchor-root-clip,#popover-anchor-child-clip{box-sizing:border-box;width:240px;height:160px;overflow:hidden;border:0;padding:0}
 #popover-anchor-root-clip{position:fixed;left:320px;top:260px}
@@ -602,7 +622,7 @@ fn AnchorProbe(mode: FocusMode) -> Element {
             }
             div { id: "popover-anchor-root-surface",
                 Dropdown { controller: root, label: "Partial anchor root menu", placement, enable_top_layer: true, suppress_automatic_placement: true, suppress_trigger_visibility_check: suppressed,
-                    onbeforechange: move |event: DropdownChangeEvent| record(rows, "anchor-root-request", "anchor-root", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})),
+                    onbeforechange: move |event: DropdownChangeEvent| { if !event.open && root_veto() { event.prevent_default(); } record(rows, "anchor-root-request", "anchor-root", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
                     onchange: move |open| record(rows, "anchor-root-completed", "anchor-root", json!({"open":open})),
                     button { id: "popover-anchor-root-action", style: "box-sizing:border-box;width:140px;height:36px", "Root native action" }
                     if nested {
@@ -614,10 +634,36 @@ fn AnchorProbe(mode: FocusMode) -> Element {
             }
             if nested {
                 div { id: "popover-anchor-child-surface",
-                    Dropdown { controller: child, label: "Partial anchor child menu", placement: DropdownPlacement::RightStart, enable_top_layer: true, suppress_automatic_placement: true,
-                        onbeforechange: move |event: DropdownChangeEvent| record(rows, "anchor-child-request", "anchor-child", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})),
+                    Dropdown { controller: child, label: "Partial anchor child menu", placement: DropdownPlacement::RightStart, enable_top_layer: true, suppress_automatic_placement: true, navigation_mode: if child_roving() { DropdownNavigationMode::RovingTabindex } else { DropdownNavigationMode::ActiveDescendant }, disable_focus_trap: child_disable_trap(),
+                        onbeforechange: move |event: DropdownChangeEvent| { if !event.open && child_veto() { event.prevent_default(); } record(rows, "anchor-child-request", "anchor-child", json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()})); },
                         onchange: move |open| record(rows, "anchor-child-completed", "anchor-child", json!({"open":open})),
                         button { id: "popover-anchor-child-action", style: "box-sizing:border-box;width:140px;height:36px", "Child native action" }
+                    }
+                }
+            }
+            if focus_case {
+                input { id: "popover-anchor-settings", r#type: "hidden", oninput: move |event| {
+                    let Ok(value) = serde_json::from_str::<Value>(&event.value()) else { return; };
+                    if let Some(value) = value["rootVeto"].as_bool() { root_veto.set(value); }
+                    if let Some(value) = value["childVeto"].as_bool() { child_veto.set(value); }
+                    if let Some(value) = value["childRoving"].as_bool() { child_roving.set(value); }
+                    if let Some(value) = value["childDisableFocusTrap"].as_bool() { child_disable_trap.set(value); }
+                    record(rows, "anchor-fixture-settings", "anchor", value);
+                } }
+                div { style: "display:flex;gap:4px;flex-wrap:wrap;margin:4px 0",
+                    for setting in ["rootVeto", "childVeto", "childRoving", "childDisableFocusTrap"] {
+                        button { id: "popover-anchor-setting-{setting}", tabindex: "-1", onmousedown: move |event| event.prevent_default(), onclick: move |event| {
+                            event.stop_propagation();
+                            #[cfg(feature = "web")]
+                            { let data = event.data(); if let Some(native) = data.downcast::<web_sys::MouseEvent>() { native.stop_propagation(); } }
+                            match setting {
+                                "rootVeto" => { let next = !root_veto(); root_veto.set(next); },
+                                "childVeto" => { let next = !child_veto(); child_veto.set(next); },
+                                "childRoving" => { let next = !child_roving(); child_roving.set(next); },
+                                _ => { let next = !child_disable_trap(); child_disable_trap.set(next); },
+                            }
+                            record(rows, "anchor-fixture-settings", "anchor", json!({"rootVeto":root_veto(),"childVeto":child_veto(),"childRoving":child_roving(),"childDisableFocusTrap":child_disable_trap()}));
+                        }, "Toggle {setting}" }
                     }
                 }
             }
@@ -704,8 +750,8 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[];
-let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null;
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[];
+let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null;
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -1040,20 +1086,20 @@ try {
  }
  assert(headerModeChecks.length===10&&headerModeChecks.every(check=>check.matched),'all ten approved settled Header mode contracts match source84; two visibility-incompatible rows remain diagnostic');
  const anchorPositions={full:[70,60],top:[70,-20],bottom:[70,140],left:[-50,60],right:[190,60],corner:[190,-20],outside:[-120,60]};
- const anchorRun=async({sourceCase,mode,position,target='root',nested=false,suppressed=false,reset=false})=>{
-  const label='source'+sourceCase+' actual '+target+' anchor '+position+(reset?' then full reset':suppressed?' then fully outside with visibility suppressed':' with cached open child/root');await freshFocus(mode,label);
+ const anchorRun=async({sourceCase,mode,position,target='root',nested=false,suppressed=false,reset=false,history=null,historyName=null})=>{
+  const label=historyName?'source'+sourceCase+' '+historyName:'source'+sourceCase+' actual '+target+' anchor '+position+(reset?' then full reset':suppressed?' then fully outside with visibility suppressed':' with cached open child/root');await freshFocus(mode,label);
   const nodes=()=>{const owner=get('popover-anchor-probe'),rootClip=get('popover-anchor-root-clip'),childClip=get('popover-anchor-child-clip'),rootTrigger=rootClip?.querySelector('[data-ix-overlay-trigger]'),childTrigger=childClip?.querySelector('[data-ix-overlay-trigger]'),rootHost=get('popover-anchor-root-surface')?.querySelector('[data-ix-overlay-host]'),childHost=get('popover-anchor-child-surface')?.querySelector('[data-ix-overlay-host]');return{owner,rootClip,childClip,rootTrigger,childTrigger,rootHost,childHost,rootRoot:rootHost?.closest('[data-ix-overlay-root]'),childRoot:childHost?.closest('[data-ix-overlay-root]'),rootAction:get('popover-anchor-root-action'),childAction:get('popover-anchor-child-action')};};
   const bound=root=>{const input=root?.querySelector('input[data-ix-overlay-transport][data-ix-overlay-native="true"]');return root?.isConnected&&root.dataset.ixOverlayRoot&&root.dataset.ixOverlayOwner&&/^\d+$/.test(root.dataset.ixOverlayGeneration??'')&&root.dataset.ixOverlayMode&&input?.getAttribute('data-ix-overlay-transport')===root.dataset.ixOverlayOwner;};
   await wait(()=>{const n=nodes();return n.owner&&n.rootTrigger&&n.rootHost&&bound(n.rootRoot)&&(!nested||n.childTrigger&&n.childHost&&bound(n.childRoot));},'actual generic partial-anchor owner/generation/mode/native transport bindings');await settle();
   const rect=r=>r?Object.fromEntries(['x','y','width','height','top','right','bottom','left'].map(k=>[k,r[k]])):null,element=node=>{if(!node)return null;const style=getComputedStyle(node);return{...describe(node),connected:node.isConnected,attributes:Object.fromEntries(Array.from(node.attributes).filter(a=>a.name.startsWith('data-')||['popover','hidden','inert','aria-expanded'].includes(a.name)).map(a=>[a.name,a.value])),nativeOpen:node.hasAttribute('popover')?node.matches(':popover-open'):null,rect:rect(node.getBoundingClientRect()),clientRectCount:node.getClientRects().length,inlineStyle:node.getAttribute('style'),computed:{position:style.position,top:style.top,left:style.left,right:style.right,bottom:style.bottom,transform:style.transform,display:style.display,visibility:style.visibility,overflowX:style.overflowX,overflowY:style.overflowY,positionAnchor:style.getPropertyValue('position-anchor'),positionArea:style.getPropertyValue('position-area'),positionTryFallbacks:style.getPropertyValue('position-try-fallbacks')},geometry:geometry(node)};},start=logs().length,held=nodes(),timeline=[],intersectionEntries=[],latest=new Map(),listeners=new AbortController();let entrySequence=0;
-  const facts=()=>{const n=nodes();return{owner:n.owner?Object.fromEntries(Object.entries(n.owner.dataset)):null,elements:Object.fromEntries(Object.entries(n).map(([k,v])=>[k,element(v)])),sameActualObjects:Object.fromEntries(Object.entries(held).map(([k,v])=>[k,n[k]===v])),active:describe(document.activeElement),callbacks:logs().slice(start),cssSupport:{anchor:CSS.supports('position-anchor:--ix-probe'),area:CSS.supports('position-area:bottom'),tryFallbacks:CSS.supports('position-try-fallbacks:none')},viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY},clippingScroll:{root:{left:n.rootClip?.scrollLeft,top:n.rootClip?.scrollTop},child:{left:n.childClip?.scrollLeft,top:n.childClip?.scrollTop}}};};
-  const phase=(name,extra={})=>{const row={phase:name,time:performance.now(),facts:facts(),...extra};timeline.push(row);return row;};readFailureAnchor=facts;activeAnchorCase={sourceCase,label,timeline,intersectionEntries};
+  const facts=()=>{const n=nodes();return{owner:n.owner?Object.fromEntries(Object.entries(n.owner.dataset)):null,elements:Object.fromEntries(Object.entries(n).map(([k,v])=>[k,element(v)])),sameActualObjects:Object.fromEntries(Object.entries(held).map(([k,v])=>[k,n[k]===v])),active:describe(document.activeElement),callbacks:logs().slice(start),cssSupport:{anchor:CSS.supports('position-anchor:--ix-probe'),area:CSS.supports('position-area:bottom'),tryFallbacks:CSS.supports('position-try-fallbacks:none')},viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY},clippingScroll:{stage:{left:n.owner?.scrollLeft,top:n.owner?.scrollTop},root:{left:n.rootClip?.scrollLeft,top:n.rootClip?.scrollTop},child:{left:n.childClip?.scrollLeft,top:n.childClip?.scrollTop},rootMenu:{left:n.rootHost?.scrollLeft,top:n.rootHost?.scrollTop},childMenu:{left:n.childHost?.scrollLeft,top:n.childHost?.scrollTop}}};};
+  const phase=(name,extra={})=>{const row={phase:name,time:performance.now(),facts:facts(),...extra};timeline.push(row);return row;};readFailureAnchor=facts;if(history)activeAnchorFocus={sourceCase,label,timeline,intersectionEntries};else activeAnchorCase={sourceCase,label,timeline,intersectionEntries};
   const observer=new IntersectionObserver(entries=>{for(const entry of entries){const n=nodes(),role=entry.target===n.rootTrigger?'root':entry.target===n.childTrigger?'child':'unknown',row={sequence:++entrySequence,role,time:performance.now(),entryTime:entry.time,target:describe(entry.target),isIntersecting:entry.isIntersecting,intersectionRatio:entry.intersectionRatio,boundingClientRect:rect(entry.boundingClientRect),intersectionRect:rect(entry.intersectionRect),rootBounds:rect(entry.rootBounds),clip:element(role==='root'?n.rootClip:n.childClip),note:'Independent actual native IO entry; not a fabricated transport report or access to component private observer callback.'};latest.set(role,row);intersectionEntries.push(row);phase('independent-native-intersection',{entry:row});}},{threshold:[0,0.5,1]});
   try{
    for(const trigger of [held.rootTrigger,held.childTrigger].filter(Boolean))observer.observe(trigger);
    for(const host of [held.rootHost,held.childHost].filter(Boolean))for(const type of ['beforetoggle','toggle'])host.addEventListener(type,event=>phase('native-'+type,{target:describe(event.target),oldState:event.oldState,newState:event.newState}),{passive:true,signal:listeners.signal});
    for(const type of ['focusin','focusout'])document.addEventListener(type,event=>phase('native-'+type,{target:describe(event.target),relatedTarget:describe(event.relatedTarget)}),{capture:true,passive:true,signal:listeners.signal});
-   document.addEventListener('input',event=>{const input=event.target;if(!(input instanceof HTMLInputElement)||!input.matches('[data-ix-overlay-transport]'))return;let report;try{report=JSON.parse(input.value);}catch{return;}if(report?.kind==='anchor-visibility')phase('actual-native-anchor-transport',{transport:describe(input),report:{owner:report.owner,sequence:report.sequence,kind:report.kind,anchor_visibility:report.anchor_visibility,nodes:(report.nodes??[]).filter(node=>node.id===report.anchor_visibility?.root)}});},{capture:true,passive:true,signal:listeners.signal});
+   document.addEventListener('input',event=>{const input=event.target;if(!(input instanceof HTMLInputElement)||!input.matches('[data-ix-overlay-transport]'))return;let report;try{report=JSON.parse(input.value);}catch{return;}if(report?.kind==='anchor-visibility')phase('actual-native-anchor-transport',{transport:describe(input),report:{owner:report.owner,sequence:report.sequence,kind:report.kind,anchor_visibility:report.anchor_visibility,nodes:(report.nodes??[]).filter(node=>node.id===report.anchor_visibility?.root)}});else if(history&&report?.kind==='modality')phase('actual-native-modality-transport',{transport:describe(input),report:{owner:report.owner,sequence:report.sequence,kind:report.kind,input_kind:report.input_kind,key:report.key,default_prevented:report.default_prevented,target_id:report.target_id,active_id:report.active_id}});},{capture:true,passive:true,signal:listeners.signal});
    const dimensions=entry=>entry&&Math.abs(entry.boundingClientRect.width-100)<.5&&Math.abs(entry.boundingClientRect.height-40)<.5&&Math.abs(entry.clip.rect.width-240)<.5&&Math.abs(entry.clip.rect.height-160)<.5&&(entry.role!=='root'||Math.abs(entry.clip.rect.x-320)<.5&&Math.abs(entry.clip.rect.y-260)<.5),edges=entry=>{const b=entry.boundingClientRect,i=entry.intersectionRect;return['top','bottom','left','right'].filter(side=>side==='top'?i.top>b.top+.5:side==='bottom'?i.bottom<b.bottom-.5:side==='left'?i.left>b.left+.5:i.right<b.right-.5);},condition=(role,key,since=0)=>{const entry=latest.get(role);if(!entry||entry.sequence<=since||!dimensions(entry))return false;if(key==='outside')return entry.isIntersecting===false&&entry.intersectionRect.width*entry.intersectionRect.height===0;const expected=key==='full'?[]:key==='corner'?['top','right']:[key],actual=edges(entry);return entry.isIntersecting&&entry.intersectionRect.width>0&&entry.intersectionRect.height>0&&JSON.stringify(actual)===JSON.stringify(expected)&&(key==='full'?entry.intersectionRatio>.999:entry.intersectionRatio>0&&entry.intersectionRatio<1);};
    await wait(()=>condition('root','full'),'fresh actual root fully-visible 100x40 native IO');phase('conditioned-root-full-before-open',{entry:latest.get('root')});
    if(nested){const outside=get('popover-anchor-modality-outside');outside.focus();const event=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',bubbles:true,cancelable:true,composed:true});let reachedWindow=false;window.addEventListener('keydown',actual=>{if(actual===event)reachedWindow=true;},{passive:true,signal:listeners.signal});outside.dispatchEvent(event);driverJournal.push({scenario,kind:'synthetic-native-Tab-modality-prime-before-anchor-opening',trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,reachedWindow,nativeDefaultNavigation:false,target:describe(outside)});await settle();phase('actual-document-Tab-modality-prime',{trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,reachedWindow,nativeDefaultNavigation:false});}
@@ -1061,7 +1107,7 @@ try {
    click('root');await wait(()=>nodes().owner?.dataset.rootOpen==='true'&&nodes().rootHost?.matches(':popover-open'),'actual public root anchor opens');await settle();phase('actual-root-open');
    if(nested){await wait(()=>condition('child','full'),'actual child trigger fully visible within open cached root');phase('conditioned-child-full-before-open',{entry:latest.get('child')});click('child');await wait(()=>nodes().owner?.dataset.rootOpen==='true'&&nodes().rootHost?.matches(':popover-open')&&nodes().owner?.dataset.childOpen==='true'&&nodes().childHost?.matches(':popover-open'),'actual cached root and child remain open together');await settle();assert(nodes().owner?.dataset.rootOpen==='true'&&nodes().rootHost?.matches(':popover-open')&&nodes().owner?.dataset.childOpen==='true'&&nodes().childHost?.matches(':popover-open'),'both actual cached root and child are logical/native open before anchor clipping');phase('actual-child-open-with-real-linked-trigger-topology');}
    const move=async(role,key)=>{const point=anchorPositions[key],since=entrySequence,detail={target:role,x:point[0],y:point[1]};driverJournal.push({scenario,kind:'public-fixture-Rust-anchor-position-change',detail,remount:false,geometryOnly:true});input('popover-anchor-position',JSON.stringify(detail));phase('synchronous-geometry-input-return',{detail});const frame=name=>new Promise(resolve=>requestAnimationFrame(time=>resolve(phase(name,{frameTime:time}))));const first=frame('first-native-frame-after-anchor-move');await Promise.resolve();phase('microtask-after-anchor-move');await first;await frame('second-native-frame-after-anchor-move');await wait(()=>nodes().owner?.dataset[role+'X']===String(point[0])&&nodes().owner?.dataset[role+'Y']===String(point[1])&&condition(role,key,since),'fresh exact native IO '+role+' '+key);await settle();phase('conditioned-'+role+'-'+key,{condition:{role,key,point,actualEntry:latest.get(role),edges:latest.get(role)?.isIntersecting?edges(latest.get(role)):null}});};
-   const transitionStart=logs().length;await move(target,position);if(reset)await move(target,'full');if(suppressed)await move(target,'outside');const settled=phase('settled-partial-anchor-case'),entry={sourceCase,label,classification:'raw actual partial-anchor setup/IO/native placement/focus/callback facts; no FloatingUI or root/child policy outcome parity asserted before source comparison',input:{mode,position,target,nested,suppressed,reset,suppressAutomaticPlacement:true,sourceEquivalentCondition:'same public suppression request; port CSS adapter is not FloatingUI inline/shift equivalence'},timeline,intersectionEntries,settled,transitionCallbacks:logs().slice(transitionStart),limits:['Exact clipping edges/native IO are required setup facts, not policy verdicts','Configured data-placement, current dataset and CSS properties are separate from actual computed source FloatingUI placement','Native threshold delivery and callback DOM publication do not timestamp private source/Rust callback execution','Negative cases prime actual document Tab before actual root/child clicks; no keyboard mode flags are assigned','No fallback reopen, private discovery, fake IO, host transform rewrite or native menu navigation policy is injected']};anchorCases.push(entry);save({phase:'raw-partial-anchor-case',anchor:entry});activeAnchorCase=null;
+   const transitionStart=logs().length;if(history)await history({nodes,phase,move,click,condition,latest,intersectionEntries,listeners});else{await move(target,position);if(reset)await move(target,'full');if(suppressed)await move(target,'outside');}const settled=phase(history?'settled-anchor-focus-history':'settled-partial-anchor-case'),entry={sourceCase,label,classification:history?'raw public negative-focus and vetoed-Tab history; no private suppression latch or outcome oracle injected':'raw actual partial-anchor setup/IO/native placement/focus/callback facts; no FloatingUI or root/child policy outcome parity asserted before source comparison',input:{mode,position,target,nested,suppressed,reset,...(history?{historyName}:{}),suppressAutomaticPlacement:true,sourceEquivalentCondition:'same public suppression request; port CSS adapter is not FloatingUI inline/shift equivalence'},timeline,intersectionEntries,settled,transitionCallbacks:logs().slice(transitionStart),limits:['Exact clipping edges/native IO are required setup facts, not policy verdicts','Configured data-placement, current dataset and CSS properties are separate from actual computed source FloatingUI placement','Native threshold delivery and callback DOM publication do not timestamp private source/Rust callback execution','Negative cases prime actual document Tab before actual root/child clicks; no keyboard mode flags are assigned','No fallback reopen, private discovery, fake IO, host transform rewrite or native menu navigation policy is injected']};if(history){anchorFocusCases.push(entry);save({phase:'raw-anchor-focus-history',anchorFocus:entry});activeAnchorFocus=null;}else{anchorCases.push(entry);save({phase:'raw-partial-anchor-case',anchor:entry});activeAnchorCase=null;}
   }finally{observer.disconnect();listeners.abort();}
  };
  await anchorRun({sourceCase:85,mode:'anchor-right-start',position:'top',reset:true});
@@ -1073,6 +1119,29 @@ try {
  await anchorRun({sourceCase:91,mode:'anchor-nested',position:'outside',nested:true});
  await anchorRun({sourceCase:92,mode:'anchor-nested',position:'outside',target:'child',nested:true});
  assert(anchorCases.length===8,'all eight public partial-anchor cases complete fresh native geometry and IO conditioning');
- return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,activeHeaderMode,activeAnchorCase,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
+ const focusHistory=sourceCase=>async({nodes,phase,move,click,condition,intersectionEntries,listeners})=>{
+  const childAction=nodes().childAction,childHost=nodes().childHost,rootTrigger=nodes().rootTrigger,childTrigger=nodes().childTrigger;
+  const settings=async values=>{driverJournal.push({scenario,kind:'public-fixture-Rust-anchor-settings',values});input('popover-anchor-settings',JSON.stringify(values));const attrs={rootVeto:'rootVeto',childVeto:'childVeto',childRoving:'childRoving',childDisableFocusTrap:'childDisableTrap'};await wait(()=>Object.entries(values).every(([key,value])=>nodes().owner?.dataset[attrs[key]]===String(value)),'actual public anchor settings render');await settle();phase('public-anchor-settings-committed',{values});};
+  const action=async label=>{await wait(()=>nodes().owner?.dataset.childOpen==='true'&&nodes().childHost?.matches(':popover-open'),'actual child open before ordinary action focus');nodes().childAction.focus();await settle();assert(document.activeElement===childAction&&nodes().childAction===childAction,'actual retained child native action focus before '+label);phase('actual-child-native-action-focus',{label,heldAction:describe(childAction)});};
+  const openRoot=async label=>{await wait(()=>nodes().owner?.dataset.rootOpen==='false'&&!nodes().rootHost?.matches(':popover-open'),'actual root closed before reopen toggle');const since=intersectionEntries.length?intersectionEntries.at(-1).sequence:0;click('root');await wait(()=>nodes().owner?.dataset.rootOpen==='true'&&nodes().rootHost?.matches(':popover-open')&&condition('child','full',since),'actual root reopened with fresh fully-visible child anchor');await settle();phase('actual-root-reopened',{label,heldRootTrigger:describe(rootTrigger)});};
+  const openChild=async label=>{await wait(()=>nodes().owner?.dataset.childOpen==='false'&&!nodes().childHost?.matches(':popover-open'),'actual child closed before reopen toggle');click('child');await wait(()=>nodes().owner?.dataset.childOpen==='true'&&nodes().childHost?.matches(':popover-open'),'actual child reopened');await settle();assert(nodes().childHost===childHost,'actual child host identity after '+label);phase('actual-child-reopened',{label,heldChildHost:describe(childHost)});};
+  if(sourceCase===93||sourceCase===94){
+   await settings(sourceCase===93?{rootVeto:true}:{childVeto:true});await wait(()=>nodes().childRoot?.dataset.ixOverlayMode==='roving-tabindex','actual child public roving mode before ShiftTab');childTrigger.focus();await settle();assert(document.activeElement===childTrigger,'actual child trigger ShiftTab focus seed');
+   const event=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',shiftKey:true,bubbles:true,cancelable:true,composed:true});let reachedDocument=false,reachedWindow=false;document.addEventListener('keydown',actual=>{if(actual===event){reachedDocument=true;phase('history-Tab-late-document',{defaultPrevented:event.defaultPrevented});}},{passive:true,signal:listeners.signal});window.addEventListener('keydown',actual=>{if(actual===event){reachedWindow=true;phase('history-Tab-window',{defaultPrevented:event.defaultPrevented});}},{passive:true,signal:listeners.signal});
+   driverJournal.push({scenario,kind:'synthetic-actual-child-trigger-ShiftTab',target:describe(childTrigger),trusted:event.isTrusted,nativeDefaultNavigation:false});childTrigger.dispatchEvent(event);phase('history-Tab-synchronous-return',{trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,reachedDocument,reachedWindow});await Promise.resolve();phase('history-Tab-microtask',{defaultPrevented:event.defaultPrevented});await new Promise(resolve=>requestAnimationFrame(time=>{phase('history-Tab-first-native-frame',{frameTime:time});resolve();}));await new Promise(resolve=>requestAnimationFrame(time=>{phase('history-Tab-second-native-frame',{frameTime:time});resolve();}));await settle();phase('history-Tab-settled-with-passive-IO-observation',{defaultPrevented:event.defaultPrevented,reachedDocument,reachedWindow});
+   if(sourceCase===93){await settings({rootVeto:false});await action('first root negative after vetoed Tab');await move('root','outside');phase('first-accepted-negative-cycle-complete');await move('root','full');await openRoot('root reopen after first accepted negative cycle');await openChild('root-latch second cycle');await action('second root negative after reopen');await move('root','outside');phase('second-accepted-negative-cycle-complete');}
+   else{await openRoot('root actual reopen while child veto remains held');assert(nodes().owner?.dataset.childOpen==='true'&&nodes().childHost?.matches(':popover-open')&&nodes().childHost===childHost,'same actual child remains open through veto-held root reopen');phase('same-open-child-after-veto-held-root-reopen',{heldChildHost:describe(childHost)});await settings({childVeto:false});await action('first child negative after vetoed Tab');await move('child','outside');phase('first-accepted-negative-cycle-complete');await move('child','full');await openChild('child-latch second cycle');await action('second child negative after reopen');await move('child','outside');phase('second-accepted-negative-cycle-complete');}
+  }else{
+   if(sourceCase===95){const outside=get('popover-anchor-modality-outside'),event=new MouseEvent('mousedown',{bubbles:true,cancelable:true,composed:true,button:0,buttons:1});outside.dispatchEvent(event);driverJournal.push({scenario,kind:'actual-synthetic-mousedown-only-modality-input',target:describe(outside),trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,clickDispatched:false});await settle();phase('actual-outside-mousedown-only-after-keyboard-open-pair',{trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,clickDispatched:false});}
+   else assert(nodes().owner?.dataset.childDisableTrap==='true','actual child disableFocusTrap configured before opening');
+   await action(sourceCase===95?'pointer-gated root negative':'disableFocusTrap-gated child negative');await move(sourceCase===95?'root':'child','outside');phase('ordinary-negative-gate-cycle-complete');
+  }
+ };
+ await anchorRun({sourceCase:93,mode:'anchor-focus',position:'outside',nested:true,historyName:'cached root vetoed ShiftTab latch then two actual root negative cycles',history:focusHistory(93)});
+ await anchorRun({sourceCase:94,mode:'anchor-focus',position:'outside',target:'child',nested:true,historyName:'cached child vetoed ShiftTab latch with same-open-child root reopen then two child negative cycles',history:focusHistory(94)});
+ await anchorRun({sourceCase:95,mode:'anchor-focus-pointer',position:'outside',nested:true,historyName:'ordinary root negative after actual outside mousedown resets keyboard modality',history:focusHistory(95)});
+ await anchorRun({sourceCase:96,mode:'anchor-focus-no-trap',position:'outside',target:'child',nested:true,historyName:'ordinary child negative with disableFocusTrap configured before connection',history:focusHistory(96)});
+ assert(anchorFocusCases.length===4,'all four public negative-focus and vetoed-Tab histories complete actual native setup and IO conditioning');
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
 "#;

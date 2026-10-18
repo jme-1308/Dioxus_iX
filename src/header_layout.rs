@@ -131,6 +131,9 @@ impl Model {
         self.preserve = Some(capture);
     }
     fn apply_focus(&mut self, restore: bool) {
+        // The source's attempt to focus hidden More has no native effect. Keep
+        // an eligible visible mode-handoff capture in that case.
+        let restore = restore && self.more_visible();
         let retained = (!restore)
             .then(|| self.preserve.clone())
             .flatten()
@@ -328,7 +331,7 @@ fn header_tab_key(
     };
     // A NodeHandle holds only a weak runtime reference. Resolve it after the
     // callback borrow, and keep release intent even if the close is vetoed.
-    runtime.dismiss_root(node.id(), Reason::Keyboard, false);
+    runtime.close_and_release_focus(node.id());
     KeyDecision {
         release_focus: true,
         ..KeyDecision::default()
@@ -972,6 +975,16 @@ mod tests {
         restoring.apply_focus(true);
         assert_eq!(restoring.focus, "more");
         assert!(restoring.preserve.is_none());
+
+        let mut hidden_more = pending_capture(1);
+        hidden_more.small = false;
+        hidden_more.presence[2] = false;
+        hidden_more.open = false;
+        assert!(!hidden_more.more_visible());
+        hidden_more.apply_focus(true);
+        assert_eq!(hidden_more.preserve, Some(capture(1)));
+        let admitted = preserve_report(&hidden_more);
+        assert!(hidden_more.authorize_preserve(&admitted));
     }
 
     #[test]

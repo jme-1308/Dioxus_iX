@@ -17,6 +17,7 @@ struct FixtureState {
     owner: Option<Weak<dioxus::core::Runtime>>,
     open: Option<Signal<bool>>,
     calls: Vec<(String, bool)>,
+    applied: Vec<Change>,
     captures: Vec<Option<Vec<usize>>>,
 }
 
@@ -41,6 +42,7 @@ impl Fixture {
             owner: None,
             open: None,
             calls: Vec::new(),
+            applied: Vec::new(),
             captures: Vec::new(),
         })))
     }
@@ -111,12 +113,12 @@ fn owner_root(fixture: Fixture) -> Element {
                 }),
                 apply: Rc::new(move |change| {
                     assert_owner(&apply_owner, scope, token);
-                    apply_fixture
-                        .upgrade()
-                        .expect("registered fixture is live")
-                        .borrow_mut()
-                        .calls
-                        .push(("apply".into(), change.open));
+                    {
+                        let fixture = apply_fixture.upgrade().expect("registered fixture is live");
+                        let mut state = fixture.borrow_mut();
+                        state.calls.push(("apply".into(), change.open));
+                        state.applied.push(change);
+                    }
                     let mut open = open;
                     open.set(change.open);
                 }),
@@ -2052,4 +2054,679 @@ fn current_anchor_shape_is_independent_of_visibility_suppression_and_rejects_sta
         "late shape cannot reach the dropped actual owner"
     );
     assert!(fixture.0.borrow().calls.is_empty());
+}
+
+fn anchor_focus_nodes(nodes: &[(&Fixture, &[&str])]) -> Vec<serde_json::Value> {
+    nodes.iter().map(|(fixture, ancestors)| {
+        let id = fixture.0.borrow().id;
+        serde_json::json!({"id":id,"generation":fixture.node().generation(),"connected":true,
+            "discovery_ready":true,"trigger_ancestors":ancestors,"trigger_id":format!("{id}-trigger"),
+            "mode":"roving-tabindex","on_trigger":true})
+    }).collect()
+}
+
+fn anchor_focus_report(
+    fixture: &Fixture,
+    document: &str,
+    sequence: u64,
+    kind: &str,
+    nodes: &[serde_json::Value],
+) -> serde_json::Value {
+    serde_json::json!({"owner":fixture.runtime().owner_id(),"document":document,
+        "sequence":sequence,"kind":kind,"nodes":nodes})
+}
+
+fn prepare_anchor_focus(
+    owners: &[(&VirtualDom, &Fixture)],
+    document: &str,
+    nodes: &[serde_json::Value],
+) {
+    for (dom, fixture) in owners {
+        deliver_trap(
+            dom,
+            fixture,
+            anchor_focus_report(fixture, document, 1, "observe", nodes),
+        );
+    }
+    for (dom, fixture) in owners {
+        dom.in_scope(fixture.scope(), || {
+            assert!(fixture.node().request(true, Reason::Trigger, false))
+        });
+        fixture.0.borrow_mut().calls.clear();
+        fixture.0.borrow_mut().applied.clear();
+    }
+    let (dom, fixture) = owners[0];
+    let mut mode = anchor_focus_report(fixture, document, 2, "modality", nodes);
+    mode["input_kind"] = "keydown".into();
+    mode["key"] = "Tab".into();
+    deliver_trap(dom, fixture, mode);
+}
+
+fn negative_anchor_focus(
+    dom: &VirtualDom,
+    fixture: &Fixture,
+    document: &str,
+    sequence: u64,
+    nodes: &[serde_json::Value],
+) {
+    let id = fixture.0.borrow().id;
+    let mut report = anchor_focus_report(fixture, document, sequence, "anchor-visibility", nodes);
+    report["anchor_visibility"] = serde_json::json!({"root":id,"generation":fixture.node().generation(),
+        "target":format!("{id}-trigger"),"intersecting":false});
+    assert!(deliver_trap(dom, fixture, report).default_action_enabled());
+}
+
+fn release_anchor_tab(
+    dom: &VirtualDom,
+    fixture: &Fixture,
+    document: &str,
+    sequence: u64,
+    nodes: &[serde_json::Value],
+) -> FormEvent {
+    let weak = Rc::downgrade(&fixture.runtime().0);
+    let id = fixture.0.borrow().id;
+    fixture
+        .runtime()
+        .0
+        .borrow_mut()
+        .nodes
+        .get_mut(id)
+        .unwrap()
+        .callbacks
+        .key = Some(Rc::new(move |_| {
+        let runtime = RuntimeHandle(weak.upgrade().unwrap());
+        runtime.close_and_release_focus(id);
+        KeyDecision {
+            release_focus: true,
+            ..KeyDecision::default()
+        }
+    }));
+    let mut report = anchor_focus_report(fixture, document, sequence, "key", nodes);
+    report["key"] = "Tab".into();
+    report["phase"] = "capture".into();
+    report["triggers"] = serde_json::json!([id]);
+    // No document/parent exit candidates: suppression must not depend on a target.
+    deliver_trap(dom, fixture, report)
+}
+
+fn trigger_suppressed(fixture: &Fixture) -> bool {
+    fixture
+        .runtime()
+        .entry(fixture.0.borrow().id)
+        .unwrap()
+        .suppress_trigger_restore
+}
+
+#[test]
+fn vetoed_tab_marks_cached_owners_before_reentrant_before_and_later_hide_consumes_once() {
+    let root = Fixture::new("anchor-focus-root", 725);
+    let child = Fixture::new("anchor-focus-child", 726);
+    let dom_root = build(&root);
+    let dom_child = build(&child);
+    let document = "anchor focus root-veto document";
+    let nodes = anchor_focus_nodes(&[(&root, &[]), (&child, &["anchor-focus-root"])]);
+    prepare_anchor_focus(
+        &[(&dom_root, &root), (&dom_child, &child)],
+        document,
+        &nodes,
+    );
+    root.0.borrow().veto.set(true);
+    let runtime = root.runtime();
+    let old_before = runtime.entry("anchor-focus-root").unwrap().callbacks.before;
+    let callback_before = old_before.clone();
+    let root_weak = Rc::downgrade(&runtime.0);
+    let child_weak = Rc::downgrade(&child.runtime().0);
+    let reentrant_nodes = nodes.clone();
+    let checked = Rc::new(Cell::new(0));
+    let observed = checked.clone();
+    runtime
+        .0
+        .borrow_mut()
+        .nodes
+        .get_mut("anchor-focus-root")
+        .unwrap()
+        .callbacks
+        .before = Rc::new(move |change| {
+        if !change.open {
+            let runtime = RuntimeHandle(root_weak.upgrade().unwrap());
+            assert!(
+                runtime
+                    .entry("anchor-focus-root")
+                    .unwrap()
+                    .suppress_trigger_restore
+            );
+            assert!(
+                RuntimeHandle(child_weak.upgrade().unwrap())
+                    .entry("anchor-focus-child")
+                    .unwrap()
+                    .suppress_trigger_restore
+            );
+            if observed.replace(observed.get() + 1) == 0 {
+                runtime.input(trap_form(
+                    serde_json::json!({"owner":runtime.owner_id(),"document":document,
+                    "sequence":3,"kind":"observe","nodes":reentrant_nodes}),
+                ));
+            }
+        }
+        callback_before(change)
+    });
+    let event = release_anchor_tab(&dom_child, &child, document, 2, &nodes);
+    assert!(
+        event.default_action_enabled(),
+        "undefined exit target does not prevent Tab"
+    );
+    assert_eq!(checked.get(), 1);
+    assert!(root.open() && child.open() && trigger_suppressed(&root) && trigger_suppressed(&child));
+    let absent = trap_form(
+        serde_json::json!({"owner":child.runtime().owner_id(),"sequence":2,
+        "schedule_focus_target":"undefined-exit-target"}),
+    );
+    dom_child.in_scope(child.scope(), || child.runtime().query(absent.clone()));
+    assert!(
+        absent.default_action_enabled(),
+        "undefined exit did not admit a pending focus job"
+    );
+    root.0.borrow().veto.set(false);
+    negative_anchor_focus(&dom_root, &root, document, 4, &nodes);
+    assert!(!root.open() && !child.open());
+    assert!(!trigger_suppressed(&root) && !trigger_suppressed(&child));
+    assert!(!root.0.borrow().applied.last().unwrap().restore_focus);
+    assert!(!child.0.borrow().applied.last().unwrap().restore_focus);
+    // Remove the observation-only wrapper before the next ordinary lifecycle.
+    runtime
+        .0
+        .borrow_mut()
+        .nodes
+        .get_mut("anchor-focus-root")
+        .unwrap()
+        .callbacks
+        .before = old_before;
+    for (dom, fixture) in [(&dom_root, &root), (&dom_child, &child)] {
+        dom.in_scope(fixture.scope(), || {
+            assert!(fixture.node().request(true, Reason::Trigger, false))
+        });
+    }
+    negative_anchor_focus(&dom_root, &root, document, 5, &nodes);
+    assert!(root.0.borrow().applied.last().unwrap().restore_focus);
+    assert!(child.0.borrow().applied.last().unwrap().restore_focus);
+    assert_eq!(
+        child.0.borrow().applied.last().unwrap().reason,
+        Reason::AnchorVisibilityParent
+    );
+}
+
+#[test]
+fn child_veto_retains_own_latch_after_parent_cache_is_cleared_then_consumes_on_instance_hide() {
+    let root = Fixture::new("anchor-veto-root", 727);
+    let child = Fixture::new("anchor-veto-child", 728);
+    let dom_root = build(&root);
+    let dom_child = build(&child);
+    let document = "anchor focus child-veto document";
+    let nodes = anchor_focus_nodes(&[(&root, &[]), (&child, &["anchor-veto-root"])]);
+    prepare_anchor_focus(
+        &[(&dom_root, &root), (&dom_child, &child)],
+        document,
+        &nodes,
+    );
+    child.0.borrow().veto.set(true);
+    release_anchor_tab(&dom_child, &child, document, 2, &nodes);
+    assert!(!root.open() && child.open());
+    assert!(!trigger_suppressed(&root) && trigger_suppressed(&child));
+    assert!(
+        root.runtime()
+            .domain()
+            .unwrap()
+            .cached_children("anchor-veto-root")
+            .is_empty()
+    );
+    child.0.borrow().veto.set(false);
+    negative_anchor_focus(&dom_child, &child, document, 3, &nodes);
+    assert!(!child.open() && !trigger_suppressed(&child));
+    assert!(!child.0.borrow().applied.last().unwrap().restore_focus);
+    dom_child.in_scope(child.scope(), || {
+        assert!(child.node().request(true, Reason::Trigger, false))
+    });
+    negative_anchor_focus(&dom_child, &child, document, 4, &nodes);
+    assert!(child.0.borrow().applied.last().unwrap().restore_focus);
+    assert!(
+        !root.open(),
+        "negative child fact never reopens or dismisses its cached parent"
+    );
+}
+
+#[test]
+fn suppression_stops_at_closed_cached_intermediate_and_pointer_hide_consumes_registration_state() {
+    let root = Fixture::new("anchor-closed-root", 729);
+    let middle = Fixture::new("anchor-closed-middle", 730);
+    let leaf = Fixture::new("anchor-closed-leaf", 731);
+    let dom_root = build(&root);
+    let dom_middle = build(&middle);
+    let dom_leaf = build(&leaf);
+    let document = "anchor focus closed-intermediate document";
+    let nodes = anchor_focus_nodes(&[
+        (&root, &[]),
+        (&middle, &["anchor-closed-root"]),
+        (&leaf, &["anchor-closed-middle", "anchor-closed-root"]),
+    ]);
+    prepare_anchor_focus(
+        &[
+            (&dom_root, &root),
+            (&dom_middle, &middle),
+            (&dom_leaf, &leaf),
+        ],
+        document,
+        &nodes,
+    );
+    dom_middle.in_scope(middle.scope(), || {
+        let mut open = middle.0.borrow().open.unwrap();
+        open.set(false);
+        middle.node().sync_open(false);
+    });
+    root.0.borrow().veto.set(true);
+    dom_root.in_scope(root.scope(), || {
+        assert!(!root.runtime().close_and_release_focus("anchor-closed-root"))
+    });
+    assert!(trigger_suppressed(&root));
+    assert!(!trigger_suppressed(&middle) && !trigger_suppressed(&leaf));
+    dom_root.in_scope(root.scope(), || {
+        root.runtime().join_node("anchor-closed-root")
+    });
+    assert!(
+        trigger_suppressed(&root),
+        "same-registration domain metadata rejoin retains latch"
+    );
+    let mut pointer = anchor_focus_report(&root, document, 3, "modality", &nodes);
+    pointer["input_kind"] = "mousedown".into();
+    deliver_trap(&dom_root, &root, pointer);
+    root.0.borrow().veto.set(false);
+    negative_anchor_focus(&dom_root, &root, document, 4, &nodes);
+    assert!(!trigger_suppressed(&root));
+    assert!(!root.0.borrow().applied.last().unwrap().restore_focus);
+    dom_root.in_scope(root.scope(), || {
+        assert!(root.node().request(true, Reason::Trigger, false))
+    });
+    let mut keyboard = anchor_focus_report(&root, document, 5, "modality", &nodes);
+    keyboard["input_kind"] = "keydown".into();
+    keyboard["key"] = "Tab".into();
+    deliver_trap(&dom_root, &root, keyboard);
+    negative_anchor_focus(&dom_root, &root, document, 6, &nodes);
+    assert!(root.0.borrow().applied.last().unwrap().restore_focus);
+}
+
+#[test]
+fn trigger_restore_queries_are_independent_consume_once_and_registration_lifetime_guarded() {
+    let fixture = Fixture::new("anchor-restore-query", 732);
+    let dom = build(&fixture);
+    let nodes = anchor_focus_nodes(&[(&fixture, &[])]);
+    let document = "anchor trigger restore query document";
+    prepare_anchor_focus(&[(&dom, &fixture)], document, &nodes);
+    assert!(
+        !fixture.node().queue_trigger_restore(1),
+        "no native bridge means component keeps its fallback command"
+    );
+    let runtime = fixture.runtime();
+    let job = runtime
+        .0
+        .borrow_mut()
+        .trigger_restores
+        .admit("anchor-restore-query".into(), 1, 7);
+    let query = |sequence, root, generation| {
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
+        "trigger_restore_sequence":sequence,"trigger_restore_root":root,"trigger_restore_generation":generation})
+    };
+    for value in [
+        query(job.sequence + 1, "anchor-restore-query", 1),
+        query(job.sequence, "wrong", 1),
+        query(job.sequence, "anchor-restore-query", 2),
+    ] {
+        let event = trap_form(value);
+        dom.in_scope(fixture.scope(), || runtime.query(event.clone()));
+        assert!(event.default_action_enabled());
+    }
+    dom.in_scope(fixture.scope(), || {
+        assert!(fixture.node().request(false, Reason::Trigger, false));
+        assert!(fixture.node().request(true, Reason::Trigger, false));
+    });
+    deliver_trap(
+        &dom,
+        &fixture,
+        anchor_focus_report(&fixture, document, 3, "observe", &nodes),
+    );
+    let event = trap_form(query(job.sequence, "anchor-restore-query", 1));
+    dom.in_scope(fixture.scope(), || runtime.query(event.clone()));
+    assert!(
+        !event.default_action_enabled(),
+        "newer ACK/revision/reopen does not revoke source cleanup RAF"
+    );
+    let repeat = trap_form(query(job.sequence, "anchor-restore-query", 1));
+    dom.in_scope(fixture.scope(), || runtime.query(repeat.clone()));
+    assert!(repeat.default_action_enabled());
+    let late = runtime
+        .0
+        .borrow_mut()
+        .trigger_restores
+        .admit("anchor-restore-query".into(), 1, 8);
+    fixture.0.borrow().veto.set(true);
+    dom.in_scope(fixture.scope(), || {
+        assert!(!runtime.close_and_release_focus("anchor-restore-query"))
+    });
+    assert!(trigger_suppressed(&fixture));
+    fixture.0.borrow().veto.set(false);
+    let old_node = fixture.node();
+    dom.in_scope(fixture.scope(), || {
+        let callbacks = runtime.entry("anchor-restore-query").unwrap().callbacks;
+        let node = runtime.register(
+            "anchor-restore-query".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        fixture.0.borrow_mut().node = Some(node);
+    });
+    assert!(!trigger_suppressed(&fixture));
+    assert!(!old_node.queue_trigger_restore(9));
+    let stale = trap_form(query(late.sequence, "anchor-restore-query", 1));
+    dom.in_scope(fixture.scope(), || runtime.query(stale.clone()));
+    assert!(stale.default_action_enabled());
+    let dropped =
+        runtime
+            .0
+            .borrow_mut()
+            .trigger_restores
+            .admit("anchor-restore-query".into(), 2, 10);
+    let event = trap_form(query(dropped.sequence, "anchor-restore-query", 2));
+    drop(dom);
+    let caller = Fixture::new("anchor-restore-dropped-caller", 733);
+    let dom_caller = build(&caller);
+    dom_caller.in_scope(caller.scope(), || runtime.query(event.clone()));
+    assert!(event.default_action_enabled());
+}
+
+#[test]
+fn ordinary_negative_cleanup_reads_modality_after_child_before_callbacks() {
+    let root = Fixture::new("anchor-mode-root", 734);
+    let child = Fixture::new("anchor-mode-child", 735);
+    let dom_root = build(&root);
+    let dom_child = build(&child);
+    let document = "anchor focus commit modality document";
+    let nodes = anchor_focus_nodes(&[(&root, &[]), (&child, &["anchor-mode-root"])]);
+    prepare_anchor_focus(
+        &[(&dom_root, &root), (&dom_child, &child)],
+        document,
+        &nodes,
+    );
+    let runtime = child.runtime();
+    let before = runtime.entry("anchor-mode-child").unwrap().callbacks.before;
+    let weak = Rc::downgrade(&runtime.0);
+    let reentrant_nodes = nodes.clone();
+    runtime
+        .0
+        .borrow_mut()
+        .nodes
+        .get_mut("anchor-mode-child")
+        .unwrap()
+        .callbacks
+        .before = Rc::new(move |change| {
+        let allowed = before(change);
+        if !change.open {
+            let runtime = RuntimeHandle(weak.upgrade().unwrap());
+            runtime.input(trap_form(
+                serde_json::json!({"owner":runtime.owner_id(),"document":document,
+                "sequence":2,"kind":"modality","input_kind":"mousedown","nodes":reentrant_nodes}),
+            ));
+        }
+        allowed
+    });
+    negative_anchor_focus(&dom_root, &root, document, 3, &nodes);
+    assert!(!root.open() && !child.open());
+    assert!(
+        !child.0.borrow().applied.last().unwrap().restore_focus,
+        "child cleanup sees its before callback's pointer modality"
+    );
+    assert!(
+        !root.0.borrow().applied.last().unwrap().restore_focus,
+        "later parent cleanup reads current mode rather than a captured pre-cascade value"
+    );
+}
+
+#[test]
+fn dropdown_suppression_does_not_mark_or_change_cross_type_popover_restoration() {
+    let root = Fixture::new("anchor-cross-root", 736);
+    let popover = Fixture::new("anchor-cross-popover", 737);
+    let dom_root = build(&root);
+    let dom_popover = build_popover_fixture(&popover);
+    let document = "anchor focus cross-type document";
+    let nodes = anchor_focus_nodes(&[(&root, &[]), (&popover, &["anchor-cross-root"])]);
+    prepare_anchor_focus(
+        &[(&dom_root, &root), (&dom_popover, &popover)],
+        document,
+        &nodes,
+    );
+    root.0.borrow().veto.set(true);
+    dom_root.in_scope(root.scope(), || {
+        assert!(!root.runtime().close_and_release_focus("anchor-cross-root"))
+    });
+    assert!(trigger_suppressed(&root));
+    assert!(!trigger_suppressed(&popover));
+    assert!(popover.open());
+    root.0.borrow().veto.set(false);
+    negative_anchor_focus(&dom_root, &root, document, 3, &nodes);
+    assert!(!root.open() && !popover.open());
+    assert!(!root.0.borrow().applied.last().unwrap().restore_focus);
+    assert!(
+        popover.0.borrow().applied.last().unwrap().restore_focus,
+        "Popover keeps its existing own-trigger cross-type parent-close policy"
+    );
+}
+
+#[test]
+fn tab_dispatch_preserves_immediate_veto_frames_and_isolates_failed_deferred_delivery() {
+    let fixture = Fixture::new("deferred-exit-routing", 738);
+    let dom = build_deferred_exit_fixture(&fixture, Rc::new(Cell::new(false)));
+    let document = "deferred dispatch routing document";
+    attach(&dom, &fixture, document);
+    deferred_observe(&dom, &fixture, document, 1);
+    present(&dom, &fixture);
+    fixture.0.borrow().veto.set(true);
+    for sequence in [2, 3] {
+        assert!(
+            !deliver_trap(
+                &dom,
+                &fixture,
+                deferred_exit_report(&fixture, document, sequence)
+            )
+            .default_action_enabled()
+        );
+        assert!(
+            !deferred_query(
+                &dom,
+                &fixture,
+                sequence,
+                "schedule_focus_target",
+                "after",
+                None
+            )
+            .default_action_enabled()
+        );
+    }
+    assert!(fixture.open());
+    for (target, owner) in [("wrong", None), ("after", Some("foreign owner"))] {
+        assert!(
+            deferred_query(&dom, &fixture, 2, "dispatch_focus_target", target, owner)
+                .default_action_enabled()
+        );
+    }
+    for sequence in [2, 3] {
+        assert!(
+            !deferred_query(
+                &dom,
+                &fixture,
+                sequence,
+                "dispatch_focus_target",
+                "after",
+                None
+            )
+            .default_action_enabled(),
+            "each vetoed Tab keeps synchronous native RAF admission without earlier cleanup"
+        );
+        assert!(
+            deferred_query(
+                &dom,
+                &fixture,
+                sequence,
+                "dispatch_focus_target",
+                "after",
+                None
+            )
+            .default_action_enabled(),
+            "dispatch cannot schedule the same source job twice"
+        );
+    }
+    assert!(
+        !deliver_trap(&dom, &fixture, deferred_exit_report(&fixture, document, 4))
+            .default_action_enabled()
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 4, "dispatch_focus_target", "after", None)
+            .default_action_enabled(),
+        "unarmed admission cannot dispatch"
+    );
+    let runtime = fixture.runtime();
+    runtime
+        .0
+        .borrow_mut()
+        .trigger_restores
+        .admit("deferred-exit-routing".into(), 1, 7);
+    assert!(
+        !deferred_query(&dom, &fixture, 4, "schedule_focus_target", "after", None)
+            .default_action_enabled(),
+        "arming remains independent of queued cleanup"
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 4, "dispatch_focus_target", "after", None)
+            .default_action_enabled(),
+        "deferred dispatch does not authorize immediate RAF; absent bridge fails its own job"
+    );
+    assert!(
+        deferred_query(&dom, &fixture, 4, "pending_focus_target", "after", None)
+            .default_action_enabled()
+    );
+    for sequence in [2, 3] {
+        assert!(
+            !deferred_query(
+                &dom,
+                &fixture,
+                sequence,
+                "pending_focus_target",
+                "after",
+                None
+            )
+            .default_action_enabled(),
+            "failed deferred delivery preserves independently routed immediate source jobs"
+        );
+    }
+}
+
+#[test]
+fn linked_roving_trigger_owns_tab_before_enclosing_active_descendant_host() {
+    let child = Fixture::new("linked-roving-trigger", 739);
+    let (dom, fixture) = build_header_exit_fixture(&child);
+    let runtime = child.runtime();
+    let root = dom.in_scope(child.scope(), || {
+        let callbacks = runtime.entry(fixture.header.id()).unwrap().callbacks;
+        let root = runtime.register(
+            fixture.header.id().into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        let mut callbacks = runtime.entry(child.node().id()).unwrap().callbacks;
+        let weak = Rc::downgrade(&runtime.0);
+        let id = child.node().id().to_string();
+        callbacks.key = Some(Rc::new(move |facts| {
+            if facts.key != "Tab" || facts.default_prevented {
+                return KeyDecision::default();
+            }
+            RuntimeHandle(weak.upgrade().unwrap()).close_and_release_focus(&id);
+            KeyDecision {
+                release_focus: true,
+                ..KeyDecision::default()
+            }
+        }));
+        let node = runtime.register(
+            child.node().id().into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        child.0.borrow_mut().node = Some(node);
+        root
+    });
+    let document = "linked roving trigger root host document";
+    attach(&dom, &child, document);
+    let nodes = serde_json::json!([
+        {"id":root.id(),"generation":1,"connected":true,"discovery_ready":true,
+         "mode":"active-descendant","trigger_id":"linked-root-trigger","inside":true},
+        {"id":child.node().id(),"generation":1,"connected":true,"discovery_ready":true,
+         "trigger_ancestors":[root.id()],"mode":"roving-tabindex",
+         "trigger_id":"linked-child-trigger","on_trigger":true}
+    ]);
+    deliver_trap(
+        &dom,
+        &child,
+        serde_json::json!({
+            "owner":runtime.owner_id(),"document":document,"sequence":1,"kind":"observe","nodes":nodes
+        }),
+    );
+    dom.in_scope(child.scope(), || {
+        assert!(root.request(true, Reason::Trigger, false));
+        assert!(child.node().request(true, Reason::Trigger, false));
+    });
+    assert_eq!(
+        runtime.domain().unwrap().cached_root(child.node().id()),
+        Some(root.id().into())
+    );
+    fixture.order.borrow_mut().clear();
+    for (sequence, root_veto, child_veto) in [(2, true, false), (3, false, true)] {
+        fixture.header_veto.set(root_veto);
+        child.0.borrow().veto.set(child_veto);
+        let event = deliver_trap(
+            &dom,
+            &child,
+            serde_json::json!({
+                "owner":runtime.owner_id(),"document":document,"sequence":sequence,
+                "kind":"key","phase":"capture","key":"Tab","shift":true,
+                "hosts":[root.id()],"triggers":[child.node().id()],"nodes":nodes
+            }),
+        );
+        assert!(
+            !event.default_action_enabled(),
+            "the actual child trigger mode admits the captured cached-root target synchronously"
+        );
+        assert_eq!(fixture.header_open.get(), root_veto);
+        assert!(child.open());
+        for field in [
+            "schedule_focus_target",
+            "dispatch_focus_target",
+            "pending_focus_target",
+        ] {
+            assert!(
+                !deferred_query(&dom, &child, sequence, field, "linked-root-trigger", None)
+                    .default_action_enabled(),
+                "veto or accepted root close retains independently admitted root-trigger focus"
+            );
+        }
+    }
+    assert_eq!(
+        *fixture.order.borrow(),
+        [
+            "header:before:false",
+            "header:before:false",
+            "child:before:false",
+            "header:apply:false"
+        ]
+    );
 }

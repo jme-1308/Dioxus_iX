@@ -1,7 +1,7 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
 use crate::overlay_domain::{Domain, DomainCallbacks};
-use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue};
+use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue, TriggerRestoreQueue};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -40,6 +40,7 @@ pub(crate) enum Reason {
     Inside,
     Outside,
     AnchorVisibility,
+    AnchorVisibilityParent,
     Parent,
     Configuration,
     Drop,
@@ -124,6 +125,7 @@ struct Entry {
     trigger_visibility_check: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
+    suppress_trigger_restore: bool,
     callbacks: Callbacks,
     scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
 }
@@ -145,6 +147,7 @@ struct Runtime {
     capture_block: Vec<(String, u64)>,
     ack: Ack,
     pending_focus: PendingFocusQueue,
+    trigger_restores: TriggerRestoreQueue,
     bridge: Option<dioxus::document::Eval>,
     domain: Option<Domain>,
     document: String,
@@ -155,6 +158,7 @@ type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.pending_focus.clear();
+        self.trigger_restores.clear();
         if let Some(domain) = &self.domain {
             domain.remove_owner(&self.owner);
         }
@@ -192,6 +196,7 @@ impl RuntimeHandle {
             capture_block: Vec::new(),
             ack: Ack::default(),
             pending_focus: PendingFocusQueue::default(),
+            trigger_restores: TriggerRestoreQueue::default(),
             bridge: None,
             domain: None,
             document: String::new(),
@@ -228,11 +233,15 @@ impl RuntimeHandle {
                 && old_generation != generation
             {
                 runtime.pending_focus.remove_root(&id, old_generation);
+                runtime.trigger_restores.remove_root(&id, old_generation);
             }
             let revision = runtime
                 .nodes
                 .get(&id)
                 .map_or(0, |entry| entry.revision.wrapping_add(1));
+            let suppress_trigger_restore = runtime.nodes.get(&id).is_some_and(|entry| {
+                entry.generation == generation && entry.suppress_trigger_restore
+            });
             runtime
                 .registry
                 .register(id.clone(), generation, kind, behavior);
@@ -250,6 +259,7 @@ impl RuntimeHandle {
                     trigger_visibility_check: kind.is_dropdown(),
                     anchor_intersection: None,
                     anchor_shape: None,
+                    suppress_trigger_restore,
                     callbacks,
                     scope,
                 },
@@ -282,8 +292,10 @@ impl RuntimeHandle {
         let owner = self.owner_id();
         let read_runtime = Rc::downgrade(&self.0);
         let request_runtime = read_runtime.clone();
+        let suppress_runtime = read_runtime.clone();
         let read_id = id.to_string();
         let request_id = read_id.clone();
+        let suppress_id = read_id.clone();
         domain.register(
             owner,
             id.to_string(),
@@ -291,6 +303,12 @@ impl RuntimeHandle {
             entry.kind,
             entry.behavior,
             DomainCallbacks {
+                suppress_trigger_restore: Rc::new(move || {
+                    let Some(runtime) = suppress_runtime.upgrade().map(RuntimeHandle) else {
+                        return false;
+                    };
+                    runtime.mark_trigger_restore_suppressed(&suppress_id, generation)
+                }),
                 read: Rc::new(move || {
                     let runtime = RuntimeHandle(read_runtime.upgrade()?);
                     runtime
@@ -328,6 +346,7 @@ impl RuntimeHandle {
         let (ids, categories) = {
             let mut state = self.0.borrow_mut();
             state.pending_focus.clear();
+            state.trigger_restores.clear();
             state.document = document.to_string();
             state.domain = Some(domain);
             (state.order.clone(), state.categories.clone())
@@ -419,6 +438,67 @@ impl RuntimeHandle {
             .then_some(value)
             .flatten()
     }
+    fn mark_trigger_restore_suppressed(&self, id: &str, generation: u64) -> bool {
+        self.with_owner(id, generation, || {
+            let Some(snapshot) = self.entry(id).filter(|entry| entry.kind.is_dropdown()) else {
+                return false;
+            };
+            if self.read_current(id, &snapshot) != Some(true) {
+                return false;
+            }
+            let mut state = self.0.borrow_mut();
+            let Some(entry) = state.nodes.get_mut(id).filter(|entry| {
+                entry.generation == generation && entry.revision == snapshot.revision
+            }) else {
+                return false;
+            };
+            entry.suppress_trigger_restore = true;
+            true
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn close_and_release_focus(&self, id: &str) -> bool {
+        if let Some(domain) = self.domain() {
+            return domain.close_and_release_focus(id);
+        }
+        let Some(root) = self.0.borrow().registry.cached_root(id) else {
+            return false;
+        };
+        let Some(entry) = self.entry(&root).filter(|entry| entry.kind.is_dropdown()) else {
+            return false;
+        };
+        self.suppress_cached_trigger_restore(&root, &mut Vec::new());
+        self.with_owner(&root, entry.generation, || {
+            self.request(
+                &root,
+                entry.generation,
+                Change {
+                    open: false,
+                    reason: Reason::Keyboard,
+                    restore_focus: false,
+                },
+            )
+        })
+        .unwrap_or(false)
+    }
+
+    fn suppress_cached_trigger_restore(&self, id: &str, visited: &mut Vec<String>) {
+        if visited.iter().any(|seen| seen == id) {
+            return;
+        }
+        visited.push(id.to_owned());
+        let Some(entry) = self.entry(id) else {
+            return;
+        };
+        if !self.mark_trigger_restore_suppressed(id, entry.generation) {
+            return;
+        }
+        let children = self.0.borrow().registry.cached_children(id);
+        for child in children {
+            self.suppress_cached_trigger_restore(&child, visited);
+        }
+    }
     fn request(&self, id: &str, generation: u64, change: Change) -> bool {
         let forced = change.reason == Reason::Configuration && !change.open;
         let Some(snapshot) = self.entry(id).filter(|entry| {
@@ -494,10 +574,12 @@ impl RuntimeHandle {
         if !change.open {
             self.close_children_with_focus(
                 id,
-                if change.reason == Reason::Drop {
-                    Reason::Drop
-                } else {
-                    Reason::Parent
+                match change.reason {
+                    Reason::Drop => Reason::Drop,
+                    Reason::AnchorVisibility | Reason::AnchorVisibilityParent => {
+                        Reason::AnchorVisibilityParent
+                    }
+                    _ => Reason::Parent,
                 },
                 change.restore_focus,
             );
@@ -507,6 +589,38 @@ impl RuntimeHandle {
         {
             return false;
         }
+        let applied = if previous && !change.open && snapshot.kind.is_dropdown() {
+            let ordinary_anchor = matches!(
+                change.reason,
+                Reason::AnchorVisibility | Reason::AnchorVisibilityParent
+            );
+            // Each accepted source cleanup observes modality after its own
+            // before/cascade, and consumes its CURRENT latch even in pointer
+            // mode. Veto and stale operations never reach this point.
+            let restore = if ordinary_anchor {
+                self.keyboard_mode()
+            } else {
+                change.restore_focus
+            };
+            let suppressed =
+                {
+                    let mut state = self.0.borrow_mut();
+                    let Some(entry) = state.nodes.get_mut(id).filter(|entry| {
+                        entry.generation == generation && entry.revision == operation
+                    }) else {
+                        return false;
+                    };
+                    std::mem::take(&mut entry.suppress_trigger_restore)
+                };
+            Change {
+                restore_focus: restore
+                    && !suppressed
+                    && !matches!(change.reason, Reason::Configuration | Reason::Drop),
+                ..change
+            }
+        } else {
+            change
+        };
         // Commit graph state before apply so a nested command in an accepted
         // callback sees the current hierarchy, not the superseded transaction.
         self.0.borrow_mut().registry.set_open(id, change.open);
@@ -521,7 +635,7 @@ impl RuntimeHandle {
                 domain.forget_children(id, generation);
             }
         }
-        (snapshot.callbacks.apply)(change);
+        (snapshot.callbacks.apply)(applied);
         if !self.current(id, generation, operation) {
             return false;
         }
@@ -553,7 +667,10 @@ impl RuntimeHandle {
                 Change {
                     open: false,
                     reason,
-                    restore_focus: false,
+                    restore_focus: reason == Reason::AnchorVisibilityParent
+                        && self
+                            .entry(&child)
+                            .is_some_and(|entry| entry.kind.is_dropdown()),
                 },
             );
         }
@@ -690,6 +807,7 @@ impl RuntimeHandle {
             .is_some_and(|entry| entry.generation == generation)
         {
             runtime.pending_focus.remove_root(id, generation);
+            runtime.trigger_restores.remove_root(id, generation);
             runtime.nodes.remove(id);
             runtime.order.retain(|candidate| candidate != id);
             runtime.registry.unregister(id, generation);
@@ -938,6 +1056,22 @@ impl RuntimeHandle {
         KeyDecision::default()
     }
     fn key_owner<'a>(&self, report: &'a Report) -> Option<&'a NodeFacts> {
+        // A linked Dropdown trigger can be physically inside another menu's
+        // host. Its own trigger listener owns the key before that enclosing
+        // host's navigation mode is considered.
+        if let Some(trigger) = report.triggers.iter().find_map(|id| {
+            let entry = self
+                .entry(id)
+                .filter(|entry| entry.kind == OverlayKind::Dropdown)?;
+            report.nodes.iter().find(|node| {
+                node.id == *id
+                    && node.connected
+                    && node.generation == entry.generation
+                    && node.on_trigger
+            })
+        }) {
+            return Some(trigger);
+        }
         report
             .hosts
             .iter()
@@ -1360,14 +1494,73 @@ impl RuntimeHandle {
         if query.owner != self.owner_id() {
             return;
         }
+        if let Some(sequence) = query.trigger_restore_sequence {
+            let (Some(root), Some(generation)) =
+                (query.trigger_restore_root, query.trigger_restore_generation)
+            else {
+                return;
+            };
+            let job = self
+                .0
+                .borrow_mut()
+                .trigger_restores
+                .take(sequence, &root, generation);
+            if job.is_some()
+                && self
+                    .with_owner(&root, generation, || {
+                        let entry = self.entry(&root)?;
+                        (entry.generation == generation)
+                            .then(|| self.read_current(&root, &entry))
+                            .flatten()
+                    })
+                    .flatten()
+                    .is_some()
+            {
+                // A source cleanup RAF survives later same-owner reopen and
+                // newer reports. Only this registration's lifetime authorizes it.
+                event.prevent_default();
+            }
+            return;
+        }
         if let Some(target) = query.schedule_focus_target {
-            if self
+            let armed = self
                 .0
                 .borrow_mut()
                 .pending_focus
-                .schedule(query.sequence, &target)
-            {
+                .schedule(query.sequence, &target);
+            if armed {
                 event.prevent_default();
+            }
+            return;
+        }
+        if let Some(target) = query.dispatch_focus_target {
+            let route = {
+                let mut state = self.0.borrow_mut();
+                let has_pending_trigger = !state.trigger_restores.is_empty();
+                state
+                    .pending_focus
+                    .route(query.sequence, &target, has_pending_trigger)
+            };
+            if route == Some(false) {
+                // Preserve the source's synchronous RAF scheduling when no
+                // earlier queued cleanup requires native command ordering.
+                event.prevent_default();
+            } else if route == Some(true) {
+                let sent = self.0.borrow().bridge.as_ref().is_some_and(|bridge| {
+                    bridge
+                        .send(serde_json::json!({
+                            "tab_focus":{"sequence":query.sequence,"target":target}
+                        }))
+                        .is_ok()
+                });
+                if !sent {
+                    // Only this routed admission failed to enter the native
+                    // FIFO; independent source jobs remain retained.
+                    self.0
+                        .borrow_mut()
+                        .pending_focus
+                        .take(query.sequence, &target);
+                }
             }
             return;
         }
@@ -1460,6 +1653,46 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    pub(crate) fn queue_trigger_restore(&self, focus_version: u64) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let Some(entry) = runtime
+                    .entry(&self.id)
+                    .filter(|entry| entry.generation == self.generation)
+                else {
+                    return false;
+                };
+                if runtime.read_current(&self.id, &entry).is_none() {
+                    return false;
+                }
+                let mut state = runtime.0.borrow_mut();
+                if state.document.is_empty() || state.bridge.is_none() {
+                    return false;
+                }
+                let job =
+                    state
+                        .trigger_restores
+                        .admit(self.id.clone(), self.generation, focus_version);
+                let sent = state.bridge.as_ref().is_some_and(|bridge| {
+                    bridge
+                        .send(serde_json::json!({
+                            "restore_trigger":{"sequence":job.sequence,"root":job.root,
+                                "generation":job.generation,"focus_version":job.focus_version}
+                        }))
+                        .is_ok()
+                });
+                if !sent {
+                    state
+                        .trigger_restores
+                        .take(job.sequence, &self.id, self.generation);
+                }
+                sent
+            })
+            .unwrap_or(false)
+    }
     pub(crate) fn set_anchor_shape_handler(&self, handler: Rc<dyn Fn(bool)>) {
         let Some(runtime) = self.runtime() else {
             return;
@@ -1775,10 +2008,18 @@ struct Query {
     #[serde(default)]
     schedule_focus_target: Option<String>,
     #[serde(default)]
+    dispatch_focus_target: Option<String>,
+    #[serde(default)]
     pending_focus_target: Option<String>,
     /// Current Popover ancestors of the captured native destination object.
     #[serde(default)]
     focus_hosts: Vec<String>,
+    #[serde(default)]
+    trigger_restore_sequence: Option<u64>,
+    #[serde(default)]
+    trigger_restore_root: Option<String>,
+    #[serde(default)]
+    trigger_restore_generation: Option<u64>,
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),handledBubbleKeys=new WeakSet();
-const pendingFocusFrames=new Set();
+const tabFocusCaptures=new Map(),nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
 const anchorObservers=new Map();
 const lastFocus=new Map(),nativeIds=new WeakMap(),nativeNodes=new Map();let nativeSequence=0;
 function nativeId(el){if(!(el instanceof HTMLElement))return '';if(el.id)return el.id;let id=nativeIds.get(el);if(!id){id=owner+'-native-'+(++nativeSequence);nativeIds.set(el,id);}nativeNodes.set(id,el);return id;}
@@ -240,20 +240,22 @@ function send(report,event){
       const el=facts.element;
       if(report.key==='Tab'&&['capture','bubble','fallback'].includes(report.phase)){
         const scheduleInput=transport();if(!scheduleInput)return;
+        tabFocusCaptures.set(report.sequence,{target:id,element:el});
         scheduleInput.value=JSON.stringify({owner,sequence:report.sequence,schedule_focus_target:id});
         if(!scheduleInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
-          // Rust owns the pending intent and validates it again in this frame.
-          // Keep the captured actual element: public-ID replacements cannot
-          // inherit it, and same-owner reopen does not retarget the source job.
-          const frame=requestAnimationFrame(()=>{
-            pendingFocusFrames.delete(frame);if(!alive)return;
-            const pendingInput=transport();if(!pendingInput)return;
-            pendingInput.value=JSON.stringify({owner,sequence:report.sequence,pending_focus_target:id,focus_hosts:popoverAncestors(el)});
-            const allowed=!pendingInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-            if(allowed&&el?.isConnected)el.focus();
-          });
-          pendingFocusFrames.add(frame);break;
+          scheduleInput.value=JSON.stringify({owner,sequence:report.sequence,dispatch_focus_target:id});
+          if(!scheduleInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){
+            const command={sequence:report.sequence,target:id};
+            const frame=requestAnimationFrame(()=>{
+              immediateTabFrames.delete(frame);if(alive)executeCapturedTab(command);
+            });
+            immediateTabFrames.add(frame);
+          }
+          // A deferred command arrives on the ordered cleanup channel. Direct
+          // jobs retain the original event's first native animation frame.
+          break;
         }
+        tabFocusCaptures.delete(report.sequence);
       }
       const valid=()=>el?.isConnected&&(!facts.panel||(facts.panel.isConnected&&facts.panel.matches(':popover-open')&&facts.panel.getAttribute('data-surface-generation')===facts.generation));
       if(!valid())continue;
@@ -403,10 +405,57 @@ observer.observe(document.documentElement,{subtree:true,childList:true,attribute
   'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
 ]});
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
-try{reportObserve();await dioxus.recv();}finally{
+function queueTriggerRestore(command){
+  const root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(node=>
+    node instanceof HTMLElement&&node.getAttribute('data-ix-overlay-owner')===owner&&node.getAttribute('data-ix-overlay-root')===command.root&&Number(node.getAttribute('data-ix-overlay-generation'))===command.generation);
+  nativeFocusCommands.push({kind:'trigger',command,root});scheduleNativeFocus();
+}
+function executeCapturedTab(command){
+  const capture=tabFocusCaptures.get(command.sequence);tabFocusCaptures.delete(command.sequence);
+  if(!capture||capture.target!==command.target)return;
+  const input=transport();if(!input)return;
+  const el=capture.element;
+  input.value=JSON.stringify({owner,sequence:command.sequence,pending_focus_target:command.target,focus_hosts:popoverAncestors(el)});
+  const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+  if(allowed&&el?.isConnected)el.focus();
+}
+function scheduleNativeFocus(){
+  if(nativeFocusFrame||!nativeFocusCommands.length)return;
+  nativeFocusFrame=requestAnimationFrame(()=>{
+    nativeFocusFrame=0;if(!alive)return;
+    while(nativeFocusCommands.length){
+      const job=nativeFocusCommands[0],command=job.command;
+      if(job.kind==='trigger'&&job.root?.isConnected&&job.root.getAttribute('data-ix-overlay-owner')===owner&&job.root.getAttribute('data-ix-overlay-root')===command.root&&Number(job.root.getAttribute('data-ix-overlay-generation'))===command.generation&&
+        Number(job.root.getAttribute('data-ix-overlay-focus-version')||'0')<command.focus_version)break;
+      // Waiting for one renderer commit must not let a later captured Tab exit
+      // overtake an earlier cleanup. Rust's channel supplies causal order.
+      nativeFocusCommands.shift();syncExecution();
+      const input=transport();if(!input)continue;
+      if(job.kind==='trigger'){
+        input.value=JSON.stringify({owner,sequence:0,trigger_restore_sequence:command.sequence,trigger_restore_root:command.root,trigger_restore_generation:command.generation});
+        const allowed=!input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})),root=job.root;
+        if(allowed&&root?.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===command.root&&Number(root.getAttribute('data-ix-overlay-generation'))===command.generation){
+          const trigger=findTrigger(command.root,root);
+          if(trigger?.isConnected)try{trigger.focus();}catch{}
+        }
+      }else{
+        executeCapturedTab(command);
+      }
+    }
+    reportObserve();scheduleNativeFocus();
+  });
+}
+try{
+  reportObserve();
+  while(alive){const command=await dioxus.recv();if(command?.finish)break;
+    if(command?.restore_trigger)queueTriggerRestore(command.restore_trigger);
+    if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
+  }
+}finally{
   alive=false;listeners.abort();keyTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
-  for(const frame of pendingFocusFrames)cancelAnimationFrame(frame);pendingFocusFrames.clear();
+  if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;tabFocusCaptures.clear();
+  for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');
 }

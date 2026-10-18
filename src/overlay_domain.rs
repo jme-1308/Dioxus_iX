@@ -25,6 +25,7 @@ thread_local! {
 pub(crate) struct DomainCallbacks {
     pub(crate) read: Rc<dyn Fn() -> Option<bool>>,
     pub(crate) request: Rc<dyn Fn(Change) -> bool>,
+    pub(crate) suppress_trigger_restore: Rc<dyn Fn() -> bool>,
 }
 
 #[derive(Clone)]
@@ -670,10 +671,14 @@ impl Domain {
                 Change {
                     open: false,
                     reason,
-                    restore_focus: restore_focus
+                    restore_focus: (reason == Reason::AnchorVisibilityParent
                         && self
-                            .entry(id)
-                            .is_some_and(|entry| entry.kind == OverlayKind::Popover),
+                            .entry(&child)
+                            .is_some_and(|entry| entry.kind.is_dropdown()))
+                        || (restore_focus
+                            && self
+                                .entry(id)
+                                .is_some_and(|entry| entry.kind == OverlayKind::Popover)),
                 },
             );
         }
@@ -696,6 +701,49 @@ impl Domain {
                 restore_focus,
             },
         )
+    }
+
+    /// Source Tab release suppresses each currently open cached Dropdown
+    /// before the root's cancelable before callback. Veto leaves that state.
+    pub(crate) fn close_and_release_focus(&self, id: &str) -> bool {
+        self.refresh();
+        let Some(root) = self.cached_root(id) else {
+            return false;
+        };
+        let Some(entry) = self.entry(&root).filter(|entry| entry.kind.is_dropdown()) else {
+            return false;
+        };
+        self.suppress_cached_trigger_restore(&root, &mut BTreeSet::new());
+        if !self.current(&root, &entry) {
+            return false;
+        }
+        self.request(
+            &root,
+            Change {
+                open: false,
+                reason: Reason::Keyboard,
+                restore_focus: false,
+            },
+        )
+    }
+
+    fn suppress_cached_trigger_restore(&self, id: &str, visited: &mut BTreeSet<String>) {
+        if !visited.insert(id.to_owned()) {
+            return;
+        }
+        let Some(entry) = self.entry(id).filter(|entry| entry.kind.is_dropdown()) else {
+            return;
+        };
+        if self.read(id, &entry) != Some(true)
+            || !(entry.callbacks.suppress_trigger_restore)()
+            || !self.current(id, &entry)
+        {
+            return;
+        }
+        // A closed intermediate stops recursion, matching the source method.
+        for child in self.cached_children(id) {
+            self.suppress_cached_trigger_restore(&child, visited);
+        }
     }
 
     /// Called only after the native event reaches Window. Source does not gate
@@ -793,6 +841,7 @@ mod tests {
             kind,
             CloseBehavior::Both,
             DomainCallbacks {
+                suppress_trigger_restore: Rc::new(|| true),
                 read: Rc::new(move || Some(read.get())),
                 request: Rc::new(move |change| {
                     log.borrow_mut().push(format!(
@@ -922,6 +971,7 @@ mod tests {
             OverlayKind::Popover,
             CloseBehavior::Both,
             DomainCallbacks {
+                suppress_trigger_restore: Rc::new(|| true),
                 read: Rc::new(|| Some(false)),
                 request: Rc::new(move |_| {
                     append_log.borrow_mut().push("first".into());
@@ -934,6 +984,7 @@ mod tests {
                             OverlayKind::Popover,
                             CloseBehavior::Both,
                             DomainCallbacks {
+                                suppress_trigger_restore: Rc::new(|| true),
                                 read: Rc::new(|| Some(false)),
                                 request: Rc::new(move |_| {
                                     late_log.borrow_mut().push("late".into());
@@ -965,6 +1016,7 @@ mod tests {
             OverlayKind::Popover,
             CloseBehavior::Both,
             DomainCallbacks {
+                suppress_trigger_restore: Rc::new(|| true),
                 read: Rc::new(|| Some(true)),
                 request: Rc::new(move |_| {
                     remove.remove_owner("target-owner");
@@ -1308,6 +1360,7 @@ mod tests {
             OverlayKind::Dropdown,
             CloseBehavior::Both,
             DomainCallbacks {
+                suppress_trigger_restore: Rc::new(|| true),
                 read: Rc::new(move || Some(read.get())),
                 request: Rc::new(move |_| {
                     assert!(nested.accept_event(19));
@@ -1369,6 +1422,7 @@ mod tests {
             OverlayKind::Dropdown,
             CloseBehavior::Both,
             DomainCallbacks {
+                suppress_trigger_restore: Rc::new(|| true),
                 read: Rc::new(move || {
                     if once.replace(false) {
                         replacing.register(
@@ -1378,6 +1432,7 @@ mod tests {
                             OverlayKind::Dropdown,
                             CloseBehavior::Both,
                             DomainCallbacks {
+                                suppress_trigger_restore: Rc::new(|| true),
                                 read: Rc::new(|| Some(true)),
                                 request: Rc::new(|_| false),
                             },
