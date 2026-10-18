@@ -212,6 +212,10 @@ pub fn IconButton(
     aria_expanded: Option<bool>,
     tabindex: Option<i32>,
     onclick: Option<EventHandler<MouseEvent>>,
+    onmousedown: Option<EventHandler<MouseEvent>>,
+    onkeydown: Option<EventHandler<KeyboardEvent>>,
+    onmounted: Option<EventHandler<MountedEvent>>,
+    aria_hidden: Option<bool>,
 ) -> Element {
     let blocked = disabled || loading;
     let loading_size = match (!icon.is_empty(), size) {
@@ -219,13 +223,39 @@ pub fn IconButton(
         (true, ButtonIconSize::Sixteen) => SpinnerSize::Xs,
         _ => SpinnerSize::Sm,
     };
+    let mut native_events = Vec::new();
+    if let Some(handler) = onmousedown {
+        native_events.push(Attribute::new(
+            "onmousedown",
+            dioxus::html::EventHandlerValue::into_platform_listener(handler),
+            None,
+            false,
+        ));
+    }
+    if let Some(handler) = onkeydown {
+        native_events.push(Attribute::new(
+            "onkeydown",
+            dioxus::html::EventHandlerValue::into_platform_listener(handler),
+            None,
+            false,
+        ));
+    }
+    if let Some(handler) = onmounted {
+        native_events.push(Attribute::new(
+            "onmounted",
+            dioxus::html::EventHandlerValue::into_platform_listener(handler),
+            None,
+            false,
+        ));
+    }
     rsx! { button {
         class: "ix-button ix-icon-button ix-button-tokenized ix-icon-button-native ix-button-{variant.as_str()} ix-icon-size-{size.as_str()} {class}",
         class: if oval { "ix-oval" }, r#type: button_type.as_str(),
         style: icon_color.map(|name| format!("--ix-icon-button-color:var({name})")),
         disabled: blocked, tabindex: if blocked { -1 } else { tabindex.unwrap_or(0) },
-        aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked, aria_pressed, aria_expanded,
+        aria_label: label.clone(), title: label, aria_busy: loading, aria_disabled: blocked, aria_pressed, aria_expanded, aria_hidden,
         onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
+        ..native_events,
         if loading { Spinner { size: loading_size, hide_track: true } }
         else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }
     } }

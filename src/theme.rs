@@ -91,6 +91,7 @@ pub fn IxTheme(
         style { {crate::number_input_styles::STYLES} }
         style { {crate::expanding_search_styles::STYLES} }
         style { {crate::slider_styles::STYLES} }
+        style { {crate::select_visual_styles::STYLES} }
         style { {crate::layout::STYLES} }
         style { {crate::notifications::STYLES} }
         style { {crate::overlays::STYLES} }

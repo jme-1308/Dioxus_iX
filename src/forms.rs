@@ -1691,10 +1691,10 @@ fn select_add_allowed(value: String, before: EventHandler<SelectAddEvent>) -> bo
 // remain in the combobox while the surface enters the top layer.
 #[cfg(any(feature = "web", feature = "desktop"))]
 const SELECT_POPOVER_BRIDGE: &str = r#"
-const [id, anchorId, inputId] = await dioxus.recv();
+const [id, anchorId, inputId, topLayer] = await dioxus.recv();
 const panel = document.getElementById(id), anchor = document.getElementById(anchorId), input = document.getElementById(inputId);
 if (!panel || !anchor || !input) return {error:'Select surface is not mounted'};
-if (typeof panel.showPopover !== 'function') return {error:'Popover API is unavailable'};
+if (topLayer && typeof panel.showPopover !== 'function') return {error:'Popover API is unavailable'};
 let disposed = false, frame = 0;
 const events = new AbortController();
 const place = () => {
@@ -1710,13 +1710,14 @@ const place = () => {
   panel.style.width = Math.min(rect.width, roomWidth) + 'px';
   panel.style.width = requestedWidth ? `min(${requestedWidth}, ${roomWidth}px)` : Math.min(rect.width, roomWidth) + 'px';
   panel.style.maxWidth = roomWidth + 'px';
-  panel.style.maxWidth = requestedMax ? `min(${requestedMax}, ${roomWidth}px)` : roomWidth + 'px';
-  panel.style.maxHeight = 'none';
+  panel.style.maxWidth = requestedMax ? `min(${requestedMax}, ${roomWidth}px)` : '100%';
+  const sourceCap = 'calc(var(--ix-dropdown-overflow--max-height) - var(--ix-dropdown--offset))';
+  panel.style.maxHeight = sourceCap;
   const desired = panel.offsetHeight;
   const below = Math.max(0, top + height - rect.bottom), above = Math.max(0, rect.top - top);
   const flipped = below < desired && above >= desired;
   const room = flipped ? above : below;
-  panel.style.maxHeight = room + 'px';
+  panel.style.maxHeight = `min(${room}px, ${sourceCap})`;
   const start = direction === 'rtl' ? rect.right - panel.offsetWidth : rect.left;
   panel.style.left = Math.max(left, Math.min(start, left + width - panel.offsetWidth)) + 'px';
   panel.style.top = (flipped ? rect.top - Math.min(desired, room) : rect.bottom) + 'px';
@@ -1735,7 +1736,7 @@ function cleanup() {
 }
 panel.__ixSelectCleanup = cleanup;
 try {
-  panel.showPopover({source:input}); place();
+  if (topLayer) panel.showPopover({source:input}); place();
   resize.observe(anchor); resize.observe(panel);
   changes.observe(panel, {childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['data-requested-width','data-requested-max-width']});
   for (let node = anchor; node; node = node.parentElement) ancestry.observe(node, {attributes:true,attributeFilter:['dir','style','class']});
@@ -1794,7 +1795,6 @@ fn SelectOptionsSurface(
             "data-requested-width": dropdown_width.clone(), "data-requested-max-width": dropdown_max_width.clone(),
             onmounted: move |event| {
                 mounted.set(Some(event.data()));
-                if !enable_top_layer { return; }
                 let alive = alive.clone();
                 let id = mounted_id.clone(); let anchor = anchor_id.clone(); let input = input_id.clone();
                 spawn(async move {
@@ -1802,7 +1802,7 @@ fn SelectOptionsSurface(
                     let failure = {
                         #[derive(serde::Deserialize)] struct Reply { error: Option<String> }
                         let bridge = crate::dom_query::eval(SELECT_POPOVER_BRIDGE);
-                        if let Err(error) = bridge.send((id, anchor, input)) { Some(crate::NativeSurfaceError::Rejected(error.to_string())) }
+                        if let Err(error) = bridge.send((id, anchor, input, enable_top_layer)) { Some(crate::NativeSurfaceError::Rejected(error.to_string())) }
                         else { match bridge.join::<Reply>().await { Ok(reply) => reply.error.map(crate::NativeSurfaceError::Rejected), Err(error) => Some(crate::NativeSurfaceError::Rejected(error.to_string())) } }
                     };
                     #[cfg(not(any(feature = "web", feature = "desktop")))]
@@ -1846,18 +1846,17 @@ fn select_next_active(enabled: &[usize], active: usize, backwards: bool) -> Opti
     })
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct ChipMeasurements {
     values: Vec<String>,
     widths: Vec<f64>,
     badges: Vec<f64>,
     available: f64,
     gap: f64,
+    chips_width: f64,
 }
 
-// DOM plumbing only: all partitioning, selection and focus state stays in Rust.
-// Observe intrinsic chip widths as well as container size (including font/density
-// changes). Both observers disconnect when this component leaves the document.
+// Native layout only. Chip partitioning, selection and focus remain in Rust.
 const SELECT_MEASURE: &str = r#"
 const id = await dioxus.recv();
 const root = document.getElementById(id);
@@ -1865,35 +1864,78 @@ if (!root) return;
 let frame = 0, previous = '', done = () => {};
 const measure = () => {
   frame = 0;
-  if (!root.isConnected) { resize.disconnect(); changes.disconnect(); removal.disconnect(); done(); return; }
-  const control = root.querySelector('.ix-select-control');
+  if (!root.isConnected) { cleanup(); return; }
+  const chipsContainer = root.querySelector('.ix-select-chips');
   const rail = root.querySelector('.ix-select-measure');
-  if (!control || !rail || !control.clientWidth) return;
-  const trigger = control.querySelector('.ix-select-trigger');
-  const clear = control.querySelector('.ix-select-clear');
-  const chevron = control.querySelector('.ix-select-chevron');
-  const chips = [...rail.querySelectorAll('[data-measure-value]')];
-  const style = getComputedStyle(root.querySelector('.ix-select-chips') || rail);
+  const reservation = root.querySelector('.ix-select-trigger-size');
+  if (!chipsContainer?.clientWidth) return;
+  // Percent chip caps must resolve against the current container on this very
+  // measurement, including its first mount and resize before Rust's next commit.
+  if (rail && rail.style.width !== `${chipsContainer.clientWidth}px`) rail.style.width = `${chipsContainer.clientWidth}px`;
+  const width = node => { const style = getComputedStyle(node); return node.offsetWidth + Math.ceil((parseFloat(style.marginLeft)||0) + (parseFloat(style.marginRight)||0)); };
+  const chips = [...(rail?.querySelectorAll('[data-measure-value]') || [])];
+  const clear = root.querySelector('.ix-select-clear-host');
   const payload = {
-    values: chips.map(n => n.dataset.measureValue),
-    widths: chips.map(n => n.getBoundingClientRect().width),
-    badges: [...rail.querySelectorAll('[data-measure-badge]')].map(n => n.getBoundingClientRect().width),
-    available: Math.max(0, control.clientWidth - (trigger?.getBoundingClientRect().width || 0) - (clear?.getBoundingClientRect().width || 0) - (chevron?.getBoundingClientRect().width || 0) - parseFloat(style.paddingLeft || 0) - parseFloat(style.paddingRight || 0)),
-    gap: parseFloat(style.columnGap) || 0
+    values: chips.map(n => n.dataset.measureValue), widths: chips.map(width),
+    badges: [...(rail?.querySelectorAll('[data-measure-badge]') || [])].map(width),
+    available: Math.max(0, chipsContainer.clientWidth - (reservation?.getBoundingClientRect().width || 0) - (clear?.offsetWidth || 0)),
+    gap: 0, chips_width: chipsContainer.clientWidth
   };
   const json = JSON.stringify(payload);
   if (json !== previous) { previous = json; dioxus.send(payload); }
 };
 const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
 const resize = new ResizeObserver(schedule);
-const observe = () => { resize.disconnect(); resize.observe(root); root.querySelectorAll('.ix-select-control,.ix-select-measure > *').forEach(n => resize.observe(n)); schedule(); };
+const observe = () => { resize.disconnect(); resize.observe(root); root.querySelectorAll('.ix-select-chips,.ix-select-trigger-size,.ix-select-clear-host,.ix-select-measure > *').forEach(n => resize.observe(n)); schedule(); };
 const changes = new MutationObserver(observe);
 changes.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
-const removal = new MutationObserver(() => { if (!root.isConnected) { resize.disconnect(); changes.disconnect(); removal.disconnect(); cancelAnimationFrame(frame); done(); } });
+const removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
+function cleanup() { resize.disconnect(); changes.disconnect(); removal.disconnect(); cancelAnimationFrame(frame); document.fonts?.removeEventListener('loadingdone', schedule); done(); }
 removal.observe(document.documentElement, { childList: true, subtree: true });
+document.fonts?.addEventListener('loadingdone', schedule);
 await new Promise(resolve => { done = resolve; observe(); });
 return null;
 "#;
+
+fn select_visual_chip(
+    text: String,
+    disabled: bool,
+    measure_value: Option<String>,
+    close: Element,
+) -> Element {
+    rsx! { span { class: "ix-select-chip", "data-chip-disabled": disabled.to_string(),
+        "data-hide-close": disabled.to_string(), "data-measure-value": measure_value,
+        span { class: "ix-select-chip-label", title: text.clone(), "{text}" }
+        if !disabled { span { class: "ix-select-chip-close-host", {close} } }
+    } }
+}
+
+#[component]
+fn SelectOptionPresentation(
+    id: String,
+    #[props(default)] value: Option<String>,
+    label: String,
+    selected: bool,
+    disabled: bool,
+    active: bool,
+    #[props(default)] onmouseenter: EventHandler<MouseEvent>,
+    #[props(default)] onclick: EventHandler<MouseEvent>,
+) -> Element {
+    rsx! { span { class: "ix-select-item-host", "data-disabled": disabled.to_string(),
+        div { class: "ix-select-option-host", "data-selected": selected.to_string(), "data-disabled": disabled.to_string(),
+            button { id, value, class: if active { "ix-select-option ix-select-active" } else { "ix-select-option" },
+                r#type: "button", role: "option", tabindex: "-1", disabled,
+                "aria-selected": selected.to_string(),
+                onmousedown: move |event| event.prevent_default(), onmouseenter, onclick,
+                span { class: "ix-select-choice", "aria-hidden": "true",
+                    if selected { crate::Icon { name: "single-check", size: 16 } }
+                }
+                span { class: "ix-select-option-label", "{label}" }
+                span { class: "ix-select-option-end" }
+            }
+        }
+    } }
+}
 
 /// Branded select with single/multiple selection, clear, filtering, editable additions and
 /// Arrow/Home/End/Enter/Escape keyboard handling. `value` controls single selection;
@@ -1916,6 +1958,7 @@ pub fn Select(
     #[props(default)]
     collapse_multiple_selection: bool,
     #[props(default)] label: Option<String>,
+    #[props(default)] class: String,
     #[props(default)] id: Option<String>,
     #[props(default)] name: Option<String>,
     #[props(default = "Select an option".to_string())] placeholder: String,
@@ -1969,6 +2012,10 @@ pub fn Select(
     let control_id = format!("{id}-control");
     let help_id = format!("{id}-help");
     let mut open = use_signal(|| false);
+    let mut focused = use_signal(|| false);
+    let mut measured_width = use_signal(|| 0.0_f64);
+    let mut measured_revision = use_signal(|| 0_u64);
+    let mut measured_facts = use_signal(String::new);
     let mut query = use_signal(String::new);
     let mut active = use_signal(|| usize::MAX);
     let mut query_dirty = use_signal(|| false);
@@ -2029,6 +2076,11 @@ pub fn Select(
             },
         );
     }
+    let state = if state == FieldState::Default {
+        crate::form_control::validation_class_state(&class)
+    } else {
+        state
+    };
     let state = select_field_state(state, required, invalid_attempted(), !selected.is_empty());
     let invalid_text = invalid_text.or_else(|| {
         (invalid_attempted() && required).then(|| "Please select an option".to_string())
@@ -2175,7 +2227,7 @@ pub fn Select(
         None
     };
     let add_index = visible.len();
-    let input_placeholder = if disabled || readonly || (multiple && !selected.is_empty()) {
+    let input_placeholder = if disabled || readonly {
         String::new()
     } else if editable {
         editable_placeholder
@@ -2193,8 +2245,25 @@ pub fn Select(
         warning_text.clone(),
     );
     let tooltip_available = show_text_as_tooltip && feedback.is_some();
+    let invalid_alert =
+        state == FieldState::Invalid && invalid_text.as_ref().is_some_and(|text| !text.is_empty());
+    let visual_feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
+    let focus_outline = focused() && active_index == usize::MAX;
+    let measure_style = format!("width:{}px", measured_width());
     rsx! {
-        div { id: root_id, class: "ix-field ix-select {state.class()}",
+        div { id: root_id, class: "ix-select ix-select-visual ix-text-field-native {state.class()} {class}",
+            class: if focus_outline { "show-focus-outline" },
+            "data-disabled": disabled.to_string(), "data-readonly": readonly.to_string(),
+            "data-select-measured-width": measured_width().to_string(),
+            "data-select-measured-revision": measured_revision().to_string(),
+            "data-select-measured-facts": measured_facts(),
             "data-feedback-tooltip": tooltip_available.to_string(),
             onfocusout: move |_| {
                 let id = blur_root_id.clone();
@@ -2217,9 +2286,12 @@ pub fn Select(
                     let mut task = dioxus::document::eval(SELECT_MEASURE);
                     if task.send(id).is_err() { return; }
                     while let Ok(measured) = task.recv::<ChipMeasurements>().await {
+                        measured_facts.set(serde_json::to_string(&measured).expect("native layout serialization"));
                         let count = fitting_chips(&measured.widths, &measured.badges, measured.available, measured.gap);
                         let hidden = measured.values.into_iter().skip(count).collect::<Vec<_>>();
                         if *hidden_values.peek() != hidden { hidden_values.set(hidden); }
+                        if *measured_width.peek() != measured.chips_width { measured_width.set(measured.chips_width); }
+                        measured_revision += 1;
                     }
                 });
             },
@@ -2254,42 +2326,48 @@ pub fn Select(
                     _ => {}
                 }
             },
-            if let Some(text) = label { FieldLabel { text, html_for: id.clone(), required, invalid: state == FieldState::Invalid } }
-            div { id: control_id.clone(), class: "ix-select-control", "data-readonly": readonly.to_string(), "data-open": open().to_string(),
-                if multiple && !selected.is_empty() {
+            TextFieldPresentation { label, control_id: id.clone(), anchor_id: control_id.clone(),
+                feedback_id: help_id.clone(), required, state, invalid_alert,
+                feedback: if tooltip_available { None } else { visual_feedback.clone() },
+                show_text_as_tooltip: false, max_length: None, length: 0,
+            div { id: control_id.clone(), class: "ix-select-control", "data-readonly": readonly.to_string(), "data-disabled": disabled.to_string(), "data-open": open().to_string(),
+                div { class: "ix-select-input-container",
                     div { class: "ix-select-values ix-select-chips",
+                      if multiple && !selected.is_empty() {
                         if collapsed_all {
-                            span { class: "ix-select-chip", span { class: "ix-select-chip-label", "{all_selected_text} ({selected.len()})" },
-                                if !read_only { button { r#type: "button", class: "ix-select-chip-remove", "aria-label": select_remove_label(&remove_selected_item_text, &all_selected_text),
-                                    onkeydown: move |event| event.stop_propagation(),
-                                    onclick: move |event| { event.stop_propagation(); publish_selection(vec![], onvaluechange, onvalueschange); },
-                                    crate::Icon { name: "close".to_string(), size: 12 }
-                                } }
-                            }
+                            {select_visual_chip(format!("{all_selected_text} ({})", selected.len()), read_only, None, rsx! {
+                                crate::IconButton { icon: "close-small", label: select_remove_label(&remove_selected_item_text, &all_selected_text),
+                                    variant: crate::ButtonVariant::Tertiary, size: crate::ButtonIconSize::Sixteen, oval: true, class: "ix-select-chip-remove",
+                                    onkeydown: move |event: KeyboardEvent| event.stop_propagation(),
+                                    onclick: move |event: MouseEvent| { event.stop_propagation(); publish_selection(vec![], onvaluechange, onvalueschange); }
+                                }
+                            })}
                         }
                         for (value, text) in selected_chips.into_iter().filter(|(value, _)| !collapsed_all && !hidden_values.read().contains(value)) {
                             {
                                 let next = selected.iter().filter(|item| **item != value).cloned().collect::<Vec<_>>();
-                                rsx! { span { key: "{value}", class: "ix-select-chip", span { class: "ix-select-chip-label", title: text.clone(), "{text}" },
-                                    if !read_only { button { r#type: "button", class: "ix-select-chip-remove", "aria-label": select_remove_label(&remove_selected_item_text, &text),
-                                        onkeydown: move |event| if matches!(event.key(), Key::Enter | Key::Character(_)) { event.stop_propagation(); },
-                                        onclick: move |event| { event.stop_propagation(); publish_selection(next.clone(), onvaluechange, onvalueschange); let mounted = trigger_ref.peek().clone(); spawn(async move { if let Some(mounted) = mounted { let _ = mounted.set_focus(true).await; } }); },
-                                        crate::Icon { name: "close".to_string(), size: 12 }
-                                    } }
+                                rsx! { Fragment { key: "{value}",
+                                  {select_visual_chip(text.clone(), read_only, None, rsx! {
+                                    crate::IconButton { icon: "close-small", label: select_remove_label(&remove_selected_item_text, &text),
+                                        variant: crate::ButtonVariant::Tertiary, size: crate::ButtonIconSize::Sixteen, oval: true, class: "ix-select-chip-remove",
+                                        onkeydown: move |event: KeyboardEvent| if matches!(event.key(), Key::Enter | Key::Character(_)) { event.stop_propagation(); },
+                                        onclick: move |event: MouseEvent| { event.stop_propagation(); publish_selection(next.clone(), onvaluechange, onvalueschange); let mounted = trigger_ref.peek().clone(); spawn(async move { if let Some(mounted) = mounted { let _ = mounted.set_focus(true).await; } }); }
+                                    }
+                                  })}
                                 } }
                             }
                         }
                         if !collapsed_all && !hidden_chips.is_empty() {
-                            button { r#type: "button", class: "ix-select-chip ix-select-overflow", disabled: read_only,
+                            button { r#type: "button", class: "ix-select-chip ix-select-overflow ix-select-chip-overflow", disabled: read_only, "data-chip-disabled": read_only.to_string(), "data-hide-close": "true",
                                 "aria-label": select_more_label(&more_items_text, hidden_chips.len()), "aria-haspopup": "listbox", "aria-expanded": overflow_open().to_string(), "aria-controls": overflow_id.clone(),
                                 onmounted: move |event| overflow_ref.set(Some(event.data())),
                                 onclick: move |event| { event.stop_propagation(); open.set(false); overflow_open.set(!overflow_open()); },
                                 onkeydown: move |event| { event.stop_propagation(); if matches!(event.key(), Key::Enter | Key::ArrowDown) || event.key() == Key::Character(" ".into()) { event.prevent_default(); open.set(false); overflow_open.set(true); } },
-                                "+{hidden_chips.len()}"
+                                span { class: "ix-select-chip-label", "+{hidden_chips.len()}" }
                             }
                         }
-                    }
-                }
+                      }
+                div { class: "ix-select-trigger-rail",
                 input { id: id.clone(), r#type: "text", class: if multiple && !selected.is_empty() { "ix-select-trigger ix-select-trigger-multiple" } else { "ix-select-trigger" }, disabled, readonly,
                     value: input_text, placeholder: input_placeholder, autocomplete: "off",
                     role: "combobox", "aria-haspopup": "listbox", "aria-expanded": open().to_string(),
@@ -2301,7 +2379,9 @@ pub fn Select(
                     onmounted: move |event| { let node = event.data(); *method_input.borrow_mut() = Some(node.clone()); trigger_ref.set(Some(node)); },
                     onclick: move |_| if !read_only { overflow_open.set(false); if !open() { active.set(usize::MAX); open.set(true); } },
                     oninput: move |event| if !read_only { let text = event.value(); query.set(text.clone()); query_dirty.set(true); active.set(usize::MAX); overflow_open.set(false); open.set(true); oninputchange.call(text); },
+                    onfocus: move |_| focused.set(true),
                     onblur: move |_| {
+                        focused.set(false);
                         touched.set(true);
                         onixblur.call(());
                         if required && !read_only {
@@ -2322,31 +2402,36 @@ pub fn Select(
                     },
                 }
                 if allow_clear && (!clear_selected.is_empty() || !query_text.is_empty()) && !read_only {
-                    button { r#type: "button", class: "ix-select-clear", "aria-label": aria_label_clear,
-                        onmousedown: move |event| event.prevent_default(),
-                        onkeydown: move |event| if matches!(event.key(), Key::Enter | Key::Character(_)) { event.stop_propagation(); },
-                        onclick: move |event| { event.stop_propagation(); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); open.set(false); publish_selection(vec![], onvaluechange, onvalueschange); let node = trigger_ref.peek().clone(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); },
-                        crate::Icon { name: "close".to_string(), size: 16 }
-                    }
+                    span { class: "ix-select-action-host ix-select-clear-host",
+                    crate::IconButton { icon: "clear", label: aria_label_clear, class: "ix-select-clear", variant: crate::ButtonVariant::SubtleTertiary, size: crate::ButtonIconSize::Sixteen, oval: true,
+                        onmousedown: move |event: MouseEvent| event.prevent_default(),
+                        onkeydown: move |event: KeyboardEvent| if matches!(event.key(), Key::Enter | Key::Character(_)) { event.stop_propagation(); },
+                        onclick: move |event: MouseEvent| { event.stop_propagation(); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); open.set(false); publish_selection(vec![], onvaluechange, onvalueschange); let node = trigger_ref.peek().clone(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); },
+                    } }
                 }
                 if !read_only {
-                    button { r#type: "button", class: "ix-select-chevron", tabindex: "-1", "aria-hidden": "true",
-                        "aria-label": if open() { "Close select dropdown" } else { "Open select dropdown" },
-                        onmousedown: move |event| event.prevent_default(),
-                        onclick: move |event| { event.stop_propagation(); overflow_open.set(false); if open() { query.set(String::new()); query_dirty.set(false); } active.set(usize::MAX); open.set(!open()); },
-                        crate::Icon { name: (if open() { "chevron-up" } else { "chevron-down" }).to_string(), size: 16 }
-                    }
+                    span { class: "ix-select-action-host ix-select-chevron-host", "data-open": open().to_string(),
+                    crate::IconButton { class: "ix-select-chevron", tabindex: -1, aria_hidden: true, variant: crate::ButtonVariant::SubtleTertiary,
+                        icon: if open() { "chevron-up-small" } else { "chevron-down-small" },
+                        label: if open() { "Close select dropdown" } else { "Open select dropdown" },
+                        onmousedown: move |event: MouseEvent| event.prevent_default(),
+                        onclick: move |event: MouseEvent| { event.stop_propagation(); overflow_open.set(false); if open() { query.set(String::new()); query_dirty.set(false); } active.set(usize::MAX); open.set(!open()); },
+                    } }
                 }
+                } } }
+                span { class: "ix-select-trigger-size", "aria-hidden": "true" }
+            }
             }
             if multiple && !selected.is_empty() {
-                div { class: "ix-select-measure", "aria-hidden": "true", inert: true,
+                div { class: "ix-select-measure", style: measure_style, "aria-hidden": "true", inert: true,
                     for (value, text) in measurement_chips {
-                        span { class: "ix-select-chip", "data-measure-value": value, span { class: "ix-select-chip-label", "{text}" },
-                            if !read_only { span { class: "ix-select-chip-remove", crate::Icon { name: "close".to_string(), size: 12 } } }
-                        }
+                        {select_visual_chip(text.clone(), read_only, Some(value), rsx! {
+                            crate::IconButton { icon: "close-small", label: select_remove_label(&remove_selected_item_text, &text),
+                                variant: crate::ButtonVariant::Tertiary, size: crate::ButtonIconSize::Sixteen, oval: true, class: "ix-select-chip-remove", tabindex: -1 }
+                        })}
                     }
                     for count in 1..=measurement_count {
-                        button { r#type: "button", class: "ix-select-chip ix-select-overflow", "data-measure-badge": count.to_string(), tabindex: "-1", "+{count}" }
+                        button { r#type: "button", class: "ix-select-chip ix-select-overflow ix-select-chip-overflow", "data-chip-disabled": read_only.to_string(), "data-hide-close": "true", "data-measure-badge": count.to_string(), tabindex: "-1", span { class: "ix-select-chip-label", "+{count}" } }
                     }
                 }
             }
@@ -2357,11 +2442,13 @@ pub fn Select(
                         {
                             let remaining = selected.iter().filter(|item| **item != value).cloned().collect::<Vec<_>>();
                             let count = hidden_chips.len();
-                            rsx! { span { key: "{value}", class: "ix-select-chip", role: "option", "aria-selected": "true", "{text}",
-                                button { r#type: "button", class: "ix-select-chip-remove", "aria-label": select_remove_label(&remove_selected_item_text, &text),
-                                    onmounted: move |event| { let node = event.data(); { let mut refs = hidden_refs.write(); if refs.len() <= index { refs.resize(index + 1, None); } refs[index] = Some(node.clone()); } if index == 0 { spawn(async move { let _ = node.set_focus(true).await; }); } },
-                                    onclick: move |event| { event.stop_propagation(); overflow_open.set(false); publish_selection(remaining.clone(), onvaluechange, onvalueschange); let node = trigger_ref.peek().clone(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); },
-                                    onkeydown: move |event| {
+                            rsx! { span { key: "{value}", class: "ix-select-chip", "data-chip-disabled": "false", "data-hide-close": "false", role: "option", "aria-selected": "true",
+                                span { class: "ix-select-chip-label", "{text}" }
+                                span { class: "ix-select-chip-close-host",
+                                crate::IconButton { class: "ix-select-chip-remove", icon: "close-small", label: select_remove_label(&remove_selected_item_text, &text), variant: crate::ButtonVariant::Tertiary, size: crate::ButtonIconSize::Sixteen, oval: true,
+                                    onmounted: move |event: MountedEvent| { let node = event.data(); { let mut refs = hidden_refs.write(); if refs.len() <= index { refs.resize(index + 1, None); } refs[index] = Some(node.clone()); } if index == 0 { spawn(async move { let _ = node.set_focus(true).await; }); } },
+                                    onclick: move |event: MouseEvent| { event.stop_propagation(); overflow_open.set(false); publish_selection(remaining.clone(), onvaluechange, onvalueschange); let node = trigger_ref.peek().clone(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); },
+                                    onkeydown: move |event: KeyboardEvent| {
                                         event.stop_propagation();
                                         let next = match event.key() {
                                             Key::ArrowDown => Some((index + 1) % count),
@@ -2372,8 +2459,7 @@ pub fn Select(
                                         };
                                         if let Some(next) = next { event.prevent_default(); let node = hidden_refs.peek().get(next).cloned().flatten(); spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } }); }
                                     },
-                                    crate::Icon { name: "close".to_string(), size: 12 }
-                                }
+                                } }
                             } }
                         }
                     }
@@ -2390,25 +2476,17 @@ pub fn Select(
                 SelectOptionsSurface { anchor_id: control_id.clone(), input_id: id.clone(), enable_top_layer,
                     dropdown_width, dropdown_max_width, onnativeerror,
                     onclose: move |_| { restore_focus.set(false); open.set(false); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); },
-                    if !hide_list_header && !no_matches { div { class: "ix-select-list-header", "aria-hidden": "true", title: list_header.clone(), "{list_header}" } }
+                    div { class: "ix-select-list-header", hidden: hide_list_header || no_matches, "aria-hidden": "true", title: list_header.clone(), "{list_header}" }
                     div { id: list_id.clone(), role: "listbox", "aria-multiselectable": multiple.to_string(), class: "ix-select-list",
                         for (index, option) in visible.iter().cloned().enumerate() {
                             {
                                 let next_values = update_selection(selected.clone(), option.value.clone(), multiple);
                                 let is_selected = selected.contains(&option.value);
                                 rsx! {
-                                    button { key: "{option.value}", id: format!("{list_id}-{index}"),
-                                        class: if index == active_index { "ix-select-option ix-select-active" } else { "ix-select-option" },
-                                        r#type: "button", role: "option", tabindex: "-1", disabled: option.disabled,
-                                        "aria-selected": is_selected.to_string(),
-                                        onmousedown: move |event| event.prevent_default(),
+                                    SelectOptionPresentation { key: "{option.value}", id: format!("{list_id}-{index}"), value: option.value.clone(),
+                                        label: option.label, selected: is_selected, disabled: option.disabled, active: index == active_index,
                                         onmouseenter: move |_| if !option.disabled { active.set(index); },
-                                        onclick: move |event| { event.stop_propagation(); publish_selection(next_values.clone(), onvaluechange, onvalueschange); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); if !multiple { open.set(false); } },
-                                        if multiple { span { class: if is_selected { "ix-select-choice checked" } else { "ix-select-choice" }, "aria-hidden": "true",
-                                            if is_selected { crate::Icon { name: "check".to_string(), size: 16 } }
-                                        } }
-                                        "{option.label}"
-                                        if is_selected && !multiple { crate::Icon { name: "check".to_string(), size: 16 } }
+                                        onclick: move |event: MouseEvent| { event.stop_propagation(); publish_selection(next_values.clone(), onvaluechange, onvalueschange); query.set(String::new()); query_dirty.set(false); active.set(usize::MAX); if !multiple { open.set(false); } }
                                     }
                                 }
                             }
@@ -2436,10 +2514,8 @@ pub fn Select(
                     placement: crate::TooltipPlacement::Bottom, show_delay: 500,
                     class: "ix-select-feedback-tooltip {state.class()}",
                     onnativeerror: move |message: String| onnativeerror.call(crate::NativeSurfaceError::Rejected(message)),
-                    "{feedback.as_deref().unwrap_or_default()}"
+                    if let Some(feedback) = visual_feedback { {render_text_field_feedback(feedback, None)} }
                 }
-            } else {
-                HelperText { id: help_id.clone(), helper_text, invalid_text, valid_text, info_text, warning_text, state }
             }
         }
     }
@@ -2864,6 +2940,10 @@ mod checkbox_token_tests;
 mod radio_token_tests;
 
 #[cfg(test)]
+#[path = "select_visual_tests.rs"]
+mod select_visual_tests;
+
+#[cfg(test)]
 #[path = "slider_token_tests.rs"]
 mod slider_token_tests;
 
@@ -2925,24 +3005,10 @@ pub(crate) const STYLES: &str = r#"
 
 
 
-.ix-theme .ix-range-field{display:flex;align-items:end;gap:2.5rem;position:relative;min-width:0;width:100%}.ix-theme .ix-range-field>.ix-temporal-field,.ix-theme .ix-range-field>.ix-field{flex:1;min-width:0}.ix-theme .ix-range-field:before{content:'';position:absolute;left:calc(50% - .5rem);bottom:1.25rem;width:1rem;border-top:1px solid var(--ix-color-text-secondary)}.ix-theme .ix-range-field:after{content:'';position:absolute;left:calc(50% + .125rem);bottom:1.075rem;width:.35rem;height:.35rem;border-top:1px solid var(--ix-color-text-secondary);border-right:1px solid var(--ix-color-text-secondary);transform:rotate(45deg)}.ix-theme .ix-range-no-arrow:before,.ix-theme .ix-range-no-arrow:after{display:none}.ix-theme .ix-range-no-arrow{gap:.75rem}
+.ix-theme .ix-range-field{display:flex;align-items:end;gap:2.5rem;position:relative;min-width:0;width:100%}.ix-theme .ix-range-field>.ix-temporal-field,.ix-theme .ix-range-field>.ix-field,.ix-theme .ix-range-field>.ix-select{flex:1;min-width:0}.ix-theme .ix-range-field:before{content:'';position:absolute;left:calc(50% - .5rem);bottom:1.25rem;width:1rem;border-top:1px solid var(--ix-color-text-secondary)}.ix-theme .ix-range-field:after{content:'';position:absolute;left:calc(50% + .125rem);bottom:1.075rem;width:.35rem;height:.35rem;border-top:1px solid var(--ix-color-text-secondary);border-right:1px solid var(--ix-color-text-secondary);transform:rotate(45deg)}.ix-theme .ix-range-no-arrow:before,.ix-theme .ix-range-no-arrow:after{display:none}.ix-theme .ix-range-no-arrow{gap:.75rem}
 .ix-theme .ix-field-info{--ix-slider-accent:var(--ix-color-info);--ix-check-accent:var(--ix-color-info)}.ix-theme .ix-field-warning{--ix-slider-accent:var(--ix-color-warning);--ix-check-accent:var(--ix-color-warning)}.ix-theme .ix-field-invalid{--ix-slider-accent:var(--ix-color-danger);--ix-check-accent:var(--ix-color-danger)}.ix-theme .ix-field-valid{--ix-slider-accent:var(--ix-color-primary);--ix-check-accent:var(--ix-color-primary)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid) .ix-check-shape{border-color:var(--ix-check-accent)}.ix-theme .ix-check:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)[data-checked=true] .ix-check-shape,.ix-theme .ix-radio:is(.ix-field-info,.ix-field-warning,.ix-field-invalid,.ix-field-valid)>input:checked+.ix-check-shape{background:var(--ix-check-accent)}.ix-theme .ix-upload-state{display:flex;align-items:center;gap:.5rem;min-width:0}.ix-theme .ix-upload-state>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-upload-button{flex:none}.ix-theme .ix-field-info>.ix-input,.ix-theme .ix-field-info .ix-select-control{border-color:var(--ix-color-info-text)}.ix-theme .ix-field-valid>.ix-input,.ix-theme .ix-field-valid .ix-select-control{border-color:var(--ix-color-success)}.ix-theme .ix-field-warning .ix-select-control{border-color:var(--ix-color-warning-text)}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-toggle-track:before{transition:none}}
-.ix-theme .ix-select{position:relative}
-.ix-theme .ix-select-feedback-tooltip.ix-field-invalid{color:var(--ix-color-danger-text)}.ix-theme .ix-select-feedback-tooltip.ix-field-valid{color:var(--ix-color-success)}.ix-theme .ix-select-feedback-tooltip.ix-field-info{color:var(--ix-color-info-text)}.ix-theme .ix-select-feedback-tooltip.ix-field-warning{color:var(--ix-color-warning-text)}
-.ix-theme .ix-select-control{position:relative;display:flex;align-items:stretch;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1)}
-.ix-theme .ix-select-control:focus-within{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-theme .ix-select-control:hover{border-color:var(--ix-color-text-secondary)}.ix-theme .ix-field-invalid .ix-select-control{border-color:var(--ix-color-danger-text)}
-.ix-theme .ix-select-trigger{display:flex;align-items:center;justify-content:space-between;gap:.5rem;min-width:0;min-height:2.5rem;padding:.375rem .75rem;width:100%;border:0;background:transparent;color:var(--ix-color-text);font:inherit;font-size:.875rem;cursor:pointer;text-align:start}.ix-theme .ix-select-trigger:focus-visible{outline:0}.ix-theme .ix-select-trigger::placeholder{color:var(--ix-color-text-secondary)}.ix-theme .ix-select-control[data-open=true]{z-index:92}.ix-theme .ix-select-chevron{display:flex;align-items:center;justify-content:center;flex:none;width:2.5rem;border:0;background:transparent;color:var(--ix-color-text);cursor:pointer}.ix-theme .ix-select-chevron:hover{background:var(--ix-color-surface-2)}
-.ix-theme .ix-select-trigger:disabled{opacity:.45;cursor:not-allowed}.ix-theme .ix-select-control[data-readonly=true] .ix-select-trigger{cursor:default}.ix-theme .ix-select-placeholder{color:var(--ix-color-text-secondary)}.ix-theme .ix-select-values{display:flex;flex-wrap:wrap;gap:.25rem;min-width:0;overflow-wrap:anywhere}
-.ix-theme .ix-select-chip{display:inline-flex;align-items:center;border-radius:1rem;background:var(--ix-color-surface-2);padding:.125rem .5rem;font-size:.75rem;line-height:1.25rem;white-space:nowrap}.ix-theme .ix-select-chip-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.ix-theme .ix-select-chips{flex-wrap:nowrap;overflow:hidden}.ix-theme .ix-select-chips>.ix-select-chip{flex:0 1 auto;min-width:0;overflow:hidden}.ix-theme .ix-select-chips>.ix-select-overflow{flex:none}.ix-theme .ix-select-chip-remove{flex:none}.ix-theme .ix-select-overflow{border:0;color:var(--ix-color-text);font-family:inherit;cursor:pointer}.ix-theme .ix-select-overflow:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:1px}.ix-theme .ix-select-overflow:disabled{cursor:default}.ix-theme .ix-select-measure{position:fixed;inset:0 auto auto 0;display:flex;width:max-content;visibility:hidden;pointer-events:none;gap:.25rem}.ix-theme .ix-select-measure>.ix-select-chip{flex:none;max-width:none}.ix-theme .ix-select-overflow-popup{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;padding:.75rem;max-height:18rem;overflow:auto}.ix-theme .ix-select-overflow-popup>.ix-select-chip{max-width:100%;white-space:normal;overflow-wrap:anywhere}
-.ix-theme .ix-select-chips{flex:1;align-items:center;padding:.375rem 0 .375rem .75rem}.ix-theme .ix-select-trigger-multiple{width:5rem;flex:0 0 5rem;padding-inline:.5rem}.ix-theme .ix-select-chip-remove{display:inline-flex;align-items:center;justify-content:center;margin-inline-start:.25rem;padding:0;width:1.25rem;height:1.25rem;border:0;background:transparent;color:inherit;border-radius:50%;cursor:pointer}.ix-theme .ix-select-chip-remove:hover{background:var(--ix-color-border)}.ix-theme .ix-select-chip-remove:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:1px}.ix-theme .ix-select-control:has(.ix-select-trigger:disabled) .ix-select-chips{opacity:.45}
-.ix-theme .ix-select-clear{display:flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--ix-color-text);padding:.5rem;cursor:pointer;flex:none}.ix-theme .ix-select-clear:hover{background:var(--ix-color-surface-2)}.ix-theme .ix-select-clear:focus-visible{outline:2px solid var(--ix-color-focus)}
 .ix-theme .ix-select-native{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;inset-inline-start:0;bottom:1rem}.ix-theme .ix-select-backdrop{position:fixed;inset:0;border:0;background:transparent;z-index:90;cursor:default}
-.ix-theme .ix-select-popup{position:absolute;top:100%;inset-inline:0;background:var(--ix-color-surface-1);border:1px solid var(--ix-color-border);box-shadow:0 8px 24px #0004;z-index:91;min-width:12rem;padding:.25rem 0;border-radius:var(--ix-radius)}.ix-theme .ix-select-list-header{padding:.5rem .75rem;color:var(--ix-color-text-secondary);font-size:.875rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-select-list{max-height:18rem;overflow:auto;overscroll-behavior:contain}
-.ix-theme .ix-select-popup[data-top-layer=true]{position:fixed;inset:auto;margin:0;box-sizing:border-box;color:var(--ix-color-text);overflow:hidden}.ix-theme .ix-select-popup[data-top-layer=true]:popover-open{display:flex;flex-direction:column}.ix-theme .ix-select-popup[data-top-layer=true]>.ix-select-list{flex:0 1 auto;min-height:0}.ix-theme .ix-select-popup[data-top-layer=true]>.ix-select-list-header{flex:none}
-.ix-theme .ix-select-option{display:flex;align-items:center;gap:.5rem;min-height:2.5rem;width:100%;font:inherit;font-size:.875rem;text-align:start;color:var(--ix-color-text);padding:.5rem .75rem;border:0;background:transparent;cursor:pointer}.ix-theme .ix-select-option>.ix-icon:last-child{margin-inline-start:auto}.ix-theme .ix-select-option:hover,.ix-theme .ix-select-active{background:var(--ix-color-surface-2)}.ix-theme .ix-select-option[aria-selected=true]{color:var(--ix-color-primary)}.ix-theme .ix-select-option:disabled{opacity:.45;cursor:not-allowed}.ix-theme .ix-select-option:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
-.ix-theme .ix-select-choice{width:1rem;height:1rem;border:1px solid var(--ix-color-text-secondary);border-radius:2px;display:flex;align-items:center;justify-content:center;flex-shrink:0}.ix-theme .ix-select-choice.checked{background:var(--ix-color-primary);color:var(--ix-color-on-primary);border-color:var(--ix-color-primary)}.ix-theme .ix-select-empty{padding:.75rem;color:var(--ix-color-text-secondary);font-size:.875rem}
 .ix-theme .ix-upload{display:flex;align-items:center;justify-content:space-between;flex-direction:row;gap:1rem;position:relative;min-height:4rem;padding:1rem;box-sizing:border-box;border:1px dashed var(--ix-color-border);color:var(--ix-color-text-secondary);font-size:.875rem;cursor:pointer;background:var(--ix-color-surface-1)}.ix-theme .ix-upload:hover{border-color:var(--ix-color-primary)}.ix-theme .ix-upload>input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:inherit}.ix-theme .ix-upload:has(:focus-visible){outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-theme .ix-upload-button{padding:.5rem 1rem;color:var(--ix-color-primary);border:1px solid var(--ix-color-primary);border-radius:var(--ix-radius)}.ix-theme .ix-upload-success{border-color:var(--ix-color-success)}.ix-theme .ix-upload-failed{border-color:var(--ix-color-danger-text);color:var(--ix-color-danger-text)}.ix-theme .ix-upload[data-disabled=true]{cursor:not-allowed;opacity:.45}
 "#;
 
