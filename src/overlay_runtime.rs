@@ -2,9 +2,6 @@
 //! facts and executes an acknowledged default/stop/activation or focus intent.
 use crate::dropdown_inventory::{HostFacts, InventoryFacts, ItemKind, ItemRef};
 use crate::overlay_completion::CompletionQueue;
-use crate::overlay_descendant_focus::{
-    DescendantHide, DescendantJob, DescendantPurpose, DescendantQueue,
-};
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_focus_pending::{PendingFocus, PendingFocusQueue};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
@@ -68,6 +65,7 @@ pub(crate) struct KeyFacts {
     pub(crate) meta: bool,
     pub(crate) default_prevented: bool,
     pub(crate) focused_item: Option<usize>,
+    pub(crate) focused_target: Option<String>,
     pub(crate) items: Vec<usize>,
     pub(crate) focus_count: usize,
     pub(crate) focused_index: Option<usize>,
@@ -144,7 +142,6 @@ struct Entry {
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
     item_visual: Option<Rc<dyn Fn() -> RootVisual>>,
-    descendant_focus: Option<DescendantFocusCallback>,
     submenu: Option<SubmenuAccess>,
     navigation: Option<NavigationConfiguration>,
     suppress_trigger_restore: bool,
@@ -186,8 +183,6 @@ struct Runtime {
     item_mounts: BTreeMap<String, ItemMount>,
     owned_item_focus: BTreeMap<String, OwnedItemFocus>,
     item_focus_sequence: u64,
-    descendant_focus: DescendantQueue,
-    descendant_visual: BTreeMap<u64, (DescendantJob, bool)>,
     submenu_marks: BTreeMap<String, (String, u64)>,
     submenu_own: BTreeMap<String, (u64, InventoryFacts)>,
     inventories: BTreeMap<String, (u64, InventoryFacts)>,
@@ -221,7 +216,6 @@ struct OwnedItemFocus {
     focus_native: bool,
     task: Option<(Weak<dioxus::core::Runtime>, dioxus::core::Task)>,
 }
-type DescendantFocusCallback = Rc<dyn Fn(&InventoryFacts, bool, bool, bool) -> Option<bool>>;
 
 #[derive(Clone)]
 struct SubmenuAccess {
@@ -238,27 +232,6 @@ struct SubmenuMarkerOffer {
     root_capture: String,
     capture: String,
     active: bool,
-}
-
-#[derive(Deserialize)]
-struct DescendantQuery {
-    sequence: u64,
-    root: String,
-    generation: u64,
-    reference: String,
-    phase: String,
-    #[serde(default)]
-    hide_before: Vec<DescendantHide>,
-    #[serde(default)]
-    facts: Option<crate::descendant_focus::DescendantFacts>,
-    #[serde(default)]
-    inventory: Option<InventoryFacts>,
-    #[serde(default)]
-    hosts: Vec<HostFacts>,
-    #[serde(default)]
-    attempt_path: Vec<String>,
-    #[serde(default)]
-    target: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -337,8 +310,6 @@ impl RuntimeHandle {
             item_mounts: BTreeMap::new(),
             owned_item_focus: BTreeMap::new(),
             item_focus_sequence: 0,
-            descendant_focus: DescendantQueue::default(),
-            descendant_visual: BTreeMap::new(),
             submenu_marks: BTreeMap::new(),
             submenu_own: BTreeMap::new(),
             inventories: BTreeMap::new(),
@@ -774,14 +745,10 @@ impl RuntimeHandle {
                 runtime.pending_focus.remove_root(&id, old_generation);
                 runtime.completions.remove_root(&id, old_generation);
 
-                runtime.descendant_focus.remove_root(&id, old_generation);
                 runtime
                     .submenu_marks
                     .retain(|_, (root, generation)| root != &id || *generation != old_generation);
                 runtime.submenu_own.remove(&id);
-                runtime
-                    .descendant_visual
-                    .retain(|_, (job, _)| job.root != id || job.generation != old_generation);
 
                 runtime.item_root_captures.remove(&id);
                 runtime.inventories.remove(&id);
@@ -818,7 +785,6 @@ impl RuntimeHandle {
                     anchor_intersection: None,
                     anchor_shape: None,
                     item_visual: None,
-                    descendant_focus: None,
                     submenu: None,
                     navigation,
                     suppress_trigger_restore,
@@ -925,10 +891,8 @@ impl RuntimeHandle {
             state.pending_focus.clear();
             // Adopting another document cancels old-document native work.
             if !state.document.is_empty() {
-                state.descendant_focus.clear();
                 state.submenu_marks.clear();
                 state.submenu_own.clear();
-                state.descendant_visual.clear();
 
                 state.inventories.clear();
                 state.item_cue_hosts.reset_captures();
@@ -1454,57 +1418,76 @@ impl RuntimeHandle {
             || self.0.borrow().registry.cached_parent(id),
             |domain| domain.cached_parent(id),
         );
-        if let Some(parent) = parent {
-            let parent_entry = self.entry(&parent);
-            let marker = parent_entry
-                .as_ref()
-                .and_then(|entry| self.first_submenu_marker(&parent, entry.generation));
-            let children = self.domain().map_or_else(
-                || self.0.borrow().registry.cached_children(&parent),
-                |domain| domain.cached_children(&parent),
+        let Some(parent) = parent else { return };
+        let parent_entry = self.entry(&parent);
+        let marker = parent_entry
+            .as_ref()
+            .and_then(|entry| self.first_submenu_marker(&parent, entry.generation));
+        // Capture the parent's own inventory before forwarding is reset. Native
+        // hide receipts and arbitrary-DOM return targets are unnecessary: the
+        // existing Dioxus item executor validates the current open owner/mount.
+        let own = parent_entry.as_ref().and_then(|entry| {
+            self.0
+                .borrow()
+                .submenu_own
+                .get(&parent)
+                .filter(|(generation, _)| *generation == entry.generation)
+                .map(|(_, facts)| facts.clone())
+        });
+        let host = marker.as_ref().and_then(|capture| {
+            own.as_ref()?
+                .hosts
+                .iter()
+                .find(|host| host.capture == *capture)
+                .cloned()
+        });
+        let children = self.domain().map_or_else(
+            || self.0.borrow().registry.cached_children(&parent),
+            |domain| domain.cached_children(&parent),
+        );
+        for child in children {
+            self.request_id(
+                &child,
+                Change {
+                    open: false,
+                    reason: Reason::Left,
+                    restore_focus: true,
+                },
             );
-            let mut hides = Vec::new();
-            for child in children {
-                let closing = self.entry(&child).and_then(|entry| {
-                    (self.read_current(&child, &entry) == Some(true)).then_some(entry)
-                });
-                let accepted = self.request_id(
-                    &child,
-                    Change {
-                        open: false,
-                        reason: Reason::Left,
-                        restore_focus: true,
-                    },
-                );
-                if accepted
-                    && let Some(closing) = closing
-                    && let Some(current) = self.entry(&child)
-                    && current.generation == closing.generation
-                    && self.read_current(&child, &current) == Some(false)
-                    && let Some((_, reference, _)) = self
-                        .0
-                        .borrow()
-                        .item_root_captures
-                        .get(&child)
-                        .filter(|(generation, _, _)| *generation == current.generation)
-                {
-                    hides.push(DescendantHide {
-                        root: child,
-                        generation: current.generation,
-                        operation: current.revision,
-                        reference: reference.clone(),
-                    });
-                }
-            }
-            if let (Some(capture), Some(entry)) = (marker, parent_entry) {
-                self.0.borrow_mut().submenu_marks.remove(&capture);
-                self.wake_submenu_markers();
-                if let Some(access) = entry.submenu {
-                    self.with_owner(&parent, entry.generation, || (access.reset)());
-                }
-                self.queue_submenu_return_after_hide(&parent, entry.generation, capture, hides);
-            }
         }
+        let (Some(capture), Some(entry)) = (marker, parent_entry) else {
+            return;
+        };
+        self.0.borrow_mut().submenu_marks.remove(&capture);
+        self.wake_submenu_markers();
+        if let Some(access) = entry.submenu {
+            self.with_owner(&parent, entry.generation, || (access.reset)());
+        }
+        let Some(host) = host.filter(|host| !host.disabled_attribute && !host.hidden_attribute)
+        else {
+            return;
+        };
+        let node = NodeHandle {
+            runtime: Rc::downgrade(&self.0),
+            id: parent.clone(),
+            generation: entry.generation,
+        };
+        if !self.item_owner_open(&parent, entry.generation) || !node.is_item_registered(&host) {
+            return;
+        }
+        let roving = self.entry(&parent).is_some_and(|entry| {
+            entry.navigation.is_some_and(|configuration| {
+                configuration.enabled && configuration.mode == "roving-tabindex"
+            })
+        });
+        if roving
+            && !own
+                .as_ref()
+                .is_some_and(|facts| node.select_roving(facts, &host.item))
+        {
+            return;
+        }
+        node.queue_item_host_focus(&host, Rc::new(|| {}));
     }
     fn sync_open(&self, id: &str, generation: u64, open: bool) {
         let mut runtime = self.0.borrow_mut();
@@ -1542,14 +1525,10 @@ impl RuntimeHandle {
             runtime.pending_focus.remove_root(id, generation);
             runtime.completions.remove_root(id, generation);
 
-            runtime.descendant_focus.remove_root(id, generation);
             runtime
                 .submenu_marks
                 .retain(|_, (root, version)| root != id || *version != generation);
             runtime.submenu_own.remove(id);
-            runtime
-                .descendant_visual
-                .retain(|_, (job, _)| job.root != id || job.generation != generation);
 
             runtime.item_root_captures.remove(id);
             runtime.inventories.remove(id);
@@ -1575,16 +1554,10 @@ impl RuntimeHandle {
         }
         let owner = serde_json::to_string(&self.owner_id()).expect("overlay runtime owner");
         let bridge = dioxus::document::eval(
-            &crate::overlay_registry_dom::BRIDGE
-                .replace(
-                    "__DESCENDANT_PLUMBING__",
-                    crate::descendant_focus_dom::PLUMBING,
-                )
-                .replace("__OWNER__", &owner),
+            &crate::overlay_registry_dom::BRIDGE.replace("__OWNER__", &owner),
         );
         self.0.borrow_mut().bridge = Some(bridge);
         self.flush_navigation_configurations();
-        self.flush_descendant_focus();
     }
     fn configure_navigation(&self, id: &str, generation: u64, mode: &str, enabled: bool) -> bool {
         if !matches!(mode, "active-descendant" | "roving-tabindex") {
@@ -1661,25 +1634,6 @@ impl RuntimeHandle {
             {
                 configuration.sent = true;
             }
-        }
-    }
-    fn flush_descendant_focus(&self) {
-        let jobs = self.0.borrow().descendant_focus.unsent();
-        for job in jobs {
-            let sent = self.0.borrow().bridge.as_ref().is_some_and(|bridge| {
-                bridge
-                    .send(serde_json::json!({"descendant_focus":{
-                        "sequence":job.sequence,"root":job.root,"generation":job.generation,
-                        "focus_version":job.focus_version,"last":job.last,
-                        "allow_checked":job.allow_checked,"reference":job.reference,"purpose":job.purpose,
-                        "hide_before":job.hide_before
-                    }}))
-                    .is_ok()
-            });
-            if !sent {
-                break;
-            }
-            self.0.borrow_mut().descendant_focus.mark_sent(&job);
         }
     }
     #[cfg(test)]
@@ -2105,12 +2059,15 @@ impl RuntimeHandle {
             }
         }
         // A linked Dropdown trigger can be physically inside another menu's
-        // host. Its own trigger listener owns the key before that enclosing
-        // host's navigation mode is considered.
+        // host. Its own trigger listener normally owns the key. ArrowRight on
+        // a closed child belongs to the enclosing menu's submenu entry action.
         if let Some(trigger) = report.triggers.iter().find_map(|id| {
             let entry = self
                 .entry(id)
                 .filter(|entry| entry.kind == OverlayKind::Dropdown)?;
+            if report.key == "ArrowRight" && self.read_current(id, &entry) == Some(false) {
+                return None;
+            }
             report.nodes.iter().find(|node| {
                 node.id == *id
                     && node.connected
@@ -2261,6 +2218,7 @@ impl RuntimeHandle {
             meta: report.meta,
             default_prevented: report.default_prevented,
             focused_item: owner.focused_item,
+            focused_target: (!report.active_id.is_empty()).then(|| report.active_id.clone()),
             items: owner.items.clone(),
             focus_count: owner.focus_count,
             focused_index: owner.focused_index,
@@ -2744,10 +2702,6 @@ impl RuntimeHandle {
             }
             return;
         }
-        if let Some(descendant) = query.descendant_focus {
-            self.query_descendant_focus(descendant, &event);
-            return;
-        }
         if query.item_cues_pending {
             if std::mem::take(&mut self.0.borrow_mut().item_cues_dirty) {
                 event.prevent_default();
@@ -2812,8 +2766,7 @@ impl RuntimeHandle {
         }
         if let Some(capture) = query.capture_retained {
             let state = self.0.borrow();
-            let retained = state.descendant_focus.retains_token(&capture)
-                || state.submenu_marks.contains_key(&capture)
+            let retained = state.submenu_marks.contains_key(&capture)
                 || state.item_visual_host.as_ref().is_some_and(|host| {
                     host.capture == capture || host.parts.iter().any(|part| part.capture == capture)
                 });
@@ -3099,6 +3052,16 @@ impl NodeHandle {
         {
             runtime.clear_item_tabindices(&self.id, self.generation);
         }
+    }
+    pub(crate) fn is_item_registered(&self, host: &HostFacts) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                RuntimeHandle::mounted_item_key(&runtime.0.borrow(), host).is_some()
+            })
+            .unwrap_or(false)
     }
     pub(crate) fn queue_item_host_focus(&self, host: &HostFacts, callback: Rc<dyn Fn()>) -> bool {
         self.queue_mounted_item_focus(host.target.clone(), true, callback, Some(host.clone()))
@@ -3455,59 +3418,6 @@ impl NodeHandle {
             runtime.unregister(&self.id, self.generation);
         }
     }
-    pub(crate) fn set_descendant_focus_handler(&self, handler: DescendantFocusCallback) {
-        if let Some(runtime) = self.runtime() {
-            let mut state = runtime.0.borrow_mut();
-            if let Some(entry) = state
-                .nodes
-                .get_mut(&self.id)
-                .filter(|entry| entry.generation == self.generation)
-            {
-                entry.descendant_focus = Some(handler);
-            }
-        }
-    }
-    pub(crate) fn queue_descendant_focus(
-        &self,
-        focus_version: u64,
-        last: bool,
-        allow_checked: bool,
-    ) -> bool {
-        let Some(runtime) = self.runtime() else {
-            return false;
-        };
-        let admitted = runtime
-            .with_owner(&self.id, self.generation, || {
-                let Some(entry) = runtime.entry(&self.id) else {
-                    return false;
-                };
-                if runtime.read_current(&self.id, &entry).is_none() {
-                    return false;
-                }
-                let mut state = runtime.0.borrow_mut();
-                let reference = state
-                    .item_root_captures
-                    .get(&self.id)
-                    .filter(|(generation, capture, _)| {
-                        *generation == self.generation && !capture.is_empty()
-                    })
-                    .map(|(_, capture, _)| capture.clone());
-                state.descendant_focus.admit(
-                    self.id.clone(),
-                    self.generation,
-                    focus_version,
-                    last,
-                    allow_checked,
-                    reference,
-                );
-                true
-            })
-            .unwrap_or(false);
-        if admitted {
-            runtime.flush_descendant_focus();
-        }
-        admitted
-    }
     pub(crate) fn set_item_visual_reader(&self, reader: Rc<dyn Fn() -> RootVisual>) {
         if let Some(runtime) = self.runtime() {
             let mut state = runtime.0.borrow_mut();
@@ -3553,13 +3463,6 @@ mod overlay_assignment_tests;
 #[path = "overlay_navigation_tests.rs"]
 mod overlay_navigation_tests;
 
-#[path = "descendant_transport.rs"]
-mod descendant_transport;
-
-#[cfg(test)]
-#[path = "descendant_transport_tests.rs"]
-mod descendant_transport_tests;
-
 #[cfg(test)]
 #[path = "item_visual_transport_tests.rs"]
 mod item_visual_transport_tests;
@@ -3585,6 +3488,8 @@ struct Report {
     phase: String,
     #[serde(default)]
     key: String,
+    #[serde(default)]
+    active_id: String,
     #[serde(default)]
     shift: bool,
     #[serde(default)]
@@ -3708,8 +3613,6 @@ struct Query {
     capture_retained: Option<String>,
     #[serde(default)]
     item_focus_observation: Option<crate::item_visual::FocusObservation>,
-    #[serde(default)]
-    descendant_focus: Option<DescendantQuery>,
     #[serde(default)]
     submenu_marker: Option<SubmenuMarkerOffer>,
     #[serde(default)]

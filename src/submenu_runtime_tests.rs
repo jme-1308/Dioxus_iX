@@ -40,6 +40,7 @@ struct FixtureState {
     calls: Cell<usize>,
     applied: Cell<usize>,
     veto: Cell<bool>,
+    resets: Cell<usize>,
 }
 #[derive(Clone)]
 struct Fixture(Rc<FixtureState>);
@@ -70,11 +71,12 @@ fn fixture_root(fixture: Fixture) -> Element {
             },
         );
         let clicked = state.clone();
+        let reset = state.clone();
         let click_node = node.clone();
         node.set_submenu_access(
             handle,
             Rc::new(|| None),
-            Rc::new(|| {}),
+            Rc::new(move || reset.0.resets.set(reset.0.resets.get() + 1)),
             Rc::new(move || {
                 assert_eq!(
                     current_scope_id(),
@@ -276,4 +278,279 @@ fn submenu_marker_query_uses_exact_root_and_object_capture_without_consuming_tru
     node.unregister();
     assert!(!permitted(marker("actual-member", true)));
     assert!(!permitted(marker("actual-member", false)));
+}
+
+#[derive(Clone, Default)]
+struct ReturnMount(Rc<RefCell<Vec<&'static str>>>);
+impl dioxus::html::RenderedElementBacking for ReturnMount {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn set_focus(
+        &self,
+        focus: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>> {
+        assert!(focus);
+        let calls = self.0.clone();
+        Box::pin(async move {
+            calls.borrow_mut().push("focus");
+            Ok(())
+        })
+    }
+    fn scroll_to(
+        &self,
+        options: dioxus::html::ScrollToOptions,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>> {
+        assert!(matches!(
+            options.vertical,
+            dioxus::html::ScrollLogicalPosition::Nearest
+        ));
+        assert!(matches!(
+            options.horizontal,
+            dioxus::html::ScrollLogicalPosition::Nearest
+        ));
+        let calls = self.0.clone();
+        Box::pin(async move {
+            calls.borrow_mut().push("scroll");
+            Ok(())
+        })
+    }
+}
+
+struct ReturnFixture {
+    dom: VirtualDom,
+    state: Fixture,
+    runtime: RuntimeHandle,
+    parent: NodeHandle,
+    child_open: Rc<Cell<bool>>,
+    child_veto: Rc<Cell<bool>>,
+    host: HostFacts,
+    mount: ReturnMount,
+}
+fn return_fixture(disabled: bool, registered: bool) -> ReturnFixture {
+    return_fixture_kind(disabled, registered, ItemKind::Dropdown)
+}
+fn return_fixture_kind(disabled: bool, registered: bool, kind: ItemKind) -> ReturnFixture {
+    let (dom, state, runtime, parent) = fixture();
+    let child_open = Rc::new(Cell::new(false));
+    let child_veto = Rc::new(Cell::new(false));
+    let read = child_open.clone();
+    let apply = child_open.clone();
+    let before = child_veto.clone();
+    let child = dom.in_scope(ScopeId::ROOT, || {
+        runtime.register(
+            "nested-return".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::None,
+            Callbacks {
+                read: Rc::new(move || Some(read.get())),
+                before: Rc::new(move |_| !before.get()),
+                apply: Rc::new(move |change| apply.set(change.open)),
+                key: None,
+            },
+        )
+    });
+    let mut host: HostFacts = serde_json::from_value(serde_json::json!({
+        "item":"return-trigger-object", "kind":"dropdown", "target":"return-trigger",
+        "capture":"return-trigger-object", "registration_key":"return-trigger-key",
+        "disabled_attribute":disabled,
+    }))
+    .unwrap();
+    host.kind = kind;
+    host.source_focusable = kind != ItemKind::Category;
+    let facts = InventoryFacts {
+        items_host: ItemRef("configured-host".into()),
+        hosts: vec![host.clone()],
+        navigation_order: vec![host.item.clone()],
+        query_order: vec![host.item.clone()],
+        slots: None,
+    };
+    let mount = ReturnMount::default();
+    if registered {
+        runtime.register_item_cue(host.registration_key.clone(), host.kind);
+        runtime.register_item_mount(
+            &host.registration_key,
+            &host.target,
+            Rc::new(MountedData::new(mount.clone())),
+        );
+    }
+    send(
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
+            {"id":"configured","generation":1,"connected":true,"discovery_ready":true,"root_capture":"actual-root","inventory":facts},
+            {"id":"nested-return","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":["configured"]}
+        ]}),
+    );
+    assert!(parent.request(true, Reason::Trigger, false));
+    assert!(child.request(true, Reason::Trigger, false));
+    assert_eq!(
+        runtime
+            .0
+            .borrow()
+            .registry
+            .cached_parent("nested-return")
+            .as_deref(),
+        Some("configured")
+    );
+    parent.mark_submenu_trigger(&host);
+    runtime.0.borrow_mut().keyboard = true;
+    ReturnFixture {
+        dom,
+        state,
+        runtime,
+        parent,
+        child_open,
+        child_veto,
+        host,
+        mount,
+    }
+}
+
+#[test]
+fn submenu_close_returns_registered_parent_through_mounted_focus_scroll_and_roving_state() {
+    let mut fixture = return_fixture(false, true);
+    assert!(fixture.parent.configure_navigation("roving-tabindex", true));
+    assert!(fixture.parent.is_item_registered(&fixture.host));
+    let stale = NodeHandle {
+        generation: fixture.parent.generation + 1,
+        ..fixture.parent.clone()
+    };
+    assert!(!stale.is_item_registered(&fixture.host));
+    fixture.runtime.close_submenu("nested-return");
+    assert!(!fixture.child_open.get());
+    assert_eq!(fixture.state.0.resets.get(), 1);
+    assert!(
+        !fixture
+            .runtime
+            .0
+            .borrow()
+            .submenu_marks
+            .contains_key(&fixture.host.capture)
+    );
+    assert!(
+        fixture.mount.0.borrow().is_empty(),
+        "focus executes after the Dioxus render"
+    );
+    tests::settle_item_effects(&mut fixture.dom);
+    assert_eq!(*fixture.mount.0.borrow(), ["focus", "scroll"]);
+    assert_eq!(
+        fixture.runtime.item_visual_key().as_deref(),
+        Some("return-trigger-key")
+    );
+    assert_eq!(fixture.runtime.item_tabindex("return-trigger-key"), Some(0));
+
+    let mut category = return_fixture_kind(false, true, ItemKind::Category);
+    assert!(
+        !category.host.source_focusable,
+        "the old outer cue marker is not physical focus support"
+    );
+    assert!(category.parent.is_item_registered(&category.host));
+    assert!(
+        category
+            .parent
+            .configure_navigation("roving-tabindex", true)
+    );
+    category.runtime.close_submenu("nested-return");
+    tests::settle_item_effects(&mut category.dom);
+    assert_eq!(*category.mount.0.borrow(), ["focus", "scroll"]);
+    assert_eq!(
+        category.runtime.item_tabindex("return-trigger-key"),
+        Some(0)
+    );
+}
+
+#[test]
+fn submenu_close_skips_disabled_and_unregistered_return_targets_but_resets_forwarding() {
+    for (disabled, registered) in [(true, true), (false, false)] {
+        let mut fixture = return_fixture(disabled, registered);
+        fixture.runtime.close_submenu("nested-return");
+        tests::settle_item_effects(&mut fixture.dom);
+        assert!(!fixture.child_open.get());
+        assert_eq!(fixture.state.0.resets.get(), 1);
+        assert!(fixture.mount.0.borrow().is_empty());
+        assert_eq!(fixture.runtime.pending_item_focus_count(), 0);
+    }
+}
+
+#[test]
+fn submenu_close_preserves_child_veto_and_returns_to_live_parent() {
+    let mut fixture = return_fixture(false, true);
+    fixture.child_veto.set(true);
+    fixture.runtime.close_submenu("nested-return");
+    tests::settle_item_effects(&mut fixture.dom);
+    assert!(fixture.child_open.get(), "veto keeps the child visible");
+    assert_eq!(fixture.state.0.resets.get(), 1);
+    assert_eq!(*fixture.mount.0.borrow(), ["focus", "scroll"]);
+}
+
+#[test]
+fn submenu_return_rejects_closed_parent_and_cancels_when_parent_is_removed() {
+    let mut closed = return_fixture(false, true);
+    // A controlled prop can already be false while the cached relation is
+    // still being reconciled. It cannot authorize a return-focus request.
+    closed.state.0.open.set(false);
+    closed.runtime.close_submenu("nested-return");
+    tests::settle_item_effects(&mut closed.dom);
+    assert!(closed.mount.0.borrow().is_empty());
+    assert_eq!(closed.runtime.pending_item_focus_count(), 0);
+
+    let mut removed = return_fixture(false, true);
+    removed.runtime.close_submenu("nested-return");
+    assert_eq!(removed.runtime.pending_item_focus_count(), 1);
+    removed.parent.unregister();
+    assert!(!removed.parent.is_item_registered(&removed.host));
+    tests::settle_item_effects(&mut removed.dom);
+    assert!(removed.mount.0.borrow().is_empty());
+    assert_eq!(removed.runtime.pending_item_focus_count(), 0);
+    assert!(!removed.child_open.get());
+}
+
+#[test]
+fn closed_linked_trigger_arrow_right_reaches_parent_but_other_keys_and_open_child_keep_ownership() {
+    let fixture = return_fixture(false, true);
+    fixture.child_open.set(false);
+    let delivered = Rc::new(RefCell::new(Vec::new()));
+    for (id, owner) in [("configured", "parent"), ("nested-return", "child")] {
+        let delivered = delivered.clone();
+        fixture
+            .runtime
+            .0
+            .borrow_mut()
+            .nodes
+            .get_mut(id)
+            .unwrap()
+            .callbacks
+            .key = Some(Rc::new(move |facts| {
+            assert_eq!(facts.focused_target.as_deref(), Some("return-trigger"));
+            delivered.borrow_mut().push(owner);
+            KeyDecision {
+                prevent: true,
+                ..KeyDecision::default()
+            }
+        }));
+    }
+    // The builtin parent root is its trigger and an ancestor of the physically
+    // focused linked item. Its own trigger is on the composed event path even
+    // though the child trigger, rather than the parent root, is the key target.
+    let mut report: Report = serde_json::from_value(serde_json::json!({
+        "owner":fixture.runtime.owner_id(),"sequence":2,"kind":"key","phase":"bubble",
+        "key":"ArrowRight","active_id":"return-trigger",
+        "hosts":["configured"],"triggers":["nested-return","configured"],"nodes":[
+            {"id":"configured","generation":1,"connected":true,"inside":true,
+                "mode":"active-descendant","on_trigger":false,"trigger_on_path":true},
+            {"id":"nested-return","generation":1,"connected":true,"inside":false,
+                "mode":"active-descendant","on_trigger":true,"trigger_on_path":true}
+        ]
+    }))
+    .unwrap();
+    assert!(fixture.runtime.key(&report).prevent);
+    assert_eq!(*delivered.borrow(), ["parent"]);
+    report.key = "Enter".into();
+    assert!(fixture.runtime.key(&report).prevent);
+    assert_eq!(*delivered.borrow(), ["parent", "child"]);
+    fixture.child_open.set(true);
+    report.key = "ArrowRight".into();
+    assert!(fixture.runtime.key(&report).prevent);
+    assert_eq!(*delivered.borrow(), ["parent", "child", "child"]);
 }

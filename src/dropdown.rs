@@ -29,6 +29,7 @@ pub(crate) struct ItemHostBinding {
     pub(crate) host_id: String,
     pub(crate) generic: bool,
     pub(crate) runtime: overlay_runtime::RuntimeHandle,
+    context: Option<DropdownContext>,
 }
 impl ItemHostBinding {
     pub(crate) fn mount(&self, target: &str, node: Rc<MountedData>) {
@@ -39,6 +40,80 @@ impl ItemHostBinding {
     }
     pub(crate) fn tabindex(&self) -> Option<i32> {
         self.runtime.item_tabindex(&self.key)
+    }
+    pub(crate) fn navigation_key(&self, event: KeyboardEvent) -> bool {
+        if !event.default_action_enabled()
+            || !matches!(
+                event.key(),
+                Key::Home
+                    | Key::End
+                    | Key::ArrowUp
+                    | Key::ArrowDown
+                    | Key::ArrowLeft
+                    | Key::ArrowRight
+            )
+        {
+            return false;
+        }
+        let Some(context) = &self.context else {
+            return false;
+        };
+        {
+            let state = context.state.borrow();
+            if !state.alive
+                || !state.surface
+                || !state.mounted
+                || !state.external
+                || state.blocked
+                || state.settings.disable_focus_handling
+                || state.settings.mode != DropdownNavigationMode::ActiveDescendant
+                || !context.open.try_peek().is_ok_and(|open| *open)
+                || !context.blocked.try_peek().is_ok_and(|blocked| !*blocked)
+            {
+                return false;
+            }
+        }
+        let Some(node) = context
+            .node
+            .borrow()
+            .clone()
+            .filter(NodeHandle::is_registered)
+        else {
+            return false;
+        };
+        let Some(inventory) = node.inventory() else {
+            return false;
+        };
+        let Some(host) = inventory.hosts.iter().find(|host| {
+            host.registration_key == self.key
+                && host.kind != ItemKind::NativeOptIn
+                && host.eligible(InventoryMode::ActiveDescendant)
+                && node.is_item_registered(host)
+        }) else {
+            return false;
+        };
+        let facts = KeyFacts {
+            route: KeyRoute::Navigation,
+            navigation_mode: Some("active-descendant".into()),
+            key: event.key().to_string(),
+            shift: event.modifiers().contains(Modifiers::SHIFT),
+            alt: event.modifiers().contains(Modifiers::ALT),
+            ctrl: event.modifiers().contains(Modifiers::CONTROL),
+            meta: event.modifiers().contains(Modifiers::META),
+            focused_target: Some(host.target.clone()),
+            inside: true,
+            inventory: Some(inventory),
+            ..Default::default()
+        };
+        context.state.borrow_mut().native = true;
+        let decision = context.key(&facts);
+        if decision.prevent {
+            event.prevent_default();
+        }
+        if decision.stop || event.key() == Key::ArrowLeft && !*context.open.peek() {
+            event.stop_propagation();
+        }
+        true
     }
 }
 pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
@@ -63,11 +138,13 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
     let cleanup = runtime.clone();
     let dropped = key.clone();
     use_drop(move || cleanup.unregister_item_cue(&dropped));
+    let context = try_use_context::<DropdownContext>();
     ItemHostBinding {
         host_id: key.clone(),
         key,
-        generic: try_use_context::<DropdownContext>().is_some(),
+        generic: context.is_some(),
         runtime,
+        context,
     }
 }
 
@@ -83,8 +160,10 @@ pub struct DropdownItemBinding {
 /// Bind a custom Dioxus control to Dropdown keyboard navigation.
 ///
 /// Apply both returned fields, give the control the same stable `id`, and mark
-/// it with `data-ix-roving-item`. Dioxus owns focus, scrolling, tab order and
-/// cleanup. There is no JavaScript fallback for unregistered controls. Use a
+/// it with `data-ix-roving-item`. Registered buttons and fields participate in
+/// opening focus in both navigation modes; active-descendant mode preserves
+/// native editing keys once they are focused. Dioxus owns focus, scrolling,
+/// tab order and cleanup. There is no JavaScript fallback for unregistered controls. Use a
 /// different component key when replacing the element. If the control has an
 /// authored tab index, use `item.tabindex.or(Some(authored_index))`.
 ///
@@ -117,8 +196,8 @@ pub fn use_dropdown_item(id: impl Into<String>) -> DropdownItemBinding {
     }
 }
 
-/// Register focus and scrolling only. Use [`use_dropdown_item`] and apply both
-/// fields when the Dropdown should also manage the control's roving tab order.
+/// Register opening focus and scrolling only. Use [`use_dropdown_item`] and
+/// apply both fields when the Dropdown should also manage roving tab order.
 pub fn use_dropdown_item_mount(id: impl Into<String>) -> EventHandler<MountedEvent> {
     use_dropdown_item(id).onmounted
 }
@@ -290,6 +369,7 @@ struct MenuState {
     surface: bool,
     generation: u64,
     mounted: bool,
+    external: bool,
     blocked: bool,
     settings: Settings,
     active: Option<usize>,
@@ -812,17 +892,7 @@ impl DropdownContext {
         child.focus_submenu_entry();
     }
     fn focus_submenu_entry(&self) {
-        let epoch = {
-            let mut state = self.state.borrow_mut();
-            state.focus_epoch = state.focus_epoch.wrapping_add(1);
-            state.focus_target = "none".into();
-            state.focus_pending = None;
-            state.focus_epoch
-        };
-        if let Some(node) = self.node.borrow().clone() {
-            node.queue_submenu_entry(epoch);
-        }
-        self.notify();
+        self.focus_edge_with_checked(false, true);
     }
     fn item_target(&self, order: &[usize], current: Option<usize>, key: &str) -> Option<usize> {
         menu_target(&self.entries.borrow(), order, current, key)
@@ -844,52 +914,121 @@ impl DropdownContext {
     fn focus_edge(&self, last: bool) {
         self.focus_edge_with_checked(last, true);
     }
-    fn focus_edge_with_checked(&self, last: bool, allow_checked: bool) {
-        let task = self.focus_task.borrow_mut().take();
-        if let Some(task) = task {
-            task.cancel();
+    fn opening_focus_current(
+        &self,
+        epoch: u64,
+        generation: u64,
+        mode: DropdownNavigationMode,
+    ) -> bool {
+        if !self.current(epoch) {
+            return false;
         }
-        if self.state.borrow().settings.disable_focus_handling {
+        let state = self.state.borrow();
+        state.generation == generation
+            && state.settings.mode == mode
+            && !state.settings.disable_focus_handling
+            && !state.blocked
+            && self.blocked.try_peek().is_ok_and(|blocked| !*blocked)
+            && self
+                .node
+                .borrow()
+                .as_ref()
+                .is_some_and(|node| node.generation() == generation && node.is_registered())
+    }
+    fn complete_edge_focus(
+        &self,
+        epoch: u64,
+        generation: u64,
+        mode: DropdownNavigationMode,
+        request: FocusRequest,
+        facts: Option<&InventoryFacts>,
+    ) {
+        if self.state.borrow().focus_epoch == epoch {
+            self.focus_task.borrow_mut().take();
+        }
+        if !self.opening_focus_current(epoch, generation, mode) {
             return;
         }
-        let epoch = {
+        let checked = !request.last
+            && request.allow_checked
+            && self.state.borrow().settings.focus_checked_item;
+        let Some(node) = self.node.borrow().clone() else {
+            return;
+        };
+        if mode == DropdownNavigationMode::RovingTabindex {
+            if let Some(facts) = facts {
+                self.initialize_roving(facts, request.last, checked);
+            }
+            return;
+        }
+        let candidates = facts
+            .map(|facts| Inventory::new(InventoryMode::RovingTabindex, facts.clone()).query_hosts())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|host| {
+                node.is_item_registered(host)
+                    && !host
+                        .tabindex_attribute
+                        .as_deref()
+                        .is_some_and(|value| value.starts_with('-'))
+            })
+            .collect::<Vec<_>>();
+        let edge = if request.last {
+            candidates.last()
+        } else {
+            candidates.first()
+        };
+        let selected = if checked {
+            candidates
+                .iter()
+                .find(|host| host.checked_attribute)
+                .or(edge)
+        } else {
+            edge
+        };
+        if let Some(host) = selected {
+            self.queue_host_focus(host);
+        } else {
+            self.focus_trigger(true);
+        }
+    }
+    fn focus_edge_with_checked(&self, last: bool, allow_checked: bool) {
+        let epoch = self.invalidate_focus();
+        let (generation, mode) = {
             let mut state = self.state.borrow_mut();
-            state.focus_epoch = state.focus_epoch.wrapping_add(1);
+            if state.settings.disable_focus_handling || state.blocked {
+                return;
+            }
             state.focus_pending = Some(FocusRequest {
                 last,
                 allow_checked,
             });
-            state.focus_epoch
+            (state.generation, state.settings.mode)
         };
-        let context = self.clone();
-        let node = context.node.borrow().clone();
-        let mode = context.state.borrow().settings.mode;
-        if mode == DropdownNavigationMode::ActiveDescendant {
-            if !context.current(epoch) {
-                return;
-            }
-            // Opening is an independently captured broad helper, not the
-            // arrow inventory or a renderer's latest first-native intent.
-            context.state.borrow_mut().focus_target = "none".into();
-            if let Some(node) = node {
-                node.queue_descendant_focus(epoch, last, allow_checked);
-            }
-            context.notify();
+        if !self.opening_focus_current(epoch, generation, mode) {
             return;
         }
-        let task = spawn(async move {
-            let Some(node) = node else { return };
-            let Some(facts) = node.query_inventory().await else {
-                return;
-            };
-            if !context.current(epoch) {
-                return;
-            }
-            let checked =
-                !last && allow_checked && context.state.borrow().settings.focus_checked_item;
-            context.initialize_roving(&facts, last, checked);
+        let Some(node) = self.node.borrow().clone() else {
+            return;
+        };
+        let owner = node.clone();
+        let context = self.clone();
+        let task = owner.with_owner(move || {
+            spawn(async move {
+                let facts = node.query_inventory().await;
+                context.complete_edge_focus(
+                    epoch,
+                    generation,
+                    mode,
+                    FocusRequest {
+                        last,
+                        allow_checked,
+                    },
+                    facts.as_ref(),
+                );
+            })
         });
-        *self.focus_task.borrow_mut() = Some(task);
+        *self.focus_task.borrow_mut() = task;
     }
     fn key(&self, facts: &KeyFacts) -> KeyDecision {
         self.key_inner(facts, &mut Vec::new())
@@ -1005,6 +1144,27 @@ impl DropdownContext {
             }
             return result;
         }
+        let effective_mode = facts.navigation_mode.as_deref().map_or(mode, |mode| {
+            if mode == "roving-tabindex" {
+                DropdownNavigationMode::RovingTabindex
+            } else {
+                DropdownNavigationMode::ActiveDescendant
+            }
+        });
+        if effective_mode == DropdownNavigationMode::ActiveDescendant
+            && let (Some(focused), Some(inventory), Some(node)) = (
+                &facts.focused_target,
+                &facts.inventory,
+                self.node.borrow().clone(),
+            )
+            && inventory.hosts.iter().any(|host| {
+                host.kind == ItemKind::NativeOptIn
+                    && host.target == *focused
+                    && node.is_item_registered(host)
+            })
+        {
+            return result;
+        }
         if facts.alt && matches!(facts.key.as_str(), "ArrowDown" | "ArrowUp") {
             return result;
         }
@@ -1092,9 +1252,7 @@ impl DropdownContext {
                             // Source retains this metadata even if showing is vetoed.
                             self.state.borrow_mut().forward = Some(submenu);
                             self.notify();
-                            let checked = child.state.borrow().settings.mode
-                                == DropdownNavigationMode::RovingTabindex;
-                            child.focus_edge_with_checked(false, checked);
+                            child.focus_submenu_entry();
                         }
                         result.stop = mode == DropdownNavigationMode::RovingTabindex;
                     } else if facts.key != "ArrowRight" {
@@ -1205,6 +1363,7 @@ pub fn use_dropdown() -> DropdownHandle {
                 surface: false,
                 generation: 0,
                 mounted: false,
+                external: false,
                 blocked: false,
                 settings: Settings::default(),
                 active: None,
@@ -1501,6 +1660,7 @@ fn DropdownSurface(
     {
         let mut state = context.state.borrow_mut();
         state.settings = settings.clone();
+        state.external = external;
         state.blocked = blocked;
         state.placement = placement;
         state.declaration.update(&trigger);
@@ -1578,29 +1738,6 @@ fn DropdownSurface(
                     }
                 }),
             );
-            let opening = context.clone();
-            node.set_descendant_focus_handler(Rc::new(
-                move |facts, last, allow_checked, submenu| {
-                    let (mode, checked, disabled_focus) = {
-                        let state = opening.state.borrow();
-                        (
-                            state.settings.mode,
-                            !last
-                                && (allow_checked || submenu)
-                                && state.settings.focus_checked_item,
-                            state.settings.disable_focus_handling,
-                        )
-                    };
-                    if mode == DropdownNavigationMode::RovingTabindex
-                        && (!submenu || !disabled_focus)
-                    {
-                        opening.initialize_roving(facts, last, checked);
-                        None
-                    } else {
-                        Some(!submenu && checked)
-                    }
-                },
-            ));
             let projection = context.clone();
             node.set_item_visual_reader(Rc::new(move || {
                 let active = projection.active_dom_id();
@@ -1796,6 +1933,7 @@ fn fallback_key(context: &DropdownContext, event: KeyboardEvent, on_trigger: boo
         ctrl: event.modifiers().contains(Modifiers::CONTROL),
         meta: event.modifiers().contains(Modifiers::META),
         default_prevented: !event.default_action_enabled(),
+        focused_target: None,
         focused_item: None,
         items: order,
         focus_count: 0,
@@ -1950,6 +2088,7 @@ pub fn DropdownItem(
     let mounted_id = host_id.clone();
     let linked_mount = use_trigger_mount(linked.clone(), blocked);
     let key_context = context.clone();
+    let navigation_host = host_binding.clone();
     let click_label = label.clone();
     let key_label = label.clone();
     let tabindex = host_binding.tabindex();
@@ -2003,6 +2142,7 @@ pub fn DropdownItem(
             }else if keep_open{event.prevent_default();}
         },
         onkeydown:move |event:KeyboardEvent|{if !disabled&&!dropdown.and_then(DropdownHandle::try_context).is_some_and(|child|child.state.borrow().blocked) {
+            if navigation_host.navigation_key(event.clone()){return;}
             if event.key()==Key::Enter||event.key()==Key::Character(" ".into()){onitemclick.call(DropdownItemClickEvent{label:key_label.clone(),prevented:Rc::new(Cell::new(false))});}
             if let Some(context)=&key_context{if !context.native_key_route(){fallback_key(context,event.clone(),false);event.stop_propagation();}}
         }},
@@ -2401,9 +2541,18 @@ mod tests {
             Self::with_settings(Fixture::default())
         }
         fn with_settings(settings: Fixture) -> Self {
+            Self::with_document(settings, None)
+        }
+        fn with_document(
+            settings: Fixture,
+            document: Option<Rc<dyn dioxus::document::Document>>,
+        ) -> Self {
             dioxus::html::set_event_converter(Box::new(Converter));
             let config = Rc::new(RefCell::new(settings));
             let mut dom = VirtualDom::new_with_props(fixture, config.clone());
+            if let Some(document) = document {
+                dom = dom.with_root_context(document);
+            }
             let edits = dom.rebuild_to_vec();
             let mut result = Self {
                 dom,
@@ -3547,16 +3696,13 @@ mod tests {
             assert!(child.is_open());
             assert!(parent.state.borrow().forward == Some(child));
             let child_context = child.context();
-            assert_eq!(
-                child_context.state.borrow().focus_pending,
-                Some(FocusRequest {
-                    last: false,
-                    allow_checked: false
-                }),
-                "AD submenu's first focus excludes checked preference"
-            );
-            // The fallback has not delivered native focus; repeated keys must
-            // never manufacture a click/toggle on the already open trigger.
+            // This harness dispatches mounted events with unit-backed handles,
+            // while NoOpDocument cannot return a native inventory. Opening
+            // therefore completes with the Dioxus trigger focus intent.
+            assert_eq!(child_context.state.borrow().focus_target, "trigger");
+            assert!(child_context.state.borrow().focus_pending.is_none());
+            // Repeated keys must never manufacture a click/toggle on the
+            // already open trigger after the opening focus request completes.
             h.key("Menu", Key::Enter);
             h.key("Menu", Key::Character(" ".into()));
             assert!(child.is_open());
@@ -3567,7 +3713,7 @@ mod tests {
             assert_eq!(
                 child_context.entries.borrow()[&selected].label,
                 "Checked detached",
-                "fallback navigates child-owned facts, not root IDs"
+                "forwarded navigation uses child-owned facts, not root IDs"
             );
             assert!(
                 parent
@@ -4127,5 +4273,429 @@ mod tests {
         );
         h.settle();
         assert_eq!(second.calls.borrow().len(), 1);
+    }
+    #[derive(Default)]
+    struct OpeningQuery {
+        scope: Option<ScopeId>,
+        reply: Option<serde_json::Value>,
+        waiter: Option<std::task::Waker>,
+        finished: bool,
+    }
+    #[derive(Default)]
+    struct OpeningDocument {
+        owner: dioxus::signals::Owner,
+        queries: RefCell<Vec<Rc<RefCell<OpeningQuery>>>>,
+    }
+    struct OpeningEvaluator(Rc<RefCell<OpeningQuery>>);
+    impl dioxus::document::Document for OpeningDocument {
+        fn eval(&self, script: String) -> dioxus::document::Eval {
+            if !script.contains("?.inventoryReaders?.get(owner)") {
+                return dioxus::document::Document::eval(&dioxus::document::NoOpDocument, script);
+            }
+            let query = Rc::new(RefCell::new(OpeningQuery {
+                scope: Some(dioxus::core::current_scope_id()),
+                ..Default::default()
+            }));
+            self.queries.borrow_mut().push(query.clone());
+            dioxus::document::Eval::new(
+                self.owner.insert(
+                    Box::new(OpeningEvaluator(query)) as Box<dyn dioxus::document::Evaluator>
+                ),
+            )
+        }
+    }
+    impl dioxus::document::Evaluator for OpeningEvaluator {
+        fn send(&self, value: serde_json::Value) -> Result<(), dioxus::document::EvalError> {
+            if value["kind"] == "finish" {
+                self.0.borrow_mut().finished = true;
+            }
+            Ok(())
+        }
+        fn poll_recv(
+            &mut self,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<serde_json::Value, dioxus::document::EvalError>> {
+            let mut query = self.0.borrow_mut();
+            if let Some(reply) = query.reply.take() {
+                std::task::Poll::Ready(Ok(reply))
+            } else {
+                query.waiter = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+        fn poll_join(
+            &mut self,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<serde_json::Value, dioxus::document::EvalError>> {
+            panic!("the inventory query must receive its acknowledged result");
+        }
+    }
+    fn opening_reply(h: &mut Harness, query: &Rc<RefCell<OpeningQuery>>, facts: &InventoryFacts) {
+        let waiter = {
+            let mut query = query.borrow_mut();
+            query.reply = Some(serde_json::json!({"value":facts,"error":null}));
+            query.waiter.take()
+        };
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
+        h.settle();
+    }
+    #[test]
+    fn opening_uses_registered_first_last_checked_and_custom_controls_in_both_modes() {
+        let _guard = crate::test_event_converter_guard();
+        for mode in [
+            DropdownNavigationMode::ActiveDescendant,
+            DropdownNavigationMode::RovingTabindex,
+        ] {
+            let document = Rc::new(OpeningDocument::default());
+            let mut h = Harness::with_document(
+                Fixture {
+                    mode,
+                    focus_checked: true,
+                    ..Default::default()
+                },
+                Some(document.clone()),
+            );
+            let trigger = mount_trigger_mock(&mut h, "Menu");
+            h.click("Menu");
+            let context = h.context();
+            let mut facts = mixed_inventory_facts();
+            facts.hosts[1].checked_attribute = true;
+            let extra = |name: &str, disabled: bool, hidden: bool, negative: bool| {
+                let mut host = facts.hosts[1].clone();
+                host.item = ItemRef(name.into());
+                host.capture = name.into();
+                host.target = name.into();
+                host.registration_key = name.into();
+                host.checked_attribute = false;
+                host.disabled_attribute = disabled;
+                host.hidden_attribute = hidden;
+                host.tabindex_attribute = negative.then(|| "-1".into());
+                host
+            };
+            let mut hosts = vec![
+                extra("disabled-opening", true, false, false),
+                extra("hidden-opening", false, true, false),
+                extra("unregistered-opening", false, false, false),
+                extra("negative-opening", false, false, true),
+            ];
+            hosts.extend(facts.hosts.clone());
+            facts.hosts = hosts;
+            facts.query_order = facts.hosts.iter().map(|host| host.item.clone()).collect();
+            facts.navigation_order = facts.query_order.clone();
+            let mut registered = facts.clone();
+            registered
+                .hosts
+                .retain(|host| host.target != "unregistered-opening");
+            let focuses = mount_inventory(&h, &registered);
+            for (last, checked, target) in [
+                (
+                    false,
+                    false,
+                    if mode == DropdownNavigationMode::ActiveDescendant {
+                        "mixed-category"
+                    } else {
+                        "negative-opening"
+                    },
+                ),
+                (true, true, "mixed-native"),
+                (false, true, "mixed-menu"),
+            ] {
+                h.dom
+                    .in_runtime(|| context.focus_edge_with_checked(last, checked));
+                h.settle();
+                let query = document.queries.borrow().last().unwrap().clone();
+                assert_eq!(
+                    query.borrow().scope,
+                    context
+                        .node
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .with_owner(dioxus::core::current_scope_id),
+                    "query belongs to the surface owner"
+                );
+                opening_reply(&mut h, &query, &facts);
+                assert_eq!(focuses.borrow().last().map(String::as_str), Some(target));
+            }
+            assert!(trigger.calls.borrow().is_empty());
+            let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
+            for host in &registered.hosts {
+                runtime.unregister_item_cue(if host.registration_key.is_empty() {
+                    &host.capture
+                } else {
+                    &host.registration_key
+                });
+            }
+            h.dom.in_runtime(|| context.focus_edge(false));
+            h.settle();
+            let query = document.queries.borrow().last().unwrap().clone();
+            opening_reply(&mut h, &query, &facts);
+            assert_eq!(
+                trigger.calls.borrow().len(),
+                usize::from(mode == DropdownNavigationMode::ActiveDescendant),
+                "no registered candidate uses Dioxus trigger focus in AD mode"
+            );
+        }
+    }
+    #[test]
+    fn opening_inventory_await_cancels_on_new_intent_close_mode_disabled_and_drop() {
+        let _guard = crate::test_event_converter_guard();
+        let document = Rc::new(OpeningDocument::default());
+        let mut h = Harness::with_document(Fixture::default(), Some(document.clone()));
+        h.click("Menu");
+        let context = h.context();
+        let facts = mixed_inventory_facts();
+        let focuses = mount_inventory(&h, &facts);
+        h.dom.in_runtime(|| context.focus_edge(false));
+        h.settle();
+        let first = document.queries.borrow().last().unwrap().clone();
+        h.dom.in_runtime(|| context.focus_edge(true));
+        h.settle();
+        assert!(
+            first.borrow().finished,
+            "newer opening intent drops the old query channel"
+        );
+        let latest = document.queries.borrow().last().unwrap().clone();
+        opening_reply(&mut h, &first, &facts);
+        assert!(focuses.borrow().is_empty());
+        opening_reply(&mut h, &latest, &facts);
+        assert_eq!(*focuses.borrow(), ["mixed-native"]);
+        h.dom.in_runtime(|| context.focus_submenu_entry());
+        h.settle();
+        let closing = document.queries.borrow().last().unwrap().clone();
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Outside, false)));
+        h.settle();
+        assert!(closing.borrow().finished);
+        opening_reply(&mut h, &closing, &facts);
+        assert_eq!(focuses.borrow().len(), 1);
+        h.dom.in_runtime(|| {
+            assert!(context.request(true, Reason::Trigger, false));
+            context.focus_edge(false);
+        });
+        h.settle();
+        let old_mode = document.queries.borrow().last().unwrap().clone();
+        h.config.borrow_mut().mode = DropdownNavigationMode::RovingTabindex;
+        h.update();
+        assert!(old_mode.borrow().finished);
+        opening_reply(&mut h, &old_mode, &facts);
+        assert_eq!(focuses.borrow().len(), 1);
+        let roving = document.queries.borrow().last().unwrap().clone();
+        h.config.borrow_mut().no_focus = true;
+        h.update();
+        opening_reply(&mut h, &roving, &facts);
+        assert_eq!(
+            focuses.borrow().len(),
+            1,
+            "disabled focus handling rejects a query admitted earlier"
+        );
+        h.config.borrow_mut().no_focus = false;
+        h.update();
+        h.dom.in_runtime(|| context.focus_edge(false));
+        h.settle();
+        let dropping = document.queries.borrow().last().unwrap().clone();
+        h.config.borrow_mut().visible = false;
+        h.update();
+        assert!(dropping.borrow().finished);
+        opening_reply(&mut h, &dropping, &facts);
+        assert_eq!(focuses.borrow().len(), 1);
+    }
+    #[test]
+    fn registered_native_control_keeps_ad_editing_defaults_while_escape_and_roving_still_route() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.click("Menu");
+        let context = h.context();
+        let facts = mixed_inventory_facts();
+        let _focuses = mount_inventory(&h, &facts);
+        let node = context.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        for (index, key) in ["Home", "End", "ArrowDown", "ArrowLeft", "Enter", " "]
+            .into_iter()
+            .enumerate()
+        {
+            let prevented = dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"sequence":index+1,"kind":"key","phase":"bubble","key":key,
+                "active_id":"mixed-native","hosts":[node.id()],"triggers":[node.id()],"nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
+                    "mode":"active-descendant","inside":true,"inventory":facts}]}).to_string()).0;
+            h.settle();
+            assert!(!prevented, "native registered control keeps {key} default");
+            assert!(*context.open.peek());
+            assert_eq!(runtime.pending_item_focus_count(), 0);
+        }
+        h.config.borrow_mut().mode = DropdownNavigationMode::RovingTabindex;
+        h.update();
+        assert!(
+            registered_inventory_key(&h, 7, "ArrowDown", &facts),
+            "roving mode still owns item arrow navigation"
+        );
+        h.settle();
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Escape, true)));
+        h.settle();
+        assert!(!*context.open.peek());
+    }
+    #[test]
+    fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            focus_checked: true,
+            ..Default::default()
+        });
+        let parent = h.context();
+        let child = h.config.borrow().linked.get().unwrap().context();
+        assert!(!parent.state.borrow().external && child.state.borrow().external);
+        let inventory = |context: &DropdownContext| {
+            let hosts = context
+                .entries
+                .borrow()
+                .values()
+                .map(|entry| {
+                    let attrs = &h.attrs[&h.target(&entry.label).raw()];
+                    serde_json::json!({"item":entry.host_id,"capture":entry.host_id,
+                    "target":entry.host_id,"registration_key":attrs["data-ix-item-key"],
+                    "kind":"dropdown","disabled_attribute":entry.disabled,
+                    "checked_attribute":entry.checked,"visible_focus":entry.label=="Detached leaf"})
+                })
+                .collect::<Vec<_>>();
+            let order = hosts
+                .iter()
+                .map(|host| host["item"].clone())
+                .collect::<Vec<_>>();
+            serde_json::from_value::<InventoryFacts>(
+                serde_json::json!({"items_host":context.host_id(),
+                "hosts":hosts,"query_order":order,"navigation_order":order}),
+            )
+            .unwrap()
+        };
+        let parent_facts = inventory(&parent);
+        let child_facts = inventory(&child);
+        let parent_focus = mount_inventory(&h, &parent_facts);
+        let child_focus = mount_inventory(&h, &child_facts);
+        let parent_node = parent.node.borrow().clone().unwrap();
+        let child_node = child.node.borrow().clone().unwrap();
+        let runtime = parent_node.runtime().unwrap();
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
+            {"id":parent_node.id(),"generation":parent_node.generation(),"connected":true,"discovery_ready":true,
+                "root_capture":"parent-root","mode":"active-descendant","inventory":parent_facts,"own_inventory":parent_facts},
+            {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,
+                "root_capture":"child-root","mode":"active-descendant","trigger_ancestors":[parent_node.id()],"inventory":child_facts}
+        ]}).to_string());
+        let trigger = parent_facts
+            .hosts
+            .iter()
+            .find(|host| {
+                parent
+                    .entries
+                    .borrow()
+                    .values()
+                    .any(|entry| entry.label == "Linked" && entry.host_id == host.target)
+            })
+            .unwrap();
+        assert!(parent_node.first_assigned_submenu() == h.config.borrow().linked.get());
+        // Discovery precedes opening, as it does for mounted native surfaces.
+        // Opening before the first report would retain an empty parent cache.
+        h.dom.in_runtime(|| {
+            assert!(parent.request(true, Reason::Trigger, false));
+            parent.open_submenu(trigger);
+        });
+        h.settle();
+        assert!(*parent.open.peek() && *child.open.peek());
+        assert!(h.key("Detached leaf", Key::ArrowDown).0);
+        let next = child
+            .entries
+            .borrow()
+            .values()
+            .find(|entry| entry.label == "Checked detached")
+            .unwrap()
+            .host_id
+            .clone();
+        assert_eq!(child_focus.borrow().last(), Some(&next));
+        let left = h.key("Checked detached", Key::ArrowLeft);
+        assert!(
+            !left.1,
+            "successful child return stops ancestor key handling"
+        );
+        assert!(!*child.open.peek() && *parent.open.peek());
+        assert!(parent.state.borrow().forward.is_none());
+        assert_eq!(parent_focus.borrow().last(), Some(&trigger.target));
+
+        let host = &child_facts.hosts[0];
+        let binding = ItemHostBinding {
+            key: host.registration_key.clone(),
+            host_id: host.target.clone(),
+            generic: true,
+            runtime: runtime.clone(),
+            context: Some(child.clone()),
+        };
+        let event = || {
+            KeyboardEvent::new(
+                Rc::new(dioxus::html::KeyboardData::new(TestKeyboard(
+                    Key::ArrowDown,
+                    Modifiers::empty(),
+                ))),
+                true,
+            )
+        };
+        h.dom.in_runtime(|| {
+            assert!(
+                !binding.navigation_key(event()),
+                "closed owner does not route"
+            )
+        });
+        h.dom.in_runtime(|| {
+            child.request(true, Reason::Trigger, false);
+        });
+        child.state.borrow_mut().settings.mode = DropdownNavigationMode::RovingTabindex;
+        h.dom.in_runtime(|| {
+            assert!(
+                !binding.navigation_key(event()),
+                "roving retains its existing route"
+            )
+        });
+        child.state.borrow_mut().settings.mode = DropdownNavigationMode::ActiveDescendant;
+        child.state.borrow_mut().external = false;
+        h.dom.in_runtime(|| {
+            assert!(
+                !binding.navigation_key(event()),
+                "builtin surfaces retain their existing route"
+            )
+        });
+        child.state.borrow_mut().external = true;
+        let unregistered = ItemHostBinding {
+            key: "unregistered-control".into(),
+            ..binding.clone()
+        };
+        h.dom.in_runtime(|| {
+            assert!(
+                !unregistered.navigation_key(event()),
+                "unregistered controls are not enrolled"
+            )
+        });
+        let mut native_facts = child_facts.clone();
+        native_facts.hosts[0].kind = ItemKind::NativeOptIn;
+        dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"kind":"observe","nodes":[
+            {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,
+                "root_capture":"child-root","inventory":native_facts}
+        ]}).to_string());
+        h.dom.in_runtime(|| {
+            assert!(
+                !binding.navigation_key(event()),
+                "registered native controls retain their editing route"
+            )
+        });
     }
 }

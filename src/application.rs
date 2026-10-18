@@ -3468,7 +3468,11 @@ pub fn MenuItem(
             }
         }
     };
+    let dropdown_key = item_host.clone();
     let onkey = move |event: KeyboardEvent| {
+        if dropdown_key.navigation_key(event.clone()) {
+            return;
+        }
         if let Some(nested) = &nested_key {
             nested.child_key(id, event);
         }
@@ -3856,6 +3860,7 @@ pub fn MenuCategory(
     let popup_key = category.clone();
     let popup_roving = root_roving.clone();
     let mounted_host = item_host.clone();
+    let dropdown_parent_key = item_host.clone();
     let mounted_id = host_id.clone();
     rsx! {
         div { id:host_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
@@ -3882,7 +3887,11 @@ pub fn MenuCategory(
                     if let Some(context)=&mount_context {let mut order=context.prefix.clone();order.push(id);context.entries.borrow_mut().push(NavigationEntry{id,node:event.data(),enabled:Rc::new(Cell::new(true)),order});}
                 },
                 onfocus:move |_|if let Some(context)=&focus_context {context.focused.set(Some(id));if let Some(roving)=&context.roving {roving.focus(Some(context.prefix.first().copied().unwrap_or(id)));}},
-                onkeydown:move |event|{if let Some(roving)=&key_roving {roving.origin(MenuOrigin::Item(id));}parent_key.key(event,true);},
+                onkeydown:move |event:KeyboardEvent|{
+                    if dropdown_parent_key.navigation_key(event.clone()){return;}
+                    if let Some(roving)=&key_roving {roving.origin(MenuOrigin::Item(id));}
+                    parent_key.key(event,true);
+                },
                 onclick:move |event|{event.stop_propagation();parent_click.activate_parent(false);},
                 span {class:"ix-menu-item-icon",if let Some(icon)=icon {crate::Icon{name:icon,size:24}}}
                 span {class:"ix-menu-label","{label}"}

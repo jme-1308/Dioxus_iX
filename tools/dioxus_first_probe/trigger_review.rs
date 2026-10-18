@@ -93,7 +93,7 @@ byId('r02-custom-trigger').click();await wait('outside setup',()=>surface().getA
 byId('r02-outside-trigger').focus();byId('r02-outside-trigger').click();await wait('outside focus preserved',()=>surface().getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-outside-trigger'));
 byId('r02-custom-trigger').click();await wait('programmatic return setup',()=>surface().getAttribute('data-ix-overlay-open')==='true');
 byId('r02-close-return').click();await wait('explicit return',()=>surface().getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-custom-trigger'));
-const old=byId('r02-custom-trigger');byId('r02-replace-trigger').click();await wait('replacement',()=>byId('r02-custom-trigger')!==old&&byId('r02-custom-trigger').textContent.includes('2'));
+const old=byId('r02-custom-trigger'),oldVersion=surface().getAttribute('data-ix-overlay-trigger-version');byId('r02-replace-trigger').click();await wait('replacement mounted',()=>byId('r02-custom-trigger')!==old&&byId('r02-custom-trigger').textContent.includes('2')&&surface().getAttribute('data-ix-overlay-trigger-version')!==oldVersion);
 byId('r02-custom-trigger').click();await wait('replacement open',()=>surface().getAttribute('data-ix-overlay-open')==='true');
 key('Escape');await wait('replacement current focus',()=>surface().getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-custom-trigger'));
 byId('r02-toggle-trigger').click();await wait('removed trigger',()=>!byId('r02-custom-trigger'));

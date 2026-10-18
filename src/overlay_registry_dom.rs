@@ -23,7 +23,7 @@ const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
 const keyTargets=new Map(),clickTargets=new Map(),triggerKeyTargets=new Map(),navigationTargets=new Map(),handledBubbleKeys=new WeakSet();
 const navigationBindings=new Map();
-const nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
+const immediateTabFrames=new Set();
 const anchorObservers=new Map();
 const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map();let itemObjectSequence=0;
 const itemInventoryLeases=new Map();
@@ -527,10 +527,6 @@ function send(report,event){
   syncItemCues();
 }
 
-// Each Boolean or nullable string is an offer. Only Rust's current model may
-// grant it; DOM values are never a saved desired state or a navigation policy.
-__DESCENDANT_PLUMBING__
-
 function itemCueQuery(cue){
   const input=transport();if(!alive||!input)return false;
   input.value=JSON.stringify({owner,sequence:0,item_cue:cue});
@@ -904,45 +900,16 @@ const inventoryReader=(id,generation)=>{
   return facts;
 };
 nativeDocument.inventoryReaders.set(owner,inventoryReader);
-function scheduleNativeFocus(){
-  if(nativeFocusFrame||!nativeFocusCommands.length)return;
-  nativeFocusFrame=requestAnimationFrame(()=>{
-    nativeFocusFrame=0;if(!alive)return;
-    // Only native focus commands admitted before this frame belong to its batch.
-    let remaining=nativeFocusCommands.length;
-    while(nativeFocusCommands.length&&remaining--){
-      const job=nativeFocusCommands[0],command=job.command;
-      if(job.root?.isConnected&&job.root.getAttribute('data-ix-overlay-owner')===owner&&job.root.getAttribute('data-ix-overlay-root')===command.root&&Number(job.root.getAttribute('data-ix-overlay-generation'))===command.generation&&
-        Number(job.root.getAttribute('data-ix-overlay-focus-version')||'0')<command.focus_version)break;
-      // Descendant focus waits for its renderer commit and hide permission.
-      syncExecution();
-      if(!job.hidden){
-        const state=descendantHidesReady(job);
-        if(state==='wait')break;
-        if(state==='cancel'||!descendantQuery(command,job.reference,'hidden',{hide_before:command.hide_before})){
-          nativeFocusCommands.shift();descendantQuery(command,job.reference,'cancel');continue;
-        }
-        job.hidden=true;
-      }
-      nativeFocusCommands.shift();
-      if(!transport())continue;
-      executeDescendantFocus(job);
-    }
-    reportObserve();scheduleNativeFocus();
-  });
-}
 try{
   reportObserve();
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
     if(command?.assignment_ack){acknowledgeTriggerAssignment(command.assignment_ack);reportObserve();}
     if(command?.navigation_config)configureNavigation(command.navigation_config);
-    if(command?.descendant_focus)queueDescendantFocus(command.descendant_focus);
     if(command?.item_cues)syncItemCues(null,true);
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
-  if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;
   itemCaptureNodes.clear();
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);

@@ -3,6 +3,8 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
+#[path = "dioxus_first_probe/descendant_review.rs"]
+mod descendant_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
@@ -57,6 +59,9 @@ fn Preview() -> Element {
                 .unwrap_or_default()
         }
     });
+    if scope == "?opening" {
+        return rsx! { descendant_review::DescendantPreview {} };
+    }
     if scope == "?triggers" {
         return rsx! { trigger_review::TriggerPreview {} };
     }

@@ -27,6 +27,7 @@ pub fn SelectItem(
     let binding = use_item_host("select");
     let host_id = item_host_id(&attributes, &binding.host_id);
     let mounted_host = binding.clone();
+    let dropdown_key = binding.clone();
     let mounted_id = host_id.clone();
     let active = binding.active();
     let roving_tabindex = binding.tabindex();
@@ -79,6 +80,7 @@ pub fn SelectItem(
             tabindex: roving_tabindex,
             onmounted: move |event| mounted_host.mount(&mounted_id,event.data()),
             onclick: move |event| onclick.call(event),
+            onkeydown: move |event: KeyboardEvent| { dropdown_key.navigation_key(event); },
             ..attributes,
             div {
                 class: if selected { "ix-dropdown-item ix-select-item-option select-item-checked" } else { "ix-dropdown-item ix-select-item-option" },

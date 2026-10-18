@@ -82,56 +82,6 @@ impl RuntimeHandle {
             .and_then(|item| facts.hosts.iter().find(|host| host.item == *item))
             .map(|host| host.capture.clone())
     }
-    #[cfg(test)]
-    pub(super) fn queue_submenu_return(&self, root: &str, generation: u64, capture: String) {
-        self.queue_submenu_return_after_hide(root, generation, capture, Vec::new());
-    }
-    pub(super) fn queue_submenu_return_after_hide(
-        &self,
-        root: &str,
-        generation: u64,
-        capture: String,
-        hides: Vec<crate::overlay_descendant_focus::DescendantHide>,
-    ) {
-        let admitted = self
-            .with_owner(root, generation, || {
-                let Some(entry) = self.entry(root) else {
-                    return false;
-                };
-                if self.read_current(root, &entry).is_none() {
-                    return false;
-                }
-                let mut state = self.0.borrow_mut();
-                let reference = state
-                    .item_root_captures
-                    .get(root)
-                    .filter(|(version, _, _)| *version == generation)
-                    .map(|(_, capture, _)| capture.clone());
-                if hides.is_empty() {
-                    state.descendant_focus.admit_return(
-                        root.into(),
-                        generation,
-                        0,
-                        reference,
-                        capture,
-                    );
-                } else {
-                    state.descendant_focus.admit_return_after_hide(
-                        root.into(),
-                        generation,
-                        0,
-                        reference,
-                        capture,
-                        hides,
-                    );
-                }
-                true
-            })
-            .unwrap_or(false);
-        if admitted {
-            self.flush_descendant_focus();
-        }
-    }
 }
 
 impl NodeHandle {
@@ -220,37 +170,6 @@ impl NodeHandle {
             .unwrap_or(false);
         if admitted {
             runtime.wake_submenu_markers();
-        }
-    }
-    pub(crate) fn queue_submenu_entry(&self, focus_version: u64) {
-        let Some(runtime) = self.runtime() else {
-            return;
-        };
-        let admitted = runtime
-            .with_owner(&self.id, self.generation, || {
-                let Some(entry) = runtime.entry(&self.id) else {
-                    return false;
-                };
-                if runtime.read_current(&self.id, &entry).is_none() {
-                    return false;
-                }
-                let mut state = runtime.0.borrow_mut();
-                let reference = state
-                    .item_root_captures
-                    .get(&self.id)
-                    .filter(|(version, _, _)| *version == self.generation)
-                    .map(|(_, capture, _)| capture.clone());
-                state.descendant_focus.admit_submenu(
-                    self.id.clone(),
-                    self.generation,
-                    focus_version,
-                    reference,
-                );
-                true
-            })
-            .unwrap_or(false);
-        if admitted {
-            runtime.flush_descendant_focus();
         }
     }
 }
