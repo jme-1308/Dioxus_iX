@@ -1,0 +1,274 @@
+<!doctype html>
+<!-- Development-only comparison of actual pinned Typography under authored system-font tokens. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pinned Typography token matrix</title>
+<link rel="stylesheet" href="http://127.0.0.1:8089/keyboard-foundation.css"><script type="module" src="http://127.0.0.1:8089/www/build/siemens-ix.esm.js"></script><script nomodule src="http://127.0.0.1:8089/www/build/siemens-ix.js"></script>
+<style>body{margin:0;background:#f4f6f8;color:#202932;font:16px/1.5 system-ui,sans-serif}main{max-width:96rem;margin:auto;padding:24px}h1{font-size:1.75rem;line-height:1.2;margin:0 0 16px}h2{font-size:1.25rem;margin:24px 0 8px}p{max-width:75ch}.controls{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}button{font:inherit;min-height:36px;padding:4px 10px;background:white;color:#202932;border:1px solid #7d8b98;border-radius:4px;cursor:pointer}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid #075c9d;outline-offset:3px}::selection{background:#bddcf2;color:#102c42}.matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.scope{padding:16px;border:1px solid #bdc6ce;background:white;min-width:0}.scope[data-ix-color-schema=dark]{background:#202932}.scope-title{color:#202932;background:#f4f6f8;font:600 16px/1.5 system-ui,sans-serif;padding:8px;margin:0 0 16px}.specimen{padding:8px 0;border-bottom:1px solid #bdc6ce;overflow-wrap:anywhere}.specimen-label{display:block;font:12px/1.5 system-ui,sans-serif;color:#384b5b;background:#eef2f5;padding:2px 4px;margin-bottom:4px}.nested{margin-top:24px;padding:12px;border:1px solid #7d8b98;background:#202932}pre{max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:white;border:1px solid #bdc6ce;font:13px/1.5 ui-monospace,monospace;font-variant-numeric:tabular-nums;scrollbar-color:#7d8b98 #f4f6f8}@media(max-width:900px){.matrix{grid-template-columns:1fr}main{padding:16px}}</style></head>
+<body data-ix-theme="brand"><main><h1>Pinned Typography token matrix</h1><p>This diagnostic supplies developer-authored system-font tokens to actual source components. It measures semantic token behavior, inheritance and updates. The values are not Brand font metrics.</p><p id="typography-status" role="status" data-ready="false" data-run="idle">Loading pinned Typography…</p>
+<div class="controls"><button id="typography-baseline" disabled>Baseline tokens</button><button id="typography-revised" disabled>Revise tokens</button><button id="typography-reactive" disabled>Change scope and props</button><button id="typography-restored" disabled>Restore baseline</button><button id="typography-capture" disabled>Capture metrics</button><button id="typography-run" disabled>Run four phases</button></div><div id="typography-matrix" class="matrix"></div><h2>Computed observations</h2><pre id="typography-result">{}</pre></main>
+<script type="module">
+const spec={
+  "revision": "8bf599bc68365d7752e12832e71b625883b93d7a",
+  "fixture": "developer-authored system-font semantic-token adapter; not numeric Brand metrics",
+  "formats": [
+    "body",
+    "body-sbold",
+    "body-paragraph",
+    "body-paragraph-sbold",
+    "body-sm",
+    "body-sm-sbold",
+    "body-lg",
+    "body-lg-sbold",
+    "display",
+    "display-sbold",
+    "display-lg",
+    "display-lg-sbold",
+    "display-xl",
+    "display-xl-sbold",
+    "display-xxl",
+    "display-xxl-sbold",
+    "h6",
+    "h5",
+    "h5-bold",
+    "h4",
+    "h3",
+    "h2",
+    "h1",
+    "code",
+    "code-sm",
+    "code-lg"
+  ],
+  "colorRoles": [
+    "alarm",
+    "alarm-contrast",
+    "contrast",
+    "critical-contrast",
+    "info-contrast",
+    "inv-contrast",
+    "inv-soft",
+    "inv-std",
+    "inv-weak",
+    "neutral-contrast",
+    "primary-contrast",
+    "soft",
+    "std",
+    "success-contrast",
+    "warning-contrast",
+    "weak"
+  ],
+  "colorTokens": [
+    "text-danger",
+    "text-on-danger",
+    "text-primary",
+    "text-on-critical",
+    "text-on-information",
+    "text-inverse",
+    "text-on-neutral",
+    "text-on-accent",
+    "text-secondary",
+    "text-on-success",
+    "text-on-warning",
+    "text-disabled"
+  ],
+  "colorMap": {
+    "alarm": "text-danger",
+    "alarm-contrast": "text-on-danger",
+    "contrast": "text-primary",
+    "critical-contrast": "text-on-critical",
+    "info-contrast": "text-on-information",
+    "inv-contrast": "text-inverse",
+    "inv-soft": "text-inverse",
+    "inv-std": "text-inverse",
+    "inv-weak": "text-inverse",
+    "neutral-contrast": "text-on-neutral",
+    "primary-contrast": "text-on-accent",
+    "soft": "text-secondary",
+    "std": "text-primary",
+    "success-contrast": "text-on-success",
+    "warning-contrast": "text-on-warning",
+    "weak": "text-disabled"
+  },
+  "scopes": [
+    {
+      "id": "light-normal",
+      "index": 0,
+      "scheme": "light",
+      "density": "normal"
+    },
+    {
+      "id": "light-compact",
+      "index": 1,
+      "scheme": "light",
+      "density": "compact"
+    },
+    {
+      "id": "dark-normal",
+      "index": 2,
+      "scheme": "dark",
+      "density": "normal"
+    },
+    {
+      "id": "dark-compact",
+      "index": 3,
+      "scheme": "dark",
+      "density": "compact"
+    }
+  ],
+  "sentinel": {
+    "fontSize": "12 + 2*(formatIndex % 8) + scopeIndex + 2*revision px",
+    "lineHeight": "fontSize + 8 px",
+    "fontWeight": "600 if format contains sbold or is h5-bold, otherwise400",
+    "fontFamily": "ui-monospace, monospace for code*; otherwise revision0 system-ui, sans-serif; revision1 serif",
+    "letterSpacing": "0.25 + 0.25*revision px",
+    "boldWeight": "700 + 100*revision",
+    "color": "rgb(24+11*tokenIndex+5*scopeIndex+3*revision,32+7*tokenIndex+3*scopeIndex+5*revision,48+5*tokenIndex+7*scopeIndex+2*revision)",
+    "inheritedColor": "rgb(37, 83, 119)",
+    "normalSpacingToken": "--si-ref-typography-letter-spacing-normal",
+    "boldToken": "--si-ref-typography-font-weight-bold"
+  },
+  "extras": [
+    "inherited",
+    "bold",
+    "underline",
+    "line-through",
+    "default-format",
+    "reactive"
+  ],
+  "phases": [
+    {
+      "id": "baseline",
+      "revision": 0,
+      "primaryScopeIndex": 0,
+      "reactive": {
+        "format": "body",
+        "textColor": null,
+        "bold": false,
+        "textDecoration": "none"
+      }
+    },
+    {
+      "id": "revised",
+      "revision": 1,
+      "primaryScopeIndex": 0,
+      "reactive": {
+        "format": "body",
+        "textColor": null,
+        "bold": false,
+        "textDecoration": "none"
+      }
+    },
+    {
+      "id": "reactive",
+      "revision": 1,
+      "primaryScopeIndex": 3,
+      "reactive": {
+        "format": "h2",
+        "textColor": "warning-contrast",
+        "bold": true,
+        "textDecoration": "underline"
+      }
+    },
+    {
+      "id": "restored",
+      "revision": 0,
+      "primaryScopeIndex": 0,
+      "reactive": {
+        "format": "body",
+        "textColor": null,
+        "bold": false,
+        "textDecoration": "none"
+      }
+    }
+  ],
+  "nested": {
+    "id": "nested-isolated",
+    "scopeIndex": 3,
+    "revision": 0,
+    "format": "body",
+    "textColor": "soft"
+  },
+  "counts": {
+    "rowsPerScope": 48,
+    "scopes": 4,
+    "nestedRows": 1,
+    "rowsPerPhase": 193,
+    "phases": 4,
+    "totalRows": 772
+  },
+  "ids": {
+    "scope": "typo-scope-{scopeID}",
+    "row": "typo-{scopeID}-{kind}-{key}",
+    "nested": "typo-nested-isolated",
+    "run": "typography-run",
+    "status": "typography-status",
+    "result": "typography-result",
+    "controls": [
+      "typography-baseline",
+      "typography-revised",
+      "typography-reactive",
+      "typography-restored"
+    ]
+  },
+  "rowSchema": [
+    "id",
+    "scope",
+    "scopeIndex",
+    "revision",
+    "kind",
+    "key",
+    "format",
+    "textColor",
+    "bold",
+    "textDecoration",
+    "attrs",
+    "class",
+    "computed",
+    "rect",
+    "text"
+  ],
+  "computedSchema": [
+    "fontSize",
+    "lineHeight",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "letterSpacing",
+    "color",
+    "textDecorationLine",
+    "fontFeatureSettings"
+  ],
+  "resultSchema": [
+    "ok",
+    "revision",
+    "fixture",
+    "phases",
+    "errors",
+    "limits"
+  ],
+  "phaseSchema": [
+    "id",
+    "rows",
+    "scopes",
+    "settleFrames"
+  ],
+  "settlement": "actualcomponentOnReady atbootstrap, document.fonts.ready, fixed2nativeRAF aftereachpublicphasecommand; no desiredmetrics waits"
+};
+const byId=id=>document.getElementById('typography-'+id),scopes=[],rows=[],errors=[],journal=[];
+let ready=false,busy=false,phase='baseline',sequence=0;
+const phaseById=id=>spec.phases.find(p=>p.id===id);
+function log(kind,data={}){journal.push({seq:++sequence,kind,time:performance.now(),...data});}
+function tokens(scope,index,revision){for(const[i,format]of spec.formats.entries()){const size=12+2*(i%8)+index+2*revision,weight=format.includes('sbold')||format==='h5-bold'?600:400,family=format.startsWith('code')?'ui-monospace, monospace':revision===0?'system-ui, sans-serif':'serif';scope.style.setProperty('--si-sys-typography-'+format,`${weight} ${size}px/${size+8}px ${family}`);}scope.style.setProperty('--si-ref-typography-letter-spacing-normal',`${0.25+0.25*revision}px`);scope.style.setProperty('--si-ref-typography-font-weight-bold',String(700+100*revision));for(const[k,token]of spec.colorTokens.entries())scope.style.setProperty('--si-sys-color-'+token,`rgb(${24+11*k+5*index+3*revision}, ${32+7*k+3*index+5*revision}, ${48+5*k+7*index+2*revision})`);scope.style.color=spec.sentinel.inheritedColor;scope.dataset.scopeIndex=String(index);scope.dataset.revision=String(revision);scope.dataset.ixColorSchema=index>=2?'dark':'light';scope.dataset.ixDensity=index%2===1?'compact':'normal';scope.dataset.ixTheme='brand';}
+function specimen(scope,id,kind,key,props){const wrap=document.createElement('div');wrap.className='specimen';const label=document.createElement('span');label.className='specimen-label';label.textContent=kind+' / '+key;const node=document.createElement('ix-typography');node.id=id;node.dataset.typographyKind=kind;node.dataset.typographyKey=key;for(const[k,v]of Object.entries(props))if(v!==null)node[k]=v;node.textContent='Aa 0123 — '+key;wrap.append(label,node);scope.append(wrap);const item={node,scope:scope.dataset.scopeId,kind,key,props:{format:null,textColor:null,bold:false,textDecoration:'none',...props}};rows.push(item);return item;}
+function construct(){for(const entry of spec.scopes){const scope=document.createElement('section');scope.id='typo-scope-'+entry.id;scope.dataset.scopeId=entry.id;scope.className='scope';const title=document.createElement('h2');title.className='scope-title';title.textContent=entry.id;scope.append(title);byId('matrix').append(scope);scopes.push({entry,node:scope});tokens(scope,entry.index,0);for(const format of spec.formats)specimen(scope,`typo-${entry.id}-format-${format}`,'format',format,{format});for(const role of spec.colorRoles)specimen(scope,`typo-${entry.id}-color-${role}`,'color',role,{format:'body',textColor:role});for(const extra of spec.extras){const props={format:extra==='default-format'?null:'body'};if(extra==='bold')props.bold=true;if(extra==='underline'||extra==='line-through')props.textDecoration=extra;specimen(scope,`typo-${entry.id}-extra-${extra}`,'extra',extra,props);}}
+const nested=document.createElement('section');nested.className='nested';nested.dataset.scopeId='nested-isolated';nested.id='typo-scope-nested-isolated';scopes[0].node.append(nested);tokens(nested,3,0);specimen(nested,spec.ids.nested,'nested','body',{format:'body',textColor:'soft'});}
+function computedRow(item){const n=item.node,cs=getComputedStyle(n),r=n.getBoundingClientRect(),scope=n.closest('[data-scope-id]');return{id:n.id,scope:item.scope,scopeIndex:Number(scope.dataset.scopeIndex),revision:Number(scope.dataset.revision),kind:item.kind,key:item.key,...item.props,attrs:Object.fromEntries([...n.attributes].map(a=>[a.name,a.value])),class:n.className,computed:Object.fromEntries(spec.computedSchema.map(k=>[k,cs[k]])),rect:{x:r.x,y:r.y,width:r.width,height:r.height},text:n.textContent,sourceProperties:{format:n.format??null,textColor:n.textColor??null,bold:n.bold,textDecoration:n.textDecoration},resolvedTokens:{font:cs.getPropertyValue('--si-sys-typography-'+(n.format??'body')).trim(),letterSpacing:cs.getPropertyValue('--si-ref-typography-letter-spacing-normal').trim(),bold:cs.getPropertyValue('--si-ref-typography-font-weight-bold').trim(),color:n.textColor?cs.getPropertyValue('--si-sys-color-'+spec.colorMap[n.textColor]).trim():null}};}
+function snapshot(){return{id:phase,rows:rows.map(computedRow),scopes:scopes.map(({entry,node})=>({id:entry.id,scopeIndex:Number(node.dataset.scopeIndex),scheme:node.dataset.ixColorSchema,density:node.dataset.ixDensity,revision:Number(node.dataset.revision),supplied:true})),settleFrames:2};}
+async function settle(){await document.fonts.ready;for(let index=1;index<=2;index++)await new Promise(resolve=>requestAnimationFrame(timestamp=>queueMicrotask(()=>{log('settle-frame',{index,timestamp,phase});resolve();})));}
+async function apply(id){const p=phaseById(id);if(!p)throw Error('Unknown phase '+id);phase=id;log('public-phase-before',{id});for(const{entry,node}of scopes){tokens(node,entry.index===0?p.primaryScopeIndex:entry.index,p.revision);const item=rows.find(r=>r.scope===entry.id&&r.kind==='extra'&&r.key==='reactive');for(const[key,value]of Object.entries(p.reactive)){item.node[key]=value===null?undefined:value;item.props[key]=value;}}await settle();log('public-phase-settled',{id,rows:rows.length});byId('status').textContent='Ready: '+id+' — '+rows.length+' computed specimens';return snapshot();}
+function controls(enabled){for(const n of document.querySelectorAll('.controls button'))n.disabled=!enabled;}
+function publish(result){byId('result').textContent=JSON.stringify(result,null,2);}
+async function command(id){if(!ready||busy)return;busy=true;controls(false);try{const observation=await apply(id);publish({ok:true,revision:spec.revision,fixture:spec.fixture,phases:[observation],errors:[...errors],journal:[...journal],limits});return observation;}catch(error){errors.push(String(error));publish({ok:false,error:String(error),errors:[...errors]});}finally{busy=false;controls(ready);}}
+const limits=['Developer-authored tokens establish a semantic adapter comparison; no exact Brand font metric or corporate font claim','Actual source native/custom-host attributes and Rust renderer structure are independent; computed properties are the comparison layer','Fixed2 native RAF plus font readiness are observation horizons, not desired metric waits','No source rebuild, private component state, focus policy, prototype or RAF wrapping'];
+async function run(){if(!ready||busy)return;busy=true;controls(false);byId('status').dataset.run='running';const phases=[];try{for(const entry of spec.phases)phases.push(await apply(entry.id));const result={ok:true,revision:spec.revision,fixture:spec.fixture,phases,errors:[...errors],journal:[...journal],limits};publish(result);byId('status').dataset.run='done';return result;}catch(error){errors.push(String(error));const result={ok:false,error:String(error),phases,errors:[...errors]};publish(result);byId('status').dataset.run='done';return result;}finally{busy=false;controls(ready);}}
+for(const entry of spec.phases)byId(entry.id).addEventListener('click',event=>{event.preventDefault();event.stopPropagation();command(entry.id);});byId('run').addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run();});byId('capture').addEventListener('click',event=>{event.preventDefault();event.stopPropagation();if(ready&&!busy)publish({ok:true,revision:spec.revision,fixture:spec.fixture,phases:[snapshot()],errors:[...errors],journal:[...journal],limits});});window.addEventListener('error',event=>errors.push(event.message));window.addEventListener('unhandledrejection',event=>errors.push(String(event.reason)));
+window.upstreamTypographyReview=Object.freeze({snapshot,run});try{await customElements.whenDefined('ix-typography');construct();await Promise.all(rows.map(r=>r.node.componentOnReady()));await apply('baseline');ready=true;byId('status').dataset.ready='true';controls(true);publish({ok:true,revision:spec.revision,fixture:spec.fixture,phases:[snapshot()],errors:[...errors],journal:[...journal],limits});}catch(error){errors.push(String(error));byId('status').textContent='Pinned Typography unavailable: '+error;publish({ok:false,error:String(error),errors:[...errors]});}
+</script></body></html>

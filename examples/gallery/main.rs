@@ -43,6 +43,7 @@ mod patterns;
 mod source_examples;
 mod tabs_review;
 mod text_commit_review;
+mod theme_review;
 mod tree;
 mod workflow_review;
 
@@ -66,6 +67,7 @@ enum GalleryPage {
     Patterns,
     Dialogs,
     Icons,
+    Theme,
     Coverage,
 }
 
@@ -85,6 +87,7 @@ impl GalleryPage {
         Self::Patterns,
         Self::Dialogs,
         Self::Icons,
+        Self::Theme,
         Self::Coverage,
     ];
     fn label(self) -> &'static str {
@@ -103,6 +106,7 @@ impl GalleryPage {
             Self::Tree => "Tree",
             Self::Application => "Application shell",
             Self::Icons => "Icons",
+            Self::Theme => "Theme & typography",
             Self::Coverage => "Port coverage",
         }
     }
@@ -118,6 +122,7 @@ impl GalleryPage {
             Self::Patterns => "editor-grid",
             Self::Dialogs => "application-screen",
             Self::Icons => "shapes",
+            Self::Theme => "shapes",
             Self::DateTime => "calendar",
             Self::DataGrid => "editor-grid",
             Self::Tree => "hierarchy",
@@ -210,6 +215,7 @@ fn Gallery() -> Element {
                         GalleryPage::Patterns => rsx! { filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
                         GalleryPage::Dialogs => rsx! { dialogs::DialogExamples {} },
                         GalleryPage::Icons => rsx! { IconExamples {} },
+                        GalleryPage::Theme => rsx! { theme_review::ThemeReview {} },
                         GalleryPage::Coverage => rsx! { CoverageExamples {} },
                     }
                 }

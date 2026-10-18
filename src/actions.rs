@@ -753,7 +753,11 @@ action_enum!(TypographyFormat, Body,
     DisplayXl => "display-xl", DisplayXlSbold => "display-xl-sbold", DisplayXxl => "display-xxl", DisplayXxlSbold => "display-xxl-sbold",
     H6 => "h6", H5 => "h5", H5Bold => "h5-bold", H4 => "h4", H3 => "h3", H2 => "h2", H1 => "h1",
     Code => "code", CodeSm => "code-sm", CodeLg => "code-lg");
-action_enum!(TypographyColor, Std, Std => "std", Soft => "soft", Weak => "weak", Alarm => "alarm", Contrast => "contrast", Inverse => "inverse", PrimaryContrast => "primary-contrast", AlarmContrast => "alarm-contrast", CriticalContrast => "critical-contrast", InfoContrast => "info-contrast", NeutralContrast => "neutral-contrast", SuccessContrast => "success-contrast", WarningContrast => "warning-contrast");
+action_enum!(TypographyColor, Std,
+    Std => "std", Soft => "soft", Weak => "weak", Alarm => "alarm", Contrast => "contrast",
+    InvContrast => "inv-contrast", InvSoft => "inv-soft", InvStd => "inv-std", InvWeak => "inv-weak", Inverse => "inverse",
+    PrimaryContrast => "primary-contrast", AlarmContrast => "alarm-contrast", CriticalContrast => "critical-contrast",
+    InfoContrast => "info-contrast", NeutralContrast => "neutral-contrast", SuccessContrast => "success-contrast", WarningContrast => "warning-contrast");
 action_enum!(TypographyDecoration, None, None => "none", Underline => "underline", LineThrough => "line-through");
 
 /// Text styles with semantic heading levels and code roles where appropriate.
@@ -761,7 +765,7 @@ action_enum!(TypographyDecoration, None, None => "none", Underline => "underline
 pub fn Typography(
     children: Element,
     #[props(default)] format: TypographyFormat,
-    #[props(default)] text_color: TypographyColor,
+    text_color: Option<TypographyColor>,
     #[props(default)] bold: bool,
     #[props(default)] text_decoration: TypographyDecoration,
     #[props(default)] class: String,
@@ -775,8 +779,11 @@ pub fn Typography(
         TypographyFormat::H6 => Some(6),
         _ => None,
     };
+    let color_class = text_color
+        .map(|color| format!(" ix-text-{}", color.as_str()))
+        .unwrap_or_default();
     rsx! { div {
-        class: "ix-typography ix-type-{format.as_str()} ix-text-{text_color.as_str()} {class}",
+        class: "ix-typography ix-type-{format.as_str()}{color_class} {class}",
         class: if bold { "ix-type-bold" }, style: "text-decoration:{text_decoration.as_str()}",
         role: heading.map(|_| "heading"), aria_level: heading,
         {children}
@@ -811,7 +818,7 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-badge{position:relative;display:inline-flex;vertical-align:middle}.ix-theme .ix-badge-indicator{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:20px;height:20px;padding:0 4px;border-radius:10px;background:var(--ix-status-bg);color:var(--ix-status-fg);font:700 14px/20px var(--ix-font);white-space:nowrap;max-width:var(--ix-badge-max-width,160px);overflow:hidden;text-overflow:ellipsis}.ix-theme .ix-badge-label:not(.ix-badge-attached) .ix-badge-indicator{width:100%}.ix-theme .ix-badge-label-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ix-theme .ix-badge-label .ix-badge-indicator{height:20px;line-height:20px;border-radius:10px;padding:0 8px;font-weight:400}.ix-theme .ix-badge-dot .ix-badge-indicator{min-width:12px;width:12px;height:12px;padding:0;border-radius:50%}.ix-theme .ix-badge-status-icon .ix-badge-indicator{min-width:20px;width:20px;height:20px;padding:0;border-radius:0;background:transparent;color:var(--ix-status-bg);overflow:visible}.ix-theme .ix-badge-status-stack{position:relative;display:inline-flex;width:20px;height:20px}.ix-theme .ix-badge-status-plate,.ix-theme .ix-badge-status-glyph{position:absolute;inset:0}.ix-theme .ix-badge-status-plate{color:var(--ix-status-fg)}.ix-theme .ix-badge.ix-outline.ix-badge-status-icon .ix-badge-indicator{background:transparent;border:0}.ix-theme .ix-badge.ix-outline .ix-badge-indicator{border:1px solid var(--ix-status-bg);background:var(--ix-color-surface);color:var(--ix-status-bg)}.ix-theme .ix-badge-attached .ix-badge-indicator{position:absolute;right:var(--ix-badge-x);top:var(--ix-badge-y)}.ix-theme .ix-badge-bottom-after .ix-badge-indicator{top:auto;bottom:var(--ix-badge-y)}.ix-theme .ix-badge-border .ix-badge-indicator{outline:2px solid var(--ix-color-surface)}.ix-theme .ix-badge-animated .ix-badge-indicator{position:relative;overflow:visible;isolation:isolate}.ix-theme .ix-badge-attached.ix-badge-animated .ix-badge-indicator{position:absolute}.ix-theme .ix-badge-animated .ix-badge-indicator::after{content:"";position:absolute;inset:.5px;z-index:-1;pointer-events:none;box-sizing:border-box;border:0 solid var(--ix-status-bg);border-radius:inherit;opacity:0;animation:ix-badge-pulse-ring var(--ix-badge-animation-duration,2s) linear infinite}.ix-theme .ix-badge-status-icon.ix-badge-animated .ix-badge-indicator::after{inset:.4px;border:0;background:var(--ix-status-bg);border-radius:50%;transform:scale(.521);animation-name:ix-badge-pulse-status}@keyframes ix-badge-pulse-ring{0%,100%{inset:.5px;border-width:0;opacity:0}5%{inset:.5px;border-width:0;opacity:.5}45%{opacity:.4}80%{inset:-7.5px;border-width:8px;opacity:.1;animation-timing-function:ease-out}90%{inset:-9.5px;border-width:10px;opacity:0}}@keyframes ix-badge-pulse-status{0%,100%{transform:scale(.521);opacity:0}5%{transform:scale(.521);opacity:.5;animation-timing-function:cubic-bezier(.637,.43,.928,1.008)}45%{transform:scale(1);opacity:.4}80%{transform:scale(1.6);opacity:.1;animation-timing-function:ease-out}90%{transform:scale(1.8);opacity:0}}
 .ix-theme .ix-avatar{display:inline-flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;vertical-align:middle;width:var(--ix-avatar-size);height:var(--ix-avatar-size);border-radius:50%;background:var(--ix-color-surface-2);color:var(--ix-color-text);font:600 14px/1 var(--ix-font)}.ix-theme .ix-avatar img{width:100%;height:100%;object-fit:cover}.ix-theme .ix-divider{height:1px;background:var(--ix-color-border);margin:16px 0;flex-shrink:0}.ix-theme .ix-divider-vertical{height:auto;min-height:24px;width:1px;margin:0 16px;align-self:stretch}
 .ix-theme .ix-progress{--ix-progress-color:var(--ix-color-primary);color:var(--ix-color-text);min-width:0}.ix-theme .ix-progress-status-error{--ix-progress-color:var(--ix-color-danger-text)}.ix-theme .ix-progress-status-success{--ix-progress-color:var(--ix-color-success)}.ix-theme .ix-progress-status-warning{--ix-progress-color:var(--ix-color-warning-text)}.ix-theme .ix-progress-status-info{--ix-progress-color:var(--ix-color-info-text)}.ix-theme .ix-progress-status-paused{--ix-progress-color:var(--ix-color-text-secondary)}.ix-theme .ix-progress-label{color:var(--ix-color-text-secondary);margin-bottom:8px;font-size:14px}.ix-theme .ix-progress-content{display:flex;align-items:center;gap:12px}.ix-theme .ix-progress-track{height:8px;flex:1;overflow:hidden;background:var(--ix-color-surface-2);border-radius:2px}.ix-theme .ix-progress-xs .ix-progress-track{height:2px}.ix-theme .ix-progress-sm .ix-progress-track{height:4px}.ix-theme .ix-progress-lg .ix-progress-track{height:16px}.ix-theme .ix-progress-xl .ix-progress-track{height:24px}.ix-theme .ix-progress-fill{height:100%;background:var(--ix-progress-color);transition:width .2s ease-out}.ix-theme .ix-progress-value{font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums}.ix-theme .ix-progress-helper{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--ix-color-text-secondary)}.ix-theme .ix-progress-status-error .ix-progress-helper{color:var(--ix-color-danger-text)}.ix-theme .ix-progress-circle{position:relative;display:inline-flex;width:var(--ix-progress-size);height:var(--ix-progress-size);flex-shrink:0}.ix-theme .ix-progress-circle svg{width:100%;height:100%;transform:rotate(-90deg)}.ix-theme .ix-progress-circle circle{fill:none;stroke-width:3}.ix-theme .ix-progress-circle-track{stroke:var(--ix-color-surface-2)}.ix-theme .ix-progress-circle-fill{stroke:var(--ix-progress-color);transition:stroke-dashoffset .2s ease-out}.ix-theme .ix-progress-circle-value{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-variant-numeric:tabular-nums}.ix-theme .ix-progress-circular .ix-progress-content{justify-content:inherit}
-.ix-theme .ix-typography{display:block;font:14px/20px var(--ix-font);color:var(--ix-color-text);margin:0;overflow-wrap:break-word}.ix-theme .ix-type-body-paragraph,.ix-theme .ix-type-body-paragraph-sbold{line-height:24px}.ix-theme .ix-type-body-sm,.ix-theme .ix-type-body-sm-sbold{font-size:12px;line-height:16px}.ix-theme .ix-type-body-lg,.ix-theme .ix-type-body-lg-sbold{font-size:16px;line-height:24px}.ix-theme .ix-type-display,.ix-theme .ix-type-display-sbold{font-size:40px;line-height:48px}.ix-theme .ix-type-display-lg,.ix-theme .ix-type-display-lg-sbold{font-size:48px;line-height:56px}.ix-theme .ix-type-display-xl,.ix-theme .ix-type-display-xl-sbold{font-size:56px;line-height:64px}.ix-theme .ix-type-display-xxl,.ix-theme .ix-type-display-xxl-sbold{font-size:64px;line-height:72px}.ix-theme .ix-type-h1{font-size:40px;line-height:48px}.ix-theme .ix-type-h2{font-size:32px;line-height:40px}.ix-theme .ix-type-h3{font-size:24px;line-height:32px}.ix-theme .ix-type-h4{font-size:20px;line-height:28px}.ix-theme .ix-type-h5,.ix-theme .ix-type-h5-bold{font-size:16px;line-height:24px}.ix-theme .ix-type-h6{font-size:14px;line-height:20px}.ix-theme .ix-typography[class*=-sbold],.ix-theme .ix-type-h6,.ix-theme .ix-type-h5-bold{font-weight:600}.ix-theme .ix-type-bold{font-weight:700}.ix-theme .ix-type-code,.ix-theme .ix-type-code-sm,.ix-theme .ix-type-code-lg{font-family:monospace}.ix-theme .ix-type-code-sm{font-size:12px;line-height:16px}.ix-theme .ix-type-code-lg{font-size:16px;line-height:24px}.ix-theme .ix-text-soft,.ix-theme .ix-text-weak{color:var(--ix-color-text-secondary)}.ix-theme .ix-text-alarm{color:var(--ix-color-danger-text)}.ix-theme .ix-text-inverse,.ix-theme .ix-text-primary-contrast{color:var(--ix-color-on-primary)}.ix-theme .ix-text-alarm-contrast{color:var(--ix-color-on-danger,#fff)}.ix-theme .ix-text-warning-contrast,.ix-theme .ix-text-critical-contrast,.ix-theme .ix-text-info-contrast,.ix-theme .ix-text-success-contrast{color:#000028}
+.ix-theme .ix-typography{display:block;position:relative;font:var(--si-sys-typography-body,14px/20px var(--ix-font));margin:0;overflow-wrap:break-word}.ix-theme .ix-type-body{font:var(--si-sys-typography-body,14px/20px var(--ix-font))}.ix-theme .ix-type-body-sbold{font:var(--si-sys-typography-body-sbold,600 14px/20px var(--ix-font))}.ix-theme .ix-type-body-paragraph{font:var(--si-sys-typography-body-paragraph,14px/24px var(--ix-font))}.ix-theme .ix-type-body-paragraph-sbold{font:var(--si-sys-typography-body-paragraph-sbold,600 14px/24px var(--ix-font))}.ix-theme .ix-type-body-sm{font:var(--si-sys-typography-body-sm,12px/16px var(--ix-font))}.ix-theme .ix-type-body-sm-sbold{font:var(--si-sys-typography-body-sm-sbold,600 12px/16px var(--ix-font))}.ix-theme .ix-type-body-lg{font:var(--si-sys-typography-body-lg,16px/24px var(--ix-font))}.ix-theme .ix-type-body-lg-sbold{font:var(--si-sys-typography-body-lg-sbold,600 16px/24px var(--ix-font))}.ix-theme .ix-type-display{font:var(--si-sys-typography-display,40px/48px var(--ix-font))}.ix-theme .ix-type-display-sbold{font:var(--si-sys-typography-display-sbold,600 40px/48px var(--ix-font))}.ix-theme .ix-type-display-lg{font:var(--si-sys-typography-display-lg,48px/56px var(--ix-font))}.ix-theme .ix-type-display-lg-sbold{font:var(--si-sys-typography-display-lg-sbold,600 48px/56px var(--ix-font))}.ix-theme .ix-type-display-xl{font:var(--si-sys-typography-display-xl,56px/64px var(--ix-font))}.ix-theme .ix-type-display-xl-sbold{font:var(--si-sys-typography-display-xl-sbold,600 56px/64px var(--ix-font))}.ix-theme .ix-type-display-xxl{font:var(--si-sys-typography-display-xxl,64px/72px var(--ix-font))}.ix-theme .ix-type-display-xxl-sbold{font:var(--si-sys-typography-display-xxl-sbold,600 64px/72px var(--ix-font))}.ix-theme .ix-type-h1{font:var(--si-sys-typography-h1,40px/48px var(--ix-font))}.ix-theme .ix-type-h2{font:var(--si-sys-typography-h2,32px/40px var(--ix-font))}.ix-theme .ix-type-h3{font:var(--si-sys-typography-h3,24px/32px var(--ix-font))}.ix-theme .ix-type-h4{font:var(--si-sys-typography-h4,20px/28px var(--ix-font))}.ix-theme .ix-type-h5{font:var(--si-sys-typography-h5,16px/24px var(--ix-font))}.ix-theme .ix-type-h5-bold{font:var(--si-sys-typography-h5-bold,600 16px/24px var(--ix-font))}.ix-theme .ix-type-h6{font:var(--si-sys-typography-h6,600 14px/20px var(--ix-font))}.ix-theme .ix-type-code{font:var(--si-sys-typography-code,14px/20px monospace)}.ix-theme .ix-type-code-sm{font:var(--si-sys-typography-code-sm,12px/16px monospace)}.ix-theme .ix-type-code-lg{font:var(--si-sys-typography-code-lg,16px/24px monospace)}.ix-theme .ix-typography{font-feature-settings:"clig" off,"liga" off;font-style:normal;letter-spacing:var(--si-ref-typography-letter-spacing-normal,normal);-webkit-font-smoothing:antialiased}.ix-theme .ix-type-bold{font-weight:var(--ix-typography-weight-bold--font-weight,var(--si-ref-typography-font-weight-bold,700))!important}.ix-theme .ix-text-std,.ix-theme .ix-text-contrast{color:var(--si-sys-color-text-primary,var(--ix-color-text))}.ix-theme .ix-text-soft{color:var(--si-sys-color-text-secondary,var(--ix-color-text-secondary))}.ix-theme .ix-text-weak{color:var(--si-sys-color-text-disabled,var(--ix-color-text-disabled,var(--ix-color-text-secondary)))}.ix-theme .ix-text-alarm{color:var(--si-sys-color-text-danger,var(--ix-color-danger-text))}.ix-theme .ix-text-alarm-contrast{color:var(--si-sys-color-text-on-danger,var(--ix-color-on-danger,#fff))}.ix-theme .ix-text-critical-contrast{color:var(--si-sys-color-text-on-critical,var(--ix-color-on-critical,#000028))}.ix-theme .ix-text-info-contrast{color:var(--si-sys-color-text-on-information,var(--ix-color-on-info,#fff))}.ix-theme .ix-text-inv-contrast,.ix-theme .ix-text-inv-soft,.ix-theme .ix-text-inv-std,.ix-theme .ix-text-inv-weak,.ix-theme .ix-text-inverse{color:var(--si-sys-color-text-inverse,var(--ix-color-on-primary))}.ix-theme .ix-text-neutral-contrast{color:var(--si-sys-color-text-on-neutral,var(--ix-color-text))}.ix-theme .ix-text-primary-contrast{color:var(--si-sys-color-text-on-accent,var(--ix-color-on-primary))}.ix-theme .ix-text-success-contrast{color:var(--si-sys-color-text-on-success,var(--ix-color-on-success,#fff))}.ix-theme .ix-text-warning-contrast{color:var(--si-sys-color-text-on-warning,var(--ix-color-on-warning,#000028))}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-spinner svg{animation-duration:3s}.ix-theme .ix-badge-animated .ix-badge-indicator::after{animation:none;opacity:0}.ix-theme .ix-button,.ix-theme .ix-progress-fill,.ix-theme .ix-progress-circle-fill{transition:none}}
 "#;
 
@@ -872,5 +879,87 @@ mod tests {
         assert!(html.contains("ix-status-alarm"));
         assert!(html.contains("aria-label=\"Information\""));
         assert!(html.contains("aria-label=\"In review\""));
+    }
+    #[test]
+    fn typography_omits_color_class_by_default_and_preserves_semantic_roles_and_variants() {
+        for (color, expected) in [
+            (TypographyColor::InvContrast, "inv-contrast"),
+            (TypographyColor::InvSoft, "inv-soft"),
+            (TypographyColor::InvStd, "inv-std"),
+            (TypographyColor::InvWeak, "inv-weak"),
+            (TypographyColor::Inverse, "inverse"),
+            (TypographyColor::CriticalContrast, "critical-contrast"),
+            (TypographyColor::WarningContrast, "warning-contrast"),
+            (TypographyColor::InfoContrast, "info-contrast"),
+            (TypographyColor::NeutralContrast, "neutral-contrast"),
+        ] {
+            assert_eq!(color.as_str(), expected);
+        }
+        let mut dom = VirtualDom::new(|| {
+            rsx! {
+                Typography { class: "omitted-color", "Inherited" }
+                Typography { text_color: TypographyColor::Soft, class: "direct-enum", "Soft" }
+                Typography { text_color: Some(TypographyColor::InvContrast), class: "some-inv-contrast", "InvContrast" }
+                Typography { text_color: TypographyColor::InvSoft, "InvSoft" }
+                Typography { text_color: TypographyColor::InvStd, "InvStd" }
+                Typography { text_color: TypographyColor::InvWeak, "InvWeak" }
+                Typography { text_color: TypographyColor::Inverse, "InverseAlias" }
+                Typography {
+                    format: TypographyFormat::H5Bold,
+                    text_color: TypographyColor::Weak,
+                    bold: true,
+                    text_decoration: TypographyDecoration::Underline,
+                    "HeadingFive"
+                }
+                Typography {
+                    format: TypographyFormat::CodeSm,
+                    text_decoration: TypographyDecoration::LineThrough,
+                    "CodeSample"
+                }
+            }
+        });
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        let classes: Vec<Vec<_>> = html
+            .split("class=\"")
+            .skip(1)
+            .map(|value| {
+                value
+                    .split('"')
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .collect()
+            })
+            .collect();
+        let omitted = classes
+            .iter()
+            .find(|names| names.contains(&"omitted-color"))
+            .unwrap();
+        assert!(omitted.contains(&"ix-typography") && omitted.contains(&"ix-type-body"));
+        assert!(omitted.iter().all(|name| !name.starts_with("ix-text-")));
+        assert!(!html.contains("ix-text-std"));
+        assert!(
+            classes
+                .iter()
+                .any(|names| names.contains(&"direct-enum") && names.contains(&"ix-text-soft"))
+        );
+        assert!(
+            classes
+                .iter()
+                .any(|names| names.contains(&"some-inv-contrast")
+                    && names.contains(&"ix-text-inv-contrast"))
+        );
+        assert!(html.contains("ix-text-inv-soft"));
+        assert!(html.contains("ix-text-inv-std"));
+        assert!(html.contains("ix-text-inv-weak"));
+        assert!(html.contains("ix-text-inverse"));
+        assert!(html.contains("ix-type-h5-bold ix-text-weak"));
+        assert!(html.contains("ix-type-bold"));
+        assert!(html.contains("role=\"heading\""));
+        assert!(html.contains("aria-level=5") || html.contains("aria-level=\"5\""));
+        assert!(html.contains("style=\"text-decoration:underline\""));
+        assert!(html.contains("ix-type-code-sm"));
+        assert!(html.contains("style=\"text-decoration:line-through\""));
     }
 }

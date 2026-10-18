@@ -51,6 +51,13 @@ impl Density {
 /// these aliases. Missing upstream tokens retain the provisional defaults.
 /// Proprietary fonts and corporate-theme files are not bundled; callers are
 /// responsible for their authorization to supply those assets or token values.
+///
+/// [`crate::Typography`] also consumes the per-format
+/// `--si-sys-typography-*` shorthands, semantic text colors and reference
+/// letter-spacing/weight tokens at the text element. This permits inherited
+/// density-specific tokens and nested scopes without replacing the component.
+/// Bundled numeric typography fallbacks remain provisional; selecting compact
+/// density does not manufacture a complete Brand typography token set.
 #[component]
 pub fn IxTheme(
     #[props(default)] scheme: ColorScheme,
