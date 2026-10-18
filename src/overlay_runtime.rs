@@ -39,6 +39,7 @@ pub(crate) enum Reason {
     Left,
     Inside,
     Outside,
+    TriggerOther,
     AnchorVisibility,
     AnchorVisibilityParent,
     Parent,
@@ -458,6 +459,77 @@ impl RuntimeHandle {
         .unwrap_or(false)
     }
 
+    /// Distinct post-actual-trigger phase, including a vetoed own transition.
+    /// Closed origins are valid; a dropped/replaced registration is not.
+    pub(crate) fn dismiss_dropdown_others(&self, id: &str, generation: u64) -> bool {
+        let admitted = self.with_owner(id, generation, || {
+            let entry = self.entry(id)?;
+            (entry.kind.is_dropdown() && entry.generation == generation)
+                .then(|| self.read_current(id, &entry))
+                .flatten()
+        });
+        if admitted.flatten().is_none() {
+            return false;
+        }
+        if let Some(domain) = self.domain() {
+            return domain.dismiss_dropdown_others(id, generation);
+        }
+        // Reconcile current Rust presence before capturing live ancestry.
+        let ids = self.0.borrow().order.clone();
+        for candidate in ids {
+            let Some(entry) = self.entry(&candidate) else {
+                continue;
+            };
+            if let Some(open) = self
+                .with_owner(&candidate, entry.generation, || {
+                    self.read_current(&candidate, &entry)
+                })
+                .flatten()
+            {
+                self.0.borrow_mut().registry.set_presence(&candidate, open);
+            }
+        }
+        let excluded = self.0.borrow().registry.dropdown_dismiss_exclusions(id);
+        let mut visited = std::collections::BTreeSet::new();
+        loop {
+            let next = self
+                .0
+                .borrow()
+                .registry
+                .next_dropdown_dismiss_other(&visited);
+            let Some((candidate, candidate_generation, registration)) = next else {
+                break;
+            };
+            visited.insert(registration);
+            if excluded.contains(&candidate) {
+                continue;
+            }
+            self.with_owner(&candidate, candidate_generation, || {
+                let Some(entry) = self.entry(&candidate).filter(|entry| {
+                    entry.generation == candidate_generation
+                        && entry.kind.is_dropdown()
+                        && entry.behavior.allows_outside()
+                }) else {
+                    return;
+                };
+                // Closed instances do not receive even an unchanged request:
+                // that would incorrectly advance their operation revision.
+                if self.read_current(&candidate, &entry) == Some(true) {
+                    self.request(
+                        &candidate,
+                        candidate_generation,
+                        Change {
+                            open: false,
+                            reason: Reason::TriggerOther,
+                            restore_focus: true,
+                        },
+                    );
+                }
+            });
+        }
+        true
+    }
+
     pub(crate) fn close_and_release_focus(&self, id: &str) -> bool {
         if let Some(domain) = self.domain() {
             return domain.close_and_release_focus(id);
@@ -579,6 +651,7 @@ impl RuntimeHandle {
                     Reason::AnchorVisibility | Reason::AnchorVisibilityParent => {
                         Reason::AnchorVisibilityParent
                     }
+                    Reason::TriggerOther => Reason::TriggerOther,
                     _ => Reason::Parent,
                 },
                 change.restore_focus,
@@ -590,14 +663,14 @@ impl RuntimeHandle {
             return false;
         }
         let applied = if previous && !change.open && snapshot.kind.is_dropdown() {
-            let ordinary_anchor = matches!(
+            let ordinary_cleanup = matches!(
                 change.reason,
-                Reason::AnchorVisibility | Reason::AnchorVisibilityParent
+                Reason::AnchorVisibility | Reason::AnchorVisibilityParent | Reason::TriggerOther
             );
             // Each accepted source cleanup observes modality after its own
             // before/cascade, and consumes its CURRENT latch even in pointer
             // mode. Veto and stale operations never reach this point.
-            let restore = if ordinary_anchor {
+            let restore = if ordinary_cleanup {
                 self.keyboard_mode()
             } else {
                 change.restore_focus
@@ -667,10 +740,12 @@ impl RuntimeHandle {
                 Change {
                     open: false,
                     reason,
-                    restore_focus: reason == Reason::AnchorVisibilityParent
-                        && self
-                            .entry(&child)
-                            .is_some_and(|entry| entry.kind.is_dropdown()),
+                    restore_focus: matches!(
+                        reason,
+                        Reason::AnchorVisibilityParent | Reason::TriggerOther
+                    ) && self
+                        .entry(&child)
+                        .is_some_and(|entry| entry.kind.is_dropdown()),
                 },
             );
         }
@@ -1350,6 +1425,32 @@ impl RuntimeHandle {
         KeyDecision::default()
     }
     fn click(&self, report: &Report) -> KeyDecision {
+        if report.phase == "trigger" {
+            // Native default prevention can be established at the target,
+            // after document capture but before Dioxus's delegated callback.
+            // Preserve the existing ancestor-toggle guards; this fact alone
+            // must neither toggle the owner nor dismiss another registration.
+            if report.default_prevented
+                && let Some((id, generation)) = report.triggers.iter().find_map(|id| {
+                    let entry = self
+                        .entry(id)
+                        .filter(|entry| entry.kind == OverlayKind::Dropdown)?;
+                    report
+                        .nodes
+                        .iter()
+                        .any(|node| {
+                            node.id == *id && node.connected && node.generation == entry.generation
+                        })
+                        .then(|| (id.clone(), entry.generation))
+                })
+            {
+                let mut state = self.0.borrow_mut();
+                if !state.capture_block.contains(&(id.clone(), generation)) {
+                    state.capture_block.push((id, generation));
+                }
+            }
+            return KeyDecision::default();
+        }
         if report.phase == "capture" {
             let mut blocked = Vec::new();
             let mut prevent = false;
@@ -1743,8 +1844,8 @@ impl NodeHandle {
         self.runtime()?.with_owner(&self.id, self.generation, f)
     }
     /// Native default prevention is not copied into Dioxus web MouseEvent
-    /// metadata. The component consults the same Rust capture decision before
-    /// toggling, after running its own consumer callback.
+    /// metadata. The component consults Rust's capture and actual-trigger facts
+    /// before toggling, after running its own consumer callback.
     pub(crate) fn trigger_click_allowed(&self) -> bool {
         self.runtime().is_some_and(|runtime| {
             let state = runtime.0.borrow();

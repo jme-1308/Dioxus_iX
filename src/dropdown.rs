@@ -236,6 +236,18 @@ impl DropdownContext {
         value.set(open);
         true
     }
+    /// Actual trigger activation has a post-toggle controller phase even when
+    /// the visibility request is vetoed. Public handles do not use this path.
+    fn request_from_trigger(&self, open: bool, reason: Reason, restore_focus: bool) -> bool {
+        let origin = self.node.borrow().clone();
+        let accepted = self.request(open, reason, restore_focus);
+        if let Some(origin) = origin
+            && let Some(runtime) = origin.runtime()
+        {
+            runtime.dismiss_dropdown_others(origin.id(), origin.generation());
+        }
+        accepted
+    }
     fn apply(&self, change: Change) {
         let task = self.focus_task.borrow_mut().take();
         if let Some(task) = task {
@@ -263,7 +275,9 @@ impl DropdownContext {
                 && !state.settings.disable_focus_trap
                 && matches!(
                     change.reason,
-                    Reason::AnchorVisibility | Reason::AnchorVisibilityParent
+                    Reason::AnchorVisibility
+                        | Reason::AnchorVisibilityParent
+                        | Reason::TriggerOther
                 ))
             .then_some(state.focus_epoch);
             (changed, state.settings.changed, trigger_cleanup)
@@ -393,13 +407,14 @@ impl DropdownContext {
         if facts.default_prevented || !self.state.borrow().alive || self.state.borrow().blocked {
             return result;
         }
-        let (open, mode, no_focus, no_trap) = {
+        let (open, mode, no_focus, no_trap, anchor_submenu) = {
             let state = self.state.borrow();
             (
                 *self.open.peek(),
                 state.settings.mode,
                 state.settings.disable_focus_handling,
                 state.settings.disable_focus_trap,
+                state.anchor_in_dropdown_item,
             )
         };
         let opening_key = matches!(
@@ -408,7 +423,13 @@ impl DropdownContext {
         );
         if facts.on_trigger && opening_key {
             if !open {
-                self.request(true, Reason::Keyboard, false);
+                if anchor_submenu {
+                    // Anchor-submenu keyboard delegation is a separate source
+                    // route; it does not acquire a trigger-toggle others pass.
+                    self.request(true, Reason::Keyboard, false);
+                } else {
+                    self.request_from_trigger(true, Reason::Keyboard, false);
+                }
                 result.prevent = !facts.alt || no_focus;
                 result.stop = no_focus;
                 if *self.open.peek() && !facts.alt && !no_focus {
@@ -814,7 +835,7 @@ pub fn DropdownTrigger(
         "aria-haspopup":"menu","aria-expanded":dropdown.is_open().to_string(),"aria-controls":host_id,"aria-activedescendant":active_id,
         "data-ix-overlay-trigger":id,style:"anchor-name:--ix-dropdown-anchor-{context.id}",
         onmounted:move |event| *mount.borrow_mut()=Some(event.data()),
-        onclick:move |event:MouseEvent| {if !blocked&&!click.state.borrow().blocked&&event.default_action_enabled()&&click.trigger_click_allowed(){let previous=*click.open.peek();click.request(!previous,Reason::Trigger,click.keyboard_mode());}},
+        onclick:move |event:MouseEvent| {if !blocked&&!click.state.borrow().blocked&&event.default_action_enabled()&&click.trigger_click_allowed(){let previous=*click.open.peek();click.request_from_trigger(!previous,Reason::Trigger,click.keyboard_mode());}},
         onkeydown:move |event:KeyboardEvent| {if !key.state.borrow().native{fallback_key(&key,event,true);}},
         if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
         else if let Some(icon)=icon {Icon {name:icon,size:20}}
@@ -1079,7 +1100,7 @@ fn DropdownSurface(
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,"data-ix-overlay-focus-target":focus_target,"data-ix-overlay-focus-version":focus_version.to_string(),
         style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
         onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;if !external{*mount_trigger.borrow_mut()=Some(event.data());}mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}},
-        onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request(!previous,Reason::Trigger,click_context.keyboard_mode());}},
+        onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}},
         onkeydown:move |event:KeyboardEvent|{if !key_context.state.borrow().native{fallback_key(&key_context,event,!external);}},
         if !external {button {class:"ix-dropdown-trigger ix-button ix-button-{variant.as_str()}",r#type:"button",disabled:blocked,"aria-hidden":"true",inert:true,tabindex:-1,
             if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
@@ -1279,7 +1300,9 @@ pub fn DropdownItem(
             onitemclick.call(DropdownItemClickEvent {label:click_label.clone(),prevented:Rc::new(Cell::new(false))});
             if let Some(handler)=onclick {handler.call(event.clone());}
             if let Some(handle)=dropdown {
-                if event.default_action_enabled()&&handle.try_context().is_some_and(|context|context.trigger_click_allowed()){handle.toggle();}
+                if event.default_action_enabled()&&let Some(context)=handle.try_context().filter(|context|context.trigger_click_allowed()){
+                    let previous=*context.open.peek();context.request_from_trigger(!previous,Reason::Trigger,context.keyboard_mode());
+                }
                 // Foreign-trigger protection is separate from child visibility
                 // veto, and prevents the composed ancestor from also toggling.
                 event.prevent_default();
@@ -1783,6 +1806,119 @@ mod tests {
         }
     }
 
+    fn unrelated_trigger_target(h: &Harness) -> (Rc<Cell<bool>>, Rc<RefCell<Vec<Change>>>) {
+        let owner = h.context().node.borrow().clone().unwrap();
+        let runtime = owner.runtime().unwrap();
+        let open = Rc::new(Cell::new(true));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let read = open.clone();
+        let apply = open.clone();
+        let before = seen.clone();
+        owner
+            .with_owner(|| {
+                runtime.register(
+                    "actual-trigger-unrelated-target".into(),
+                    1,
+                    OverlayKind::Dropdown,
+                    CloseBehavior::Both,
+                    overlay_runtime::Callbacks {
+                        read: Rc::new(move || Some(read.get())),
+                        before: Rc::new(move |change| {
+                            before.borrow_mut().push(change);
+                            true
+                        }),
+                        apply: Rc::new(move |change| apply.set(change.open)),
+                        key: None,
+                    },
+                );
+            })
+            .unwrap();
+        (open, seen)
+    }
+
+    #[test]
+    fn actual_mouse_triggers_dismiss_others_despite_visibility_veto_but_public_handles_do_not() {
+        let _guard = crate::test_event_converter_guard();
+        for label in ["Menu", "External trigger", "Linked"] {
+            let mut h = Harness::with_settings(Fixture {
+                veto_open: true,
+                linked_veto: true,
+                ..Fixture::default()
+            });
+            let (other, seen) = unrelated_trigger_target(&h);
+            let linked = h.config.borrow().linked.get().unwrap();
+            h.dom.in_runtime(|| {
+                linked.open();
+                linked.close(false);
+                linked.toggle();
+            });
+            h.settle();
+            assert!(
+                other.get(),
+                "public handle requests must not acquire the trigger phase"
+            );
+            assert!(seen.borrow().is_empty());
+            // Actual component listener dispatch is isolated from native layout
+            // and hierarchy here; the unrelated target is a registered owner.
+            h.click(label);
+            assert!(
+                !other.get(),
+                "{label}: own visibility veto does not cancel other dismissal"
+            );
+            assert_eq!(seen.borrow().len(), 1);
+            assert_eq!(seen.borrow()[0].reason, Reason::TriggerOther);
+            assert!(!*h.context().open.peek());
+            assert!(!linked.is_open());
+        }
+    }
+
+    #[test]
+    fn closed_ordinary_trigger_keys_run_others_but_open_navigation_and_submenu_delegation_do_not() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        let (other, seen) = unrelated_trigger_target(&h);
+        h.key("Menu", Key::ArrowDown);
+        assert!(!other.get());
+        assert_eq!(seen.borrow().len(), 1);
+        other.set(true);
+        h.key("Menu", Key::Home);
+        assert!(
+            other.get(),
+            "already open navigation has no toggle-controller phase"
+        );
+        h.dom
+            .in_runtime(|| h.context().request(false, Reason::Trigger, false));
+        h.settle();
+        h.context().state.borrow_mut().anchor_in_dropdown_item = true;
+        h.key("Menu", Key::Enter);
+        assert!(
+            other.get(),
+            "anchor-submenu delegation has no ordinary trigger phase"
+        );
+        assert_eq!(seen.borrow().len(), 1);
+    }
+
+    #[test]
+    fn original_prevented_component_click_skips_own_toggle_and_other_dismissal() {
+        let _guard = crate::test_event_converter_guard();
+        for label in ["Menu", "External trigger", "Linked"] {
+            let mut h = Harness::new();
+            let (other, seen) = unrelated_trigger_target(&h);
+            let data: Rc<dyn std::any::Any> =
+                Rc::new(dioxus::html::PlatformEventData::new(Box::new(())));
+            let event = Event::new(data, true);
+            event.prevent_default();
+            h.dom
+                .runtime()
+                .handle_event("click", event, h.target(label));
+            h.settle();
+            assert!(!*h.context().open.peek());
+            assert!(!h.config.borrow().linked.get().unwrap().is_open());
+            assert!(other.get());
+            assert!(seen.borrow().is_empty());
+        }
+    }
+
     #[test]
     fn dropdown_partial_anchor_updates_preserve_alignment_until_fresh_geometry_and_reset() {
         let _guard = crate::test_event_converter_guard();
@@ -1982,6 +2118,26 @@ mod tests {
         let mut h = Harness::new();
         let root = h.context();
         let child = h.config.borrow().linked.get().unwrap();
+        // This callback-only renderer has no native observer. Supply the
+        // fixture's real linked-trigger ancestry before testing its exclusion
+        // from the new post-trigger dismissal pass.
+        let root_node = root.node.borrow().clone().unwrap();
+        let child_node = child.context().node.borrow().clone().unwrap();
+        let runtime = root_node.runtime().unwrap();
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        dispatch(&h.dom, "input", transport, serde_json::json!({
+            "owner":runtime.owner_id(),"sequence":1,"kind":"observe",
+            "nodes":[
+                {"id":root_node.id(),"generation":root_node.generation(),"connected":true,"discovery_ready":true},
+                {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,"trigger_ancestors":[root_node.id()]}
+            ]
+        }).to_string());
+        h.settle();
         h.click("Menu");
         let result = h.click("Linked");
         assert!(result.0);

@@ -94,10 +94,12 @@ enum FocusMode {
     AnchorFocus,
     AnchorFocusPointer,
     AnchorFocusNoTrap,
+    TriggerOthers,
+    TriggerOthersTopology,
 }
 
 impl FocusMode {
-    const ALL: [Self; 29] = [
+    const ALL: [Self; 31] = [
         Self::Default,
         Self::Priority,
         Self::HeaderOnly,
@@ -127,6 +129,8 @@ impl FocusMode {
         Self::AnchorFocus,
         Self::AnchorFocusPointer,
         Self::AnchorFocusNoTrap,
+        Self::TriggerOthers,
+        Self::TriggerOthersTopology,
     ];
     fn key(self) -> &'static str {
         match self {
@@ -159,6 +163,8 @@ impl FocusMode {
             Self::AnchorFocus => "anchor-focus",
             Self::AnchorFocusPointer => "anchor-focus-pointer",
             Self::AnchorFocusNoTrap => "anchor-focus-no-trap",
+            Self::TriggerOthers => "trigger-others",
+            Self::TriggerOthersTopology => "trigger-others-topology",
         }
     }
     fn from_key(value: &str) -> Self {
@@ -179,6 +185,9 @@ impl FocusMode {
                 | Self::AnchorFocusPointer
                 | Self::AnchorFocusNoTrap
         )
+    }
+    fn is_trigger_others(self) -> bool {
+        matches!(self, Self::TriggerOthers | Self::TriggerOthersTopology)
     }
     fn is_header(self) -> bool {
         matches!(
@@ -204,7 +213,7 @@ fn Probe() -> Element {
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     use_effect(move || {
         spawn(async move {
-            futures_timer::Delay::new(std::time::Duration::from_secs(90)).await;
+            futures_timer::Delay::new(std::time::Duration::from_secs(150)).await;
             eprintln!("Popover controller native global timeout");
             std::process::exit(1);
         });
@@ -235,7 +244,7 @@ fn Probe() -> Element {
             button { id: "popover-topology-hover", onclick: move |_| { nested_child_host.set(true); hover_parent.set(true); focus_mode.set(FocusMode::Default); generation += 1; }, "Fresh hover parent trigger" }
             input { id: "popover-topology", r#type: "hidden", oninput: move |event| { let value = event.value(); nested_child_host.set(value != "sibling"); hover_parent.set(value == "hover"); focus_mode.set(FocusMode::Default); generation += 1; } }
             div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
-                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
+                for mode in FocusMode::ALL.into_iter().filter(|mode| !mode.is_anchor() && !mode.is_trigger_others()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh focus: {}", mode.key())} } }
             }
             input { id: "popover-focus-mode", r#type: "hidden", oninput: move |event| { focus_mode.set(FocusMode::from_key(&event.value())); nested_child_host.set(true); hover_parent.set(false); generation += 1; } }
             button { id: "popover-before", "Before opening focus target" }
@@ -244,6 +253,9 @@ fn Probe() -> Element {
             TabNativeJournal {}
             div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
                 for mode in FocusMode::ALL.into_iter().filter(|mode| mode.is_anchor()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh partial anchor: {}", mode.key())} } }
+            }
+            div { style: "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0",
+                for mode in FocusMode::ALL.into_iter().filter(|mode| mode.is_trigger_others()) { button { id: format!("popover-focus-mode-{}", mode.key()), onclick: move |_| { focus_mode.set(mode); nested_child_host.set(true); hover_parent.set(false); generation += 1; }, {format!("Fresh actual trigger: {}", mode.key())} } }
             }
         }
     } }
@@ -338,6 +350,7 @@ fn Fixture(
             PopoverTrigger { popover: handles[3], "Sticky native trigger" }
             Panel { index: 3 }
             if focus_mode.is_anchor() { AnchorProbe { mode: focus_mode } }
+            if focus_mode.is_trigger_others() { TriggerOthersProbe { topology: focus_mode == FocusMode::TriggerOthersTopology } }
             pre { id: "popover-controller-log", style: "white-space:pre-wrap;overflow-wrap:anywhere", "{logs}" }
         }
     }
@@ -565,6 +578,158 @@ const ANCHOR_POSITIONS: [(&str, i32, i32); 7] = [
     ("outside", -120, 60),
 ];
 
+#[derive(Clone, Copy)]
+struct TriggerOthersContext {
+    handles: [DropdownHandle; 5],
+    veto_open: Signal<[bool; 5]>,
+    veto_close: Signal<[bool; 5]>,
+    topology: bool,
+}
+
+#[component]
+fn TriggerOthersProbe(topology: bool) -> Element {
+    let ProbeContext { rows, .. } = use_context::<ProbeContext>();
+    let handles = [
+        use_dropdown(),
+        use_dropdown(),
+        use_dropdown(),
+        use_dropdown(),
+        use_dropdown(),
+    ];
+    let mut veto_open = use_signal(|| [false; 5]);
+    let mut veto_close = use_signal(|| [false; 5]);
+    use_context_provider(|| TriggerOthersContext {
+        handles,
+        veto_open,
+        veto_close,
+        topology,
+    });
+    let roles = if topology {
+        [
+            "active",
+            "old-parent",
+            "live-parent",
+            "sibling",
+            "descendant",
+        ]
+    } else {
+        ["active", "both", "outside", "inside", "none"]
+    };
+    let surface_order = if topology {
+        [1, 2, 0, 3, 4]
+    } else {
+        [0, 1, 2, 3, 4]
+    };
+    let state = json!(
+        roles
+            .into_iter()
+            .enumerate()
+            .map(|(i, role)| (role, handles[i].is_open()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    )
+    .to_string();
+    rsx! {
+        section { id: "trigger-others-probe", "data-topology": topology.to_string(), "data-state": state, "data-veto-open": json!(*veto_open.read()).to_string(), "data-veto-close": json!(*veto_close.read()).to_string(),
+            input { id: "trigger-others-command", r#type: "hidden", oninput: move |event| {
+                let Ok(value) = serde_json::from_str::<Value>(&event.value()) else { return; };
+                let Some(index) = roles.iter().position(|role| Some(*role) == value["target"].as_str()) else { return; };
+                let action = value["action"].as_str().unwrap_or("");
+                record(rows, "trigger-others-public-command", roles[index], value.clone());
+                match action {
+                    "open" => handles[index].open(),
+                    "close" => handles[index].close(false),
+                    "toggle" => handles[index].toggle(),
+                    "veto-open" => veto_open.write()[index] = value["value"].as_bool().unwrap_or(false),
+                    "veto-close" => veto_close.write()[index] = value["value"].as_bool().unwrap_or(false),
+                    _ => {},
+                }
+                record(rows, "trigger-others-public-return", roles[index], json!({"action":action,"open":handles[index].is_open()}));
+            } }
+            div { id: "trigger-others-stage", style: "display:flex;gap:12px;flex-wrap:wrap;margin:12px 0",
+                for (index, role) in roles.into_iter().enumerate() {
+                    if !topology || index == 1 || index == 2 {
+                        span { id: "trigger-others-trigger-slot-{role}", DropdownTrigger { dropdown: handles[index], aria_label: format!("Actual {role} trigger"), "Actual {role} trigger" } }
+                    }
+                }
+            }
+            for index in surface_order { TriggerOthersSurface { index } }
+            div { style: "display:flex;gap:4px;flex-wrap:wrap;margin:8px 0",
+                for (index, role) in roles.into_iter().enumerate() {
+                    for action in ["open", "close", "toggle", "veto-open", "veto-close"] {
+                        button { id: "trigger-others-control-{role}-{action}", tabindex: "-1", onmousedown: move |event| event.prevent_default(), onclick: move |event| {
+                            event.stop_propagation();
+                            #[cfg(feature = "web")]
+                            { let data = event.data(); if let Some(native) = data.downcast::<web_sys::MouseEvent>() { native.stop_propagation(); } }
+                            record(rows, "trigger-others-public-command", role, json!({"action":action,"origin":"visible-Rust-control"}));
+                            match action {
+                                "open" => handles[index].open(),
+                                "close" => handles[index].close(false),
+                                "toggle" => handles[index].toggle(),
+                                "veto-open" => { let next = !veto_open()[index]; veto_open.write()[index] = next; },
+                                _ => { let next = !veto_close()[index]; veto_close.write()[index] = next; },
+                            }
+                            record(rows, "trigger-others-public-return", role, json!({"action":action,"open":handles[index].is_open()}));
+                        }, "{role}: {action}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn TriggerOthersSurface(index: usize) -> Element {
+    let ProbeContext { rows, .. } = use_context::<ProbeContext>();
+    let TriggerOthersContext {
+        handles,
+        veto_open,
+        veto_close,
+        topology,
+    } = use_context::<TriggerOthersContext>();
+    let roles = if topology {
+        [
+            "active",
+            "old-parent",
+            "live-parent",
+            "sibling",
+            "descendant",
+        ]
+    } else {
+        ["active", "both", "outside", "inside", "none"]
+    };
+    let role = roles[index];
+    let behavior = if topology {
+        DropdownCloseBehavior::Both
+    } else {
+        match index {
+            2 => DropdownCloseBehavior::Outside,
+            3 => DropdownCloseBehavior::Inside,
+            4 => DropdownCloseBehavior::None,
+            _ => DropdownCloseBehavior::Both,
+        }
+    };
+    rsx! {
+        div { id: "trigger-others-surface-{role}", "data-signal-index": index.to_string(), "data-close-behavior": if topology || index < 2 { "both" } else if index == 2 { "outside" } else if index == 3 { "inside" } else { "none" },
+            Dropdown { controller: handles[index], label: format!("Actual {role} surface"), close_behavior: behavior, enable_top_layer: true, suppress_trigger_visibility_check: true,
+                onbeforechange: move |event: DropdownChangeEvent| {
+                    if (event.open && veto_open()[index]) || (!event.open && veto_close()[index]) { event.prevent_default(); }
+                    record(rows, "trigger-others-request", role, json!({"open":event.open,"previous":event.previous,"vetoed":event.default_prevented()}));
+                },
+                onchange: move |open| record(rows, "trigger-others-completed", role, json!({"open":open})),
+                button { id: "trigger-others-action-{role}", "Actual {role} native action" }
+                if topology && index == 1 {
+                    div { id: "trigger-others-old-parent-slot",
+                        DropdownTrigger { dropdown: handles[0], aria_label: "Actual active trigger", "Actual active trigger" }
+                        DropdownTrigger { dropdown: handles[3], aria_label: "Actual sibling trigger", "Actual sibling trigger" }
+                    }
+                }
+                if topology && index == 2 { div { id: "trigger-others-live-parent-slot", "Live parent relocation slot" } }
+                if topology && index == 0 { div { id: "trigger-others-descendant-slot", DropdownTrigger { dropdown: handles[4], aria_label: "Actual descendant trigger", "Actual descendant trigger" } } }
+            }
+        }
+    }
+}
+
 #[component]
 fn AnchorProbe(mode: FocusMode) -> Element {
     let ProbeContext { rows, .. } = use_context();
@@ -750,8 +915,8 @@ fn ChildState() -> Element {
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const VERIFY: &str = r#"
-const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[];
-let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null;
+const observations=[],driverJournal=[],assertions=[],tabCases=[],tabChecks=[],deferredChecks=[],queuedChecks=[],headerCases=[],headerOpeningChecks=[],headerChecks=[],headerModeCases=[],headerModeOpeningChecks=[],headerModeChecks=[],headerModeFocusContinuity=[],headerModeVisibilityLimits=[],anchorCases=[],anchorFocusCases=[],triggerOthersCases=[];
+let readFailureHeader=()=>null,readFailureAnchor=()=>null,activeHeaderMode=null,activeAnchorCase=null,activeAnchorFocus=null,activeTriggerOthers=null,readFailureTriggerOthers=()=>null;
 try {
  await dioxus.recv();
  const sleep=ms=>new Promise(r=>setTimeout(r,ms)),get=id=>document.getElementById(id),names=['parent','child','unrelated','sticky','sibling'];
@@ -1142,6 +1307,52 @@ try {
  await anchorRun({sourceCase:95,mode:'anchor-focus-pointer',position:'outside',nested:true,historyName:'ordinary root negative after actual outside mousedown resets keyboard modality',history:focusHistory(95)});
  await anchorRun({sourceCase:96,mode:'anchor-focus-no-trap',position:'outside',target:'child',nested:true,historyName:'ordinary child negative with disableFocusTrap configured before connection',history:focusHistory(96)});
  assert(anchorFocusCases.length===4,'all four public negative-focus and vetoed-Tab histories complete actual native setup and IO conditioning');
- return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
-} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
+ const triggerOthersRun=async({sourceCase,operation='open',veto=false,topology=false,publicOnly=false,preprevent=false})=>{
+  const mode=topology?'trigger-others-topology':'trigger-others',label='source'+sourceCase+' '+(topology?'cached and live ancestor actual-trigger diagnostic':publicOnly?'public-handle control without own trigger':preprevent?'consumer-preprevented original trigger click':(veto?'vetoed ':'accepted ')+operation+' actual trigger with four target policies');await freshFocus(mode,label);
+  const roles=topology?['active','old-parent','live-parent','sibling','descendant']:['active','both','outside','inside','none'];
+  const nodes=()=>{const owner=get('trigger-others-probe'),surfaces=Object.fromEntries(roles.map(role=>{const wrapper=get('trigger-others-surface-'+role),host=wrapper?.querySelector('[data-ix-overlay-host]'),root=host?.closest('[data-ix-overlay-root]'),trigger=Array.from(document.querySelectorAll('[data-ix-overlay-trigger]')).find(node=>node.getAttribute('data-ix-overlay-trigger')===root?.dataset.ixOverlayRoot);return[role,{wrapper,host,root,trigger,action:get('trigger-others-action-'+role)}];}));return{owner,surfaces};};
+  await wait(()=>{const n=nodes();return n.owner&&roles.every(role=>{const s=n.surfaces[role],input=s.root?.querySelector('input[data-ix-overlay-transport][data-ix-overlay-native="true"]');return s.host&&s.trigger&&s.root?.dataset.ixOverlayOwner&&/^\d+$/.test(s.root?.dataset.ixOverlayGeneration??'')&&input;});},'actual trigger-others stable public surfaces/native bindings');await settle();
+  const held=nodes(),start=logs().length,timeline=[],listeners=new AbortController();let originalParent=null,originalNext=null,moved=null;
+  const ancestry=node=>{const rows=[];for(let n=node?.parentElement;n;n=n.parentElement)if(n.hasAttribute('data-ix-overlay-host'))rows.push({element:describe(n),root:n.getAttribute('data-ix-overlay-host'),nativeOpen:n.hasAttribute('popover')?n.matches(':popover-open'):null});return rows;};
+  const element=node=>node?{...describe(node),connected:node.isConnected,attributes:Object.fromEntries(Array.from(node.attributes).filter(a=>a.name.startsWith('data-')||['hidden','inert','popover','aria-expanded'].includes(a.name)).map(a=>[a.name,a.value])),nativeOpen:node.hasAttribute('popover')?node.matches(':popover-open'):null,geometry:geometry(node)}:null;
+  const facts=()=>{const n=nodes();return{state:JSON.parse(n.owner?.dataset.state??'{}'),vetoOpen:JSON.parse(n.owner?.dataset.vetoOpen??'[]'),vetoClose:JSON.parse(n.owner?.dataset.vetoClose??'[]'),active:describe(document.activeElement),surfaces:Object.fromEntries(roles.map(role=>[role,{...Object.fromEntries(Object.entries(n.surfaces[role]).map(([key,node])=>[key,element(node)])),sameActualObjects:Object.fromEntries(Object.entries(held.surfaces[role]).map(([key,node])=>[key,n.surfaces[role][key]===node])),liveTriggerAncestors:ancestry(n.surfaces[role].trigger)}])),callbacks:logs().slice(start)};};
+  const phase=(name,extra={})=>{const row={phase:name,time:performance.now(),facts:facts(),...extra};timeline.push(row);return row;};readFailureTriggerOthers=facts;activeTriggerOthers={sourceCase,label,timeline};
+  const command=async(action,target,value)=>{const before=logs().filter(row=>row.kind==='trigger-others-public-return').length;driverJournal.push({scenario,kind:'explicit-public-Rust-handle-or-consumer-control',action,target,value});input('trigger-others-command',JSON.stringify({action,target,...(value===undefined?{}:{value})}));await wait(()=>logs().filter(row=>row.kind==='trigger-others-public-return').length>before,'actual public Rust '+action+' return '+target);if(action==='open'||action==='close')await wait(()=>{const n=nodes(),open=action==='open';return JSON.parse(n.owner?.dataset.state??'{}')[target]===open&&n.surfaces[target].host?.matches(':popover-open')===open;},'actual logical/native '+action+' '+target);await settle();phase('public-Rust-input-settled',{action,target,value,adapter:'Rust public handle open/close, source public show property; origin remains separate from actual own trigger'});};
+  const modality=async()=>{const outside=get('popover-outside'),keyboard=sourceCase===100;let event;if(keyboard){outside.focus();await settle();event=new KeyboardEvent('keydown',{key:'Tab',code:'Tab',bubbles:true,cancelable:true,composed:true});}else event=new MouseEvent('mousedown',{bubbles:true,cancelable:true,composed:true,button:0});driverJournal.push({scenario,kind:keyboard?'actual-outside-Tab-modality-input':'actual-outside-mousedown-only-modality-input',target:describe(outside),trusted:event.isTrusted,clickDispatched:false,nativeDefaultNavigation:false});outside.dispatchEvent(event);await settle();phase('actual-input-modality-prime-before-operation',{keyboardInput:keyboard,inputType:event.type,trusted:event.isTrusted,defaultPrevented:event.defaultPrevented,clickDispatched:false,nativeDefaultNavigation:false});};
+  const actualClick=async(role,tag,{prevent=false}={})=>{const target=nodes().surfaces[role].trigger;target.focus();await settle();assert(document.activeElement===target,'actual retained native trigger focus before '+tag);const event=new MouseEvent('click',{bubbles:true,cancelable:true,composed:true,button:0});let reachedTarget=false,reachedDocument=false,reachedWindow=false;
+   if(prevent)target.addEventListener('click',actual=>{if(actual===event){actual.preventDefault();phase('native-consumer-preprevent-original-click',{tag,target:describe(target),defaultPrevented:actual.defaultPrevented});}},{capture:true,once:true,signal:listeners.signal});
+   target.addEventListener('click',actual=>{if(actual===event){reachedTarget=true;phase('actual-trigger-target-listener-return',{tag,defaultPrevented:event.defaultPrevented,target:describe(target),adapter:'Source own listener precedes this late local observer; Dioxus delegated own onclick may run later at document, recorded separately'});}},{passive:true,once:true,signal:listeners.signal});
+   document.addEventListener('click',actual=>{if(actual===event){reachedDocument=true;phase('actual-trigger-late-document',{tag,defaultPrevented:event.defaultPrevented});}},{passive:true,signal:listeners.signal});window.addEventListener('click',actual=>{if(actual===event){reachedWindow=true;phase('actual-trigger-late-window',{tag,defaultPrevented:event.defaultPrevented});}},{passive:true,signal:listeners.signal});
+   driverJournal.push({scenario,kind:'actual-registered-native-trigger-click',role,tag,target:describe(target),trusted:event.isTrusted,preprevent:prevent});phase('before-actual-trigger-click',{tag});target.dispatchEvent(event);phase('actual-trigger-synchronous-return',{tag,defaultPrevented:event.defaultPrevented,reachedTarget,reachedDocument,reachedWindow,trusted:event.isTrusted});await Promise.resolve();phase('actual-trigger-microtask',{tag,defaultPrevented:event.defaultPrevented});await new Promise(resolve=>requestAnimationFrame(time=>{phase('actual-trigger-first-native-frame',{tag,frameTime:time});resolve();}));await new Promise(resolve=>requestAnimationFrame(time=>{phase('actual-trigger-second-native-frame',{tag,frameTime:time});resolve();}));await settle();return phase('actual-trigger-settled',{tag,defaultPrevented:event.defaultPrevented,reachedTarget,reachedDocument,reachedWindow});};
+  try{
+   for(const role of roles)for(const type of ['beforetoggle','toggle'])held.surfaces[role].host.addEventListener(type,event=>phase('native-'+type,{role,oldState:event.oldState,newState:event.newState}),{passive:true,signal:listeners.signal});
+   for(const type of ['focusin','focusout'])document.addEventListener(type,event=>phase('native-'+type,{target:describe(event.target),relatedTarget:describe(event.relatedTarget)}),{capture:true,passive:true,signal:listeners.signal});
+   document.addEventListener('input',event=>{if(!(event.target instanceof HTMLInputElement)||!event.target.matches('[data-ix-overlay-transport]'))return;let report;try{report=JSON.parse(event.target.value);}catch{return;}if(['click','anchor-visibility','modality'].includes(report?.kind))phase('actual-native-overlay-report',{report:{owner:report.owner,sequence:report.sequence,kind:report.kind,phase:report.phase,input_kind:report.input_kind,key:report.key,default_prevented:report.default_prevented,target_id:report.target_id,hosts:report.hosts,triggers:report.triggers,anchor_visibility:report.anchor_visibility,nodes:(report.nodes??[]).filter(node=>roles.some(role=>nodes().surfaces[role].root?.dataset.ixOverlayRoot===node.id))}});},{capture:true,passive:true,signal:listeners.signal});
+   if(topology){
+    await actualClick('old-parent','setup-real-OldParent-trigger');await wait(()=>JSON.parse(nodes().owner.dataset.state)['old-parent']&&nodes().surfaces['old-parent'].host.matches(':popover-open'),'actual OldParent open consumes natural cached children');
+    await actualClick('active','setup-real-Active-trigger');await wait(()=>{const n=nodes(),state=JSON.parse(n.owner.dataset.state);return state['old-parent']&&state.active&&n.surfaces['old-parent'].host.matches(':popover-open')&&n.surfaces.active.host.matches(':popover-open');},'actual OldParent and Active retained after real setup clicks');
+    await command('open','live-parent');moved=held.surfaces.active.trigger;originalParent=moved.parentNode;originalNext=moved.nextSibling;get('trigger-others-live-parent-slot').append(moved);driverJournal.push({scenario,kind:'tool-only-same-native-trigger-reparent-diagnostic',target:describe(moved),originalParent:describe(originalParent),newParent:describe(moved.parentNode),privateRegistryMutation:false,remount:false});await settle();phase('same-actual-trigger-relocated-without-rediscovery');
+    await command('open','sibling');await command('open','descendant');await command('veto-close','active',true);assert(roles.every(role=>JSON.parse(nodes().owner.dataset.state)[role]&&nodes().surfaces[role].host.matches(':popover-open')),'actual five topology surfaces open before tested trigger click');assert(nodes().surfaces.active.trigger===moved&&moved.closest('#trigger-others-live-parent-slot'),'same actual Active trigger occupies real LiveParent content');
+    await modality();phase('ready-before-topology-trigger-operation',{cachedHistory:'OldParent and Active populated only through actual prior registered trigger opens; no registry/cache writes',currentNativeAncestry:ancestry(moved)});const operationStart=logs().length;await actualClick('active','tested-Active-close-veto-after-native-reparent');const settled=phase('settled-trigger-only-operation');triggerOthersCases.push({sourceCase,label,input:{topology,operation:'close',veto:true,reparent:'same native trigger, tool diagnostic',suppressTriggerVisibilityCheck:true},timeline,settled,operationCallbacks:logs().slice(operationStart),classification:'raw actual cached/live ancestor operation; local target phase and later document/Window phases remain separate'});
+   }else{
+    if(operation==='close')await command('open','active');for(const role of roles.slice(1))await command('open',role);assert(roles.slice(1).every(role=>JSON.parse(nodes().owner.dataset.state)[role]&&nodes().surfaces[role].host.matches(':popover-open')),'actual four policy targets concurrently logical/native open before operation');
+    if(veto)await command(operation==='open'?'veto-open':'veto-close','active',true);await modality();phase('ready-before-trigger-operation');const operationStart=logs().length;
+    if(publicOnly){await command('open','active');phase('public-handle-open-with-targets');await command('close','active');phase('public-handle-close-with-targets');}else await actualClick('active',preprevent?'tested-native-preprevented-trigger':'tested-Active-'+operation,{prevent:preprevent});
+    const settled=phase('settled-trigger-only-operation');triggerOthersCases.push({sourceCase,label,input:{topology,operation,veto,publicOnly,preprevent,suppressTriggerVisibilityCheck:true},timeline,settled,operationCallbacks:logs().slice(operationStart),classification:'raw actual trigger/controller-origin and outside-policy facts; no source outcome oracle injected'});
+   }
+   save({phase:'raw-trigger-only-dismiss-others',triggerOthers:triggerOthersCases.at(-1)});activeTriggerOthers=null;
+  }finally{
+   if(moved&&originalParent?.isConnected){originalParent.insertBefore(moved,originalNext?.parentNode===originalParent?originalNext:null);await settle();phase('same-actual-trigger-restored-after-operation-observation',{sameObject:nodes().surfaces.active.trigger===moved,restoredParent:describe(moved.parentNode)});}listeners.abort();
+  }
+ };
+ await triggerOthersRun({sourceCase:97});
+ await triggerOthersRun({sourceCase:98,veto:true});
+ await triggerOthersRun({sourceCase:99,operation:'close'});
+ await triggerOthersRun({sourceCase:100,operation:'close',veto:true});
+ await triggerOthersRun({sourceCase:101,topology:true});
+ await triggerOthersRun({sourceCase:102,publicOnly:true});
+ await triggerOthersRun({sourceCase:103,preprevent:true});
+ assert(triggerOthersCases.length===7,'all seven actual-trigger/public-handle policy diagnostics complete matched public setup');
+ return {ok:true,observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,input:'synthetic input controls invoking real public Rust handles; synthetic KeyboardEvent, programmatic focus and synthetic child button click',limits:['strict named endpoints and callback directions compared with pinned upstream contract; not complete Popover parity','WeakMap object identity and direct object equality certify retained actual nodes only within each fresh fixture; topology controls remount deliberately', 'geometry/computed styles/ancestor facts are diagnostics; no positive visibility or geometry parity asserted','focus-mode fixtures intentionally remount on mode selection; dynamic body add/remove uses Rust Signal state without native application policy injection', 'synthetic Tab has no native focus-navigation default; browser native-emulated Tab and read-only trusted phase recorder are separate evidence', 'Rust consumer callback cancellation and native DOM event cancellation/propagation are measured separately', 'Dropdown forward/reverse and veto release checks follow the paired source contract; native propagation flags remain separately observed', 'source-paired same-turn/reopen/parent-hide endpoints retain original event and frame evidence; native hide/completion chronology is diagnostic', 'same-ID replacement is an explicit native diagnostic fault injection; the exact original is restored only after recording its disconnected result', 'no physical input, accessibility, Brand visual, multiroot or cross-document certification'],renderer:navigator.userAgent};
+} catch(error) { return {ok:false,error:String(error),observations,assertions,driverJournal,tabCases,tabChecks,deferredChecks,queuedChecks,headerCases,headerOpeningChecks,headerChecks,headerModeCases,headerModeOpeningChecks,headerModeChecks,headerModeFocusContinuity,headerModeVisibilityLimits,anchorCases,anchorFocusCases,triggerOthersCases,activeTriggerOthers,failureTriggerOthers:readFailureTriggerOthers(),activeHeaderMode,activeAnchorCase,activeAnchorFocus,failureAnchor:readFailureAnchor(),failureHeader:readFailureHeader()}; }
 "#;

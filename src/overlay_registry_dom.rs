@@ -18,7 +18,7 @@ const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:o
 function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds.get(event);if(!id){id=++nativeDocument.eventSequence;nativeDocument.eventIds.set(event,id);}return id;}
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',focusFrame=0;
-const keyTargets=new Map(),handledBubbleKeys=new WeakSet();
+const keyTargets=new Map(),clickTargets=new Map(),handledBubbleKeys=new WeakSet();
 const tabFocusCaptures=new Map(),nativeFocusCommands=[],immediateTabFrames=new Set();let nativeFocusFrame=0;
 const anchorObservers=new Map();
 const lastFocus=new Map(),nativeIds=new WeakMap(),nativeNodes=new Map();let nativeSequence=0;
@@ -323,13 +323,19 @@ function syncExecution(){
   }
 }
 function syncKeyTargets(){
-  const wanted=new Set(),currentIds=new Set();
+  const wanted=new Set(),wantedClicks=new Set(),currentIds=new Set();
   for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner)continue;
     currentIds.add(root.getAttribute('data-ix-overlay-root'));
-    if(root.getAttribute('data-ix-overlay-mode')!=='active-descendant')continue;
     const target=findTrigger(root.getAttribute('data-ix-overlay-root'),root);
-    if(!target)continue;wanted.add(target);
+    if(!target)continue;
+    wantedClicks.add(target);
+    if(!clickTargets.has(target)){
+      const listener=event=>send(collectFacts('click',event,'trigger'),null);
+      clickTargets.set(target,listener);target.addEventListener('click',listener,{signal});
+    }
+    if(root.getAttribute('data-ix-overlay-mode')!=='active-descendant')continue;
+    wanted.add(target);
     if(!keyTargets.has(target)){
       const listener=event=>{if(handledBubbleKeys.has(event))return;handledBubbleKeys.add(event);send(collectFacts('key',event,'bubble'),event);};
       keyTargets.set(target,listener);target.addEventListener('keydown',listener,{signal});
@@ -337,6 +343,7 @@ function syncKeyTargets(){
   }
   for(const id of lastFocus.keys())if(!currentIds.has(id))lastFocus.delete(id);
   for(const [target,listener]of keyTargets)if(!wanted.has(target)){target.removeEventListener('keydown',listener);keyTargets.delete(target);}
+  for(const [target,listener]of clickTargets)if(!wantedClicks.has(target)){target.removeEventListener('click',listener);clickTargets.delete(target);}
 }
 function syncAnchorObservers(){
   const wanted=new Set();
@@ -452,7 +459,7 @@ try{
     if(command?.tab_focus){nativeFocusCommands.push({kind:'tab',command:command.tab_focus});scheduleNativeFocus();}
   }
 }finally{
-  alive=false;listeners.abort();keyTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
+  alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   if(nativeFocusFrame)cancelAnimationFrame(nativeFocusFrame);nativeFocusCommands.length=0;tabFocusCaptures.clear();
   for(const frame of immediateTabFrames)cancelAnimationFrame(frame);immediateTabFrames.clear();

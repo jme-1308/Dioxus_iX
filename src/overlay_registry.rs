@@ -10,7 +10,7 @@
 //! 2. Live composed-trigger overlay ancestry and presentation order
 //!    (`overlay-coordinator.ts:96-119, 188-363`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) enum OverlayKind {
@@ -62,6 +62,7 @@ pub(crate) struct NativeFact {
 #[derive(Clone, Debug)]
 struct NodeEntry {
     generation: u64,
+    registration: u64,
     kind: OverlayKind,
     close_behavior: CloseBehavior,
     open: bool,
@@ -73,9 +74,15 @@ struct NodeEntry {
 }
 
 impl NodeEntry {
-    fn new(generation: u64, kind: OverlayKind, close_behavior: CloseBehavior) -> Self {
+    fn new(
+        generation: u64,
+        registration: u64,
+        kind: OverlayKind,
+        close_behavior: CloseBehavior,
+    ) -> Self {
         Self {
             generation,
+            registration,
             kind,
             close_behavior,
             open: false,
@@ -94,6 +101,7 @@ pub(crate) struct Registry {
     order: Vec<String>,
     presentation_order: Vec<String>,
     presented_children: Vec<(String, Vec<String>)>,
+    registration: u64,
 }
 
 impl Registry {
@@ -120,9 +128,12 @@ impl Registry {
             self.prune_node_references(&id);
             self.order.retain(|k| k != &id);
         }
+        self.registration = self.registration.wrapping_add(1);
         self.order.push(id.clone());
-        self.nodes
-            .insert(id, NodeEntry::new(generation, kind, close_behavior));
+        self.nodes.insert(
+            id,
+            NodeEntry::new(generation, self.registration, kind, close_behavior),
+        );
     }
 
     pub(crate) fn unregister(&mut self, id: &str, generation: u64) {
@@ -274,6 +285,38 @@ impl Registry {
             cursor += 1;
         }
         path
+    }
+
+    /// Dropdown trigger dismissal protects cached ancestors and current live
+    /// Dropdown ancestors, including those reached through a Popover parent.
+    /// Descendants and siblings remain eligible for the subsequent pass.
+    pub(crate) fn dropdown_dismiss_exclusions(&self, id: &str) -> Vec<String> {
+        let mut excluded = self.cached_path_including(id);
+        for ancestor in self.live_ancestors(id) {
+            if self
+                .nodes
+                .get(&ancestor)
+                .is_some_and(|node| node.kind.is_dropdown())
+                && !excluded.contains(&ancestor)
+            {
+                excluded.push(ancestor);
+            }
+        }
+        excluded
+    }
+
+    /// Select the next connected-lifetime registration in source Map order.
+    /// The caller marks it visited before checking policy, exclusions or open
+    /// state, so a later callback cannot revisit an already passed instance.
+    pub(crate) fn next_dropdown_dismiss_other(
+        &self,
+        visited: &BTreeSet<u64>,
+    ) -> Option<(String, u64, u64)> {
+        self.order.iter().find_map(|id| {
+            let node = self.nodes.get(id)?;
+            (node.kind.is_dropdown() && !visited.contains(&node.registration))
+                .then(|| (id.clone(), node.generation, node.registration))
+        })
     }
 
     /// Property-only visibility does not erase controller child assignments.
@@ -587,6 +630,86 @@ mod tests {
             trigger_ancestors: ancestors.iter().map(|s| (*s).to_string()).collect(),
             discovery_ready: ready,
         }
+    }
+
+    #[test]
+    fn dropdown_trigger_exclusions_keep_cached_and_live_ancestors_through_popover() {
+        let mut reg = Registry::new();
+        for id in ["old", "active", "sibling", "descendant", "live"] {
+            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg.register(
+            "middle".into(),
+            1,
+            OverlayKind::Popover,
+            CloseBehavior::Both,
+        );
+        reg.observe(&[
+            fact("old", 1, &[], true),
+            fact("active", 1, &["old"], true),
+            fact("sibling", 1, &["old"], true),
+            fact("descendant", 1, &["active", "old"], true),
+            fact("live", 1, &[], true),
+            fact("middle", 1, &["live"], true),
+        ]);
+        for id in ["old", "active", "sibling", "descendant", "live", "middle"] {
+            reg.set_open(id, true);
+        }
+        reg.observe(&[fact("active", 1, &["middle", "live"], true)]);
+        assert_eq!(reg.cached_parent("active").as_deref(), Some("old"));
+        assert_eq!(reg.live_ancestors("active"), ["middle", "live"]);
+        assert_eq!(
+            reg.dropdown_dismiss_exclusions("active"),
+            ["active", "old", "live"]
+        );
+    }
+
+    #[test]
+    fn dropdown_trigger_iteration_tracks_registration_lifetime_before_policy() {
+        let mut reg = Registry::new();
+        reg.register(
+            "protected".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Inside,
+        );
+        reg.register(
+            "foreign".into(),
+            1,
+            OverlayKind::Popover,
+            CloseBehavior::Both,
+        );
+        reg.register("later".into(), 1, OverlayKind::Header, CloseBehavior::Both);
+        let mut visited = BTreeSet::new();
+        let first = reg.next_dropdown_dismiss_other(&visited).unwrap();
+        assert_eq!((first.0.as_str(), first.1), ("protected", 1));
+        visited.insert(first.2);
+        reg.set_close_behavior("protected", CloseBehavior::Both);
+        reg.register(
+            "protected".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+        );
+        let later = reg.next_dropdown_dismiss_other(&visited).unwrap();
+        assert_eq!(later.0, "later");
+        visited.insert(later.2);
+        assert!(reg.next_dropdown_dismiss_other(&visited).is_none());
+        reg.unregister("protected", 1);
+        reg.register(
+            "protected".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+        );
+        let reconnected = reg.next_dropdown_dismiss_other(&visited).unwrap();
+        assert_eq!((reconnected.0.as_str(), reconnected.1), ("protected", 1));
+        assert_ne!(first.2, reconnected.2);
+        visited.insert(reconnected.2);
+        reg.register("later".into(), 2, OverlayKind::Header, CloseBehavior::Both);
+        let replaced = reg.next_dropdown_dismiss_other(&visited).unwrap();
+        assert_eq!((replaced.0.as_str(), replaced.1), ("later", 2));
+        assert_ne!(later.2, replaced.2);
     }
 
     #[test]

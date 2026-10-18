@@ -2730,3 +2730,736 @@ fn linked_roving_trigger_owns_tab_before_enclosing_active_descendant_host() {
         ]
     );
 }
+
+type OthersJournal = Rc<RefCell<Vec<(String, &'static str, Change)>>>;
+
+#[test]
+fn native_trigger_default_fact_blocks_only_current_nearest_trigger_and_preserves_capture_guards() {
+    let child = Fixture::new("native-prevented-child", 763);
+    let (dom, fixture) = build_header_exit_fixture(&child);
+    let runtime = child.runtime();
+    let root = dom.in_scope(child.scope(), || {
+        let callbacks = runtime.entry(fixture.header.id()).unwrap().callbacks;
+        runtime.register(
+            fixture.header.id().into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        )
+    });
+    let document = "native original trigger prevention document";
+    attach(&dom, &child, document);
+    let nodes = serde_json::json!([
+        {"id":root.id(),"generation":1,"connected":true,"discovery_ready":true},
+        {"id":child.node().id(),"generation":1,"connected":true,"discovery_ready":true,
+         "trigger_ancestors":[root.id()],"on_trigger":true}
+    ]);
+    let report = |sequence, phase, prevented| {
+        serde_json::json!({
+            "owner":runtime.owner_id(),"document":document,"sequence":sequence,
+            "kind":"click","phase":phase,"default_prevented":prevented,
+            "hosts":[root.id()],"triggers":[child.node().id(),root.id()],"nodes":nodes
+        })
+    };
+    assert!(deliver_trap(&dom, &child, report(1, "capture", false)).default_action_enabled());
+    assert!(child.node().trigger_click_allowed());
+    assert!(
+        !root.trigger_click_allowed(),
+        "capture protects the enclosing foreign trigger"
+    );
+    assert!(deliver_trap(&dom, &child, report(2, "trigger", false)).default_action_enabled());
+    assert!(child.node().trigger_click_allowed());
+    assert!(
+        !root.trigger_click_allowed(),
+        "an unprevented target fact must retain capture's ancestor guard"
+    );
+
+    let mut foreign = report(3, "trigger", true);
+    foreign["owner"] = "wrong-runtime-owner".into();
+    deliver_trap(&dom, &child, foreign);
+    let mut arbitrary = report(4, "trigger", true);
+    arbitrary["triggers"] = serde_json::json!(["not-a-registered-trigger"]);
+    deliver_trap(&dom, &child, arbitrary);
+    let mut stale = report(5, "trigger", true);
+    stale["nodes"][1]["generation"] = 2.into();
+    stale["triggers"] = serde_json::json!([child.node().id()]);
+    deliver_trap(&dom, &child, stale);
+    let mut disconnected = report(6, "trigger", true);
+    disconnected["nodes"][1]["connected"] = false.into();
+    disconnected["triggers"] = serde_json::json!([child.node().id()]);
+    deliver_trap(&dom, &child, disconnected);
+    assert!(
+        child.node().trigger_click_allowed(),
+        "foreign owner, unknown trigger, stale and disconnected facts do not block the child"
+    );
+    assert!(!root.trigger_click_allowed());
+    assert!(deliver_trap(&dom, &child, report(7, "trigger", true)).default_action_enabled());
+    assert!(!child.node().trigger_click_allowed());
+    assert!(!root.trigger_click_allowed());
+    assert!(!child.open() && !fixture.header_open.get());
+    assert!(
+        fixture.order.borrow().is_empty() && child.0.borrow().calls.is_empty(),
+        "raw native prevention changes only the Rust toggle guard, never own or others visibility"
+    );
+
+    let mut next = report(8, "capture", false);
+    next["triggers"] = serde_json::json!([child.node().id()]);
+    deliver_trap(&dom, &child, next);
+    assert!(
+        child.node().trigger_click_allowed() && root.trigger_click_allowed(),
+        "a new original capture clears prior target and ancestor guards"
+    );
+    deliver_trap(&dom, &child, report(9, "trigger", true));
+    let old = child.node();
+    assert!(!old.trigger_click_allowed());
+    dom.in_scope(child.scope(), || {
+        let callbacks = runtime.entry(old.id()).unwrap().callbacks;
+        let replacement = runtime.register(
+            old.id().into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        child.0.borrow_mut().node = Some(replacement);
+    });
+    assert!(
+        child.node().trigger_click_allowed(),
+        "a generation-one guard cannot block its replacement"
+    );
+    let mut stale = report(10, "trigger", true);
+    stale["triggers"] = serde_json::json!([old.id()]);
+    deliver_trap(&dom, &child, stale);
+    assert!(
+        child.node().trigger_click_allowed(),
+        "old native generation cannot add a replacement guard"
+    );
+    assert!(
+        !old.trigger_click_allowed(),
+        "old NodeHandle remains rejected"
+    );
+    assert!(fixture.order.borrow().is_empty() && child.0.borrow().calls.is_empty());
+}
+
+#[test]
+fn standalone_trigger_others_cascade_consumes_veto_retained_latches_then_restores_keyboard() {
+    let child = Fixture::new("others-standalone-child", 762);
+    let (dom, fixture) = build_header_exit_fixture(&child);
+    let runtime = child.runtime();
+    let grand_open = Rc::new(Cell::new(false));
+    let grand_changes = Rc::new(RefCell::new(Vec::new()));
+    let (root, grand) = dom.in_scope(child.scope(), || {
+        let mut child_callbacks = runtime.entry(child.node().id()).unwrap().callbacks;
+        child_callbacks.key = Some(Rc::new(|_| KeyDecision::default()));
+        let child_node = runtime.register(
+            child.node().id().into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            child_callbacks,
+        );
+        child.0.borrow_mut().node = Some(child_node);
+        let callbacks = runtime.entry(fixture.header.id()).unwrap().callbacks;
+        let root = runtime.register(
+            fixture.header.id().into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        let owner = child.0.borrow().owner.clone().unwrap();
+        let scope = child.scope();
+        let read_owner = owner.clone();
+        let before_owner = owner.clone();
+        let read = grand_open.clone();
+        let apply = grand_open.clone();
+        let applied = grand_changes.clone();
+        let grand = runtime.register(
+            "others-standalone-grandchild".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Inside,
+            Callbacks {
+                read: Rc::new(move || {
+                    assert_owner(&read_owner, scope, 762);
+                    Some(read.get())
+                }),
+                before: Rc::new(move |_| {
+                    assert_owner(&before_owner, scope, 762);
+                    true
+                }),
+                apply: Rc::new(move |change| {
+                    assert_owner(&owner, scope, 762);
+                    applied.borrow_mut().push(change);
+                    apply.set(change.open);
+                }),
+                key: None,
+            },
+        );
+        (root, grand)
+    });
+    let nodes = serde_json::json!([
+        {"id":root.id(),"generation":1,"connected":true,"discovery_ready":true},
+        {"id":child.node().id(),"generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":[root.id()],"mode":"active-descendant","on_trigger":true},
+        {"id":grand.id(),"generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":[child.node().id(),root.id()]}
+    ]);
+    deliver_trap(
+        &dom,
+        &child,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
+        "kind":"observe","nodes":nodes}),
+    );
+    assert!(runtime.domain().is_none());
+    dom.in_scope(child.scope(), || {
+        assert!(root.request(true, Reason::Trigger, false));
+        assert!(child.node().request(true, Reason::Trigger, false));
+        assert!(grand.request(true, Reason::Trigger, false));
+    });
+    deliver_trap(
+        &dom,
+        &child,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
+        "kind":"key","phase":"bubble","input_kind":"keydown","key":"ArrowDown",
+        "hosts":[root.id()],"triggers":[child.node().id()],"nodes":nodes}),
+    );
+    assert!(
+        runtime.keyboard_mode(),
+        "registered child key admission primes the standalone mode"
+    );
+    fixture.header_veto.set(true);
+    dom.in_scope(child.scope(), || {
+        assert!(!runtime.close_and_release_focus(child.node().id()))
+    });
+    assert!(runtime.entry(root.id()).unwrap().suppress_trigger_restore);
+    assert!(trigger_suppressed(&child));
+    assert!(runtime.entry(grand.id()).unwrap().suppress_trigger_restore);
+    child.0.borrow().veto.set(true);
+    dom.in_scope(child.scope(), || {
+        assert!(runtime.dismiss_dropdown_others(root.id(), 1))
+    });
+    assert!(child.open() && grand_open.get());
+    assert!(trigger_suppressed(&child));
+    child.0.borrow().veto.set(false);
+    grand_changes.borrow_mut().clear();
+    child.0.borrow_mut().applied.clear();
+    dom.in_scope(child.scope(), || {
+        assert!(runtime.dismiss_dropdown_others(root.id(), 1))
+    });
+    assert!(!child.open() && !grand_open.get());
+    assert!(!trigger_suppressed(&child));
+    assert!(!runtime.entry(grand.id()).unwrap().suppress_trigger_restore);
+    assert!(runtime.entry(root.id()).unwrap().suppress_trigger_restore);
+    assert_eq!(grand_changes.borrow().len(), 1);
+    assert!(
+        grand_changes
+            .borrow()
+            .iter()
+            .all(|change| change.reason == Reason::TriggerOther && !change.restore_focus)
+    );
+    assert!(!child.0.borrow().applied.last().unwrap().restore_focus);
+    dom.in_scope(child.scope(), || {
+        assert!(child.node().request(true, Reason::Trigger, false));
+        assert!(grand.request(true, Reason::Trigger, false));
+    });
+    grand_changes.borrow_mut().clear();
+    dom.in_scope(child.scope(), || {
+        assert!(runtime.dismiss_dropdown_others(root.id(), 1))
+    });
+    assert!(!child.open() && !grand_open.get() && fixture.header_open.get());
+    assert_eq!(grand_changes.borrow().len(), 1);
+    assert!(
+        grand_changes
+            .borrow()
+            .iter()
+            .all(|change| change.reason == Reason::TriggerOther && change.restore_focus)
+    );
+    let applied = child.0.borrow().applied.last().copied().unwrap();
+    assert_eq!(applied.reason, Reason::TriggerOther);
+    assert!(applied.restore_focus);
+}
+
+#[test]
+fn trigger_others_freezes_exclusions_but_reads_current_policy_and_appended_registration() {
+    let active = Fixture::new("others-mut-active", 752);
+    let passed = Fixture::new("others-mut-passed", 753);
+    let first = Fixture::new("others-mut-first", 754);
+    let later = Fixture::new("others-mut-later", 755);
+    let new_parent = Fixture::new("others-mut-new-parent", 756);
+    let dom_active = build(&active);
+    let dom_passed = build(&passed);
+    let dom_first = build(&first);
+    let dom_later = build(&later);
+    let dom_parent = build(&new_parent);
+    let owners = [
+        (&dom_active, &active),
+        (&dom_passed, &passed),
+        (&dom_first, &first),
+        (&dom_later, &later),
+        (&dom_parent, &new_parent),
+    ];
+    let nodes = anchor_focus_nodes(&[
+        (&active, &[]),
+        (&passed, &[]),
+        (&first, &[]),
+        (&later, &[]),
+        (&new_parent, &[]),
+    ]);
+    let document = "trigger others dynamic callbacks document";
+    prepare_others(&owners, document, &nodes);
+    for (dom, fixture) in &owners {
+        present(dom, fixture);
+    }
+    passed.node().set_close_behavior(CloseBehavior::Inside);
+    first.0.borrow().veto.set(true);
+    let journal = Rc::new(RefCell::new(Vec::new()));
+    for (_, fixture) in &owners {
+        track_others(fixture, &journal);
+    }
+    let runtime = first.runtime();
+    let before = runtime.entry(first.node().id()).unwrap().callbacks.before;
+    let weak = Rc::downgrade(&runtime.0);
+    let passed_node = passed.node();
+    let later_node = later.node();
+    let active_node = active.node();
+    let active_runtime = Rc::downgrade(&active.runtime().0);
+    let owner = first.0.borrow().owner.clone().unwrap();
+    let scope = first.scope();
+    let dynamic_open = Rc::new(Cell::new(true));
+    let dynamic_result = dynamic_open.clone();
+    let dynamic_node = Rc::new(RefCell::new(None));
+    let retained_dynamic_node = dynamic_node.clone();
+    let dynamic_journal = journal.clone();
+    let once = Cell::new(false);
+    runtime
+        .0
+        .borrow_mut()
+        .nodes
+        .get_mut(first.node().id())
+        .unwrap()
+        .callbacks
+        .before = Rc::new(move |change| {
+        let allowed = before(change);
+        if !change.open && !once.replace(true) {
+            passed_node.set_close_behavior(CloseBehavior::Both);
+            later_node.set_close_behavior(CloseBehavior::Inside);
+            let mut relocated = nodes.clone();
+            relocated[0]["trigger_ancestors"] = serde_json::json!(["others-mut-new-parent"]);
+            active_node
+                .with_owner(|| {
+                    let active_runtime = RuntimeHandle(active_runtime.upgrade().unwrap());
+                    active_runtime.input(trap_form(serde_json::json!({
+                        "owner":active_runtime.owner_id(),"document":document,"sequence":2,
+                        "kind":"observe","nodes":relocated
+                    })));
+                })
+                .unwrap();
+            let runtime = RuntimeHandle(weak.upgrade().unwrap());
+            let read = dynamic_open.clone();
+            let apply = dynamic_open.clone();
+            let read_owner = owner.clone();
+            let before_owner = owner.clone();
+            let apply_owner = owner.clone();
+            let before_log = dynamic_journal.clone();
+            let apply_log = dynamic_journal.clone();
+            let node = runtime.register(
+                "others-mut-appended".into(),
+                1,
+                OverlayKind::Dropdown,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(move || {
+                        assert_owner(&read_owner, scope, 754);
+                        Some(read.get())
+                    }),
+                    before: Rc::new(move |change| {
+                        assert_owner(&before_owner, scope, 754);
+                        before_log.borrow_mut().push((
+                            "others-mut-appended".into(),
+                            "before",
+                            change,
+                        ));
+                        true
+                    }),
+                    apply: Rc::new(move |change| {
+                        assert_owner(&apply_owner, scope, 754);
+                        apply_log.borrow_mut().push((
+                            "others-mut-appended".into(),
+                            "apply",
+                            change,
+                        ));
+                        apply.set(change.open);
+                    }),
+                    key: None,
+                },
+            );
+            *dynamic_node.borrow_mut() = Some(node);
+            assert_owner(&owner, scope, 754);
+        }
+        allowed
+    });
+    dom_active.in_scope(active.scope(), || {
+        assert!(
+            active
+                .runtime()
+                .dismiss_dropdown_others(active.node().id(), 1)
+        );
+    });
+    assert_eq!(
+        others_before_ids(&journal),
+        [
+            "others-mut-first",
+            "others-mut-new-parent",
+            "others-mut-appended"
+        ]
+    );
+    assert!(active.open() && passed.open() && first.open() && later.open());
+    assert!(!new_parent.open() && !dynamic_result.get());
+    assert!(
+        retained_dynamic_node
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .is_registered()
+    );
+}
+
+#[test]
+fn trigger_others_skips_dropped_owner_and_visits_replacement_at_new_connection_position() {
+    let active = Fixture::new("others-life-active", 757);
+    let first = Fixture::new("others-life-first", 758);
+    let dropped = Fixture::new("others-life-drop", 759);
+    let replaced = Fixture::new("others-life-replaced", 760);
+    let later = Fixture::new("others-life-later", 761);
+    let dom_active = build(&active);
+    let dom_first = build(&first);
+    let dom_dropped = Rc::new(RefCell::new(Some(build(&dropped))));
+    let dom_replaced = build(&replaced);
+    let dom_later = build(&later);
+    let nodes = anchor_focus_nodes(&[
+        (&active, &[]),
+        (&first, &[]),
+        (&dropped, &[]),
+        (&replaced, &[]),
+        (&later, &[]),
+    ]);
+    let document = "trigger others owner replacement document";
+    {
+        let dropped_dom = dom_dropped.borrow();
+        let owners = [
+            (&dom_active, &active),
+            (&dom_first, &first),
+            (dropped_dom.as_ref().unwrap(), &dropped),
+            (&dom_replaced, &replaced),
+            (&dom_later, &later),
+        ];
+        prepare_others(&owners, document, &nodes);
+        for (dom, fixture) in &owners {
+            present(dom, fixture);
+        }
+    }
+    let journal = Rc::new(RefCell::new(Vec::new()));
+    for fixture in [&active, &first, &dropped, &replaced, &later] {
+        track_others(fixture, &journal);
+    }
+    first.0.borrow().veto.set(true);
+    let runtime = first.runtime();
+    let before = runtime.entry(first.node().id()).unwrap().callbacks.before;
+    let old_replaced = replaced.node();
+    let replacement_slot = Rc::downgrade(&replaced.0);
+    let dropped_slot = dom_dropped.clone();
+    let old_for_callback = old_replaced.clone();
+    runtime
+        .0
+        .borrow_mut()
+        .nodes
+        .get_mut(first.node().id())
+        .unwrap()
+        .callbacks
+        .before = Rc::new(move |change| {
+        let allowed = before(change);
+        if !change.open {
+            drop(dropped_slot.borrow_mut().take());
+            old_for_callback
+                .with_owner(|| {
+                    let runtime = old_for_callback.runtime().unwrap();
+                    let callbacks = runtime.entry(old_for_callback.id()).unwrap().callbacks;
+                    let node = runtime.register(
+                        old_for_callback.id().into(),
+                        2,
+                        OverlayKind::Dropdown,
+                        CloseBehavior::Both,
+                        callbacks,
+                    );
+                    replacement_slot.upgrade().unwrap().borrow_mut().node = Some(node);
+                })
+                .unwrap();
+        }
+        allowed
+    });
+    dom_active.in_scope(active.scope(), || {
+        assert!(
+            active
+                .runtime()
+                .dismiss_dropdown_others(active.node().id(), 1)
+        );
+        assert_eq!(consume_context::<OwnerToken>().0, 757);
+    });
+    assert_eq!(
+        others_before_ids(&journal),
+        [
+            "others-life-first",
+            "others-life-later",
+            "others-life-replaced"
+        ]
+    );
+    assert!(first.open());
+    assert!(!later.open() && !replaced.open());
+    assert_eq!(replaced.node().generation(), 2);
+    assert!(
+        dropped
+            .0
+            .borrow()
+            .owner
+            .as_ref()
+            .unwrap()
+            .upgrade()
+            .is_none()
+    );
+    assert!(!old_replaced.request(false, Reason::Trigger, false));
+}
+
+#[test]
+fn trigger_others_keeps_cached_old_and_live_new_ancestors_but_closes_sibling_descendant() {
+    let old = Fixture::new("others-old-parent", 746);
+    let active = Fixture::new("others-relocated", 747);
+    let sibling = Fixture::new("others-sibling", 748);
+    let descendant = Fixture::new("others-descendant", 749);
+    let live = Fixture::new("others-live-parent", 750);
+    let middle = Fixture::new("others-middle-popover", 751);
+    let dom_old = build(&old);
+    let dom_active = build(&active);
+    let dom_sibling = build(&sibling);
+    let dom_descendant = build(&descendant);
+    let dom_live = build(&live);
+    let dom_middle = build_popover_fixture(&middle);
+    let owners = [
+        (&dom_old, &old),
+        (&dom_active, &active),
+        (&dom_sibling, &sibling),
+        (&dom_descendant, &descendant),
+        (&dom_live, &live),
+        (&dom_middle, &middle),
+    ];
+    let mut nodes = anchor_focus_nodes(&[
+        (&old, &[]),
+        (&active, &["others-old-parent"]),
+        (&sibling, &["others-old-parent"]),
+        (&descendant, &["others-relocated", "others-old-parent"]),
+        (&live, &[]),
+        (&middle, &["others-live-parent"]),
+    ]);
+    let document = "trigger others cached and live ancestry document";
+    prepare_others(&owners, document, &nodes);
+    for (dom, fixture) in &owners {
+        present(dom, fixture);
+    }
+    let domain = active.runtime().domain().unwrap();
+    assert_eq!(
+        domain.cached_parent(active.node().id()).as_deref(),
+        Some(old.node().id())
+    );
+    assert_eq!(
+        domain.cached_children(active.node().id()),
+        [descendant.node().id()]
+    );
+    nodes[1]["trigger_ancestors"] = serde_json::json!([middle.node().id(), live.node().id()]);
+    deliver_trap(
+        &dom_active,
+        &active,
+        anchor_focus_report(&active, document, 2, "observe", &nodes),
+    );
+    assert_eq!(
+        domain.cached_parent(active.node().id()).as_deref(),
+        Some(old.node().id())
+    );
+    assert_eq!(
+        domain.live_ancestors(active.node().id()),
+        [middle.node().id(), live.node().id()]
+    );
+    let journal = Rc::new(RefCell::new(Vec::new()));
+    for (_, fixture) in &owners {
+        track_others(fixture, &journal);
+    }
+    active.0.borrow().veto.set(true);
+    dom_active.in_scope(active.scope(), || {
+        assert!(!active.node().request(false, Reason::Trigger, false))
+    });
+    journal.borrow_mut().clear();
+    dom_active.in_scope(active.scope(), || {
+        assert!(
+            active
+                .runtime()
+                .dismiss_dropdown_others(active.node().id(), active.node().generation())
+        );
+    });
+    assert_eq!(
+        others_before_ids(&journal),
+        [sibling.node().id(), descendant.node().id()]
+    );
+    assert!(old.open() && active.open() && live.open() && middle.open());
+    assert!(!sibling.open() && !descendant.open());
+}
+
+fn track_others(fixture: &Fixture, journal: &OthersJournal) {
+    let runtime = fixture.runtime();
+    let id = fixture.0.borrow().id;
+    let mut state = runtime.0.borrow_mut();
+    let callbacks = &mut state.nodes.get_mut(id).unwrap().callbacks;
+    let before = callbacks.before.clone();
+    let before_journal = journal.clone();
+    callbacks.before = Rc::new(move |change| {
+        before_journal
+            .borrow_mut()
+            .push((id.into(), "before", change));
+        before(change)
+    });
+    let apply = callbacks.apply.clone();
+    let apply_journal = journal.clone();
+    callbacks.apply = Rc::new(move |change| {
+        apply_journal
+            .borrow_mut()
+            .push((id.into(), "apply", change));
+        apply(change);
+    });
+}
+
+fn prepare_others(owners: &[(&VirtualDom, &Fixture)], document: &str, nodes: &[serde_json::Value]) {
+    for (dom, fixture) in owners {
+        attach(dom, fixture, document);
+        deliver_trap(
+            dom,
+            fixture,
+            anchor_focus_report(fixture, document, 1, "observe", nodes),
+        );
+    }
+}
+
+fn others_before_ids(journal: &OthersJournal) -> Vec<String> {
+    journal
+        .borrow()
+        .iter()
+        .filter(|(_, phase, change)| *phase == "before" && !change.open)
+        .map(|(id, _, _)| id.clone())
+        .collect()
+}
+
+#[test]
+fn trigger_others_orders_owner_callbacks_and_policies_after_veto_or_closed_origin() {
+    let fixtures = [
+        Fixture::new("others-active", 740),
+        Fixture::new("others-both", 741),
+        Fixture::new("others-inside", 742),
+        Fixture::new("others-outside", 743),
+        Fixture::new("others-none", 744),
+        Fixture::new("others-closed", 745),
+    ];
+    let doms = fixtures.iter().map(build).collect::<Vec<_>>();
+    let owners = doms.iter().zip(&fixtures).collect::<Vec<_>>();
+    let nodes = anchor_focus_nodes(
+        &fixtures
+            .iter()
+            .map(|fixture| (fixture, &[][..]))
+            .collect::<Vec<_>>(),
+    );
+    let document = "trigger others ordered independent owner document";
+    prepare_others(&owners, document, &nodes);
+    doms[3].in_scope(fixtures[3].scope(), || {
+        let runtime = fixtures[3].runtime();
+        let id = fixtures[3].node().id().to_owned();
+        let callbacks = runtime.entry(&id).unwrap().callbacks;
+        let node = runtime.register(
+            id,
+            1,
+            OverlayKind::Header,
+            CloseBehavior::Outside,
+            callbacks,
+        );
+        fixtures[3].0.borrow_mut().node = Some(node);
+    });
+    for (fixture, behavior) in [
+        (&fixtures[2], CloseBehavior::Inside),
+        (&fixtures[3], CloseBehavior::Outside),
+        (&fixtures[4], CloseBehavior::None),
+    ] {
+        fixture.node().set_close_behavior(behavior);
+    }
+    let journal = Rc::new(RefCell::new(Vec::new()));
+    for (dom, fixture) in owners.iter().take(5) {
+        present(dom, fixture);
+    }
+    for fixture in &fixtures {
+        track_others(fixture, &journal);
+    }
+    let active = &fixtures[0];
+    let active_dom = &doms[0];
+    let runtime = active.runtime();
+    let mut pointer = anchor_focus_report(active, document, 2, "modality", &nodes);
+    pointer["input_kind"] = "mousedown".into();
+    deliver_trap(active_dom, active, pointer);
+    active.0.borrow().veto.set(true);
+    fixtures[1].0.borrow().veto.set(true);
+    active_dom.in_scope(active.scope(), || {
+        assert!(!active.node().request(false, Reason::Trigger, false))
+    });
+    journal.borrow_mut().clear();
+    let closed_revision = fixtures[5]
+        .runtime()
+        .entry(fixtures[5].node().id())
+        .unwrap()
+        .revision;
+    active_dom.in_scope(active.scope(), || {
+        assert!(runtime.dismiss_dropdown_others(active.node().id(), active.node().generation()));
+        assert_eq!(consume_context::<OwnerToken>().0, 740);
+    });
+    assert_eq!(
+        others_before_ids(&journal),
+        ["others-both", "others-outside"]
+    );
+    assert!(active.open() && fixtures[1].open() && fixtures[2].open() && fixtures[4].open());
+    assert!(!fixtures[3].open() && !fixtures[5].open());
+    assert_eq!(
+        fixtures[5]
+            .runtime()
+            .entry(fixtures[5].node().id())
+            .unwrap()
+            .revision,
+        closed_revision
+    );
+    assert!(
+        journal
+            .borrow()
+            .iter()
+            .filter(|(_, phase, _)| *phase == "apply")
+            .all(|(_, _, change)| change.reason == Reason::TriggerOther && !change.restore_focus)
+    );
+    active.0.borrow().veto.set(false);
+    fixtures[1].0.borrow().veto.set(false);
+    active_dom.in_scope(active.scope(), || {
+        assert!(active.node().request(false, Reason::Trigger, false))
+    });
+    journal.borrow_mut().clear();
+    active_dom.in_scope(active.scope(), || {
+        assert!(runtime.dismiss_dropdown_others(active.node().id(), active.node().generation()));
+    });
+    assert_eq!(others_before_ids(&journal), ["others-both"]);
+    assert!(!fixtures[1].open());
+    journal.borrow_mut().clear();
+    active_dom.in_scope(active.scope(), || {
+        assert!(runtime.dismiss_dropdown_others(active.node().id(), active.node().generation()));
+        assert!(
+            !runtime.dismiss_dropdown_others(active.node().id(), active.node().generation() + 1)
+        );
+    });
+    assert!(journal.borrow().is_empty());
+}

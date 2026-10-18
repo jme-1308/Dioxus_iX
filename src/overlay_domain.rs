@@ -633,6 +633,63 @@ impl Domain {
         accepted
     }
 
+    /// Run only after an actual Dropdown trigger's own toggle attempt. Public
+    /// controller requests do not acquire this independent dismissal phase.
+    /// True means the originating registration was admitted, not that every
+    /// eligible target accepted its close request.
+    pub(crate) fn dismiss_dropdown_others(&self, id: &str, generation: u64) -> bool {
+        let Some(origin) = self
+            .entry(id)
+            .filter(|entry| entry.generation == generation && entry.kind.is_dropdown())
+        else {
+            return false;
+        };
+        if self.read(id, &origin).is_none() {
+            return false;
+        }
+        self.refresh();
+        if !self.current(id, &origin) {
+            return false;
+        }
+        // Source takes this path once, after the own request has either
+        // committed its cache changes or retained them through a veto.
+        let excluded = self.0.borrow().registry.dropdown_dismiss_exclusions(id);
+        let mut visited = BTreeSet::new();
+        loop {
+            let next = {
+                let state = self.0.borrow();
+                state.order.iter().find_map(|candidate| {
+                    let entry = state.entries.get(candidate)?;
+                    (!visited.contains(&entry.registration))
+                        .then(|| (candidate.clone(), entry.clone()))
+                })
+            };
+            let Some((candidate, entry)) = next else {
+                break;
+            };
+            visited.insert(entry.registration);
+            let eligible = entry.kind.is_dropdown()
+                && !excluded.contains(&candidate)
+                && self
+                    .0
+                    .borrow()
+                    .registry
+                    .close_behavior(&candidate)
+                    .is_some_and(CloseBehavior::allows_outside);
+            if eligible && self.read(&candidate, &entry) == Some(true) {
+                self.request(
+                    &candidate,
+                    Change {
+                        open: false,
+                        reason: Reason::TriggerOther,
+                        restore_focus: true,
+                    },
+                );
+            }
+        }
+        true
+    }
+
     pub(crate) fn close_children(&self, id: &str, reason: Reason, restore_focus: bool) {
         let cross_type = {
             let state = self.0.borrow();
@@ -671,10 +728,12 @@ impl Domain {
                 Change {
                     open: false,
                     reason,
-                    restore_focus: (reason == Reason::AnchorVisibilityParent
-                        && self
-                            .entry(&child)
-                            .is_some_and(|entry| entry.kind.is_dropdown()))
+                    restore_focus: (matches!(
+                        reason,
+                        Reason::AnchorVisibilityParent | Reason::TriggerOther
+                    ) && self
+                        .entry(&child)
+                        .is_some_and(|entry| entry.kind.is_dropdown()))
                         || (restore_focus
                             && self
                                 .entry(id)
