@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Popover focus policy; native code supplies eligible candidates in document
-//! order and executes only the selected target. See pinned focus-trap.ts79–94,
+//! order; registered Dioxus mounted handles execute the selected target. See pinned focus-trap.ts79–94,
 //! 430–469 and popover.tsx473–518. Candidate eligibility and native focus success
 //! are separate facts: this module neither discovers DOM nor invents a fallback.
 
@@ -144,48 +144,6 @@ pub(crate) fn tab_adjacent_target(
         (index + 1) % ordered.len()
     };
     Some(ordered[next].1.target.clone())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PostCloseFocus {
-    None,
-    /// Restore the configured trigger in a frame after native close.
-    Restore,
-    /// Release contained/trigger focus in a frame, then blur trigger next frame.
-    Release,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RustCloseFocusPlan {
-    /// Release contained and trigger focus immediately before native hide.
-    pub(crate) pre_release: bool,
-    /// Blur the configured trigger immediately after native hide.
-    pub(crate) blur_trigger: bool,
-    pub(crate) post_close: PostCloseFocus,
-}
-
-/// `cached_focusable` is captured at opening, not recomputed at dismissal.
-/// A release still blurs its configured trigger after hide when content is
-/// static. Only the further explicit corrections require focusable content.
-pub(crate) fn close_focus_plan(
-    cached_focusable: bool,
-    configured_trigger: bool,
-    hover_mode: bool,
-    restore_focus: bool,
-) -> RustCloseFocusPlan {
-    let eligible = cached_focusable && configured_trigger;
-    let hover_release = hover_mode && !restore_focus;
-    RustCloseFocusPlan {
-        pre_release: eligible && hover_release,
-        blur_trigger: configured_trigger && !restore_focus,
-        post_close: if !eligible || hover_release {
-            PostCloseFocus::None
-        } else if restore_focus {
-            PostCloseFocus::Restore
-        } else {
-            PostCloseFocus::Release
-        },
-    }
 }
 
 #[cfg(test)]
@@ -363,40 +321,5 @@ mod tests {
         candidates[0].active = false;
         assert_eq!(tab_boundary_target(&candidates, &[], false), None);
         assert_eq!(tab_boundary_target(&candidates, &[], true), None);
-    }
-
-    #[test]
-    fn close_focus_matrix_preserves_static_release_blur_and_hover_frame_distinction() {
-        use PostCloseFocus::{None, Release, Restore};
-        // cached content, configured trigger, hover, restore, pre, blur, post
-        let cases = [
-            (false, false, false, false, false, false, None),
-            (false, false, false, true, false, false, None),
-            (false, false, true, false, false, false, None),
-            (false, false, true, true, false, false, None),
-            (false, true, false, false, false, true, None),
-            (false, true, false, true, false, false, None),
-            (false, true, true, false, false, true, None),
-            (false, true, true, true, false, false, None),
-            (true, false, false, false, false, false, None),
-            (true, false, false, true, false, false, None),
-            (true, false, true, false, false, false, None),
-            (true, false, true, true, false, false, None),
-            (true, true, false, false, false, true, Release),
-            (true, true, false, true, false, false, Restore),
-            (true, true, true, false, true, true, None),
-            (true, true, true, true, false, false, Restore),
-        ];
-        for (content, trigger, hover, restore, pre, blur, post) in cases {
-            assert_eq!(
-                close_focus_plan(content, trigger, hover, restore),
-                RustCloseFocusPlan {
-                    pre_release: pre,
-                    blur_trigger: blur,
-                    post_close: post
-                },
-                "content={content} trigger={trigger} hover={hover} restore={restore}"
-            );
-        }
     }
 }

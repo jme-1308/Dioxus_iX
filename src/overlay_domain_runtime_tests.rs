@@ -454,21 +454,11 @@ fn trap_report(
     sequence: u64,
     nodes: Vec<serde_json::Value>,
 ) -> serde_json::Value {
-    let targets = nodes
-        .iter()
-        .flat_map(|node| {
-            node["tab_candidates"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|item| item["target"].clone())
-        })
-        .collect::<Vec<_>>();
     serde_json::json!({
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
         "kind":"key","phase":"trap","key":"Tab","shift":true,
         "active_hosts":[fixture.0.borrow().id],"active_popover":fixture.0.borrow().id,
-        "nodes":nodes,"focus_targets":targets
+        "nodes":nodes
     })
 }
 fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value) -> FormEvent {
@@ -476,18 +466,11 @@ fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value) 
     dom.in_scope(fixture.scope(), || fixture.runtime().input(event.clone()));
     event
 }
-fn trap_query(dom: &VirtualDom, fixture: &Fixture, sequence: u64, target: &str) -> FormEvent {
-    let event = trap_form(
-        serde_json::json!({"owner":fixture.runtime().owner_id(),"sequence":sequence,"focus_target":target}),
-    );
-    dom.in_scope(fixture.scope(), || fixture.runtime().query(event.clone()));
-    event
-}
 
 #[test]
-fn document_trap_handler_preserves_interior_empty_prevented_and_consumes_open_focus_once() {
+fn document_trap_handler_preserves_interior_empty_prevented_and_focuses_registered_boundary_once() {
     let fixture = Fixture::new("document-trap-policy", 501);
-    let dom = build_popover_fixture(&fixture);
+    let mut dom = build_popover_fixture(&fixture);
     let document = "document trap handler policy";
     attach(&dom, &fixture, document);
     observe(
@@ -511,6 +494,7 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_consumes_open_fo
             ],
         )
     };
+    let mounted = register_exit_mount(&dom, &fixture, "last");
     let report = trap_report(&fixture, document, 2, vec![node()]);
     let event = deliver_trap(&dom, &fixture, report);
     assert!(
@@ -528,18 +512,15 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_consumes_open_fo
         !immediate.default_action_enabled(),
         "native immediate-stop has its own ACK"
     );
-    assert!(
-        trap_query(&dom, &fixture, 1, "last").default_action_enabled(),
-        "stale sequence cannot consume authorization"
-    );
-    assert!(
-        trap_query(&dom, &fixture, 2, "middle").default_action_enabled(),
-        "wrong target cannot consume authorization"
-    );
-    assert!(!trap_query(&dom, &fixture, 2, "last").default_action_enabled());
-    assert!(
-        trap_query(&dom, &fixture, 2, "last").default_action_enabled(),
-        "focus authorization is consumed once"
+    assert_eq!(fixture.runtime().pending_item_focus_count(), 1);
+    assert!(mounted.calls.borrow().is_empty());
+    settle_exit(&mut dom);
+    assert_eq!(*mounted.calls.borrow(), [("last".into(), fixture.scope())]);
+    settle_exit(&mut dom);
+    assert_eq!(
+        mounted.calls.borrow().len(),
+        1,
+        "one admitted Tab focuses once"
     );
 
     let mut interior = trap_report(&fixture, document, 3, vec![node()]);
@@ -556,7 +537,6 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_consumes_open_fo
     let mut prevented = trap_report(&fixture, document, 5, vec![node()]);
     prevented["default_prevented"] = true.into();
     assert!(deliver_trap(&dom, &fixture, prevented).default_action_enabled());
-    assert!(trap_query(&dom, &fixture, 5, "last").default_action_enabled());
     let mut disabled = trap_report(&fixture, document, 6, vec![node()]);
     disabled["nodes"][0]["trap_enabled"] = false.into();
     assert!(deliver_trap(&dom, &fixture, disabled).default_action_enabled());
@@ -565,6 +545,18 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_consumes_open_fo
     assert!(
         deliver_trap(&dom, &fixture, other_phase).default_action_enabled(),
         "boundary policy belongs to document trap phase"
+    );
+    dom.in_scope(fixture.scope(), || {
+        fixture.runtime().unregister_item_cue("last")
+    });
+    assert!(
+        deliver_trap(
+            &dom,
+            &fixture,
+            trap_report(&fixture, document, 8, vec![node()])
+        )
+        .default_action_enabled(),
+        "an unregistered boundary preserves native Tab"
     );
     assert!(
         fixture.0.borrow().calls.is_empty(),
@@ -575,7 +567,7 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_consumes_open_fo
 #[test]
 fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizations() {
     let fixture = Fixture::new("document-trap-stale", 502);
-    let dom = build_popover_fixture(&fixture);
+    let mut dom = build_popover_fixture(&fixture);
     let document = "document trap stale authorization";
     attach(&dom, &fixture, document);
     observe(
@@ -588,6 +580,7 @@ fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizatio
         &["document-trap-stale"],
     );
     present(&dom, &fixture);
+    let mounted = register_exit_mount(&dom, &fixture, "last");
     let report = |sequence| {
         trap_report(
             &fixture,
@@ -607,8 +600,9 @@ fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizatio
     dom.in_scope(fixture.scope(), || {
         assert!(fixture.node().request(false, Reason::Trigger, false));
     });
+    settle_exit(&mut dom);
     assert!(
-        trap_query(&dom, &fixture, 2, "last").default_action_enabled(),
+        mounted.calls.borrow().is_empty(),
         "closed host cannot execute open-trap authorization"
     );
     present(&dom, &fixture);
@@ -617,8 +611,9 @@ fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizatio
         assert!(fixture.node().request(false, Reason::Trigger, false));
         assert!(fixture.node().request(true, Reason::Trigger, false));
     });
+    settle_exit(&mut dom);
     assert!(
-        trap_query(&dom, &fixture, 3, "last").default_action_enabled(),
+        mounted.calls.borrow().is_empty(),
         "same-generation reopen changes revision"
     );
     assert!(!deliver_trap(&dom, &fixture, report(4)).default_action_enabled());
@@ -634,8 +629,9 @@ fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizatio
         );
         fixture.0.borrow_mut().node = Some(replacement);
     });
+    settle_exit(&mut dom);
     assert!(
-        trap_query(&dom, &fixture, 4, "last").default_action_enabled(),
+        mounted.calls.borrow().is_empty(),
         "new registration cannot inherit old focus admission"
     );
     assert!(
@@ -648,8 +644,8 @@ fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizatio
 fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
     let parent = Fixture::new("trap-parent", 503);
     let child = Fixture::new("trap-child", 504);
-    let dom_parent = build_popover_fixture(&parent);
-    let dom_child = build_popover_fixture(&child);
+    let mut dom_parent = build_popover_fixture(&parent);
+    let mut dom_child = build_popover_fixture(&child);
     let document = "cross-root document traps";
     attach(&dom_parent, &parent, document);
     attach(&dom_child, &child, document);
@@ -686,6 +682,9 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
             ],
         )
     };
+    let child_last = register_exit_mount(&dom_child, &child, "child-last");
+    let parent_first = register_exit_mount(&dom_parent, &parent, "parent-first");
+    let parent_last = register_exit_mount(&dom_parent, &parent, "parent-last");
     let mut focused_child = trap_report(&parent, document, 2, vec![parent_node(), child_node()]);
     focused_child["active_hosts"] = serde_json::json!(["trap-child", "trap-parent"]);
     focused_child["active_popover"] = "trap-child".into();
@@ -695,7 +694,11 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
     );
     focused_child["owner"] = child.runtime().owner_id().into();
     assert!(!deliver_trap(&dom_child, &child, focused_child).default_action_enabled());
-    assert!(!trap_query(&dom_child, &child, 2, "child-last").default_action_enabled());
+    settle_exit(&mut dom_child);
+    assert_eq!(
+        *child_last.calls.borrow(),
+        [("child-last".into(), child.scope())]
+    );
 
     // Replace the foreign participant with a Dropdown using actual registration.
     dom_child.in_scope(child.scope(), || {
@@ -727,7 +730,11 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
         !deliver_trap(&dom_parent, &parent, trigger_focus).default_action_enabled(),
         "nonfocused Dropdown branch is excluded before boundary calculation"
     );
-    assert!(!trap_query(&dom_parent, &parent, 4, "parent-first").default_action_enabled());
+    settle_exit(&mut dom_parent);
+    assert_eq!(
+        *parent_first.calls.borrow(),
+        [("parent-first".into(), parent.scope())]
+    );
 
     drop(dom_child);
     let after_drop = trap_report(&parent, document, 5, vec![parent_node()]);
@@ -735,7 +742,11 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
         !deliver_trap(&dom_parent, &parent, after_drop).default_action_enabled(),
         "dropped foreign owner no longer defers live parent"
     );
-    assert!(!trap_query(&dom_parent, &parent, 5, "parent-last").default_action_enabled());
+    settle_exit(&mut dom_parent);
+    assert_eq!(
+        *parent_last.calls.borrow(),
+        [("parent-last".into(), parent.scope())]
+    );
     assert!(parent.open());
 }
 
@@ -857,10 +868,6 @@ fn mounted_tab_exit_focuses_forward_or_reverse_and_preserves_close_veto() {
             [(destination.target.clone(), fixture.scope())]
         );
         assert_eq!(fixture.runtime().pending_item_focus_count(), 0);
-        assert!(
-            trap_query(&dom, &fixture, 2, &destination.target).default_action_enabled(),
-            "exit does not authorize native focus"
-        );
     }
 }
 
@@ -1330,7 +1337,7 @@ fn header_retained_relocation_preserves_child_cached_root_and_same_type_cascade_
 fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owners() {
     let parent = Fixture::new("header-trap-parent", 705);
     let child = Fixture::new("header-trap-child", 706);
-    let dom_parent = build_popover_fixture(&parent);
+    let mut dom_parent = build_popover_fixture(&parent);
     let (dom_child, fixture) = build_header_exit_fixture(&child);
     prepare_header_exit(
         &dom_parent,
@@ -1373,6 +1380,7 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
         {"target":"header-overflow","hosts":[fixture.header.id(),parent_id],"tab_index":0,"active":true},
         {"target":"header-more","hosts":[parent_id],"tab_index":0,"active":false}
     ]);
+    let mounted = register_exit_mount(&dom_parent, &parent, "parent-before");
     let mut report = trap_report(&parent, "header focus owner document", 2, nodes);
     report["shift"] = false.into();
     report["active_hosts"] = serde_json::json!([fixture.header.id(), parent_id]);
@@ -1380,7 +1388,7 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
         deliver_trap(&dom_parent, &parent, report.clone()).default_action_enabled(),
         "focused topmost Header owns its original Tab"
     );
-    assert!(trap_query(&dom_parent, &parent, 2, "parent-before").default_action_enabled());
+    assert_eq!(parent.runtime().pending_item_focus_count(), 0);
     report["sequence"] = 3.into();
     report["active_hosts"] = serde_json::json!([parent_id]);
     report["nodes"].as_array_mut().unwrap().last_mut().unwrap()["tab_candidates"][2]["active"] =
@@ -1391,7 +1399,11 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
         !deliver_trap(&dom_parent, &parent, report).default_action_enabled(),
         "parent last wraps with open Header host excluded"
     );
-    assert!(!trap_query(&dom_parent, &parent, 3, "parent-before").default_action_enabled());
+    settle_exit(&mut dom_parent);
+    assert_eq!(
+        *mounted.calls.borrow(),
+        [("parent-before".into(), parent.scope())]
+    );
     assert!(fixture.header_open.get() && parent.open());
 }
 

@@ -13,20 +13,9 @@ mod native;
 static NEXT_OWNER: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-struct CapturedFocus {
-    token: String,
+struct FocusedControl {
+    id: String,
     group: u8,
-    epoch: u64,
-}
-
-#[derive(Deserialize)]
-struct FocusCheck {
-    version: u64,
-    token: String,
-    target_connected: bool,
-    target_owned: bool,
-    target_visible: bool,
-    target_group: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -60,13 +49,13 @@ struct Report {
     #[serde(default)]
     triggers: Vec<String>,
     #[serde(default)]
-    focused_control: Option<CapturedFocus>,
+    focused_control: Option<FocusedControl>,
     #[serde(default)]
-    focus_epoch: u64,
+    focusable_ids: Vec<String>,
+    #[serde(default)]
+    presented_ids: Vec<String>,
     #[serde(default)]
     active_default: bool,
-    #[serde(default)]
-    focus_check: Option<FocusCheck>,
 }
 
 struct Model {
@@ -80,10 +69,13 @@ struct Model {
     open: bool,
     presence: [bool; 4],
     keyboard: bool,
-    focus_version: u64,
     focus: String,
-    focused_control: Option<CapturedFocus>,
-    preserve: Option<CapturedFocus>,
+    focused_control: Option<FocusedControl>,
+    preserve: Option<FocusedControl>,
+    preserve_target: Option<overlay_runtime::MountedFocusTarget>,
+    focusable_ids: Vec<String>,
+    presented_ids: Vec<String>,
+    active_default: bool,
     stop: bool,
     changed: Option<EventHandler<bool>>,
 }
@@ -103,10 +95,13 @@ impl Model {
             open: false,
             presence: [false; 4],
             keyboard: false,
-            focus_version: 0,
             focus: "none".into(),
             focused_control: None,
             preserve: None,
+            preserve_target: None,
+            focusable_ids: Vec::new(),
+            presented_ids: Vec::new(),
+            active_default: false,
             stop: false,
             changed: None,
         }
@@ -116,8 +111,8 @@ impl Model {
     }
     fn focus(&mut self, target: String) {
         self.focus = target;
-        self.focus_version = self.focus_version.wrapping_add(1);
         self.preserve = None;
+        self.preserve_target = None;
     }
     fn group_presented(&self, group: u8) -> bool {
         match group {
@@ -128,8 +123,8 @@ impl Model {
             _ => false,
         }
     }
-    fn preserve_focus(&mut self, capture: CapturedFocus) {
-        self.focus("preserve".into());
+    fn preserve_focus(&mut self, capture: FocusedControl) {
+        self.focus = "preserve".into();
         self.preserve = Some(capture);
     }
     fn apply_focus(&mut self, restore: bool) {
@@ -145,37 +140,6 @@ impl Model {
         } else {
             self.focus(if restore { "more" } else { "none" }.into());
         }
-    }
-    fn authorize_preserve(&mut self, report: &Report) -> bool {
-        if !self.accepts(report) {
-            return false;
-        }
-        self.sequence = report.sequence;
-        let Some(check) = &report.focus_check else {
-            return false;
-        };
-        let Some(capture) = &self.preserve else {
-            return false;
-        };
-        let same_active = report
-            .focused_control
-            .as_ref()
-            .is_some_and(|active| active.token == capture.token && active.epoch == capture.epoch);
-        if self.focus != "preserve"
-            || check.version != self.focus_version
-            || check.token != capture.token
-            || report.focus_epoch != capture.epoch
-            || !check.target_connected
-            || !check.target_owned
-            || !check.target_visible
-            || check.target_group != Some(capture.group)
-            || !self.group_presented(capture.group)
-            || !(same_active || report.active_default)
-        {
-            return false;
-        }
-        self.preserve = None;
-        true
     }
     fn sync_mode(&mut self, small: bool, top_layer: bool) -> bool {
         if self.small == small && self.top_layer == top_layer {
@@ -194,8 +158,10 @@ impl Model {
         self.generation = self.generation.wrapping_add(1);
         self.sequence = 0;
         self.stop = false;
+        self.focusable_ids.clear();
+        self.presented_ids.clear();
         let capture = (!layer_changed && self.alive && self.mounted)
-            .then(|| self.focused_control.take())
+            .then(|| self.focused_control.clone())
             .flatten()
             .filter(|capture| self.group_presented(capture.group));
         if let Some(capture) = capture {
@@ -220,7 +186,7 @@ impl Model {
         self.open = false;
         self.generation = self.generation.wrapping_add(1);
         self.focused_control = None;
-        self.preserve = None;
+        self.focus("none".into());
     }
 }
 
@@ -359,6 +325,19 @@ fn header_tab_key(
     }
 }
 
+fn focus_ids<'a>(choice: &str, ids: &'a [String]) -> Vec<&'a str> {
+    match choice {
+        "first" => ids.iter().map(String::as_str).collect(),
+        "last" => ids.iter().rev().map(String::as_str).collect(),
+        _ => choice
+            .strip_prefix("index:")
+            .and_then(|index| index.parse::<usize>().ok())
+            .and_then(|index| ids.get(index))
+            .map(|id| vec![id.as_str()])
+            .unwrap_or_default(),
+    }
+}
+
 #[derive(Clone)]
 struct Controller {
     model: Rc<RefCell<Model>>,
@@ -371,22 +350,103 @@ impl Controller {
         let next = revision.peek().wrapping_add(1);
         revision.set(next);
     }
+    fn registered_target(&self, choice: &str) -> Option<overlay_runtime::MountedFocusTarget> {
+        let (owner, ids, preserve, preserve_target) = {
+            let model = self.model.borrow();
+            (
+                model.owner.clone(),
+                model.focusable_ids.clone(),
+                model.preserve.clone(),
+                model.preserve_target.clone(),
+            )
+        };
+        match choice {
+            "more" => self.node.capture_registered_focus(&format!("{owner}-more")),
+            "preserve" => {
+                let model = self.model.borrow();
+                let valid = preserve.is_some_and(|capture| {
+                    model.sequence > 0
+                        && model.group_presented(capture.group)
+                        && model.presented_ids.contains(&capture.id)
+                        && (model.active_default
+                            || model.focused_control.as_ref() == Some(&capture))
+                });
+                valid
+                    .then_some(preserve_target)
+                    .flatten()
+                    .filter(|target| target.live_node().is_some())
+            }
+            _ => focus_ids(choice, &ids)
+                .into_iter()
+                .find_map(|id| self.node.capture_registered_focus(id)),
+        }
+    }
+    fn filter_tab_focus(&self, report: &Report, decision: &mut Decision) {
+        if report.kind == "key"
+            && report.key == "Tab"
+            && decision
+                .focus
+                .as_deref()
+                .is_some_and(|focus| self.registered_target(focus).is_none())
+        {
+            decision.prevent = false;
+            decision.stop = false;
+            decision.focus = None;
+        }
+    }
+    fn dispatch_focus(&self) {
+        let (choice, generation, open, more_visible) = {
+            let model = self.model.borrow();
+            if !model.alive || !model.mounted {
+                return;
+            }
+            (
+                model.focus.clone(),
+                model.generation,
+                model.open,
+                model.more_visible(),
+            )
+        };
+        if choice == "none" {
+            return;
+        }
+        if choice == "more" && !more_visible
+            || !open && !matches!(choice.as_str(), "more" | "preserve")
+        {
+            self.model.borrow_mut().focus("none".into());
+            return;
+        }
+        let Some(target) = self.registered_target(&choice) else {
+            // Opening candidates arrive with the next visible-presence report.
+            // Unsupported controls never become a native focus fallback.
+            let awaiting_presentation = {
+                let model = self.model.borrow();
+                choice == "preserve" && model.sequence == 0
+                    || matches!(choice.as_str(), "first" | "last") && model.focusable_ids.is_empty()
+            };
+            if !awaiting_presentation {
+                self.model.borrow_mut().focus("none".into());
+            }
+            return;
+        };
+        let expected_open = (choice != "preserve").then_some(open);
+        if self.node.queue_registered_focus(target, expected_open) {
+            let mut model = self.model.borrow_mut();
+            if model.generation == generation && model.focus == choice {
+                model.focus("none".into());
+            }
+        }
+    }
     fn observation(&self, event: FormEvent) {
         event.stop_propagation();
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
-        if report.kind == "preserve-focus" {
-            if self.model.borrow_mut().authorize_preserve(&report) {
-                event.prevent_default();
-            }
-            return;
-        }
         // Domain presence reads can enter this owner; do not hold Model's
         // mutable borrow while computing source-aware ancestry.
         let popover_ancestor =
             report.kind == "key" && report.key == "Tab" && self.node.has_popover_ancestor();
-        let (decision, generation, previous) = {
+        let (mut decision, generation, previous) = {
             let mut model = self.model.borrow_mut();
             if !model.accepts(&report) {
                 return;
@@ -394,6 +454,9 @@ impl Controller {
             model.sequence = report.sequence;
             model.presence = report.presence;
             model.focused_control = report.focused_control.clone();
+            model.focusable_ids = report.focusable_ids.clone();
+            model.presented_ids = report.presented_ids.clone();
+            model.active_default = report.active_default;
             let child_owned = self.node.runtime().is_some_and(|runtime| {
                 if report.kind == "key" {
                     runtime.key_child_path(
@@ -418,6 +481,12 @@ impl Controller {
             model.stop = decision.stop;
             (decision, model.generation, model.open)
         };
+        self.filter_tab_focus(&report, &mut decision);
+        self.model.borrow_mut().stop = decision.stop;
+        if report.kind == "pointer" {
+            self.node.cancel_registered_focus();
+            self.model.borrow_mut().focus("none".into());
+        }
         if decision.prevent {
             event.prevent_default();
         }
@@ -457,6 +526,7 @@ impl Controller {
             // others pass follows both accepted and vetoed toggle attempts.
             runtime.dismiss_dropdown_others(self.node.id(), self.node.generation());
         }
+        self.dispatch_focus();
         self.notify();
     }
     fn stop_query(&self, event: FormEvent) {
@@ -539,6 +609,9 @@ pub(crate) fn HeaderLayout(
                         }
                         let changed = model.open != change.open;
                         model.open = change.open;
+                        if changed {
+                            model.focusable_ids.clear();
+                        }
                         model.apply_focus(change.restore_focus);
                         changed
                     };
@@ -546,8 +619,11 @@ pub(crate) fn HeaderLayout(
                     if let Ok(mut value) = revision.try_write() {
                         *value = value.wrapping_add(1);
                     }
-                    if changed && let Some(node) = completion_slot.borrow().clone() {
-                        queue_changed(&apply, &node, change.open);
+                    if let Some(node) = completion_slot.borrow().clone() {
+                        node.cancel_registered_focus();
+                        if changed {
+                            queue_changed(&apply, &node, change.open);
+                        }
                     }
                 }),
                 key: Some(Rc::new(move |facts| {
@@ -563,7 +639,29 @@ pub(crate) fn HeaderLayout(
     // A slot projection preserves presence and the admitted child cache. A
     // top-layer change still closes through bounded configuration reconciliation,
     // rather than a vetoable user request. Both invalidate private focus tasks.
-    if model.borrow_mut().sync_mode(small, enable_top_layer) {
+    let mode_changed = {
+        let model = model.borrow();
+        model.small != small || model.top_layer != enable_top_layer
+    };
+    let preserve_target = mode_changed
+        .then(|| {
+            let id = model
+                .borrow()
+                .focused_control
+                .as_ref()
+                .map(|control| control.id.clone());
+            id.and_then(|id| node.capture_registered_focus(&id))
+        })
+        .flatten();
+    if mode_changed {
+        node.cancel_registered_focus();
+    }
+    let mode_closed = model.borrow_mut().sync_mode(small, enable_top_layer);
+    if mode_changed {
+        let mut model = model.borrow_mut();
+        model.preserve_target = model.preserve.as_ref().and(preserve_target);
+    }
+    if mode_closed {
         node.sync_open(false);
         queue_changed(&model, &node, false);
         let changed_node = node.clone();
@@ -598,6 +696,11 @@ pub(crate) fn HeaderLayout(
         node,
     };
     let stop_controller = controller.clone();
+    let focus_controller = controller.clone();
+    use_effect(move || {
+        let _ = revision();
+        focus_controller.dispatch_focus();
+    });
     let mount_model = model.clone();
     let _ = revision();
     let state = model.borrow();
@@ -606,9 +709,6 @@ pub(crate) fn HeaderLayout(
     let open = state.open;
     let visible = state.more_visible();
     let presence = state.presence;
-    let focus_version = state.focus_version.to_string();
-    let focus = state.focus.clone();
-    let capture = state.preserve.as_ref().map(|capture| capture.token.clone());
     let active = if small { "small" } else { "large" };
     let more_id = format!("{owner}-more");
     let small_id = format!("{owner}-small");
@@ -623,7 +723,7 @@ pub(crate) fn HeaderLayout(
             "data-ix-overlay-open":open.to_string(),"data-ix-overlay-ready":discovery_ready.to_string(),
             "data-ix-overlay-mode":"active-descendant",
             "data-small":small.to_string(),"data-open":open.to_string(),"data-top-layer":enable_top_layer.to_string(),
-            "data-generation":generation,"data-focus-version":focus_version,"data-focus-target":focus,"data-focus-capture":capture,
+            "data-generation":generation,
             onmounted:move |_| {
                 let mut model = mount_model.borrow_mut();
                 if !model.alive || model.mounted { return; }
@@ -686,6 +786,246 @@ pub(crate) const STYLES: &str = r"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct FocusFixture(Rc<RefCell<Option<Controller>>>);
+    impl PartialEq for FocusFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    fn registered_header(fixture: FocusFixture) -> Element {
+        let runtime = overlay_runtime::use_overlay_runtime();
+        let model = use_hook(|| {
+            let mut model = Model::new(true, false);
+            model.mounted = true;
+            model.presence = [true; 4];
+            Rc::new(RefCell::new(model))
+        });
+        let read = model.clone();
+        let node = runtime.register(
+            model.borrow().owner.clone(),
+            1,
+            OverlayKind::Header,
+            CloseBehavior::Both,
+            Callbacks {
+                read: Rc::new(move || {
+                    let model = read.borrow();
+                    model.alive.then_some(model.open)
+                }),
+                before: Rc::new(|_| true),
+                apply: Rc::new(|_| {}),
+                key: None,
+            },
+        );
+        let revision = use_signal(|| 0);
+        *fixture.0.borrow_mut() = Some(Controller {
+            model,
+            revision,
+            node,
+        });
+        rsx! { div {} }
+    }
+    #[derive(Clone)]
+    struct FocusMount {
+        id: String,
+        calls: Rc<RefCell<Vec<String>>>,
+    }
+    impl dioxus::html::RenderedElementBacking for FocusMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            self.calls.borrow_mut().push(self.id.clone());
+            Box::pin(async { Ok(()) })
+        }
+    }
+    fn install_focus(
+        dom: &VirtualDom,
+        controller: &Controller,
+        id: &str,
+        calls: &Rc<RefCell<Vec<String>>>,
+    ) {
+        let mount = Rc::new(MountedData::new(FocusMount {
+            id: id.into(),
+            calls: calls.clone(),
+        }));
+        dom.in_runtime(|| {
+            controller
+                .node
+                .runtime()
+                .unwrap()
+                .register_item_mount(id, id, mount)
+        });
+    }
+    fn settle_focus(dom: &mut VirtualDom) {
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+    }
+
+    #[test]
+    fn registered_header_opening_edges_and_escape_return_use_current_mounted_controls() {
+        let fixture = FocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(registered_header, fixture.clone());
+        dom.rebuild_in_place();
+        let controller = fixture.0.borrow().clone().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let more = format!("{}-more", controller.model.borrow().owner);
+        for id in ["registered-field", "registered-action", more.as_str()] {
+            install_focus(&dom, &controller, id, &calls);
+        }
+        {
+            let mut model = controller.model.borrow_mut();
+            model.open = true;
+            model.focus("first".into());
+        }
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert!(
+            calls.borrow().is_empty(),
+            "opening waits for visible candidate facts"
+        );
+        controller.model.borrow_mut().focusable_ids = vec![
+            "unregistered".into(),
+            "registered-field".into(),
+            "registered-action".into(),
+        ];
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        controller.model.borrow_mut().focus("last".into());
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        {
+            let mut model = controller.model.borrow_mut();
+            model.open = false;
+            model.apply_focus(true);
+        }
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["registered-field", "registered-action", more.as_str()]
+        );
+    }
+
+    #[test]
+    fn header_tab_wrap_requires_a_registered_target_and_keeps_interior_tab_native() {
+        let fixture = FocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(registered_header, fixture.clone());
+        dom.rebuild_in_place();
+        let controller = fixture.0.borrow().clone().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        install_focus(&dom, &controller, "registered-action", &calls);
+        {
+            let mut model = controller.model.borrow_mut();
+            model.open = true;
+            model.focusable_ids = vec!["unregistered".into(), "registered-action".into()];
+        }
+        let mut fact = report(&controller.model.borrow(), "key");
+        fact.key = "Tab".into();
+        fact.focus_count = 2;
+        fact.focused_index = Some(1);
+        let mut decision = decide(&mut controller.model.borrow_mut(), &fact, false);
+        dom.in_runtime(|| controller.filter_tab_focus(&fact, &mut decision));
+        assert!(!decision.prevent && !decision.stop && decision.focus.is_none());
+        fact.shift = true;
+        fact.focused_index = Some(0);
+        let mut decision = decide(&mut controller.model.borrow_mut(), &fact, false);
+        dom.in_runtime(|| controller.filter_tab_focus(&fact, &mut decision));
+        assert!(decision.prevent && decision.stop);
+        controller.model.borrow_mut().focus(decision.focus.unwrap());
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert_eq!(calls.borrow().as_slice(), ["registered-action"]);
+        fact.shift = false;
+        fact.focused_index = Some(0);
+        assert!(!decide(&mut controller.model.borrow_mut(), &fact, false).prevent);
+    }
+
+    #[test]
+    fn responsive_focus_keeps_registered_visible_control_and_rejects_replacement_or_outside_focus()
+    {
+        let fixture = FocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(registered_header, fixture.clone());
+        dom.rebuild_in_place();
+        let controller = fixture.0.borrow().clone().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        install_focus(&dom, &controller, "registered-field", &calls);
+        let captured = controller
+            .node
+            .capture_registered_focus("registered-field")
+            .unwrap();
+        {
+            let mut model = controller.model.borrow_mut();
+            model.open = true;
+            model.small = false;
+            model.focused_control = Some(capture(1));
+            assert!(!model.sync_mode(true, false));
+            model.preserve_target = Some(captured.clone());
+            model.sequence = 1;
+            model.presented_ids = vec!["registered-field".into()];
+        }
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert_eq!(calls.borrow().as_slice(), ["registered-field"]);
+        controller.model.borrow_mut().preserve_focus(capture(1));
+        controller.model.borrow_mut().preserve_target = Some(captured.clone());
+        install_focus(&dom, &controller, "registered-field", &calls);
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert_eq!(
+            calls.borrow().len(),
+            1,
+            "replacement cannot inherit an old snapshot"
+        );
+        let current = controller
+            .node
+            .capture_registered_focus("registered-field")
+            .unwrap();
+        {
+            let mut model = controller.model.borrow_mut();
+            model.preserve_focus(capture(1));
+            model.preserve_target = Some(current);
+            model.focused_control = None;
+            model.active_default = false;
+        }
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert_eq!(
+            calls.borrow().len(),
+            1,
+            "outside focus is not stolen by mode preservation"
+        );
+        let current = controller
+            .node
+            .capture_registered_focus("registered-field")
+            .unwrap();
+        {
+            let mut model = controller.model.borrow_mut();
+            model.preserve_focus(capture(1));
+            model.preserve_target = Some(current);
+            model.active_default = true;
+            model.presented_ids.clear();
+        }
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert_eq!(
+            calls.borrow().len(),
+            1,
+            "a hidden registered control is not revived"
+        );
+        controller.model.borrow_mut().invalidate();
+        dom.in_runtime(|| controller.dispatch_focus());
+        settle_focus(&mut dom);
+        assert_eq!(calls.borrow().len(), 1);
+    }
+
     fn report(model: &Model, kind: &str) -> Report {
         Report {
             owner: model.owner.clone(),
@@ -706,9 +1046,9 @@ mod tests {
             hosts: vec![],
             triggers: vec![],
             focused_control: None,
-            focus_epoch: 0,
+            focusable_ids: (0..6).map(|index| format!("control-{index}")).collect(),
+            presented_ids: Vec::new(),
             active_default: false,
-            focus_check: None,
         }
     }
     #[test]
@@ -839,7 +1179,6 @@ mod tests {
         model.stop = true;
         model.focus("last".into());
         let previous = report(&model, "presence");
-        let version = model.focus_version;
         assert!(
             !model.sync_mode(true, true),
             "slot movement must not request close"
@@ -852,7 +1191,6 @@ mod tests {
         assert_eq!(model.sequence, 0);
         assert!(!model.stop);
         assert_eq!(model.focus, "none");
-        assert_eq!(model.focus_version, version.wrapping_add(1));
         assert!(!model.sync_mode(true, true), "same props are inert");
         assert!(model.open);
         assert!(
@@ -862,11 +1200,10 @@ mod tests {
         assert!(!model.open);
     }
 
-    fn capture(group: u8) -> CapturedFocus {
-        CapturedFocus {
-            token: "actual-captured-object".into(),
+    fn capture(group: u8) -> FocusedControl {
+        FocusedControl {
+            id: "registered-field".into(),
             group,
-            epoch: 17,
         }
     }
 
@@ -878,22 +1215,6 @@ mod tests {
         model.focused_control = Some(capture(group));
         assert!(!model.sync_mode(true, true));
         model
-    }
-
-    fn preserve_report(model: &Model) -> Report {
-        let capture = model.preserve.as_ref().unwrap();
-        let mut report = report(model, "preserve-focus");
-        report.focus_epoch = capture.epoch;
-        report.active_default = true;
-        report.focus_check = Some(FocusCheck {
-            version: model.focus_version,
-            token: capture.token.clone(),
-            target_connected: true,
-            target_owned: true,
-            target_visible: true,
-            target_group: Some(capture.group),
-        });
-        report
     }
 
     #[test]
@@ -927,80 +1248,12 @@ mod tests {
     }
 
     #[test]
-    fn mode_capture_is_generation_scoped_and_authorized_only_once() {
-        let mut model = pending_capture(1);
-        assert_eq!(model.focus, "preserve");
-        assert_eq!(model.preserve, Some(capture(1)));
-        assert!(model.focused_control.is_none());
-        let mut stale = preserve_report(&model);
-        stale.generation -= 1;
-        assert!(!model.authorize_preserve(&stale));
-        let accepted = preserve_report(&model);
-        assert!(model.authorize_preserve(&accepted));
-        assert!(model.preserve.is_none());
-        let mut repeated = accepted;
-        repeated.sequence += 1;
-        assert!(!model.authorize_preserve(&repeated));
-    }
-
-    #[test]
-    fn mode_capture_rejects_outside_focus_replacement_and_stale_execution() {
-        for condition in 0..11 {
-            let mut model = pending_capture(1);
-            let mut report = preserve_report(&model);
-            match condition {
-                0 => report.owner.push_str("-other-owner"),
-                1 => report.connected = false,
-                2 => report.focus_epoch += 1,
-                3 => report.active_default = false,
-                4 => report.focus_check.as_mut().unwrap().version += 1,
-                5 => report
-                    .focus_check
-                    .as_mut()
-                    .unwrap()
-                    .token
-                    .push_str("-replacement"),
-                6 => report.focus_check.as_mut().unwrap().target_connected = false,
-                7 => report.focus_check.as_mut().unwrap().target_owned = false,
-                8 => report.focus_check.as_mut().unwrap().target_visible = false,
-                9 => report.focus_check.as_mut().unwrap().target_group = Some(2),
-                10 => report.sequence = model.sequence,
-                _ => unreachable!(),
-            }
-            assert!(!model.authorize_preserve(&report), "condition {condition}");
-        }
-        let mut model = pending_capture(1);
-        let mut active = preserve_report(&model);
-        active.active_default = false;
-        active.focused_control = Some(capture(1));
-        assert!(
-            model.authorize_preserve(&active),
-            "already focused is admitted without native refocus"
-        );
-
-        let mut newer = pending_capture(1);
-        let old = preserve_report(&newer);
-        newer.focus("more".into());
-        assert!(!newer.authorize_preserve(&old));
-        let mut dropped = pending_capture(1);
-        let old = preserve_report(&dropped);
-        dropped.invalidate();
-        assert!(!dropped.authorize_preserve(&old));
-        let mut reprojected = pending_capture(1);
-        let old = preserve_report(&reprojected);
-        assert!(!reprojected.sync_mode(false, true));
-        assert!(!reprojected.authorize_preserve(&old));
-    }
-
-    #[test]
     fn accepted_close_retains_only_visible_pending_mode_capture() {
         let mut large_default = pending_capture(1);
         large_default.small = false;
         large_default.open = false;
         large_default.apply_focus(false);
         assert_eq!(large_default.preserve, Some(capture(1)));
-        let admitted = preserve_report(&large_default);
-        assert!(large_default.authorize_preserve(&admitted));
 
         for group in [1, 2] {
             let mut hidden = pending_capture(group);
@@ -1022,8 +1275,6 @@ mod tests {
         assert!(!hidden_more.more_visible());
         hidden_more.apply_focus(true);
         assert_eq!(hidden_more.preserve, Some(capture(1)));
-        let admitted = preserve_report(&hidden_more);
-        assert!(hidden_more.authorize_preserve(&admitted));
     }
 
     #[test]

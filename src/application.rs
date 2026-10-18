@@ -8555,10 +8555,11 @@ mod tests {
         );
         harness.settle();
         assert_eq!(harness.header_root_attrs()["data-open"], "true");
-        assert_eq!(
-            harness.header_root_attrs()["data-focus-target"],
-            "last",
-            "Rust focus intent only; native delivery is parent runtime evidence"
+        assert!(
+            !harness
+                .header_root_attrs()
+                .contains_key("data-focus-target"),
+            "Header no longer publishes native focus commands; mounted focus is verified by rendered workflows"
         );
         let escape =
             harness.header_message(4, "key", serde_json::json!({"inside":true,"key":"Escape"}));

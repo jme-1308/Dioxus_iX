@@ -110,64 +110,308 @@ fn dropping_superseded_opening_future_preserves_newer_admission() {
     });
 }
 
-#[test]
-fn canceling_unpolled_close_future_releases_hover_focus_suppression() {
-    let capture: Capture = Rc::new(RefCell::new(None));
-    let mut dom = VirtualDom::new(fixture).with_root_context(capture.clone());
-    dom.rebuild_in_place();
-    let mut popover = capture.borrow().unwrap();
-
-    dom.in_scope(ScopeId::ROOT, || {
-        popover.surface.generation.set(11);
-        popover.suppress_focus_open.set(true);
-        // Close commits suppression before spawn. The guard must already be a
-        // captured future field, since a canceled task may never be polled.
-        let suppression = PopoverFocusSuppression {
-            popover,
-            generation: 11,
-        };
-        let close = Box::pin(async move {
-            let _suppression = suppression;
-            std::future::pending::<()>().await;
-        });
-        assert!(*popover.suppress_focus_open.peek());
-        drop(close);
-        assert!(
-            !*popover.suppress_focus_open.peek(),
-            "an unpolled close cannot leave a retained trigger suppressed"
-        );
+#[derive(Clone, Default)]
+struct FocusFixture(Rc<FocusState>);
+#[derive(Default)]
+struct FocusState {
+    popover: Cell<Option<PopoverHandle>>,
+    node: RefCell<Option<crate::overlay_runtime::NodeHandle>>,
+    first: Cell<Option<Signal<bool>>>,
+    second: Cell<Option<Signal<bool>>>,
+    mounts: RefCell<std::collections::BTreeMap<String, EventHandler<MountedEvent>>>,
+}
+impl PartialEq for FocusFixture {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+#[component]
+fn RegisteredTrigger(popover: PopoverHandle, id: String, fixture: FocusFixture) -> Element {
+    let mounted = use_popover_trigger_mount(popover, id.clone());
+    fixture.0.mounts.borrow_mut().insert(id, mounted);
+    VNode::empty()
+}
+fn focus_fixture(fixture: FocusFixture) -> Element {
+    let mut popover = use_popover();
+    let runtime = crate::overlay_runtime::use_overlay_runtime();
+    let registered = runtime.clone();
+    let node = use_hook(move || {
+        registered.register(
+            popover.id(),
+            1,
+            crate::overlay_registry::OverlayKind::Popover,
+            crate::overlay_registry::CloseBehavior::Outside,
+            popover_overlay_callbacks(popover, Rc::new(Cell::new(true))),
+        )
     });
+    let mounted = node.clone();
+    use_hook(move || popover.overlay.set(Some(mounted)));
+    let cleanup = node.clone();
+    use_drop(move || cleanup.unregister());
+    fixture.0.popover.set(Some(popover));
+    *fixture.0.node.borrow_mut() = Some(node);
+    let first = use_signal(|| true);
+    let second = use_signal(|| true);
+    fixture.0.first.set(Some(first));
+    fixture.0.second.set(Some(second));
+    rsx! {
+        if first() {RegisteredTrigger {popover,id:"first-trigger",fixture:fixture.clone()}}
+        if second() {RegisteredTrigger {popover,id:"second-trigger",fixture:fixture.clone()}}
+    }
+}
+#[derive(Clone)]
+struct FocusMount {
+    name: String,
+    calls: Rc<RefCell<Vec<String>>>,
+}
+impl dioxus::html::RenderedElementBacking for FocusMount {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn set_focus(
+        &self,
+        focus: bool,
+    ) -> std::pin::Pin<Box<dyn Future<Output = dioxus::html::MountedResult<()>>>> {
+        assert!(focus);
+        let mounted = self.clone();
+        Box::pin(async move {
+            mounted.calls.borrow_mut().push(mounted.name);
+            Ok(())
+        })
+    }
+}
+fn mount_focus(fixture: &FocusFixture, name: &str, calls: &Rc<RefCell<Vec<String>>>) {
+    fixture
+        .0
+        .node
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .runtime()
+        .unwrap()
+        .register_item_mount(
+            name,
+            name,
+            Rc::new(MountedData::new(FocusMount {
+                name: name.into(),
+                calls: calls.clone(),
+            })),
+        );
+}
+fn mounted_trigger(
+    dom: &VirtualDom,
+    fixture: &FocusFixture,
+    id: &str,
+    calls: &Rc<RefCell<Vec<String>>>,
+) {
+    dom.in_scope(ScopeId::ROOT, || {
+        fixture.0.mounts.borrow()[id].call(Event::new(
+            Rc::new(MountedData::new(FocusMount {
+                name: id.into(),
+                calls: calls.clone(),
+            })),
+            false,
+        ))
+    });
+}
+fn settle_focus(dom: &mut VirtualDom) {
+    for _ in 0..4 {
+        dom.render_immediate_to_vec();
+    }
+}
+fn present_focus(dom: &VirtualDom, fixture: &FocusFixture) -> (PopoverHandle, u64) {
+    let mut popover = fixture.0.popover.get().unwrap();
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.surface.open.set(true);
+        let generation = popover.surface.generation.peek().wrapping_add(1);
+        popover.surface.generation.set(generation);
+        fixture.0.node.borrow().as_ref().unwrap().sync_open(true);
+    });
+    (popover, *popover.surface.generation.peek())
+}
+fn candidate(name: &str, tab_index: i32, in_header: bool) -> crate::popover_focus::FocusCandidate {
+    crate::popover_focus::FocusCandidate {
+        target: name.into(),
+        tab_index,
+        in_header,
+    }
 }
 
 #[test]
-fn old_focus_suppression_guard_preserves_newer_close_operation() {
-    let capture: Capture = Rc::new(RefCell::new(None));
-    let mut dom = VirtualDom::new(fixture).with_root_context(capture.clone());
+fn popover_opening_chooses_registered_content_then_header_and_hover_preserves_focus() {
+    let fixture = FocusFixture::default();
+    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone());
     dom.rebuild_in_place();
-    let mut popover = capture.borrow().unwrap();
-
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    for id in ["header", "body-zero", "body-positive"] {
+        mount_focus(&fixture, id, &calls);
+    }
+    mounted_trigger(&dom, &fixture, "second-trigger", &calls);
+    let (mut popover, generation) = present_focus(&dom, &fixture);
+    let candidates = [
+        candidate("unregistered", 1, false),
+        candidate("header", 1, true),
+        candidate("body-zero", 0, false),
+        candidate("body-positive", 2, false),
+    ];
     dom.in_scope(ScopeId::ROOT, || {
-        popover.surface.generation.set(21);
-        popover.suppress_focus_open.set(true);
-        let old = PopoverFocusSuppression {
-            popover,
-            generation: 21,
-        };
-        popover.surface.generation.set(22);
-        let current = PopoverFocusSuppression {
-            popover,
-            generation: 22,
-        };
-        drop(old);
-        assert!(
-            *popover.suppress_focus_open.peek(),
-            "an old close cannot release the newer restore-focus interval"
-        );
-        assert_eq!(*popover.surface.generation.peek(), 22);
-        drop(current);
-        assert!(
-            !*popover.suppress_focus_open.peek(),
-            "the current close still releases its own suppression"
-        );
+        popover.apply_opening_focus(generation, &candidates)
     });
+    settle_focus(&mut dom);
+    assert_eq!(*calls.borrow(), ["body-positive"]);
+    assert!(*popover.focusable_at_open.peek());
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.apply_opening_focus(generation, &[candidate("header", 0, true)])
+    });
+    settle_focus(&mut dom);
+    assert_eq!(*calls.borrow(), ["body-positive", "header"]);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.hover_mode.set(true);
+        popover.apply_opening_focus(generation, &candidates);
+    });
+    settle_focus(&mut dom);
+    assert_eq!(
+        *calls.borrow(),
+        ["body-positive", "header"],
+        "hover opening never moves focus"
+    );
+}
+
+#[test]
+fn popover_close_returns_registered_trigger_and_hover_focus_does_not_reopen() {
+    let fixture = FocusFixture::default();
+    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    mount_focus(&fixture, "body", &calls);
+    mounted_trigger(&dom, &fixture, "second-trigger", &calls);
+    let (mut popover, generation) = present_focus(&dom, &fixture);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.apply_opening_focus(generation, &[candidate("body", 0, false)])
+    });
+    settle_focus(&mut dom);
+    let veto = Rc::new(Cell::new(true));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    dom.in_scope(ScopeId::ROOT, || {
+        let blocked = veto.clone();
+        popover
+            .onbeforechange
+            .set(Some(EventHandler::new(move |event: PopoverChangeEvent| {
+                if blocked.get() {
+                    event.prevent_default();
+                }
+            })));
+        let seen = events.clone();
+        popover
+            .onshowchanged
+            .set(Some(EventHandler::new(move |open| {
+                seen.borrow_mut().push(open)
+            })));
+        assert!(!fixture.0.node.borrow().as_ref().unwrap().request(
+            false,
+            crate::overlay_runtime::Reason::Escape,
+            true
+        ));
+    });
+    settle_focus(&mut dom);
+    assert!(popover.is_open());
+    assert_eq!(*calls.borrow(), ["body"]);
+    veto.set(false);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.hover_mode.set(true);
+        assert!(fixture.0.node.borrow().as_ref().unwrap().request(
+            false,
+            crate::overlay_runtime::Reason::Escape,
+            true
+        ));
+    });
+    assert!(
+        events.borrow().is_empty(),
+        "completion is owned by a Dioxus effect"
+    );
+    settle_focus(&mut dom);
+    assert_eq!(*calls.borrow(), ["body", "second-trigger"]);
+    assert_eq!(*events.borrow(), [false]);
+    dom.in_scope(ScopeId::ROOT, || {
+        assert!(!popover.hover_focus_allowed());
+        assert!(!popover.is_open());
+        assert!(popover.hover_focus_allowed());
+    });
+    let (popover, generation) = present_focus(&dom, &fixture);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.apply_opening_focus(generation, &[candidate("body", 0, false)]);
+        assert!(fixture.0.node.borrow().as_ref().unwrap().request(
+            false,
+            crate::overlay_runtime::Reason::Outside,
+            false
+        ));
+    });
+    settle_focus(&mut dom);
+    assert_eq!(
+        *calls.borrow(),
+        ["body", "second-trigger"],
+        "outside dismissal cancels pending opening and preserves the outside destination"
+    );
+}
+
+#[test]
+fn popover_focus_rejects_replaced_unmounted_or_newly_closed_registered_content() {
+    let fixture = FocusFixture::default();
+    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let old = Rc::new(RefCell::new(Vec::new()));
+    let replacement = Rc::new(RefCell::new(Vec::new()));
+    mount_focus(&fixture, "body", &old);
+    let (popover, generation) = present_focus(&dom, &fixture);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.apply_opening_focus(generation, &[candidate("body", 0, false)])
+    });
+    mount_focus(&fixture, "body", &replacement);
+    settle_focus(&mut dom);
+    assert!(old.borrow().is_empty() && replacement.borrow().is_empty());
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.apply_opening_focus(generation, &[candidate("body", 0, false)])
+    });
+    fixture
+        .0
+        .node
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .runtime()
+        .unwrap()
+        .unregister_item_cue("body");
+    settle_focus(&mut dom);
+    assert!(replacement.borrow().is_empty());
+    mount_focus(&fixture, "body", &replacement);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.apply_opening_focus(generation, &[candidate("body", 0, false)]);
+        popover.commit_hide_with_focus(false);
+    });
+    settle_focus(&mut dom);
+    assert!(replacement.borrow().is_empty());
+}
+
+#[test]
+fn popover_custom_trigger_cleanup_preserves_newer_mount_and_cancels_removed_return() {
+    let fixture = FocusFixture::default();
+    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    mount_focus(&fixture, "body", &calls);
+    mounted_trigger(&dom, &fixture, "first-trigger", &calls);
+    mounted_trigger(&dom, &fixture, "second-trigger", &calls);
+    dom.in_scope(ScopeId::ROOT, || fixture.0.first.get().unwrap().set(false));
+    settle_focus(&mut dom);
+    let (popover, generation) = present_focus(&dom, &fixture);
+    assert_eq!(popover.trigger_id.peek().as_deref(), Some("second-trigger"));
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.apply_opening_focus(generation, &[candidate("body", 0, false)]);
+        popover.commit_hide_with_focus(true);
+        fixture.0.second.get().unwrap().set(false);
+    });
+    settle_focus(&mut dom);
+    assert!(calls.borrow().is_empty());
+    assert!(popover.trigger_id.peek().is_none());
+    assert!(popover.surface.invoker.peek().is_none());
 }

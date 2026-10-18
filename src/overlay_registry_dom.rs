@@ -20,7 +20,7 @@ nativeDocument.triggerReaders||=new Map();
 nativeDocument.focusReaders||=new Map();
 function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds.get(event);if(!id){id=++nativeDocument.eventSequence;nativeDocument.eventIds.set(event,id);}return id;}
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
-let alive=true,sequence=0,lastSignature='',focusFrame=0;
+let alive=true,sequence=0,lastSignature='';
 const keyTargets=new Map(),clickTargets=new Map(),triggerKeyTargets=new Map(),navigationTargets=new Map(),handledBubbleKeys=new WeakSet();
 const navigationBindings=new Map();
 const anchorObservers=new Map();
@@ -43,8 +43,9 @@ function pruneItemCaptures(){
     if(input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))itemCaptureNodes.delete(capture);
   }
 }
-const lastFocus=new Map(),nativeIds=new WeakMap(),nativeNodes=new Map();let nativeSequence=0;
-function nativeId(el){if(!(el instanceof HTMLElement))return '';if(el.id)return el.id;let id=nativeIds.get(el);if(!id){id=owner+'-native-'+(++nativeSequence);nativeIds.set(el,id);}nativeNodes.set(id,el);return id;}
+// Mounted focus registration uses Rust-authored IDs; unidentified DOM controls
+// have no programmatic focus fallback and need no native identity registry.
+function nativeId(el){return el instanceof HTMLElement?el.id:'';}
 // Registry reachability is separate from source-selected light-DOM queries.
 // Scan a subtree only at discovery/mutation boundaries, never for every query.
 const registryScopes=new Set([document]);
@@ -73,7 +74,7 @@ function discoverRegistryScopes(node){
   if(containing instanceof ShadowRoot&&containing.host.isConnected)add(containing);
   for(const element of node.querySelectorAll('*'))if(element.shadowRoot)add(element.shadowRoot);
 }
-function findElement(id){const el=registryElement(id)||nativeNodes.get(id);return el instanceof HTMLElement&&el.isConnected?el:null;}
+function findElement(id){const el=registryElement(id);return el instanceof HTMLElement&&el.isConnected?el:null;}
 function transport(){
   let fallback=null,owned=null;
   for(const n of registryElements('input[data-ix-overlay-transport]')){
@@ -449,7 +450,6 @@ function collectFacts(kind,event,phase=''){
     target_id:nativeId(target),active_id:nativeId(active),
     hosts,triggers,enclosing_triggers,anchors,nodes,click_sites,active_categories,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||'',
-    focus_targets:nodes.flatMap(node=>node.tab_candidates.map(candidate=>candidate.target)),
     item_focus_host:kind==='item-focusin'?(()=>{
       const hosts=path.filter(element=>element instanceof HTMLElement&&element.matches(itemSelector));
       const element=hosts.find(element=>element.getAttribute('data-ix-item-focusable')==='true'||element.classList.contains('ix-focusable'))||hosts[0];
@@ -460,12 +460,7 @@ function collectFacts(kind,event,phase=''){
 function send(report,event){
   const input=transport();
   if(!alive||!input)return;
-  // Keep the actual observed objects through Rust callbacks. A replacement
-  // with the same public ID must not inherit this event's focus permission.
-  const focusExecution=new Map([...report.focus_targets,...report.nodes.map(node=>node.trigger_id)].filter(Boolean).map(id=>{
-    const element=findElement(id),panel=element?nearestPopover(element):null;
-    return [id,{element,panel,generation:panel?.getAttribute('data-surface-generation')}];
-  }));
+  // Bind authorized activation to the element observed before Rust callbacks.
   const activationExecution=new Map(report.candidate_ids.map(id=>[id,findElement(id)]));
   const value=JSON.stringify(report);
   input.value=value;
@@ -480,16 +475,6 @@ function send(report,event){
     immediate=!immediateInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
   }
   if(event){if(prevent&&event.cancelable)event.preventDefault();if(immediate)event.stopImmediatePropagation();else if(stop)event.stopPropagation();}
-  if(report.kind==='key'){
-    for(const [id,facts]of focusExecution){
-      const el=facts.element;
-      const valid=()=>el?.isConnected&&(!facts.panel||(facts.panel.isConnected&&facts.panel.matches(':popover-open')&&facts.panel.getAttribute('data-surface-generation')===facts.generation));
-      if(!valid())continue;
-      const focusInput=transport();if(!focusInput)return;
-      focusInput.value=JSON.stringify({owner,sequence:report.sequence,focus_target:id});
-      if(!focusInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}))){if(valid())el.focus();break;}
-    }
-  }
   if(report.kind==='key'&&report.candidate_ids.length){
     for(const id of report.candidate_ids){
       const el=activationExecution.get(id);
@@ -672,8 +657,7 @@ function syncItemCues(captured=null,retained=false,force=false){
   }finally{reconcilingItemCues=false;}
 }
 
-function syncExecution(){
-  let needsFocusPass=false;
+function syncNativeSurfaces(){
   for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
@@ -693,39 +677,13 @@ function syncExecution(){
         }
       }
     }
-    // Dropdown local focus is entirely executed by registered Dioxus mounts.
-    if(root.getAttribute('data-ix-dropdown-focus-owned')==='true')continue;
-    const ver=root.getAttribute('data-ix-overlay-focus-version')||'0',gen=root.getAttribute('data-ix-overlay-generation')||'0';
-    if(lastFocus.get(id)!==gen+':'+ver)needsFocusPass=true;
-  }
-  if(needsFocusPass&&!focusFrame){
-    focusFrame=requestAnimationFrame(()=>{
-      focusFrame=0;if(!alive)return;
-      for(const root of registryElements('[data-ix-overlay-root]')){
-        if(!(root instanceof HTMLElement)||!root.isConnected)continue;
-        const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
-        if(!id||ro!==owner)continue;
-        if(root.hasAttribute('data-ix-overlay-native-surface')||root.getAttribute('data-ix-dropdown-focus-owned')==='true')continue;
-        const ver=root.getAttribute('data-ix-overlay-focus-version')||'0',gen=root.getAttribute('data-ix-overlay-generation')||'0';
-        const token=gen+':'+ver,spec=root.getAttribute('data-ix-overlay-focus-target')||'none';
-        if(lastFocus.get(id)===token)continue;
-        lastFocus.set(id,token);
-        if(spec==='none')continue;
-        const list=hostFocusables(findHost(id));
-        const dest=spec==='trigger'?findTrigger(id,root):spec==='first-native'?list[0]:spec==='last-native'?list[list.length-1]:
-          spec.startsWith('index:')?list[Number(spec.slice(6))]:findElement(spec.startsWith('id:')?spec.slice(3):spec);
-        if(dest instanceof HTMLElement&&dest.isConnected)try{dest.focus();}catch{}
-      }
-      reportObserve();
-    });
   }
 }
 function syncKeyTargets(){
-  const wanted=new Set(),wantedClicks=new Set(),wantedTriggerKeys=new Set(),wantedNavigation=new Set(),currentIds=new Set();
+  const wanted=new Set(),wantedClicks=new Set(),wantedTriggerKeys=new Set(),wantedNavigation=new Set();
   bindNavigationConfigurations();
   for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner)continue;
-    currentIds.add(root.getAttribute('data-ix-overlay-root'));
     const current=findTrigger(root.getAttribute('data-ix-overlay-root'),root),binding=declaredTriggers.get(root);
     const managed=root.hasAttribute('data-ix-overlay-trigger-version');
     const target=managed?binding?.installed:current;
@@ -763,7 +721,6 @@ function syncKeyTargets(){
     }
   }
   for(const [root,binding]of declaredTriggers)if(!triggerBindingAlive(binding))declaredTriggers.delete(root);
-  for(const id of lastFocus.keys())if(!currentIds.has(id))lastFocus.delete(id);
   for(const [id,lease]of itemInventoryLeases){
     const current=Array.from(registryElements('[data-ix-overlay-root]')).find(root=>root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id);
     if(!current||Number(current.getAttribute('data-ix-overlay-generation'))!==lease.generation)itemInventoryLeases.delete(id);
@@ -803,11 +760,10 @@ function syncAnchorObservers(){
 function reportObserve(){
   if(!alive)return;
   syncReflectedCheckedAttributes();
-  for(const [id,node] of nativeNodes)if(!node.isConnected)nativeNodes.delete(id);
   syncKeyTargets();
   if(!transport())return;
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
-  syncExecution();
+  syncNativeSurfaces();
   syncAnchorObservers();
   const report=collectFacts('observe',null);
   const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
@@ -889,7 +845,7 @@ try{
     if(command?.item_cues)syncItemCues(null,true);
   }
 }finally{
-  alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();nativeNodes.clear();observer.disconnect();if(focusFrame)cancelAnimationFrame(focusFrame);
+  alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();observer.disconnect();
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   itemCaptureNodes.clear();
   itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);

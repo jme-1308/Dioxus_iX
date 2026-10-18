@@ -8,9 +8,9 @@
 //! [`PopoverHandle::hide`] retains its native surface and nested component state.
 //! Both restore the registered invoker's focus in Rust.
 //!
-//! Imperative opening, hover activation and popover keyboard containment use
-//! native DOM methods: typed Rust bindings on web and a small embedded native
-//! DOM bridge on desktop. Rust owns visibility, dismissal and timer state.
+//! Native top-layer visibility uses DOM methods on web and desktop. Popover
+//! focus uses registered Dioxus mounted handles; native observations provide
+//! candidate eligibility only. Rust owns visibility, dismissal and hover state.
 use dioxus::prelude::*;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -907,7 +907,8 @@ pub struct PopoverHandle {
     dispatching_change: Signal<bool>,
     opening: Signal<bool>,
     focusable_at_open: Signal<bool>,
-    focus_trigger: Signal<Option<String>>,
+    focus_trigger: Signal<Option<crate::overlay_runtime::MountedFocusTarget>>,
+    trigger_id: Signal<Option<String>>,
     overlay: Signal<Option<crate::overlay_runtime::NodeHandle>>,
 }
 
@@ -935,29 +936,6 @@ impl Drop for PopoverOpeningGuard {
     }
 }
 
-// Created before spawning: even a never-polled close task must release its
-// suppression interval when canceled, without clearing a newer operation.
-struct PopoverFocusSuppression {
-    popover: PopoverHandle,
-    generation: u64,
-}
-
-impl Drop for PopoverFocusSuppression {
-    fn drop(&mut self) {
-        if self
-            .popover
-            .surface
-            .generation
-            .try_peek()
-            .is_ok_and(|value| *value == self.generation)
-        {
-            if let Ok(mut suppressed) = self.popover.suppress_focus_open.try_write() {
-                *suppressed = false;
-            }
-        }
-    }
-}
-
 /// Create a stable popover controller in a component.
 pub fn use_popover() -> PopoverHandle {
     PopoverHandle {
@@ -973,6 +951,7 @@ pub fn use_popover() -> PopoverHandle {
         opening: use_signal(|| false),
         focusable_at_open: use_signal(|| false),
         focus_trigger: use_signal(|| None),
+        trigger_id: use_signal(|| None),
         overlay: use_signal(|| None),
     }
 }
@@ -997,6 +976,7 @@ impl PopoverHandle {
         }
         let node = self.overlay.peek().clone();
         if let Some(node) = &node {
+            node.cancel_registered_focus();
             if !node.prepare_present() {
                 return Err(NativeSurfaceError::Superseded);
             }
@@ -1026,16 +1006,6 @@ impl PopoverHandle {
             }
         })
         .await;
-        // Drain the originating native click before the new host becomes an
-        // outside-dismiss candidate. A Rust scheduler yield alone can resume
-        // inside Dioxus's delegated click, before Window's listener runs.
-        #[cfg(any(
-            all(feature = "web", target_arch = "wasm32"),
-            all(feature = "desktop", not(target_arch = "wasm32"))
-        ))]
-        let _ = crate::dom_query::eval("await new Promise(requestAnimationFrame);return true;")
-            .join::<bool>()
-            .await;
         if *self.surface.generation.peek() != generation
             || node.as_ref().is_some_and(|node| !node.is_registered())
         {
@@ -1047,7 +1017,8 @@ impl PopoverHandle {
         if let Some(node) = &node {
             node.did_present();
         }
-        let result = self.surface.native_open(false, remember_focus).await;
+        let _ = remember_focus;
+        let result = self.surface.native_open(false, false).await;
         if *self.surface.generation.peek() != generation {
             return Err(NativeSurfaceError::Superseded);
         }
@@ -1065,45 +1036,89 @@ impl PopoverHandle {
         ))]
         {
             if let Some(facts) = popover_native::snapshot(self.surface, generation).await {
-                self.focusable_at_open.set(!facts.candidates.is_empty());
-                self.focus_trigger.set(facts.trigger);
-            }
-            if *self.focusable_at_open.peek() && !*self.hover_mode.peek() {
-                let _ = popover_native::focus_open(self.surface, generation, false).await;
+                self.apply_opening_focus(generation, &facts.candidates);
             }
         }
+
         if *self.surface.generation.peek() != generation || !*self.surface.open.peek() {
             return Err(NativeSurfaceError::Superseded);
         }
         self.opening.set(false);
-        // Keep completion separate from the public show promise, as in source.
-        #[cfg(any(feature = "web", feature = "desktop"))]
-        {
-            let complete = move || {
-                spawn(async move {
-                    let _ = crate::dom_query::eval(
-                        "await new Promise(requestAnimationFrame);return true;",
-                    )
-                    .join::<bool>()
-                    .await;
-                    if *self.surface.generation.peek() == generation
-                        && *self.surface.open.peek()
-                        && !*self.reported_open.peek()
-                    {
-                        self.reported_open.set(true);
-                        if let Some(callback) = *self.onshowchanged.peek() {
-                            callback.call(true);
-                        }
+        if let Some(node) = &node {
+            node.queue_completion(Rc::new(move || {
+                if self
+                    .surface
+                    .generation
+                    .try_peek()
+                    .is_ok_and(|value| *value == generation)
+                    && self.surface.open.try_peek().is_ok_and(|open| *open)
+                    && !*self.reported_open.peek()
+                {
+                    let mut reported = self.reported_open;
+                    reported.set(true);
+                    if let Some(callback) = *self.onshowchanged.peek() {
+                        callback.call(true);
                     }
-                })
-            };
-            if let Some(node) = &node {
-                node.with_owner(complete);
-            } else {
-                complete();
-            }
+                }
+            }));
         }
         Ok(())
+    }
+
+    #[cfg(any(
+        test,
+        all(feature = "web", target_arch = "wasm32"),
+        all(feature = "desktop", not(target_arch = "wasm32"))
+    ))]
+    fn apply_opening_focus(
+        mut self,
+        generation: u64,
+        candidates: &[crate::popover_focus::FocusCandidate],
+    ) {
+        if !self
+            .surface
+            .generation
+            .try_peek()
+            .is_ok_and(|value| *value == generation)
+            || !self.surface.open.try_peek().is_ok_and(|open| *open)
+        {
+            return;
+        }
+        let Some(node) = self
+            .overlay
+            .peek()
+            .clone()
+            .filter(crate::overlay_runtime::NodeHandle::is_registered)
+        else {
+            return;
+        };
+        let registered = candidates
+            .iter()
+            .filter(|candidate| node.capture_registered_focus(&candidate.target).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.focusable_at_open.set(!registered.is_empty());
+        self.focus_trigger.set(
+            self.trigger_id
+                .peek()
+                .as_deref()
+                .and_then(|id| node.capture_registered_focus(id)),
+        );
+        if let Some(target) =
+            crate::popover_focus::opening_target(&registered, *self.hover_mode.peek())
+                .and_then(|id| node.capture_registered_focus(&id))
+        {
+            node.queue_registered_focus(target, Some(true));
+        }
+    }
+
+    fn hover_focus_allowed(mut self) -> bool {
+        if *self.suppress_focus_open.peek() {
+            self.suppress_focus_open.set(false);
+            false
+        } else {
+            true
+        }
     }
 
     fn cancel_hover_hide(mut self) {
@@ -1181,74 +1196,82 @@ impl PopoverHandle {
     }
 
     fn commit_hide_with_focus(mut self, restore_focus: bool) {
-        let was_open = self.is_open();
-        if !was_open {
+        if !self.is_open() {
             return;
         }
         self.cancel_hover_hide();
-        let trigger = self.focus_trigger.peek().clone();
-        let plan = crate::popover_focus::close_focus_plan(
-            *self.focusable_at_open.peek(),
-            trigger.is_some(),
-            *self.hover_mode.peek(),
-            restore_focus,
-        );
-        self.suppress_focus_open.set(
-            *self.hover_mode.peek()
-                && plan.post_close == crate::popover_focus::PostCloseFocus::Restore,
-        );
+        let node = self.overlay.peek().clone();
+        if let Some(node) = &node {
+            node.cancel_registered_focus();
+        }
+        let trigger = restore_focus
+            .then(|| self.focus_trigger.peek().clone())
+            .flatten();
+        // A hover trigger consumes the restoration focus event once, so closing
+        // never immediately opens it again. Blur/pointer entry clears the flag.
+        self.suppress_focus_open.set(*self.hover_mode.peek());
         self.surface.open.set(false);
         let generation = self.surface.generation.peek().wrapping_add(1);
         self.surface.generation.set(generation);
         self.surface.restore_after_mount.set(None);
         self.opening.set(false);
-        // Hide the same native surface. Removing/replacing it would destroy
-        // nested component state and vetoed child overlays.
         self.reported_open.set(false);
-        let suppression = PopoverFocusSuppression {
-            popover: self,
-            generation,
+        let complete = move || {
+            if !self
+                .surface
+                .generation
+                .try_peek()
+                .is_ok_and(|value| *value == generation)
+                || !self.surface.open.try_peek().is_ok_and(|open| !*open)
+            {
+                return;
+            }
+            if let Some(node) = self
+                .overlay
+                .peek()
+                .clone()
+                .filter(crate::overlay_runtime::NodeHandle::is_registered)
+            {
+                if let Some(trigger) = trigger.clone() {
+                    node.queue_registered_focus(trigger, Some(false));
+                }
+                node.queue_completion(Rc::new(move || {
+                    if self
+                        .surface
+                        .generation
+                        .try_peek()
+                        .is_ok_and(|value| *value == generation)
+                        && self.surface.open.try_peek().is_ok_and(|open| !*open)
+                        && let Some(callback) = *self.onshowchanged.peek()
+                    {
+                        callback.call(false);
+                    }
+                }));
+            }
         };
         #[cfg(any(
             all(feature = "web", target_arch = "wasm32"),
             all(feature = "desktop", not(target_arch = "wasm32"))
         ))]
-        spawn(async move {
-            if popover_native::close(self.surface, generation, plan, trigger).await {
-                if let Some(callback) = *self.onshowchanged.peek() {
-                    callback.call(false);
-                }
+        {
+            let hide = move || {
+                spawn(async move {
+                    if popover_native::close(self.surface, generation).await {
+                        complete();
+                    }
+                })
+            };
+            if let Some(node) = node {
+                node.with_owner(hide);
+            } else {
+                hide();
             }
-            if self
-                .surface
-                .generation
-                .try_peek()
-                .is_ok_and(|value| *value == generation)
-                && self
-                    .suppress_focus_open
-                    .try_peek()
-                    .is_ok_and(|value| *value)
-            {
-                // Source resets after the restoration frame even when focus()
-                // emits no event because the trigger was already focused.
-                let _ =
-                    crate::dom_query::eval("await new Promise(requestAnimationFrame);return true;")
-                        .join::<bool>()
-                        .await;
-            }
-            drop(suppression);
-        });
+        }
         #[cfg(not(any(
             all(feature = "web", target_arch = "wasm32"),
             all(feature = "desktop", not(target_arch = "wasm32"))
         )))]
-        {
-            let _ = (plan, trigger);
-            drop(suppression);
-            if let Some(callback) = *self.onshowchanged.peek() {
-                callback.call(false);
-            }
-        }
+        complete();
     }
 }
 
@@ -1293,6 +1316,59 @@ pub enum PopoverTriggerMode {
     Hover,
 }
 
+/// Register a custom Popover trigger's mounted element for return focus.
+///
+/// Give the control the same stable `id` and attach this handler to `onmounted`.
+/// Use the controller's `show`/`hide` methods for activation. The calling scope
+/// must unmount with the control; use a new component key for a replacement.
+/// Custom content controls register separately with [`crate::use_focus_mount`].
+pub fn use_popover_trigger_mount(
+    popover: PopoverHandle,
+    id: impl Into<String>,
+) -> EventHandler<MountedEvent> {
+    let binding = crate::dropdown::use_item_host("native-opt-in");
+    let id = id.into();
+    let mounted = use_hook(|| Rc::new(std::cell::RefCell::new(None::<Rc<MountedData>>)));
+    let cleanup = mounted.clone();
+    use_drop(move || {
+        if let Some(own) = cleanup.borrow_mut().take()
+            && popover.surface.invoker.try_peek().is_ok_and(|current| {
+                current
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &own))
+            })
+        {
+            let mut popover = popover;
+            popover.surface.invoker.set(None);
+            popover.trigger_id.set(None);
+            popover.focus_trigger.set(None);
+            if let Some(node) = popover.overlay.peek().clone() {
+                node.cancel_registered_focus();
+            }
+        }
+    });
+    use_callback(move |event: MountedEvent| {
+        let mut popover = popover;
+        let target = event.data();
+        if popover
+            .surface
+            .invoker
+            .peek()
+            .as_ref()
+            .is_some_and(|previous| !Rc::ptr_eq(previous, &target))
+        {
+            popover.focus_trigger.set(None);
+            if let Some(node) = popover.overlay.peek().clone() {
+                node.cancel_registered_focus();
+            }
+        }
+        binding.mount(&id, target.clone());
+        *mounted.borrow_mut() = Some(target.clone());
+        popover.surface.remember_invoker(Some(target));
+        popover.trigger_id.set(Some(id.clone()));
+    })
+}
+
 /// Native popover invoker with an implicit CSS anchor and accessible relationship.
 #[component]
 pub fn PopoverTrigger(
@@ -1306,7 +1382,7 @@ pub fn PopoverTrigger(
     #[props(default)] trigger_mode: PopoverTriggerMode,
 ) -> Element {
     let id = popover.id();
-    let mut trigger = use_signal(|| None::<Rc<MountedData>>);
+    let trigger_mount = use_popover_trigger_mount(popover, format!("{id}-trigger"));
     let mut hover_mode = popover.hover_mode;
     use_effect(use_reactive((&trigger_mode,), move |(mode,)| {
         hover_mode.set(mode == PopoverTriggerMode::Hover)
@@ -1317,9 +1393,8 @@ pub fn PopoverTrigger(
             "data-ix-overlay-trigger": id.clone(),
             style: "anchor-name:--{id}",
             "aria-controls": id.clone(), "aria-expanded": popover.is_open().to_string(), "aria-label": aria_label,
-            onmounted: move |event| { trigger.set(Some(event.data())); },
+            onmounted: trigger_mount,
             onclick: move |event| {
-                popover.surface.remember_invoker(trigger.peek().clone());
                 event.prevent_default();
                 if trigger_mode == PopoverTriggerMode::Click {
                     if popover.is_open() { popover.hide(); }
@@ -1328,23 +1403,20 @@ pub fn PopoverTrigger(
             },
             onkeydown: move |event| if trigger_mode==PopoverTriggerMode::Click && (event.key()==Key::Enter || event.key()==Key::Character(" ".into())) {
                 event.prevent_default();
-                popover.surface.remember_invoker(trigger.peek().clone());
                 if popover.is_open() { popover.hide(); }
                 else { spawn(async move { let _=popover.show_native(false).await; }); }
             },
             onmouseenter: move |_| if !disabled && trigger_mode == PopoverTriggerMode::Hover {
                 popover.cancel_hover_hide();
-                popover.surface.remember_invoker(trigger.peek().clone());
                 spawn(async move { let _ = popover.show_native(false).await; });
             },
             onmouseleave: move |_| popover.schedule_hover_hide(false),
             onfocus: move |_| if !disabled && trigger_mode == PopoverTriggerMode::Hover {
                 popover.cancel_hover_hide();
-                if *popover.suppress_focus_open.peek() { return; }
-                popover.surface.remember_invoker(trigger.peek().clone());
+                if !popover.hover_focus_allowed() { return; }
                 spawn(async move { let _ = popover.show_native(false).await; });
             },
-            onblur: move |_| popover.schedule_hover_hide(true),
+            onblur: move |_| {let mut suppressed=popover.suppress_focus_open;suppressed.set(false);popover.schedule_hover_hide(true);},
             {children}
         }
     }
@@ -1438,7 +1510,6 @@ pub fn Popover(
         }) {
             overlay_slot.set(None);
             let mut surface = popover.surface;
-            surface.cleanup_temporary_focus_id();
             surface.node.set(None);
             surface.open.set(false);
             let generation = surface.generation.peek().wrapping_add(1);
@@ -1491,9 +1562,6 @@ pub fn Popover(
                     // generation or cancel an opening still awaiting native work.
                     if (visible && !*surface.open.peek()) || (!visible && *popover.opening.peek()) { return; }
                     if !visible {
-                        // An admitted close still needs its temporary return ID
-                        // until native focus restoration finishes.
-                        if *surface.open.peek() { surface.cleanup_temporary_focus_id(); }
                         surface.cleanup_native_position();
                     }
                     surface.open.set(visible);
@@ -1528,13 +1596,31 @@ pub fn PopoverHeader(
             if let Some(icon) = icon { span { style: icon_color.map(|name| format!("color:var({name})")), crate::Icon { name: icon, size: 24 } } }
             h3 { class: "ix-popover-title", {children} }
             {additional_items}
-            if !hide_close { button { class: "ix-dialog-close", r#type: "button", "aria-label": close_label, disabled: popover.is_none(),
-                onclick: move |event| { if let Some(callback) = oncloseclick { callback.call(event.clone()); }
-                    if event.default_action_enabled() { if let Some(popover) = popover { popover.hide(); } } },
-                crate::Icon { name: "close".to_string(), size: 24 }
-            } }
+            if !hide_close { PopoverCloseControl { popover,label:close_label,oncloseclick } }
         }
     }
+}
+
+#[component]
+fn PopoverCloseControl(
+    popover: Option<PopoverHandle>,
+    label: String,
+    oncloseclick: Option<EventHandler<MouseEvent>>,
+) -> Element {
+    let id = use_hook(|| {
+        format!(
+            "ix-popover-close-{}",
+            DIALOG_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let mounted = crate::dropdown::use_focus_mount(id.clone());
+    rsx! {button {id,onmounted:mounted,class:"ix-dialog-close",r#type:"button","aria-label":label,disabled:popover.is_none(),
+        onclick:move |event| {
+            if let Some(callback)=oncloseclick {callback.call(event.clone());}
+            if event.default_action_enabled()&&let Some(popover)=popover {popover.hide();}
+        },
+        crate::Icon {name:"close".to_string(),size:24}
+    }}
 }
 
 /// Scrollable body content. `no_padding` supports edge-to-edge content.
@@ -1674,7 +1760,20 @@ mod tests {
     }
 
     fn popover_controller_fixture() -> Element {
-        let controller = use_popover();
+        let mut controller = use_popover();
+        let runtime = crate::overlay_runtime::use_overlay_runtime();
+        let node = use_hook(move || {
+            runtime.register(
+                controller.id(),
+                1,
+                crate::overlay_registry::OverlayKind::Popover,
+                crate::overlay_registry::CloseBehavior::Outside,
+                popover_overlay_callbacks(controller, Rc::new(std::cell::Cell::new(true))),
+            )
+        });
+        let registered = node.clone();
+        use_hook(move || controller.overlay.set(Some(registered)));
+        use_drop(move || node.unregister());
         let capture = consume_context::<Rc<RefCell<Option<PopoverHandle>>>>();
         *capture.borrow_mut() = Some(controller);
         VNode::empty()
@@ -1716,14 +1815,26 @@ mod tests {
             popover.hide();
             assert!(!popover.is_open());
             assert_eq!(*popover.surface.generation.peek(), generation + 1);
-            assert_eq!(
-                &*completions.borrow(),
-                &[false],
-                "one completion for a reentrant hide"
+            assert!(
+                completions.borrow().is_empty(),
+                "close completion waits for its Dioxus effect"
             );
-            popover.hide();
-            assert_eq!(completions.borrow().len(), 1);
         });
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+        }
+        assert_eq!(
+            &*completions.borrow(),
+            &[false],
+            "one completion for a reentrant hide"
+        );
+        dom.in_scope(ScopeId::ROOT, || popover.hide());
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+        }
+        assert_eq!(completions.borrow().len(), 1);
     }
 
     type PopoverOverlayCapture =

@@ -88,7 +88,6 @@ pub(crate) struct KeyDecision {
     pub(crate) immediate_stop: bool,
     pub(crate) release_focus: bool,
     pub(crate) activate: Option<String>,
-    pub(crate) focus: Option<String>,
 }
 type KeyCallback = Rc<dyn Fn(&KeyFacts) -> KeyDecision>;
 
@@ -167,7 +166,6 @@ struct Ack {
     stop: bool,
     immediate_stop: bool,
     activation: Option<(String, String, u64, u64)>,
-    focus: Option<(String, String, u64, u64, bool)>,
 }
 struct Runtime {
     owner: String,
@@ -221,7 +219,7 @@ pub(crate) struct MountedFocusTarget {
     renderer: Option<Weak<dioxus::core::Runtime>>,
 }
 impl MountedFocusTarget {
-    fn live_node(&self) -> Option<Rc<MountedData>> {
+    pub(crate) fn live_node(&self) -> Option<Rc<MountedData>> {
         // Component cleanup unregisters its handle. Also reject a retained
         // registry after the renderer VirtualDom itself has been dropped.
         let _renderer = match &self.renderer {
@@ -248,6 +246,7 @@ struct OwnedItemFocus {
     visual: Option<HostFacts>,
     focus_native: bool,
     exit_target: Option<MountedFocusTarget>,
+    expected_open: Option<bool>,
     destination_popovers: Vec<String>,
     task: Option<(Weak<dioxus::core::Runtime>, dioxus::core::Task)>,
 }
@@ -523,10 +522,25 @@ impl RuntimeHandle {
         target: MountedFocusTarget,
         destination_popovers: Vec<String>,
     ) -> bool {
+        self.queue_registered_focus(root, generation, target, None, destination_popovers)
+    }
+    fn queue_registered_focus(
+        &self,
+        root: &str,
+        generation: u64,
+        target: MountedFocusTarget,
+        expected_open: Option<bool>,
+        destination_popovers: Vec<String>,
+    ) -> bool {
         self.with_owner(root, generation, || {
             if !self.focus_owner_registered(root, generation)
                 || target.live_node().is_none()
                 || !self.destination_popovers_visible(&destination_popovers)
+                || expected_open.is_some_and(|expected| {
+                    self.entry(root)
+                        .and_then(|entry| self.read_current(root, &entry))
+                        != Some(expected)
+                })
             {
                 return false;
             }
@@ -552,6 +566,7 @@ impl RuntimeHandle {
                         visual: None,
                         focus_native: true,
                         exit_target: Some(target),
+                        expected_open,
                         destination_popovers,
                         task: None,
                     },
@@ -582,20 +597,24 @@ impl RuntimeHandle {
         sequence: u64,
         node: &Rc<MountedData>,
     ) -> bool {
-        let Some((exiting, popovers)) = self
+        let Some((expected_open, popovers)) = self
             .0
             .borrow()
             .owned_item_focus
             .get(root)
-            .map(|job| (job.exit_target.is_some(), job.destination_popovers.clone()))
+            .map(|job| (job.expected_open, job.destination_popovers.clone()))
         else {
             return false;
         };
-        let owner_live = if exiting {
-            self.focus_owner_registered(root, generation)
-        } else {
-            self.item_owner_open(root, generation)
-        };
+        let owner_live = self.focus_owner_registered(root, generation)
+            && expected_open.is_none_or(|expected| {
+                self.with_owner(root, generation, || {
+                    self.entry(root)
+                        .and_then(|entry| self.read_current(root, &entry))
+                        == Some(expected)
+                })
+                .unwrap_or(false)
+            });
         if !owner_live || !self.destination_popovers_visible(&popovers) {
             return false;
         }
@@ -1468,10 +1487,12 @@ impl RuntimeHandle {
             if let Some(domain) = self.domain() {
                 domain.forget_children(id, generation);
             }
+            // Cancel the previous open-state intent before apply. A synchronous
+            // close completion may admit a new expected-closed return target.
+            self.cancel_owned_item_focus(id);
         }
         (snapshot.callbacks.apply)(applied);
         if !change.open && self.read_current(id, &current) == Some(false) {
-            self.cancel_owned_item_focus(id);
             self.clear_item_tabindices(id, generation);
         }
         if !self.current(id, generation, operation) {
@@ -2117,17 +2138,6 @@ impl RuntimeHandle {
             self.current(id, *generation, *revision)
                 .then(|| (target.clone(), id.clone(), *generation, *revision))
         });
-        let focus = self
-            .0
-            .borrow_mut()
-            .ack
-            .focus
-            .take()
-            .filter(|authorization| {
-                decision.focus.as_ref() == Some(&authorization.0)
-                    && (report.tab_order.contains(&authorization.0)
-                        || report.focus_targets.contains(&authorization.0))
-            });
         let mut runtime = self.0.borrow_mut();
         if runtime.sequence == report.sequence {
             runtime.ack = Ack {
@@ -2135,7 +2145,6 @@ impl RuntimeHandle {
                 stop: decision.stop,
                 immediate_stop: decision.immediate_stop,
                 activation,
-                focus,
             };
         }
         decision
@@ -2172,18 +2181,21 @@ impl RuntimeHandle {
             else {
                 continue;
             };
-            self.0.borrow_mut().ack.focus = Some((
-                target.clone(),
-                node.id.clone(),
-                entry.generation,
-                entry.revision,
-                true,
-            ));
+            let owner = NodeHandle {
+                runtime: Rc::downgrade(&self.0),
+                id: node.id.clone(),
+                generation: entry.generation,
+            };
+            let Some(target) = owner.capture_registered_focus(&target) else {
+                continue;
+            };
+            if !owner.queue_registered_focus(target, Some(true)) {
+                continue;
+            }
             return KeyDecision {
                 prevent: true,
                 stop: true,
                 immediate_stop: true,
-                focus: Some(target),
                 ..KeyDecision::default()
             };
         }
@@ -2987,21 +2999,6 @@ impl RuntimeHandle {
                 } else {
                     None
                 }
-            } else if let Some(target) = query.focus_target {
-                if runtime
-                    .ack
-                    .focus
-                    .as_ref()
-                    .is_some_and(|focus| focus.0 == target)
-                {
-                    runtime.ack.focus.take().map(
-                        |(target, id, generation, revision, expected_open)| {
-                            ((target, id, generation, revision), expected_open)
-                        },
-                    )
-                } else {
-                    None
-                }
             } else if query.immediate_stop {
                 if runtime.ack.immediate_stop {
                     event.prevent_default();
@@ -3027,6 +3024,41 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    pub(crate) fn capture_registered_focus(&self, id: &str) -> Option<MountedFocusTarget> {
+        let runtime = self.runtime()?;
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                runtime
+                    .mounted_focus_target(id)
+                    .or_else(|| runtime.domain()?.focus_target(id))
+            })
+            .flatten()
+            .filter(|target| target.live_node().is_some())
+    }
+    pub(crate) fn queue_registered_focus(
+        &self,
+        target: MountedFocusTarget,
+        expected_open: Option<bool>,
+    ) -> bool {
+        self.runtime().is_some_and(|runtime| {
+            runtime.queue_registered_focus(
+                &self.id,
+                self.generation,
+                target,
+                expected_open,
+                Vec::new(),
+            )
+        })
+    }
+    pub(crate) fn cancel_registered_focus(&self) {
+        if let Some(runtime) = self.runtime()
+            && runtime
+                .entry(&self.id)
+                .is_some_and(|entry| entry.generation == self.generation)
+        {
+            runtime.cancel_owned_item_focus(&self.id);
+        }
+    }
     /// Revision reflected by the component's next native renderer commit.
     pub(crate) fn render_revision(&self) -> u64 {
         self.runtime()
@@ -3330,6 +3362,7 @@ impl NodeHandle {
                             visual,
                             focus_native,
                             exit_target: None,
+                            expected_open: Some(true),
                             destination_popovers: Vec::new(),
                             task: None,
                         },
@@ -3400,6 +3433,9 @@ impl NodeHandle {
                         });
                     }
                 });
+                // An async native completion can arrive without another
+                // component state change. Wake this owner to flush its effect.
+                dioxus::core::needs_update();
                 true
             })
             .unwrap_or(false)
@@ -3705,8 +3741,6 @@ struct Report {
     #[serde(default)]
     anchor_visibility: Option<AnchorVisibility>,
     #[serde(default)]
-    focus_targets: Vec<String>,
-    #[serde(default)]
     active_hosts: Vec<String>,
     #[serde(default)]
     active_popover: String,
@@ -3809,8 +3843,6 @@ struct Query {
     item_root_cue: Option<RootCueOffer>,
     #[serde(default)]
     activate_target: Option<String>,
-    #[serde(default)]
-    focus_target: Option<String>,
     #[serde(default)]
     immediate_stop: bool,
 }
@@ -5346,6 +5378,51 @@ mod tests {
     }
 
     #[test]
+    fn completion_effect_wakes_an_idle_owner_without_another_state_change() {
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        settle_item_effects(&mut dom);
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            pin!(dom.wait_for_work()).poll(&mut context),
+            Poll::Pending
+        ));
+        let delivered = Rc::new(Cell::new(false));
+        let callback = delivered.clone();
+        let owner = fixture.0.owner.get().unwrap();
+        assert!(node.queue_completion(Rc::new(move || {
+            assert_eq!(current_scope_id(), owner);
+            callback.set(true);
+        })));
+        assert!(!delivered.get(), "completion stays asynchronous");
+        assert!(
+            matches!(
+                pin!(dom.wait_for_work()).poll(&mut context),
+                Poll::Ready(())
+            ),
+            "admission itself requests renderer work"
+        );
+        assert!(
+            !delivered.get(),
+            "the renderer has not flushed the queued effect yet"
+        );
+        dom.render_immediate_to_vec();
+        // Pinned Dioxus drains post-render effects on its following idle
+        // scheduler pass, rather than at the end of render_immediate itself.
+        assert!(matches!(
+            pin!(dom.wait_for_work()).poll(&mut context),
+            Poll::Pending
+        ));
+        assert!(delivered.get());
+    }
+    #[test]
     fn completion_effects_restore_registered_owner_and_allow_reentrant_writes() {
         let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
         let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
@@ -5429,6 +5506,7 @@ mod tests {
         assert!(replacement.queue_completion(Rc::new(move || current.set(current.get() + 10))));
         assert_eq!(delivered.get(), 0);
         dom.render_immediate_to_vec();
+        dom.process_events();
         assert_eq!(delivered.get(), 10);
         assert_eq!(runtime.pending_completions(), 0);
         replacement.unregister();
@@ -5800,6 +5878,97 @@ mod tests {
         assert!(runtime.mounted_focus_target("unregistered").is_none());
         node.unregister();
         assert!(runtime.0.borrow().nodes.is_empty());
+    }
+    #[test]
+    fn accepted_close_cancels_prior_focus_but_preserves_return_admitted_by_apply() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        let old = ItemMountMock::default();
+        let returned = ItemMountMock::default();
+        runtime.register_item_mount(
+            "close-old",
+            "close-old",
+            Rc::new(MountedData::new(old.clone())),
+        );
+        runtime.register_item_mount(
+            "close-return",
+            "close-return",
+            Rc::new(MountedData::new(returned.clone())),
+        );
+        let return_target = node.capture_registered_focus("close-return").unwrap();
+        dom.in_scope(owner, || {
+            let mut callbacks = runtime.entry(node.id()).unwrap().callbacks;
+            let apply = callbacks.apply.clone();
+            let closing = node.clone();
+            callbacks.apply = Rc::new(move |change| {
+                apply(change);
+                if !change.open {
+                    assert!(closing.queue_registered_focus(return_target.clone(), Some(false)));
+                }
+            });
+            runtime.register(
+                node.id().into(),
+                node.generation,
+                OverlayKind::Popover,
+                CloseBehavior::Both,
+                callbacks,
+            );
+        });
+        assert!(node.queue_registered_focus(
+            node.capture_registered_focus("close-old").unwrap(),
+            Some(true)
+        ));
+        assert!(node.request(false, Reason::Trigger, true));
+        assert_eq!(
+            runtime.pending_item_focus_count(),
+            1,
+            "the new close return remains admitted"
+        );
+        settle_item_effects(&mut dom);
+        assert!(old.events.borrow().is_empty());
+        assert_eq!(*returned.events.borrow(), [("focus", owner)]);
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+    }
+    #[test]
+    fn registered_focus_respects_expected_visibility_and_explicit_cancellation() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let mock = ItemMountMock::default();
+        runtime.register_item_mount(
+            "registered-control",
+            "control",
+            Rc::new(MountedData::new(mock.clone())),
+        );
+        let captured = node.capture_registered_focus("control").unwrap();
+        assert!(!node.queue_registered_focus(captured.clone(), Some(false)));
+        assert!(node.queue_registered_focus(captured.clone(), Some(true)));
+        node.cancel_registered_focus();
+        settle_item_effects(&mut dom);
+        assert!(mock.events.borrow().is_empty());
+        assert!(node.request(false, Reason::Keyboard, false));
+        assert!(!node.queue_registered_focus(captured.clone(), Some(true)));
+        assert!(node.queue_registered_focus(captured.clone(), Some(false)));
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            *mock.events.borrow(),
+            [("focus", fixture.0.owner.get().unwrap())]
+        );
+        mock.events.borrow_mut().clear();
+        assert!(node.queue_registered_focus(captured, Some(false)));
+        fixture.0.open.set(true);
+        settle_item_effects(&mut dom);
+        assert!(
+            mock.events.borrow().is_empty(),
+            "changed owner visibility rejects stale focus"
+        );
+        assert!(node.capture_registered_focus("unregistered").is_none());
     }
     #[test]
     fn outside_tab_capture_cannot_follow_a_replacement_or_retain_unmounted_destination() {
