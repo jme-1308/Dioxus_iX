@@ -13,5 +13,12 @@
         "reason": "Agent review: detector omits the responsive h1 clamp(1.5rem, 3vw, 2rem); its minimum 24px is 1.25 times the 19.2px h2 and 1.5 times the 16px body in this development fixture."
       }
     ]
+  },
+  "hook": {
+    "enabled": false,
+    "limits": {
+      "maxFindings": 5,
+      "maxChars": 8000
+    }
   }
 }

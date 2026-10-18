@@ -2002,21 +2002,29 @@ impl CategoryNavigation {
 }
 
 const MENU_CATEGORY_FACTS: &str = r#"
+const categoryBelongs=(root,category)=>category instanceof HTMLElement&&category.isConnected&&category.hasAttribute('data-menu-category-root')&&category.dataset.menuOwner===root.id;
+const categoryParent=category=>{const parent=category?.querySelector(':scope > [data-ix-item-part="category-parent"]');return parent instanceof HTMLElement&&parent.id===category.dataset.menuCategoryReturnTarget?parent:null;};
 const categoryNodes=(root,category)=>Array.from(category.querySelectorAll('[data-menu-category-child]')).filter(node=>node.dataset.menuCategoryOwner===root.id&&node.dataset.menuCategory===category.dataset.menuCategory);
 const categoryFacts=(root,category)=>categoryNodes(root,category).map(node=>{const host=node.closest('[data-ix-item-kind="menu"]'),source=host&&category.contains(host)?host:node;return{id:Number(node.dataset.menuCategoryChild),disabled:source===node?node.dataset.menuCategoryDisabled==='true':source.hasAttribute('disabled'),hidden:source.hasAttribute('hidden'),tabindex:source.getAttribute('tabindex')};});
 const categoryTuples=(root,category)=>categoryFacts(root,category).map(item=>[item.id,item.disabled,item.hidden,item.tabindex]);
 "#;
 #[cfg(any(feature = "web", feature = "desktop"))]
-const CATEGORY_NATIVE_FOCUS: &str = r#"
+const CATEGORY_NATIVE_FOCUS: &str = concat!(
+    crate::menu_scope_dom::menu_scope_directory!(),
+    r#"
 const [owner,id,generation,target,expected,frames,expanded]=await dioxus.recv();
+const directory=menuScopeDirectory(),lease=directory.acquire();
+try {
+const root=directory.elementById(owner),category=directory.categories(owner,id)[0];
+const node=target===null?categoryParent(category):category?.querySelector('[data-menu-category-child="'+target+'"]');
 for(let frame=0;frame<frames;frame++)await new Promise(requestAnimationFrame);
-const root=document.getElementById(owner),category=root?.querySelector('[data-menu-category-root="'+id+'"]');
-if(!root?.isConnected||!category?.isConnected||category.dataset.menuCategoryGeneration!==generation||category.dataset.menuCategoryMode!==(expanded?'expanded':'collapsed'))return false;
+if(!directory.sameNodeById(root,owner)||directory.categories(owner,id)[0]!==category||!categoryBelongs(root,category)||category.dataset.menuCategoryGeneration!==generation||category.dataset.menuCategoryMode!==(expanded?'expanded':'collapsed'))return false;
 if(expected && (category.dataset.open!=='true'||JSON.stringify(categoryTuples(root,category))!==JSON.stringify(expected)))return false;
-const node=target===null?document.getElementById('ix-menu-category-parent-'+id):category.querySelector('[data-menu-category-child="'+target+'"]');
-if(!(node instanceof HTMLElement)||node.closest('[data-menu-root]')!==root)return false;
+if(!(node instanceof HTMLElement)||!node.isConnected||(target===null?categoryParent(category):category.querySelector('[data-menu-category-child="'+target+'"]'))!==node)return false;
 node.focus();return document.activeElement===node;
-"#;
+} finally { directory.release(lease); }
+"#
+);
 
 // Native DOM observations only: Rust interprets eligibility, order, key actions
 // and remembered focus. Direct anchor wrappers intentionally retain the source
@@ -2035,25 +2043,37 @@ const menuFacts = root => menuNodes(root).map(node => {
 const menuTuples = root => menuFacts(root).map(item => [item.id,item.disabled,item.hidden,item.display,item.grandparent_display]);
 "#;
 #[cfg(any(feature = "web", feature = "desktop"))]
-const MENU_NATIVE_FOCUS: &str = r#"
+const MENU_NATIVE_FOCUS: &str = concat!(
+    crate::menu_scope_dom::menu_scope_directory!(),
+    r#"
 const [owner,generation,id,expected] = await dioxus.recv();
+const directory=menuScopeDirectory(),lease=directory.acquire();
+try {
+const root=directory.elementById(owner),target=root?.querySelector('[data-menu-control="'+id+'"]');
 await new Promise(requestAnimationFrame);
-const root=document.getElementById(owner);
-if (!root?.isConnected || root.dataset.menuFocusGeneration!==generation || JSON.stringify(menuTuples(root))!==JSON.stringify(expected)) return false;
-const target=root.querySelector('[data-menu-control="'+id+'"]');
-if (!(target instanceof HTMLElement) || target.closest('[data-menu-root]')!==root) return false;
+if (!directory.sameNodeById(root,owner) || root.dataset.menuFocusGeneration!==generation || JSON.stringify(menuTuples(root))!==JSON.stringify(expected)) return false;
+if (!(target instanceof HTMLElement) || !target.isConnected || root.querySelector('[data-menu-control="'+id+'"]')!==target || target.closest('[data-menu-root]')!==root) return false;
 target.focus(); return document.activeElement===target;
-"#;
+} finally { directory.release(lease); }
+"#
+);
 fn menu_roving_bridge(owner: &str) -> String {
     let id = serde_json::to_string(owner).expect("menu identity serialization");
-    format!("{MENU_DOM_FACTS}\n{MENU_CATEGORY_FACTS}\n{}\n{}",crate::menu_hover_dom::MENU_HOVER_NATIVE_FACTS,r#"
-const root=document.getElementById(__MENU_ROOT__), bar=root?.querySelector('[role="menubar"]'), transport=root?.querySelector('input[data-menu-observer]');
-if (!root || !bar || !transport) return;
+    format!("{MENU_DOM_FACTS}\n{MENU_CATEGORY_FACTS}\n{}\n{}\n{}",crate::menu_scope_dom::MENU_SCOPE_DIRECTORY,crate::menu_hover_dom::MENU_HOVER_NATIVE_FACTS,r#"
+const directory=menuScopeDirectory(),scopeLease=directory.acquire();
+// One discovery pass at this actual Menu mount also covers a consumer that
+// attached a new open tree after the document journal was initialized.
+directory.discoverSubtree(document);
+const root=directory.elementById(__MENU_ROOT__), bar=root?.querySelector('[role="menubar"]'), transport=root?.querySelector('input[data-menu-observer]');
+if (!root || !bar || !transport) {directory.release(scopeLease);return;}
 const hoverTransport=root.querySelector('input[data-menu-hover-observer]');
 document[Symbol.for('dioxus-ix-document-input')]?.get(hoverTransport?.dataset.menuDocumentOwner)?.sync();
-const hover=installMenuCategoryHover(root,message=>{if(hoverTransport?.isConnected){hoverTransport.value=JSON.stringify(message);hoverTransport.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));}});
-const events=new AbortController(); let previous='',sequence=0;const categoryPrevious=new Map();
+const hover=installMenuCategoryHover(root,message=>{if(hoverTransport?.isConnected){hoverTransport.value=JSON.stringify(message);hoverTransport.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));}},directory);
+const events=new AbortController(); let previous='',sequence=0;const categoryPrevious=new Map(),categoryBindings=new Map();
+const currentRoot=()=>directory.sameNodeById(root,__MENU_ROOT__)&&root.matches('[data-menu-root]');
 const send=(kind,event,extra={}) => {
+  if(!currentRoot()||!transport.isConnected)return false;
+  directory.discoverFromEvent(event);
   const path=event?.composedPath() ?? [];
   const origin=path.find(node => node instanceof HTMLElement && node.hasAttribute('data-menu-entry') && node.dataset.menuOwner===root.id);
   const items=menuFacts(root);if(!kind.startsWith('category-'))previous=JSON.stringify(items);
@@ -2062,11 +2082,22 @@ const send=(kind,event,extra={}) => {
 };
 const sync=()=>{
   hover.sync();
+  if(!currentRoot())return;
   for(const zone of root.querySelectorAll('[data-menu-light]')) for(const anchor of Array.from(zone.children).filter(node => node.tagName==='A' && Array.from(node.children).some(child => child.hasAttribute('data-menu-entry')))) if(anchor.getAttribute('tabindex')!=='-1')anchor.setAttribute('tabindex','-1');
   const facts=JSON.stringify(menuFacts(root));if(facts!==previous)send('order');
   const currentCategories=new Set();
-  for(const category of root.querySelectorAll('[data-menu-category-root]')) {
-    if(category.closest('[data-menu-root]')!==root)continue;
+  const currentObjects=new Set(directory.categories(root.id));
+  for(const category of currentObjects) {
+    if(!categoryBindings.has(category)) {
+      const listeners=new AbortController(),changes=new MutationObserver(sync);
+      categoryBindings.set(category,{listeners,changes});
+      changes.observe(category,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden','style','tabindex','data-menu-category-disabled','data-menu-category-mode','data-menu-category-popup-open','data-menu-category-body-surface','data-menu-category-popup','data-open','popover']});
+      // The source Category owns its listeners independently of the Menu bar.
+      // Only deliver here when the original event has no actual bar receiver.
+      category.addEventListener('keydown',event=>{if(!event.composedPath().includes(bar)&&categoryBelongs(root,category))handleCategoryKey(event,category);},{capture:true,signal:listeners.signal});
+      category.addEventListener('click',event=>{if(!event.composedPath().includes(bar)&&categoryBelongs(root,category))handleCategoryClick(event,category);},{signal:listeners.signal});
+      category.addEventListener('focusout',event=>{if(!event.composedPath().includes(bar))queueCategoryOutside(event,category);},{signal:listeners.signal});
+    }
     const panel=category.querySelector(':scope > [data-menu-category-popup]');
     // Mirror Rust's retained collapsed surface into the native top layer.
     // Inert/no-source opening must not autofocus or install an invoker return.
@@ -2083,42 +2114,56 @@ const sync=()=>{
     if(categoryPrevious.get(id)!==serialized){categoryPrevious.set(id,serialized);send('category-order',null,{category:id,category_items:items});}
     category.dataset.categoryNative='true';category.dataset.categoryHoverNative='true';
   }
+  for(const [category,binding]of categoryBindings)if(!currentObjects.has(category)){binding.listeners.abort();binding.changes.disconnect();categoryBindings.delete(category);}
   for(const id of categoryPrevious.keys())if(!currentCategories.has(id))categoryPrevious.delete(id);
 };
-bar.addEventListener('click',event=>{
-  const path=event.composedPath(),category=path.find(node=>node instanceof HTMLElement&&node.hasAttribute('data-menu-category-root')&&node.closest('[data-menu-root]')===root);
-  if(category&&path.includes(document.getElementById(category.dataset.menuCategoryReturnTarget))){const facts={category:Number(category.dataset.menuCategoryRoot),category_parent:true,sequence:++sequence,category_items:categoryFacts(root,category)};if(send('category-click',event,facts))event.stopPropagation();}
-},{signal:events.signal});
-bar.addEventListener('keydown',event=>{
-  const path=event.composedPath(),category=path.find(node=>node instanceof HTMLElement&&node.hasAttribute('data-menu-category-root')&&node.closest('[data-menu-root]')===root);
-  let categoryTransaction={};
-  if(category) {
+function handleCategoryClick(event,category) {
+  if(event.composedPath().includes(categoryParent(category))){const facts={category:Number(category.dataset.menuCategoryRoot),category_parent:true,sequence:++sequence,category_items:categoryFacts(root,category)};if(send('category-click',event,facts))event.stopPropagation();}
+}
+function handleCategoryKey(event,category) {
+    const path=event.composedPath();
     const child=path.find(node=>node instanceof HTMLElement&&node.hasAttribute('data-menu-category-child')&&node.dataset.menuCategory===category.dataset.menuCategory);
-    const facts={category:Number(category.dataset.menuCategoryRoot),child:child?Number(child.dataset.menuCategoryChild):null,category_parent:path.includes(document.getElementById(category.dataset.menuCategoryReturnTarget)),sequence:++sequence,shift:event.shiftKey,alt:event.altKey,category_items:categoryFacts(root,category)};
-    categoryTransaction=facts;
+    const facts={category:Number(category.dataset.menuCategoryRoot),child:child?Number(child.dataset.menuCategoryChild):null,category_parent:path.includes(categoryParent(category)),sequence:++sequence,shift:event.shiftKey,alt:event.altKey,category_items:categoryFacts(root,category)};
     if(child&&JSON.parse(category.dataset.menuCategoryReturnKeys??'[]').includes(event.key)) {
-      const targetId=category.dataset.menuCategoryReturnTarget;
+      const target=categoryParent(category);
       if(send('category-return',event,facts)) {
-        const target=document.getElementById(targetId);
-        if(target instanceof HTMLElement&&target.isConnected&&category.contains(target)&&target.closest('[data-menu-root]')===root)target.focus();
+        if(target?.isConnected&&categoryParent(category)===target&&categoryBelongs(root,category))target.focus();
       }
       if(send('category-default',event,facts))event.preventDefault();
-      return;
+      return null;
     }
     if(JSON.parse(category.dataset.menuCategoryKeys??'[]').includes(event.key)){
       if(send('category-key',event,facts))event.preventDefault();
     }
-  }
+    return facts;
+}
+function queueCategoryOutside(event,category) {
+  // Upstream listens on its internal Dropdown, not on the parent control.
+  // Keep that receiver boundary when the source shadow tree is flattened.
+  const surface=category.querySelector(':scope > [data-menu-category-popup]');
+  if(!surface||!event.composedPath().includes(surface))return;
+  const identity=category.dataset.menuCategoryRoot;
+  requestAnimationFrame(()=>{if(currentRoot()&&categoryBelongs(root,category)&&directory.categories(root.id,identity)[0]===category)send('category-outside',null,{category:Number(identity),inside:category.contains(document.activeElement),outside_cause:'focusout',sequence:++sequence,category_items:categoryFacts(root,category)});});
+}
+bar.addEventListener('click',event=>{
+  const category=event.composedPath().find(node=>categoryBelongs(root,node));
+  if(category)handleCategoryClick(event,category);
+},{signal:events.signal});
+bar.addEventListener('keydown',event=>{
+  const category=event.composedPath().find(node=>categoryBelongs(root,node));
+  const categoryTransaction=category?handleCategoryKey(event,category):{};
+  if(categoryTransaction===null)return;
   if((bar.dataset.menuKeys??'').split(' ').includes(event.key)&&send('key',event,categoryTransaction))event.preventDefault();
 },{capture:true,signal:events.signal});
 bar.addEventListener('focusin',event=>{send('focus',event);},{signal:events.signal});
 bar.addEventListener('focusout',event=>{
-  const category=event.composedPath().find(node=>node instanceof HTMLElement&&node.hasAttribute('data-menu-category-root')&&node.closest('[data-menu-root]')===root);
-  if(category)requestAnimationFrame(()=>{if(root.isConnected&&category.isConnected)send('category-outside',null,{category:Number(category.dataset.menuCategoryRoot),inside:category.contains(document.activeElement),outside_cause:'focusout',sequence:++sequence,category_items:categoryFacts(root,category)});});
+  const category=event.composedPath().find(node=>categoryBelongs(root,node));
+  if(category)queueCategoryOutside(event,category);
 },{signal:events.signal});
 const observer=new MutationObserver(sync);observer.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden','style','tabindex','data-menu-category-disabled','data-menu-category-mode','data-menu-category-popup-open','data-menu-category-body-surface','data-menu-category-popup','data-open','popover']});
+directory.subscribe(scopeLease,sync);
 sync();send('ready');root.dataset.menuNative='true';
-try{await dioxus.recv();}finally{hover.dispose();events.abort();observer.disconnect();delete root.dataset.menuNative;for(const category of root.querySelectorAll('[data-menu-category-root]')){for(const panel of category.querySelectorAll(':scope > [data-menu-category-panel], :scope > [data-menu-category-empty-popup]'))if(panel.matches(':popover-open'))panel.hidePopover();delete category.dataset.categoryNative;delete category.dataset.categoryHoverNative;}}
+try{await dioxus.recv();}finally{hover.dispose();events.abort();observer.disconnect();directory.release(scopeLease);delete root.dataset.menuNative;for(const [category,binding]of categoryBindings){binding.listeners.abort();binding.changes.disconnect();for(const panel of category.querySelectorAll(':scope > [data-menu-category-panel], :scope > [data-menu-category-empty-popup]'))if(panel.matches(':popover-open'))panel.hidePopover();delete category.dataset.categoryNative;delete category.dataset.categoryHoverNative;}categoryBindings.clear();}
 "#.replace("__MENU_ROOT__",&id))
 }
 
@@ -3400,7 +3445,7 @@ pub fn MenuItem(
     } else {
         style.clone()
     };
-    let control_hidden = !generic && hidden;
+    let control_hidden = !generic && source_hidden;
     let element = rsx! {
         if let Some(href) = href {
             a { id:control_id, class, hidden:control_hidden,style:control_style,role:menu_role,href: if disabled { None } else { Some(href) }, target: target.clone(),"disabled":!generic&&disabled,
@@ -4457,6 +4502,10 @@ mod document_tests;
 
 #[cfg(test)]
 mod tests {
+    mod menu_scope_tests {
+        include!("application/menu_scope_tests.rs");
+    }
+
     use super::*;
     struct MenuTestMouse;
     impl dioxus::html::InteractionLocation for MenuTestMouse {

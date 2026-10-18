@@ -58,6 +58,7 @@ pub mod icons;
 mod item_visual;
 pub mod layout;
 mod menu_hover_dom;
+mod menu_scope_dom;
 pub mod notifications;
 mod overlay_completion;
 mod overlay_descendant_focus;

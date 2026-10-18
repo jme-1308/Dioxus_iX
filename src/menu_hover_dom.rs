@@ -27,7 +27,7 @@ function menuCategoryActiveFacts() {
 pub(crate) const MENU_HOVER_NATIVE_FACTS: &str = concat!(
     category_active_facts!(),
     r#"
-function installMenuCategoryHover(root, sendHover) {
+function installMenuCategoryHover(root, sendHover, directory) {
   const owner = root.id;
   const entries = new Map();
   let alive = true;
@@ -35,7 +35,7 @@ function installMenuCategoryHover(root, sendHover) {
 
   function currentRoot() {
     return alive && root.isConnected && root.id === owner &&
-      root.matches('[data-menu-root]') && document.getElementById(owner) === root;
+      root.matches('[data-menu-root]') && directory.sameNodeById(root, owner);
   }
 
   function currentPanel(category) {
@@ -44,7 +44,7 @@ function installMenuCategoryHover(root, sendHover) {
 
   function currentEntry(entry) {
     return currentRoot() && entries.get(entry.category) === entry &&
-      entry.category.isConnected && entry.category.closest('[data-menu-root]') === root &&
+      entry.category.isConnected && entry.category.dataset.menuOwner === owner &&
       entry.category.getAttribute('data-menu-category-root') === entry.identity &&
       currentPanel(entry.category) === entry.panel;
   }
@@ -87,8 +87,7 @@ function installMenuCategoryHover(root, sendHover) {
       return;
     }
     const current = new Set();
-    for (const category of root.querySelectorAll('[data-menu-category-root]')) {
-      if (!category.isConnected || category.closest('[data-menu-root]') !== root) continue;
+    for (const category of directory.categories(owner)) {
       current.add(category);
       const identity = category.getAttribute('data-menu-category-root');
       const panel = currentPanel(category);
@@ -121,7 +120,9 @@ function installMenuCategoryHover(root, sendHover) {
 /// Root-lifetime raw document input journal. Rust owns key membership and mode;
 /// the synchronous native input flush precedes each Menu's readiness marker.
 #[cfg(any(feature = "web", feature = "desktop", test))]
-pub(crate) const MENU_DOCUMENT_INPUT: &str = r#"
+pub(crate) const MENU_DOCUMENT_INPUT: &str = concat!(
+    crate::menu_scope_dom::menu_scope_directory!(),
+    r#"
 const owner = __DOCUMENT_OWNER__;
 const registryKey = Symbol.for('dioxus-ix-document-input');
 const registry = document[registryKey] ?? (document[registryKey] = new Map());
@@ -133,6 +134,8 @@ let sequence = 0;
 let pending = [];
 let syncing = false;
 let resync = false;
+const directory = menuScopeDirectory();
+const directoryLease = directory.acquire(sync);
 
 function batch() {
   return { owner, entries: pending.map(entry => ({ ...entry })) };
@@ -151,7 +154,7 @@ function sync() {
       // One immutable snapshot per flush keeps all connected input recipients
       // coherent if an input handler synchronously dispatches another fact.
       const value = JSON.stringify(batch());
-      for (const input of document.querySelectorAll('input[data-menu-document-owner]')) {
+      for (const input of directory.transports('data-menu-document-owner', owner)) {
         if (!input.isConnected || input.dataset.menuDocumentOwner !== owner) continue;
         input.value = value;
         input.dispatchEvent(new Event('input', { bubbles: true, cancelable: false }));
@@ -167,10 +170,10 @@ function sync() {
 
 const entry = { sync };
 registry.set(owner, entry);
-const observer = new MutationObserver(sync);
 try {
   for (const kind of ['keydown', 'mousedown', 'touchstart']) {
     document.addEventListener(kind, event => {
+      directory.discoverFromEvent(event);
       pending.push({ kind, key: event.key ?? '', sequence: ++sequence });
       sync();
       // Keep all unacknowledged facts in both delivery paths. A new Menu can
@@ -178,7 +181,6 @@ try {
       dioxus.send(batch());
     }, { passive: true, signal: listeners.signal });
   }
-  observer.observe(document.documentElement, { childList: true, subtree: true });
   sync();
   for (;;) {
     const message = await dioxus.recv();
@@ -190,23 +192,28 @@ try {
 } finally {
   alive = false;
   listeners.abort();
-  observer.disconnect();
+  directory.release(directoryLease);
   if (registry.get(owner) === entry) registry.delete(owner);
 }
-"#;
+"#
+);
 
 /// Fresh native focus capture before Rust mutates controller-dismissal state.
 #[cfg(any(feature = "web", feature = "desktop"))]
 pub(crate) const CATEGORY_CLOSE_CAPTURE: &str = concat!(
+    crate::menu_scope_dom::menu_scope_directory!(),
     category_active_facts!(),
     r#"
 const [owner, id] = await dioxus.recv();
+const directory = menuScopeDirectory(), lease = directory.acquire();
+try {
 const active_categories = menuCategoryActiveFacts();
-const root = document.getElementById(owner);
-const category = root?.querySelector('[data-menu-category-root="' + id + '"]');
+const root = directory.elementById(owner);
+const category = directory.categories(owner, id)[0];
 const connected = !!root?.isConnected && root.matches('[data-menu-root]') &&
-  !!category?.isConnected && category.closest('[data-menu-root]') === root;
+  !!category?.isConnected && category.dataset.menuOwner === owner;
 return { connected, active_categories };
+} finally { directory.release(lease); }
 "#
 );
 
@@ -214,24 +221,29 @@ return { connected, active_categories };
 /// Rust's job authorization and connected-node checks are lifetime adapters,
 /// not guards claimed to exist in the source's queued focus callback.
 #[cfg(any(feature = "web", feature = "desktop"))]
-pub(crate) const CATEGORY_DISMISS_RETURN: &str = r#"
+pub(crate) const CATEGORY_DISMISS_RETURN: &str = concat!(
+    crate::menu_scope_dom::menu_scope_directory!(),
+    r#"
 const [owner, id, job] = await dioxus.recv();
-const root = document.getElementById(owner);
-const selector = '[data-menu-category-root="' + id + '"]';
-const category = root?.querySelector(selector);
+const directory = menuScopeDirectory(), lease = directory.acquire();
+try {
+const root = directory.elementById(owner);
+const category = directory.categories(owner, id)[0];
 const targetId = 'ix-menu-category-parent-' + id;
-const target = document.getElementById(targetId);
+const target = category?.querySelector(':scope > [data-ix-item-part="category-parent"]');
 await new Promise(requestAnimationFrame);
 await new Promise(requestAnimationFrame);
-if (!root?.isConnected || document.getElementById(owner) !== root ||
+if (!directory.sameNodeById(root, owner) ||
     !root.matches('[data-menu-root]') || !category?.isConnected ||
-    root.querySelector(selector) !== category || category.closest('[data-menu-root]') !== root ||
-    !(target instanceof HTMLElement) || !target.isConnected || document.getElementById(targetId) !== target ||
-    target.closest('[data-menu-category-root]') !== category || target.closest('[data-menu-root]') !== root) return false;
+    directory.categories(owner, id)[0] !== category || category.dataset.menuOwner !== owner ||
+    !(target instanceof HTMLElement) || !target.isConnected || target.id !== targetId || category.querySelector(':scope > [data-ix-item-part="category-parent"]') !== target ||
+    target.closest('[data-menu-category-root]') !== category) return false;
 let jobs;
 try { jobs = JSON.parse(category.getAttribute('data-menu-category-return-jobs') ?? '[]'); }
 catch { return false; }
 if (typeof job !== 'string' || !Array.isArray(jobs) || !jobs.includes(job)) return false;
 target.focus();
 return document.activeElement === target;
-"#;
+} finally { directory.release(lease); }
+"#
+);
