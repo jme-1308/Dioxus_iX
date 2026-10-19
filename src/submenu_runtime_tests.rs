@@ -90,7 +90,7 @@ fn fixture() -> (VirtualDom, Fixture, RuntimeHandle, NodeHandle) {
 
 fn native_node() -> serde_json::Value {
     serde_json::json!({"id":"configured","generation":1,"connected":true,
-        "discovery_ready":true,"root_capture":"actual-root"})
+        "discovery_ready":true})
 }
 fn send(runtime: &RuntimeHandle, value: serde_json::Value) -> FormEvent {
     let event = form(value);
@@ -111,10 +111,10 @@ fn submenu_routing_marker_tracks_current_inventory_and_registered_owner() {
     let (_dom, _state, runtime, node) = fixture();
     bind(&runtime);
     let host = HostFacts {
-        item: ItemRef("actual-member".into()),
+        item: ItemRef("source-select".into()),
         kind: ItemKind::Select,
         target: "consumer-public-id".into(),
-        capture: "actual-member".into(),
+        capture: "source-select".into(),
         root_path: Vec::new(),
         registration_key: "source-select".into(),
         source_focusable: true,
@@ -127,20 +127,17 @@ fn submenu_routing_marker_tracks_current_inventory_and_registered_owner() {
         linked_trigger: None,
         parts: Vec::new(),
     };
-    let mut observed = native_node();
-    observed["inventory"] = serde_json::json!({"items_host":"actual-items",
-        "hosts":[host.clone()],"navigation_order":[host.item.clone()],"query_order":[host.item.clone()]});
-    send(
-        &runtime,
-        serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
-        "kind":"observe","nodes":[observed]}),
+    runtime.register_owned_item_description(
+        &host.registration_key,
+        Some(("configured".into(), 1)),
+        host.clone(),
     );
     assert_eq!(runtime.first_submenu_marker("configured", 1), None);
     node.mark_submenu_trigger(&host);
     for _ in 0..2 {
         assert_eq!(
             runtime.first_submenu_marker("configured", 1).as_deref(),
-            Some("actual-member")
+            Some("source-select")
         );
     }
     assert_eq!(runtime.first_submenu_marker("configured", 2), None);
@@ -222,20 +219,18 @@ fn return_fixture_kind(disabled: bool, registered: bool, kind: ItemKind) -> Retu
         )
     });
     let mut host: HostFacts = serde_json::from_value(serde_json::json!({
-        "item":"return-trigger-object", "kind":"dropdown", "target":"return-trigger",
-        "capture":"return-trigger-object", "registration_key":"return-trigger-key",
+        "item":"return-trigger-key", "kind":"dropdown", "target":"return-trigger",
+        "capture":"return-trigger-key", "registration_key":"return-trigger-key",
         "disabled_attribute":disabled,
     }))
     .unwrap();
     host.kind = kind;
     host.source_focusable = kind != ItemKind::Category;
-    let facts = InventoryFacts {
-        items_host: ItemRef("configured-host".into()),
-        hosts: vec![host.clone()],
-        navigation_order: vec![host.item.clone()],
-        query_order: vec![host.item.clone()],
-        slots: None,
-    };
+    runtime.register_owned_item_description(
+        &host.registration_key,
+        Some(("configured".into(), 1)),
+        host.clone(),
+    );
     let mount = ReturnMount::default();
     if registered {
         runtime.register_item_cue(host.registration_key.clone(), host.kind);
@@ -248,7 +243,7 @@ fn return_fixture_kind(disabled: bool, registered: bool, kind: ItemKind) -> Retu
     send(
         &runtime,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
-            {"id":"configured","generation":1,"connected":true,"discovery_ready":true,"root_capture":"actual-root","inventory":facts},
+            {"id":"configured","generation":1,"connected":true,"discovery_ready":true},
             {"id":"nested-return","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":["configured"]}
         ]}),
     );

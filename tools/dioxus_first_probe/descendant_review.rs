@@ -14,11 +14,11 @@ fn RegisteredEditor(
         label { r#for:"r028-name", "Equipment name" }
         input { id:"r028-name", class:"review-field", value, "data-ix-roving-item":"",
             onmounted:field.onmounted, tabindex:field.tabindex,
-            oninput:move |event|onvalue.call(event.value())
+            oninput:move |event|onvalue.call(event.value()), ..field.attributes(),
         }
         button { id:"r028-apply", class:"ix-button ix-button-primary", r#type:"button", "data-ix-roving-item":"",
             onmounted:apply.onmounted, tabindex:apply.tabindex,
-            onclick:move |event:MouseEvent|{event.prevent_default();onapply.call(());}, "Apply name"
+            onclick:move |event:MouseEvent|{event.prevent_default();onapply.call(());}, ..apply.attributes(), "Apply name"
         }
     }
 }
@@ -28,6 +28,13 @@ pub fn DescendantPreview() -> Element {
     let child = use_dropdown();
     let mut name = use_signal(String::new);
     let mut applied = use_signal(|| 0_usize);
+    let mut reverse = use_signal(|| false);
+    let mut hide_middle = use_signal(|| false);
+    let ordered = if reverse() {
+        ["third", "middle", "first"]
+    } else {
+        ["first", "middle", "third"]
+    };
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     rsx! {
@@ -71,6 +78,16 @@ pub fn DescendantPreview() -> Element {
                     DropdownItem { id:"r029-middle", label:"Schedule equipment action", tabindex:0 }
                     MenuCategory { id:"r029-category", label:"More equipment actions",
                         MenuItem { label:"Hidden category action" }
+                    }
+                }
+            }
+            section {
+                h2 { "Current item order and props" }
+                button { id:"r0225-reverse", r#type:"button", class:"ix-button ix-button-secondary", onclick:move |_|reverse.set(!reverse()), "Reverse action order" }
+                button { id:"r0225-hide", r#type:"button", class:"ix-button ix-button-secondary", onclick:move |_|hide_middle.set(!hide_middle()), "Toggle middle action" }
+                Dropdown { label:"Dynamic equipment actions", class:"r0225-dynamic",
+                    for name in ordered {
+                        DropdownItem { key:"{name}", id:format!("r0225-{name}"), label:format!("{name} action"), hidden:name=="middle"&&hide_middle(), tabindex:0 }
                     }
                 }
             }
@@ -124,5 +141,20 @@ await wait('mixed physical opening',()=>document.activeElement===first);
 key(first,'Tab',true);await wait('mixed physical reverse wrap',()=>document.activeElement===last);
 key(last,'Tab');await wait('mixed physical forward wrap',()=>document.activeElement===first);
 key(first,'Escape');await wait('mixed Escape',()=>mixed.getAttribute('aria-expanded')==='false'&&document.activeElement===mixed);
-return {ok:true,registeredTabWrap:true,mixedPhysicalWrap:true,interiorTabDefault:true,checked:true,firstLast:true,disabledHiddenSkipped:true,registeredInput:true,editingKeys:true,nativeButton:true,mixedChildEntry:true,childNavigation:true,parentReturn:true,parentCue:true};
+const dynamic=document.querySelector('.r0225-dynamic');
+dynamic.focus();key(dynamic,'Home');await wait('initial current order',()=>document.activeElement===byId('r0225-first'));
+key(document.activeElement,'ArrowDown');await wait('initial middle action',()=>document.activeElement===byId('r0225-middle'));
+key(document.activeElement,'Escape');await wait('dynamic closed',()=>dynamic.getAttribute('aria-expanded')==='false');
+const keyBefore=byId('r0225-first').getAttribute('data-ix-item-key');
+byId('r0225-reverse').click();await wait('keyed native reorder',()=>dynamic.querySelector('[data-ix-item-key]')===byId('r0225-third'));
+if(byId('r0225-first').getAttribute('data-ix-item-key')!==keyBefore)throw new Error('keyed reorder replaced registration');
+dynamic.focus();key(dynamic,'Home');await wait('reordered opening',()=>document.activeElement===byId('r0225-third'));
+key(document.activeElement,'ArrowDown');await wait('reordered middle',()=>document.activeElement===byId('r0225-middle'));
+key(document.activeElement,'ArrowDown');await wait('reordered last',()=>document.activeElement===byId('r0225-first'));
+key(document.activeElement,'Escape');await wait('reordered closed',()=>dynamic.getAttribute('aria-expanded')==='false');
+byId('r0225-hide').click();await wait('current hidden prop and layout',()=>byId('r0225-middle').hidden&&byId('r0225-middle').getClientRects().length===0);
+dynamic.focus();key(dynamic,'Home');await wait('hidden setup',()=>document.activeElement===byId('r0225-third'));
+key(document.activeElement,'ArrowDown');await wait('current hidden skipped',()=>document.activeElement===byId('r0225-first'));
+key(document.activeElement,'Escape');
+return {ok:true,ownedMetadata:true,keyedReorder:true,currentHiddenSkipped:true,registeredTabWrap:true,mixedPhysicalWrap:true,interiorTabDefault:true,checked:true,firstLast:true,disabledHiddenSkipped:true,registeredInput:true,editingKeys:true,nativeButton:true,mixedChildEntry:true,childNavigation:true,parentReturn:true,parentCue:true};
 "#;

@@ -6,7 +6,7 @@
 //! Ordinary observations retain the root partition; a shared listener hub sends
 //! document events independently, without rebuilding inventories or native policy.
 //! `__OWNER__` is replaced by a serialized runtime owner ID. Rust owns all
-//! hierarchy, discovery caches, menu/focus policy, and open/close decisions;
+//! hierarchy, item membership/metadata, menu/focus policy, and open/close decisions;
 //! Full Tab reports use `input`/`change` for saved prevent/stop ACKs; document
 //! events use noncancelable `input` only. Dropdown keyboard handling and
 //! activation run through typed Dioxus controls.
@@ -15,26 +15,8 @@ pub(super) const BRIDGE: &str = r#"
 const owner=__OWNER__,listeners=new AbortController(),signal=listeners.signal;
 const documentSlot=Symbol.for('dioxus-ix.document-native-domain.v1');
 const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:owner,eventSequence:0});
-nativeDocument.inventoryReaders||=new Map();
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='',documentEvents=null;
-const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map();let itemObjectSequence=0;
-const itemInventoryLeases=new Map();
-function captureItem(element){
-  if(!(element instanceof HTMLElement))return null;
-  const target=nativeId(element);if(!target)return null;
-  let capture=itemObjectTokens.get(element);
-  if(!capture){capture=owner+'-item-object-'+(++itemObjectSequence);itemObjectTokens.set(element,capture);}
-  itemCaptureNodes.set(capture,{element,current:true});return {target,capture};
-}
-function pruneItemCaptures(){
-  for(const [capture,binding]of itemCaptureNodes){
-    if(binding.current||Array.from(itemInventoryLeases.values()).some(lease=>lease.tokens.has(capture)))continue;
-    const input=transport();if(!input)continue;
-    input.value=JSON.stringify({owner,sequence:0,capture_retained:capture});
-    if(input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))itemCaptureNodes.delete(capture);
-  }
-}
 // Mounted focus registration uses Rust-authored IDs; unidentified DOM controls
 // have no programmatic focus fallback and need no native identity registry.
 function nativeId(el){return el instanceof HTMLElement?el.id:'';}
@@ -181,77 +163,12 @@ function popoverTabFacts(panel,active){
   if(activeIndex===-1)activeIndex=raw.findIndex(element=>active&&composedContains(element,active));
   return raw.map((element,index)=>({target:nativeId(element),tab_index:element.tabIndex,hosts:hostAncestors(element),active:index===activeIndex}));
 }
-function hostItems(host){
-  const out=[];if(!host)return out;
-  for(const el of host.querySelectorAll('[data-ix-dropdown-item]')){
-    if(!(el instanceof HTMLElement)||nearestHost(el)!==host||el.getAttribute('data-ix-dropdown-owner')!==host.getAttribute('data-ix-overlay-host')||el.matches('[hidden],[disabled],[aria-disabled="true"]'))continue;
-    const num=Number(el.getAttribute('data-ix-dropdown-item'));
-    if(Number.isInteger(num)&&num>=0)out.push({num,el});
-  }
-  return out;
-}
-const itemSelector='[data-ix-item-kind],[data-ix-roving-item]';
-function itemParts(element){
-  return Array.from(element.querySelectorAll('[data-ix-item-part]')).filter(part=>part instanceof HTMLElement&&part.closest('[data-ix-item-kind]')===element&&['select-option','category-parent'].includes(part.getAttribute('data-ix-item-part')));
-}
-// The alpha interpreter writes checked as a property even on component DIV
-// hosts. Copy the literal Rust declaration once per changed marker. Remembering
-// copied bytes avoids overwriting independent consumer DOM edits on every
-// observation; eligibility remains the resulting actual own attribute in Rust.
-const reflectedCheckedAttributes=new WeakMap();
-function syncReflectedCheckedAttributes(){
-  for(const element of registryElements('[data-ix-reflect-checked]')){
-    if(!(element instanceof HTMLElement)||element.closest('[data-ix-item-kind][data-ix-item-runtime]')?.getAttribute('data-ix-item-runtime')!==owner)continue;
-    const marker=element.getAttribute('data-ix-reflect-checked');
-    if(reflectedCheckedAttributes.get(element)===marker)continue;
-    let value;try{value=JSON.parse(marker);}catch{continue;}
-    if(value!==null&&typeof value!=='string')continue;
-    reflectedCheckedAttributes.set(element,marker);
-    if(value===null){if(element.hasAttribute('checked'))element.removeAttribute('checked');}
-    else if(element.getAttribute('checked')!==value)element.setAttribute('checked',value);
-  }
-}
-function itemRootPath(element){
-  const roots=[];
-  for(let current=element;current;current=stepParent(current))if(current instanceof HTMLElement&&current.hasAttribute('data-ix-overlay-root')&&current.getAttribute('data-ix-overlay-owner')===owner){
-    roots.push({id:current.getAttribute('data-ix-overlay-root'),generation:Number(current.getAttribute('data-ix-overlay-generation')),is_host:current===element});
-  }
-  return roots;
-}
-function itemHostFacts(element){
-  const binding=captureItem(element);if(!binding)return null;
-  const rawKind=element.getAttribute('data-ix-item-kind');
-  const kind=['dropdown','select','menu','category'].includes(rawKind)?rawKind:'native-opt-in';
-  return {item:binding.capture,kind,target:binding.target,capture:binding.capture,root_path:itemRootPath(element),
-    registration_key:element.getAttribute('data-ix-item-key')||'',
-    source_focusable:element.hasAttribute('data-ix-item-focusable')?element.getAttribute('data-ix-item-focusable')==='true':element.classList.contains('ix-focusable'),
-    disabled_attribute:element.hasAttribute('disabled'),hidden_attribute:element.hasAttribute('hidden'),
-    tabindex_attribute:element.getAttribute('tabindex'),checked_attribute:element.hasAttribute('checked'),
-    visible_focus:element.getAttribute('data-active')==='true'||element.classList.contains('ix-focused'),
-    parts:itemParts(element).flatMap(part=>{const binding=captureItem(part);return binding?[{kind:part.getAttribute('data-ix-item-part'),capture:binding.capture,source_focusable:part.hasAttribute('data-ix-item-focusable')?part.getAttribute('data-ix-item-focusable')==='true':part.classList.contains('ix-focusable')}]:[];}),
-    roving_opt_in:element.hasAttribute('data-ix-roving-item'),linked_trigger:element.hasAttribute('data-ix-overlay-trigger')?element.getAttribute('data-ix-overlay-trigger'):null};
-}
-function inventoryFacts(host){
-  if(!(host instanceof HTMLElement))return null;
-  const identity=captureItem(host),direct=Array.from(host.querySelectorAll(itemSelector)).filter(element=>element instanceof HTMLElement);
-  const elements=new Set(direct),rawSlots=[];
-  for(const slot of host.querySelectorAll('slot')){
-    const assignments=[];
-    for(const assigned of slot.assignedElements({flatten:true})){
-      const root=assigned.matches(itemSelector)?assigned:null;
-      const descendants=Array.from(assigned.querySelectorAll(itemSelector)).filter(element=>element instanceof HTMLElement);
-      if(root)elements.add(root);for(const element of descendants)elements.add(element);
-      assignments.push({root,descendants});
-    }
-    rawSlots.push({slot,assignments});
-  }
-  const facts=new Map(Array.from(elements).map(element=>[element,itemHostFacts(element)]));
-  const token=element=>facts.get(element)?.item||null,order=direct.map(token).filter(Boolean);
-  return {items_host:identity.capture,hosts:Array.from(facts.values()).filter(Boolean),navigation_order:order,query_order:order,
-    slots:rawSlots.map(({slot,assignments})=>({
-      assignments:assignments.map(assignment=>({root:token(assignment.root),descendants:assignment.descendants.map(token).filter(Boolean)})),
-      following:Array.from(elements).filter(element=>slot.compareDocumentPosition(element)&Node.DOCUMENT_POSITION_FOLLOWING).map(token).filter(Boolean)
-    }))};
+// Pinned MountedData exposes mounted focus/measurement, but no child or
+// document-position enumeration. This primary adapter reports only Rust-rendered
+// registration keys in current DOM order. Rust owns membership, current owner
+// generation and eligibility; an arbitrary DOM element cannot join an inventory.
+function registeredItemOrder(host){
+  return host instanceof HTMLElement?Array.from(host.querySelectorAll('[data-ix-item-key]')).map(element=>element.getAttribute('data-ix-item-key')).filter(Boolean):[];
 }
 function findFocusedIndex(active,list){
   if(!active)return null;
@@ -280,7 +197,6 @@ function headerControls(root){
 }
 function collectFacts(kind,event,phase=''){
   for(const site of event?.composedPath?.()||[])if(site instanceof ShadowRoot&&!registryScopes.has(site))discoverRegistryScopes(site);
-  for(const binding of itemCaptureNodes.values())binding.current=false;
   const active=deepActive(),path=event?.composedPath?.()||[];
   const target=path[0] instanceof HTMLElement?path[0]:(event?.target instanceof HTMLElement?event.target:null);
   const hosts=pathIds(path,'data-ix-overlay-host',isActiveHost),triggers=pathIds(path,'data-ix-overlay-trigger');
@@ -292,30 +208,25 @@ function collectFacts(kind,event,phase=''){
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
     const declared_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
     const open=root.hasAttribute('data-ix-overlay-open')?root.getAttribute('data-ix-overlay-open')==='true':root.getAttribute('data-open')==='true';
-    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id),anchor=findAnchor(root),itemsWithEl=hostItems(itemsHost),focusables=hostFocusables(itemsHost);
+    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id),anchor=findAnchor(root),focusables=hostFocusables(itemsHost);
     // Dioxus renders trigger metadata before MountedEvent notifications.
     // Current marked-control presence, not a later mounted-handle render,
     // admits Dropdown ancestry. An ID-only control never supplies this marker.
     const discovery_ready=declared_ready&&(!root.hasAttribute('data-ix-dropdown-focus-owned')||!!trigger);
     if(anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node)))anchors.push(id);
-    let focused_item=null;
-    const probe=target&&itemsHost&&composedContains(itemsHost,target)?target:active;
-    if(probe)for(const e of itemsWithEl)if(composedContains(e.el,probe)){focused_item=e.num;break;}
     const focused_index=findFocusedIndex(active,focusables);
     const on_trigger=!!trigger&&(event?target===trigger:active===trigger);
     const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
     // Cache current candidates on ordinary observations as well: typed Dioxus
     // Tab handlers consume these facts without a native key transport.
     const tab_candidates=root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
-    const inventory=inventoryFacts(itemsHost),own_inventory=itemsHost===host?null:inventoryFacts(host);
     nodes.push({
-      id,owner:ro||'',generation,root_capture:captureItem(root)?.capture,trigger_capture:captureItem(trigger)?.capture,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),
+      id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
       assignment_ancestors:trigger?triggerAncestors(trigger,id):[],
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
-      items:itemsWithEl.map(e=>e.num),focused_item,
-      inventory,own_inventory,trigger_on_path:!!trigger&&path.includes(trigger),
+      item_order:registeredItemOrder(itemsHost),trigger_on_path:!!trigger&&path.includes(trigger),
       // Pinned MountedData can focus a registered handle, but cannot enumerate
       // current native Tab order. Report IDs only; Dropdown never executes focus here.
       focusable_ids:focusables.map(nativeId).filter(Boolean),
@@ -349,7 +260,6 @@ function send(report,event){
     immediate=!immediateInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
   }
   if(event){if(prevent&&event.cancelable)event.preventDefault();if(immediate)event.stopImmediatePropagation();else if(stop)event.stopPropagation();}
-  pruneItemCaptures();
 }
 
 function syncNativeSurfaces(){
@@ -374,23 +284,14 @@ function syncNativeSurfaces(){
     }
   }
 }
-function pruneInventoryLeases(){
-  for(const [id,lease]of itemInventoryLeases){
-    const current=Array.from(registryElements('[data-ix-overlay-root]')).find(root=>root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id);
-    if(!current||Number(current.getAttribute('data-ix-overlay-generation'))!==lease.generation)itemInventoryLeases.delete(id);
-  }
-}
 function reportObserve(){
   if(!alive)return;
-  syncReflectedCheckedAttributes();
-  pruneInventoryLeases();
   if(!transport())return;
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   syncNativeSurfaces();
   const report=collectFacts('observe',null);
   const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
   if(sig!==lastSignature){lastSignature=sig;send(report,null);}
-  pruneItemCaptures();
   if(!documentEvents)documentEvents=subscribeDocumentEvents();
 }
 // Pinned Document has no typed document/window input listener API. This sole
@@ -472,19 +373,10 @@ const observer=new MutationObserver(changes=>{
 function observeRegistryScope(scope){observer.observe(scope===document?document.documentElement:scope,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
   'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','hidden','disabled','tabindex','inert','class'
-  ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
-  ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked','slot','name'
+  ,'data-ix-item-key','data-ix-overlay-items-host-id','aria-activedescendant','data-ix-overlay-active-item','slot','name'
 ]});}
 observeRegistryScope(document);discoverRegistryScopes(document);
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
-const inventoryReader=(id,generation)=>{
-  const root=Array.from(registryElements('[data-ix-overlay-root]')).find(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id&&Number(root.getAttribute('data-ix-overlay-generation'))===generation);
-  if(!alive||!root)return null;
-  const facts=inventoryFacts(findItemsHost(root,id));
-  if(facts)itemInventoryLeases.set(id,{generation,tokens:new Set([facts.items_host,...facts.hosts.flatMap(host=>[host.capture,...host.parts.map(part=>part.capture)])])});
-  return facts;
-};
-nativeDocument.inventoryReaders.set(owner,inventoryReader);
 try{
   reportObserve();
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
@@ -492,8 +384,6 @@ try{
 }finally{
   alive=false;listeners.abort();observer.disconnect();
   unsubscribeDocumentEvents();
-  itemCaptureNodes.clear();
-  itemInventoryLeases.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   registryScopes.clear();
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');

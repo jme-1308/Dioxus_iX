@@ -1,9 +1,9 @@
 //! Source-host inventory, navigation and activation.
 //!
-//! DOM plumbing supplies the two source query orders and actual-object tokens.
-//! Rust owns selector eligibility, navigation and activation.
-//! Descriptive registration and current inventory membership are independent:
-//! no nearest-overlay or provider-ownership filter belongs in this module.
+//! Dioxus registers current metadata and overlay ownership. A minimal native
+//! adapter reports ordered registered keys because MountedData has no child
+//! order API; it cannot discover or add item membership. Rust owns eligibility,
+//! navigation and activation. Historical slot algorithms remain pure helpers.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

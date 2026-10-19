@@ -75,13 +75,13 @@ fn owner(runtime: &RuntimeHandle, generation: u64) -> Owner {
         callbacks,
     }
 }
-fn host(key: &str, capture: &str, kind: ItemKind) -> HostFacts {
+fn host(key: &str, _legacy_capture: &str, kind: ItemKind) -> HostFacts {
     HostFacts {
         root_path: Vec::new(),
-        item: ItemRef(capture.into()),
+        item: ItemRef(key.into()),
         kind,
         target: format!("consumer-{key}"),
-        capture: capture.into(),
+        capture: key.into(),
         registration_key: key.into(),
         source_focusable: true,
         disabled_attribute: false,
@@ -103,16 +103,22 @@ fn report(
 ) -> serde_json::Value {
     let order = hosts
         .iter()
-        .map(|host| host.item.clone())
+        .map(|host| host.registration_key.clone())
         .collect::<Vec<_>>();
     serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":kind,
         "phase":"bubble","key":"ArrowDown","hosts":["cue-root"],"triggers":["cue-root"],
         "nodes":[{"id":"cue-root","generation":generation,"connected":true,"discovery_ready":true,
-            "root_capture":format!("root-object-{generation}"),"trigger_capture":format!("trigger-object-{generation}"),
             "mode":"active-descendant","inside":true,"on_trigger":true,
-            "inventory":{"items_host":"actual-items","hosts":hosts,"navigation_order":order,"query_order":order}}]})
+            "item_order":order}]})
 }
 fn observe(runtime: &RuntimeHandle, sequence: u64, generation: u64, hosts: &[HostFacts]) {
+    for host in hosts {
+        runtime.register_owned_item_description(
+            &host.registration_key,
+            Some(("cue-root".into(), generation)),
+            host.clone(),
+        );
+    }
     let mut observation = report(runtime, sequence, generation, "observe", hosts);
     observation["document"] = format!("{}-focus-test", runtime.owner_id()).into();
     runtime.input(event(observation));
@@ -173,12 +179,15 @@ fn registered_focus_before_inventory_sets_parts_and_late_blur_preserves_newer_cu
             Some((owner.node.id.clone(), owner.node.generation)),
         );
     }
-    assert!(runtime.0.borrow().inventories.is_empty());
+    assert!(
+        owner.node.inventory().unwrap().hosts.is_empty(),
+        "mounts alone do not add inventory membership"
+    );
     runtime.focus_registered_item("a", true, Some(HostPartKind::SelectOption));
     assert_eq!(runtime.item_visual_key().as_deref(), Some("a"));
     assert!(
         runtime.item_visual_matches(&a),
-        "native capture equality is not cue authority"
+        "the explicit mounted binding is cue authority"
     );
     assert!(runtime.item_visual_owned_by(owner.node.id(), owner.node.generation()));
     assert!(!runtime.item_visual_owned_by(sibling.id(), sibling.generation()));

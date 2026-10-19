@@ -4,44 +4,17 @@ use super::*;
 impl RuntimeHandle {
     pub(super) fn first_submenu_marker(&self, root: &str, generation: u64) -> Option<String> {
         let state = self.0.borrow();
-        let (_, facts) = state
-            .submenu_own
-            .get(root)
-            .filter(|(version, _)| *version == generation)?;
-        let matching = |order: &[ItemRef]| -> Vec<ItemRef> {
-            order
-                .iter()
-                .filter(|item| {
-                    facts.hosts.iter().any(|host| {
-                        host.item == **item && state.submenu_marks.contains_key(&host.capture)
-                    })
-                })
-                .cloned()
-                .collect()
-        };
-        let mut order = matching(&facts.query_order);
-        if let Some(slots) = &facts.slots {
-            for slot in slots.iter().rev() {
-                let mut assigned = Vec::new();
-                for assignment in &slot.assignments {
-                    if let Some(root) = &assignment.root
-                        && !matching(std::slice::from_ref(root)).is_empty()
-                    {
-                        assigned.push(root.clone());
-                    } else {
-                        assigned.extend(matching(&assignment.descendants));
-                    }
-                }
-                let at = order
-                    .iter()
-                    .position(|item| slot.following.contains(item))
-                    .unwrap_or(order.len());
-                order.splice(at..at, assigned);
-            }
-        }
-        order
-            .first()
-            .and_then(|item| facts.hosts.iter().find(|host| host.item == *item))
+        let facts = state.owned_inventory(root, generation)?;
+        facts
+            .query_order
+            .iter()
+            .filter_map(|item| facts.hosts.iter().find(|host| host.item == *item))
+            .find(|host| {
+                state
+                    .submenu_marks
+                    .get(&host.capture)
+                    .is_some_and(|(owner, version)| owner == root && *version == generation)
+            })
             .map(|host| host.capture.clone())
     }
 }
@@ -132,10 +105,8 @@ impl NodeHandle {
         let current = runtime
             .0
             .borrow()
-            .submenu_own
-            .get(&self.id)
-            .filter(|(generation, _)| *generation == self.generation)
-            .is_some_and(|(_, facts)| {
+            .owned_inventory(&self.id, self.generation)
+            .is_some_and(|facts| {
                 facts.hosts.iter().any(|current| {
                     current.item == host.item
                         && current.target == host.target

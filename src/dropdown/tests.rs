@@ -168,6 +168,7 @@ struct Fixture {
     linked: Rc<Cell<Option<DropdownHandle>>>,
     update: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     visible: bool,
+    empty_items: bool,
     mode: DropdownNavigationMode,
     layer: bool,
     blocked: bool,
@@ -211,6 +212,7 @@ impl Default for Fixture {
             linked: Rc::new(Cell::new(None)),
             update: None,
             visible: true,
+            empty_items: false,
             mode: DropdownNavigationMode::default(),
             layer: false,
             blocked: false,
@@ -305,10 +307,12 @@ fn fixture(config: Rc<RefCell<Fixture>>) -> Element {
             onbeforechange:move |event:DropdownChangeEvent|{let veto={let mut state=before.borrow_mut();state.requests.push((event.open,event.previous));if event.open{state.veto_open}else{state.veto_close}};if veto{event.prevent_default();}},
             onchange:move |open:bool|{let (close,capture)={let mut state=changed.borrow_mut();state.changed.push(open);(state.close_after_open&&open,state.context.clone())};let context=capture.borrow().clone();if let Some(context)=context{changed.borrow_mut().deliveries.push((settings.listener_revision,open,*context.open.peek()));if close{context.request(false,Reason::Trigger,false);}}},
             Stateful {config:config.clone()}
+            if !settings.empty_items {
             DropdownItem {label:"Alpha",id:settings.alpha_id.clone(),keep_open:settings.item_keep_open,onfocus:move |_|focused.borrow_mut().item_focus_events+=1,onblur:move |_|blurred.borrow_mut().item_blur_events+=1,onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |event:MouseEvent|{let mut state=click.borrow_mut();state.native_clicks+=1;if state.item_prevent_click{event.prevent_default();}}}
             DropdownItem {label:"Disabled",disabled:true}
             DropdownItem {label:"Linked",dropdown:linked,checked:true}
             DropdownSubmenu {label:"Explicit",DropdownItem {label:"Persistent nested"}}
+            }
         }
         DropdownTrigger {dropdown:linked,aria_label:"External trigger","External trigger"}
         Dropdown {label:"Detached",controller:linked,disabled:settings.linked_blocked,focus_checked_item:true,onbeforechange:move |event:DropdownChangeEvent|{if event.open&&linked_before.borrow().linked_veto{event.prevent_default();}},DropdownItem {label:"Detached leaf"} DropdownItem {label:"Checked detached",checked:true} DropdownSubmenu {label:"Deep",onbeforechange:move |event:DropdownChangeEvent|{if event.open&&deep_before.borrow().deep_veto{event.prevent_default();}},DropdownItem {label:"Deep first"} DropdownItem {label:"Deep last"}}}
@@ -495,6 +499,51 @@ fn unrelated_trigger_target(h: &Harness) -> (Rc<Cell<bool>>, Rc<RefCell<Vec<Chan
     (open, seen)
 }
 
+fn observe_rendered_hierarchy(h: &Harness) {
+    fn collect(
+        context: &DropdownContext,
+        ancestors: Vec<String>,
+        nodes: &mut Vec<serde_json::Value>,
+    ) {
+        let node = context.node.borrow().clone().unwrap();
+        if nodes
+            .iter()
+            .any(|existing| existing["id"].as_str() == Some(node.id()))
+        {
+            return;
+        }
+        nodes.push(serde_json::json!({"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,"trigger_ancestors":ancestors}));
+        let mut child_ancestors = vec![node.id().to_string()];
+        child_ancestors.extend(ancestors);
+        let children = context
+            .entries
+            .borrow()
+            .values()
+            .filter_map(|entry| entry.submenu)
+            .collect::<Vec<_>>();
+        for child in children {
+            collect(&child.context(), child_ancestors.clone(), nodes);
+        }
+    }
+    let context = h.context();
+    let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
+    let mut nodes = Vec::new();
+    collect(&context, Vec::new(), &mut nodes);
+    let transport = h
+        .attrs
+        .iter()
+        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+        .unwrap();
+    dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":nodes})
+            .to_string(),
+    );
+}
+
 #[test]
 fn dioxus_keys_keep_navigation_after_read_only_order_observation() {
     let _guard = crate::test_event_converter_guard();
@@ -516,19 +565,18 @@ fn dioxus_keys_keep_navigation_after_read_only_order_observation() {
             .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
             .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
             .unwrap();
-        let order = context.entries.borrow().keys().copied().collect::<Vec<_>>();
+        let order = context
+            .entries
+            .borrow()
+            .values()
+            .map(|entry| h.attrs[&h.target(&entry.label).raw()]["data-ix-item-key"].clone())
+            .collect::<Vec<_>>();
         dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,"root_capture":"typed-current-root","items":order}]}).to_string());
+            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,"item_order":order}]}).to_string());
         assert!(h.key("Menu", Key::End).0);
-        assert_eq!(
-            context.entries.borrow()[&context.state.borrow().active.unwrap()].label,
-            "Explicit"
-        );
+        assert_eq!(selected_label(&context).unwrap(), "Explicit");
         assert!(h.key("Alpha", Key::Home).0);
-        assert_eq!(
-            context.entries.borrow()[&context.state.borrow().active.unwrap()].label,
-            "Alpha"
-        );
+        assert_eq!(selected_label(&context).unwrap(), "Alpha");
     }
 }
 
@@ -540,6 +588,7 @@ fn dioxus_submenu_open_veto_keeps_navigation_with_the_visible_owner() {
         deep_veto: true,
         ..Fixture::default()
     });
+    observe_rendered_hierarchy(&h);
     h.key("Menu", Key::ArrowDown);
     h.key("Menu", Key::ArrowRight);
     let root = h.context();
@@ -558,10 +607,7 @@ fn dioxus_submenu_open_veto_keeps_navigation_with_the_visible_owner() {
         .context();
     assert!(!*grand.open.peek());
     h.key("Menu", Key::Home);
-    assert_eq!(
-        child.entries.borrow()[&child.state.borrow().active.unwrap()].label,
-        "Detached leaf"
-    );
+    assert_eq!(selected_label(&child).unwrap(), "Detached leaf");
     assert!(
         !*grand.open.peek(),
         "ordinary navigation never retries a vetoed submenu"
@@ -592,10 +638,7 @@ fn directly_focused_dialog_navigates_but_blurred_dialog_preserves_nested_field_k
         for (key, label) in [(Key::Home, "Alpha"), (Key::End, "Explicit")] {
             assert!(dispatch(&h.dom, "keydown", dialog, (key, Modifiers::empty())).0);
             h.settle();
-            assert_eq!(
-                context.entries.borrow()[&context.state.borrow().active.unwrap()].label,
-                label
-            );
+            assert_eq!(selected_label(&context).unwrap(), label);
         }
         let current_dialog = h
             .attrs
@@ -624,14 +667,14 @@ fn directly_focused_dialog_navigates_but_blurred_dialog_preserves_nested_field_k
             "{mode:?}: blur releases direct dialog keyboard ownership"
         );
         dispatch(&h.dom, "focus", field, ());
-        let selected = context.state.borrow().active;
+        let selected = selected_target(&context);
         for key in [Key::Home, Key::End, Key::ArrowDown, Key::ArrowUp] {
             assert!(
                 !h.key("Editing field", key).0,
                 "{mode:?}: a descendant field retains its native editing default"
             );
             assert_eq!(
-                context.state.borrow().active,
+                selected_target(&context),
                 selected,
                 "the dialog no longer owns field navigation"
             );
@@ -653,7 +696,7 @@ fn ordinary_content_fields_keep_editing_keys_and_escape_uses_dioxus_dismissal() 
         });
         h.click("Menu");
         let context = h.context();
-        let before = context.state.borrow().active;
+        let before = selected_target(&context);
         for key in [
             Key::Home,
             Key::End,
@@ -667,7 +710,7 @@ fn ordinary_content_fields_keep_editing_keys_and_escape_uses_dioxus_dismissal() 
                 !h.key("Editing field", key).0,
                 "ordinary fields keep native editing/activation"
             );
-            assert_eq!(context.state.borrow().active, before);
+            assert_eq!(selected_target(&context), before);
             assert!(*context.open.peek());
         }
         h.key("Editing field", Key::Escape);
@@ -681,7 +724,7 @@ fn disabled_focus_and_prevented_original_dioxus_keys_leave_navigation_unchanged(
     let mut h = Harness::new();
     h.click("Menu");
     let context = h.context();
-    let before = context.state.borrow().active;
+    let before = selected_target(&context);
     let data: Rc<dyn std::any::Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new((
         Key::End,
         Modifiers::empty(),
@@ -692,11 +735,11 @@ fn disabled_focus_and_prevented_original_dioxus_keys_leave_navigation_unchanged(
         .runtime()
         .handle_event("keydown", event, h.target("Menu"));
     h.settle();
-    assert_eq!(context.state.borrow().active, before);
+    assert_eq!(selected_target(&context), before);
     h.config.borrow_mut().no_focus = true;
     h.update();
     assert!(!h.key("Menu", Key::Home).0);
-    assert_eq!(context.state.borrow().active, before);
+    assert_eq!(selected_target(&context), before);
 }
 
 #[test]
@@ -1155,12 +1198,12 @@ fn mixed_inventory_facts() -> InventoryFacts {
     serde_json::from_value(serde_json::json!({
         "items_host":"mixed-items-host",
         "hosts":[
-            {"item":"actual-category","kind":"category","target":"mixed-category","capture":"actual-category","registration_key":"category-key","source_focusable":false},
-            {"item":"actual-menu","kind":"menu","target":"mixed-menu","capture":"actual-menu","registration_key":"menu-key"},
-            {"item":"actual-native","kind":"native-opt-in","target":"mixed-native","capture":"actual-native","source_focusable":false,"roving_opt_in":true}
+            {"item":"category-key","kind":"category","target":"mixed-category","capture":"category-key","registration_key":"category-key","source_focusable":false},
+            {"item":"menu-key","kind":"menu","target":"mixed-menu","capture":"menu-key","registration_key":"menu-key"},
+            {"item":"native-key","kind":"native-opt-in","target":"mixed-native","capture":"native-key","registration_key":"native-key","source_focusable":false,"roving_opt_in":true}
         ],
-        "navigation_order":["actual-category","actual-menu","actual-native"],
-        "query_order":["actual-category","actual-menu","actual-native"]
+        "navigation_order":["category-key","menu-key","native-key"],
+        "query_order":["category-key","menu-key","native-key"]
     })).unwrap()
 }
 struct InventoryMount {
@@ -1180,34 +1223,61 @@ impl dioxus::html::RenderedElementBacking for InventoryMount {
         Box::pin(async { Ok(()) })
     }
 }
-fn mount_inventory(h: &Harness, facts: &InventoryFacts) -> Rc<RefCell<Vec<String>>> {
-    let focuses = Rc::new(RefCell::new(Vec::new()));
-    let runtime = h
-        .context()
-        .node
-        .borrow()
-        .as_ref()
-        .unwrap()
-        .runtime()
-        .unwrap();
+fn register_inventory(context: &DropdownContext, facts: &InventoryFacts) {
+    let node = context.node.borrow().clone().unwrap();
+    let runtime = node.runtime().unwrap();
+    // Synthetic fixture members replace this owner's rendered set explicitly;
+    // the native observation supplies ordering only.
+    if let Some(current) = node.inventory() {
+        for host in current.hosts {
+            if !facts
+                .hosts
+                .iter()
+                .any(|candidate| candidate.registration_key == host.registration_key)
+            {
+                runtime.register_owned_item_description(&host.registration_key.clone(), None, host);
+            }
+        }
+    }
     for host in &facts.hosts {
-        let key = if host.registration_key.is_empty() {
-            &host.capture
-        } else {
-            &host.registration_key
-        };
-        runtime.register_item_cue(key.clone(), host.kind);
-        runtime.register_item_mount(
-            key,
-            &host.target,
-            Rc::new(MountedData::new(InventoryMount {
-                target: host.target.clone(),
-                focuses: focuses.clone(),
-            })),
+        runtime.register_owned_item_description(
+            &host.registration_key,
+            Some((node.id().to_string(), node.generation())),
+            host.clone(),
         );
     }
+}
+fn mount_inventory_for(
+    h: &Harness,
+    context: &DropdownContext,
+    facts: &InventoryFacts,
+) -> Rc<RefCell<Vec<String>>> {
+    let focuses = Rc::new(RefCell::new(Vec::new()));
+    let node = context.node.borrow().clone().unwrap();
+    let runtime = node.runtime().unwrap();
+    for host in &facts.hosts {
+        let key = &host.registration_key;
+        runtime.register_item_cue(key.clone(), host.kind);
+        h.dom.in_runtime(|| {
+            runtime.register_owned_item_control_mount(
+                key,
+                &host.target,
+                &host.target,
+                Rc::new(MountedData::new(InventoryMount {
+                    target: host.target.clone(),
+                    focuses: focuses.clone(),
+                })),
+                Some((node.id().to_string(), node.generation())),
+            )
+        });
+    }
+    register_inventory(context, facts);
     focuses
 }
+fn mount_inventory(h: &Harness, facts: &InventoryFacts) -> Rc<RefCell<Vec<String>>> {
+    mount_inventory_for(h, &h.context(), facts)
+}
+
 fn key_event(key: &str, modifiers: Modifiers) -> KeyboardEvent {
     let key = match key {
         "Home" => Key::Home,
@@ -1239,6 +1309,12 @@ fn registered_inventory_key_from(
     let node = context.node.borrow().clone().unwrap();
     let runtime = node.runtime().unwrap();
     let mode = context.state.borrow().settings.mode;
+    register_inventory(&context, facts);
+    let order = facts
+        .hosts
+        .iter()
+        .map(|host| host.registration_key.clone())
+        .collect::<Vec<_>>();
     let transport = h
         .attrs
         .iter()
@@ -1246,7 +1322,7 @@ fn registered_inventory_key_from(
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
     dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"open":true,"discovery_ready":true,"inventory":facts}]}).to_string());
+        "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"open":true,"discovery_ready":true,"item_order":order}]}).to_string());
     h.dom.in_runtime(|| {
         let event = key_event(key, Modifiers::empty());
         let on_trigger = mode == DropdownNavigationMode::ActiveDescendant && focused.is_none();
@@ -1261,10 +1337,13 @@ fn registered_inventory_key(h: &Harness, sequence: u64, key: &str, facts: &Inven
 #[test]
 fn registered_category_inventory_ignores_legacy_focus_and_retains_projection_seam() {
     let _guard = crate::test_event_converter_guard();
-    let mut h = Harness::new();
+    let mut h = Harness::with_settings(Fixture {
+        empty_items: true,
+        ..Default::default()
+    });
     h.click("Menu");
     let context = h.context();
-    let legacy = context.entries.borrow().keys().next().copied().unwrap();
+    let legacy = usize::MAX;
     context.state.borrow_mut().active = Some(legacy);
     let facts = mixed_inventory_facts();
     let focuses = mount_inventory(&h, &facts);
@@ -1294,14 +1373,60 @@ fn registered_category_inventory_ignores_legacy_focus_and_retains_projection_sea
 
 fn rendered_cue_host(h: &Harness, label: &str) -> crate::dropdown_inventory::HostFacts {
     let attributes = &h.attrs[&h.target(label).raw()];
-    let id = &attributes["id"];
-    serde_json::from_value(serde_json::json!({
-        "item":format!("rendered-{id}"),"capture":format!("rendered-{id}"),
-        "kind":"dropdown","target":id,"registration_key":attributes["data-ix-item-key"],
-        "source_focusable":true
-    }))
-    .unwrap()
+    let key = &attributes["data-ix-item-key"];
+    let contexts = [
+        Some(h.context()),
+        h.config.borrow().linked.get().map(DropdownHandle::context),
+    ];
+    contexts
+        .into_iter()
+        .flatten()
+        .find_map(|context| {
+            context
+                .node
+                .borrow()
+                .as_ref()?
+                .inventory()?
+                .hosts
+                .into_iter()
+                .find(|host| &host.registration_key == key)
+        })
+        .unwrap_or_else(|| panic!("missing Dioxus-owned item {label}"))
 }
+fn selected_target(context: &DropdownContext) -> Option<String> {
+    let node = context.node.borrow().clone()?;
+    let facts = node.inventory()?;
+    let runtime = node.runtime()?;
+    if context.state.borrow().settings.mode == DropdownNavigationMode::RovingTabindex {
+        if let Some(host) = facts
+            .hosts
+            .iter()
+            .find(|host| host.tabindex_attribute.as_deref() == Some("0"))
+        {
+            return Some(host.target.clone());
+        }
+    }
+    runtime
+        .item_visual_target()
+        .filter(|target| facts.hosts.iter().any(|host| &host.target == target))
+}
+fn selected_entry(context: &DropdownContext) -> Option<usize> {
+    let target = selected_target(context)?;
+    context
+        .entries
+        .borrow()
+        .iter()
+        .find_map(|(id, entry)| (entry.host_id == target).then_some(*id))
+}
+fn selected_label(context: &DropdownContext) -> Option<String> {
+    let entry = selected_entry(context)?;
+    context
+        .entries
+        .borrow()
+        .get(&entry)
+        .map(|entry| entry.label.clone())
+}
+
 fn cue_tag<'a>(html: &'a str, id: &str) -> &'a str {
     html.split('>')
         .find(|tag| tag.contains(&format!(" id=\"{id}\"")))
@@ -1309,7 +1434,7 @@ fn cue_tag<'a>(html: &'a str, id: &str) -> &'a str {
 }
 
 #[test]
-fn direct_roving_item_focus_preserves_keyboard_position_before_inventory() {
+fn direct_roving_item_focus_preserves_keyboard_position_without_native_inventory() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::with_settings(Fixture {
         mode: DropdownNavigationMode::RovingTabindex,
@@ -1333,21 +1458,21 @@ fn direct_roving_item_focus_preserves_keyboard_position_before_inventory() {
             .as_ref()
             .unwrap()
             .inventory()
-            .is_none()
+            .is_some()
     );
-    assert_eq!(context.state.borrow().active, Some(entry("Alpha")));
+    assert_eq!(selected_entry(&context), Some(entry("Alpha")));
     dispatch(&h.dom, "focus", h.target("Alpha"), ());
     h.settle();
     h.key("Alpha", Key::ArrowDown);
     assert_eq!(
-        context.state.borrow().active,
+        selected_entry(&context),
         Some(entry("Linked")),
         "Down continues after the focused item and skips Disabled"
     );
 }
 
 #[test]
-fn direct_item_focus_and_blur_render_owned_aria_before_native_inventory() {
+fn direct_item_focus_and_blur_render_owned_aria_without_native_inventory() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::with_settings(Fixture {
         alpha_id: Some("direct-focus-alpha".into()),
@@ -1360,7 +1485,7 @@ fn direct_item_focus_and_blur_render_owned_aria_before_native_inventory() {
     let sibling = h.config.borrow().linked.get().unwrap();
     h.dom.in_runtime(|| sibling.open());
     h.settle();
-    assert!(node.inventory().is_none());
+    assert!(node.inventory().is_some());
     let transport = h
         .attrs
         .iter()
@@ -1407,7 +1532,7 @@ fn direct_item_focus_and_blur_render_owned_aria_before_native_inventory() {
             .iter()
             .find(|(_, entry)| entry.label == "Alpha")
             .map(|(id, _)| *id),
-        "blur clears the cue while retaining the keyboard position"
+        "blur clears the cue while retaining the typed focus position"
     );
     dispatch(&h.dom, "focus", h.target("Alpha"), ());
     h.config.borrow_mut().visible = false;
@@ -1477,11 +1602,17 @@ fn linked_open_cue_and_typed_trigger_aria_follow_current_rust_submenu_state() {
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
     let document = format!("rendered-linked-cue-{}", runtime.owner_id());
-    dispatch(&h.dom,"input",transport,serde_json::json!({
-        "owner":runtime.owner_id(),"document":document,"sequence":1,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
-            "inventory":{"items_host":"rendered-child-items","hosts":[host],"navigation_order":[host.item],"query_order":[host.item]}}]
-    }).to_string());
+    dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({
+            "owner":runtime.owner_id(),"document":document,"sequence":1,"kind":"observe",
+            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
+                "item_order":[host.registration_key]}]
+        })
+        .to_string(),
+    );
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
         "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
     assert!(
@@ -1519,6 +1650,7 @@ fn registered_roving_inventory_projects_logical_tab_order_before_render() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::with_settings(Fixture {
         mode: DropdownNavigationMode::RovingTabindex,
+        empty_items: true,
         ..Fixture::default()
     });
     h.click("Menu");
@@ -1585,11 +1717,12 @@ fn rapid_navigation_commits_the_latest_mounted_target_without_foreign_commands()
 fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::new();
+    observe_rendered_hierarchy(&h);
     let context = h.context();
     let result = h.key("Menu", Key::ArrowDown);
     assert!(result.0);
     assert!(*context.open.peek());
-    let first = context.state.borrow().active.unwrap();
+    let first = selected_entry(&context).unwrap();
     assert_eq!(context.entries.borrow()[&first].label, "Alpha");
     assert_eq!(
         context.state.borrow().focus_target,
@@ -1598,7 +1731,7 @@ fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
     );
     let result = h.key("Menu", Key::End);
     assert!(result.0);
-    let last = context.state.borrow().active.unwrap();
+    let last = selected_entry(&context).unwrap();
     assert_eq!(context.entries.borrow()[&last].label, "Explicit");
     let result = h.key("Menu", Key::ArrowRight);
     assert!(!result.0, "submenu Right leaves original default enabled");
@@ -1608,7 +1741,7 @@ fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
     let next = h.key("Menu", Key::ArrowDown);
     assert!(next.0);
     assert_eq!(
-        context.entries.borrow()[&context.state.borrow().active.unwrap()].label,
+        selected_label(&context).unwrap(),
         "Alpha",
         "closed child no longer owns parent item queries"
     );
@@ -1623,14 +1756,14 @@ fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
     );
     let result = h.key("Menu", Key::Character("e".into()));
     assert!(result.0);
-    let active = context.state.borrow().active.unwrap();
+    let active = selected_entry(&context).unwrap();
     assert_eq!(
         context.entries.borrow()[&active].label,
         "Explicit",
         "explicit roving preserves existing typeahead adapter"
     );
     let target = h.target("Menu");
-    let previous = context.state.borrow().active;
+    let previous = selected_target(&context);
     let shortcut = dispatch(
         &h.dom,
         "keydown",
@@ -1640,7 +1773,7 @@ fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
     h.settle();
     assert!(!shortcut.0);
     assert_eq!(
-        context.state.borrow().active,
+        selected_target(&context),
         previous,
         "roving typeahead adapter leaves browser shortcuts unchanged"
     );
@@ -1737,6 +1870,7 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
     ] {
         let mut h = Harness::with_settings(Fixture {
             no_trap,
+            empty_items: true,
             ..Default::default()
         });
         h.click("Menu");
@@ -1758,7 +1892,7 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
                     &host.registration_key
                 };
                 runtime.register_item_cue(key.clone(), host.kind);
-                runtime.register_item_control_mount(
+                runtime.register_owned_item_control_mount(
                     key,
                     &host.target,
                     focus_id,
@@ -1766,6 +1900,7 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
                         target: host.target.clone(),
                         focuses: focuses.clone(),
                     })),
+                    Some((node.id().to_string(), node.generation())),
                 );
             }
         }
@@ -1775,10 +1910,16 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
             .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
             .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
             .unwrap();
+        register_inventory(&context, &facts);
+        let order = facts
+            .hosts
+            .iter()
+            .map(|host| host.registration_key.clone())
+            .collect::<Vec<_>>();
         let before = h.config.borrow().requests.clone();
         let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[{
             "id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
-            "open":true,"focus_count":3,"focused_index":index,"focusable_ids":focusable_ids,"inventory":facts
+            "open":true,"focus_count":3,"focused_index":index,"focusable_ids":focusable_ids,"item_order":order
         }]});
         dispatch(&h.dom, "input", transport, report.to_string());
         let revision_before = *context.revision.peek();
@@ -1835,7 +1976,7 @@ fn roving_typeahead_focuses_authored_item_id_and_dismissal_cancels_pending_mount
     assert!(h.key("Menu", Key::Character("a".into())).0);
     assert_eq!(*mock.calls.borrow(), ["Alpha"]);
     let context = h.context();
-    let selected = context.state.borrow().active.unwrap();
+    let selected = selected_entry(&context).unwrap();
     assert_eq!(
         context.entries.borrow()[&selected].host_id,
         "authored-alpha"
@@ -1908,10 +2049,7 @@ fn virtual_item_enter_and_space_deliver_one_registered_rust_action_in_both_modes
                 h.click("Menu");
             }
             h.key("Menu", Key::Home);
-            assert_eq!(
-                h.context().entries.borrow()[&h.context().state.borrow().active.unwrap()].label,
-                "Alpha"
-            );
+            assert_eq!(selected_label(&h.context()).unwrap(), "Alpha");
             h.key("Menu", key);
             assert_eq!(
                 h.config.borrow().item_requests,
@@ -1937,8 +2075,9 @@ fn dropdown_linked_activation_keys_present_and_forward_without_click_or_key_canc
         });
         let parent = h.context();
         let child = h.config.borrow().linked.get().unwrap();
+        observe_rendered_hierarchy(&h);
         h.key("Menu", Key::ArrowDown);
-        let active = parent.state.borrow().active.unwrap();
+        let active = selected_entry(&parent).unwrap();
         assert_eq!(parent.entries.borrow()[&active].label, "Linked");
         let result = h.key("Menu", key.clone());
         assert!(
@@ -1948,20 +2087,18 @@ fn dropdown_linked_activation_keys_present_and_forward_without_click_or_key_canc
         assert!(child.is_open());
         assert!(parent.state.borrow().forward == Some(child));
         let child_context = child.context();
-        // This harness dispatches mounted events with unit-backed handles,
-        // while NoOpDocument cannot return a native inventory. Opening
-        // therefore completes with the Dioxus trigger focus intent.
-        assert_eq!(child_context.state.borrow().focus_target, "trigger");
+        assert_eq!(
+            selected_label(&child_context).as_deref(),
+            Some("Checked detached"),
+            "opening selects the checked Dioxus-owned child without native inventory"
+        );
         assert!(child_context.state.borrow().focus_pending.is_none());
-        // Repeated keys must never manufacture a click/toggle on the
-        // already open trigger after the opening focus request completes.
-        h.key("Menu", Key::Enter);
-        h.key("Menu", Key::Character(" ".into()));
-        assert!(child.is_open());
+        // The linked activation enters the child without fabricating a click
+        // on its trigger. Subsequent keys navigate that child directly.
         assert_eq!(h.config.borrow().native_clicks, 0);
         h.key("Menu", Key::Home);
         h.key("Menu", Key::ArrowDown);
-        let selected = child_context.state.borrow().active.unwrap();
+        let selected = selected_entry(&child_context).unwrap();
         assert_eq!(
             child_context.entries.borrow()[&selected].label,
             "Checked detached",
@@ -1981,7 +2118,7 @@ fn dropdown_linked_activation_keys_present_and_forward_without_click_or_key_canc
         h.key("Menu", Key::End);
         let deepest = parent.navigation_owner(false);
         assert!(deepest.id != parent.id && deepest.id != child_context.id);
-        let selected = deepest.state.borrow().active.unwrap();
+        let selected = selected_entry(&deepest).unwrap();
         assert_eq!(deepest.entries.borrow()[&selected].label, "Deep last");
         assert_eq!(
             parent.active_dom_id(),
@@ -1996,6 +2133,7 @@ fn dropdown_linked_activation_keys_present_and_forward_without_click_or_key_canc
     });
     let parent = h.context();
     let child = h.config.borrow().linked.get().unwrap();
+    observe_rendered_hierarchy(&h);
     h.key("Menu", Key::ArrowDown);
     let result = h.key("Menu", Key::ArrowRight);
     assert!(!result.0);
@@ -2019,12 +2157,9 @@ fn dropdown_configuration_updates_live_blocked_triggers_and_open_mode_focus_inte
     h.config.borrow_mut().mode = DropdownNavigationMode::RovingTabindex;
     h.update();
     assert_eq!(
-        context.state.borrow().focus_pending,
-        Some(FocusRequest {
-            last: false,
-            allow_checked: true
-        }),
-        "open roving transition initializes current first/checked via DOM order read"
+        selected_label(&context).as_deref(),
+        Some("Alpha"),
+        "open roving transition initializes the first current Dioxus-owned item"
     );
     h.config.borrow_mut().mode = DropdownNavigationMode::ActiveDescendant;
     h.update();
@@ -2084,7 +2219,7 @@ fn dropdown_checked_first_last_and_disabled_focus_key_flags_follow_source() {
     });
     let context = h.context();
     h.key("Menu", Key::End);
-    let active = context.state.borrow().active.unwrap();
+    let active = selected_entry(&context).unwrap();
     assert_eq!(
         context.entries.borrow()[&active].label,
         "Explicit",
@@ -2092,7 +2227,7 @@ fn dropdown_checked_first_last_and_disabled_focus_key_flags_follow_source() {
     );
     h.click("Menu");
     h.key("Menu", Key::ArrowDown);
-    let active = context.state.borrow().active.unwrap();
+    let active = selected_entry(&context).unwrap();
     assert_eq!(
         context.entries.borrow()[&active].label,
         "Linked",
@@ -2106,12 +2241,12 @@ fn dropdown_checked_first_last_and_disabled_focus_key_flags_follow_source() {
         result.0 && !result.1,
         "disabled focus handling prevents and stops opening key"
     );
-    assert!(context.state.borrow().active.is_none());
+    assert!(selected_target(&context).is_none());
     h.click("Menu");
     h.config.borrow_mut().no_focus = false;
     h.update();
     h.click("Menu");
-    assert!(context.state.borrow().active.is_none());
+    assert!(selected_target(&context).is_none());
     let enter = h.key("Menu", Key::Enter);
     let space = h.key("Menu", Key::Character(" ".into()));
     assert!(
@@ -2260,7 +2395,7 @@ fn shared_modality_cleanup_and_open_active_descendant_mode_change_focus_the_moun
     dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"document":document,"sequence":1,
         "kind":"observe",
         "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
-            "root_capture":"mounted-trigger-root","trigger_capture":"mounted-trigger-control"}]}).to_string());
+            "item_order":[]}]}).to_string());
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
         "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
     assert!(
@@ -2594,10 +2729,7 @@ fn registered_custom_trigger_paired_key_handler_opens_navigates_and_dismisses() 
     assert!(handle.is_open());
     assert!(h.key("second", Key::End).0);
     let context = handle.context();
-    assert_eq!(
-        context.entries.borrow()[&context.state.borrow().active.unwrap()].label,
-        "Custom child"
-    );
+    assert_eq!(selected_label(&context).unwrap(), "Custom child");
     h.key("second", Key::Escape);
     assert!(!handle.is_open());
 }
@@ -2775,70 +2907,16 @@ fn custom_trigger_scope_cleanup_preserves_newer_registration_and_releases_remove
     assert_eq!(second.calls.borrow().len(), 1);
 }
 #[derive(Default)]
-struct OpeningQuery {
-    scope: Option<ScopeId>,
-    reply: Option<serde_json::Value>,
-    waiter: Option<std::task::Waker>,
-    finished: bool,
-}
-#[derive(Default)]
 struct OpeningDocument {
-    owner: dioxus::signals::Owner,
-    queries: RefCell<Vec<Rc<RefCell<OpeningQuery>>>>,
+    inventory_queries: Cell<usize>,
 }
-struct OpeningEvaluator(Rc<RefCell<OpeningQuery>>);
 impl dioxus::document::Document for OpeningDocument {
     fn eval(&self, script: String) -> dioxus::document::Eval {
-        if !script.contains("?.inventoryReaders?.get(owner)") {
-            return dioxus::document::Document::eval(&dioxus::document::NoOpDocument, script);
+        if script.contains("inventoryReaders") {
+            self.inventory_queries.set(self.inventory_queries.get() + 1);
         }
-        let query = Rc::new(RefCell::new(OpeningQuery {
-            scope: Some(dioxus::core::current_scope_id()),
-            ..Default::default()
-        }));
-        self.queries.borrow_mut().push(query.clone());
-        dioxus::document::Eval::new(
-            self.owner
-                .insert(Box::new(OpeningEvaluator(query)) as Box<dyn dioxus::document::Evaluator>),
-        )
+        dioxus::document::Document::eval(&dioxus::document::NoOpDocument, script)
     }
-}
-impl dioxus::document::Evaluator for OpeningEvaluator {
-    fn send(&self, value: serde_json::Value) -> Result<(), dioxus::document::EvalError> {
-        if value["kind"] == "finish" {
-            self.0.borrow_mut().finished = true;
-        }
-        Ok(())
-    }
-    fn poll_recv(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<serde_json::Value, dioxus::document::EvalError>> {
-        let mut query = self.0.borrow_mut();
-        if let Some(reply) = query.reply.take() {
-            std::task::Poll::Ready(Ok(reply))
-        } else {
-            query.waiter = Some(cx.waker().clone());
-            std::task::Poll::Pending
-        }
-    }
-    fn poll_join(
-        &mut self,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<serde_json::Value, dioxus::document::EvalError>> {
-        panic!("the inventory query must receive its acknowledged result");
-    }
-}
-fn opening_reply(h: &mut Harness, query: &Rc<RefCell<OpeningQuery>>, facts: &InventoryFacts) {
-    let waiter = {
-        let mut query = query.borrow_mut();
-        query.reply = Some(serde_json::json!({"value":facts,"error":null}));
-        query.waiter.take()
-    };
-    if let Some(waiter) = waiter {
-        waiter.wake();
-    }
-    h.settle();
 }
 #[test]
 fn opening_uses_registered_first_last_checked_and_custom_controls_in_both_modes() {
@@ -2851,6 +2929,7 @@ fn opening_uses_registered_first_last_checked_and_custom_controls_in_both_modes(
         let mut h = Harness::with_document(
             Fixture {
                 mode,
+                empty_items: true,
                 focus_checked: true,
                 ..Default::default()
             },
@@ -2904,18 +2983,7 @@ fn opening_uses_registered_first_last_checked_and_custom_controls_in_both_modes(
             h.dom
                 .in_runtime(|| context.focus_edge_with_checked(last, checked));
             h.settle();
-            let query = document.queries.borrow().last().unwrap().clone();
-            assert_eq!(
-                query.borrow().scope,
-                context
-                    .node
-                    .borrow()
-                    .as_ref()
-                    .unwrap()
-                    .with_owner(dioxus::core::current_scope_id),
-                "query belongs to the surface owner"
-            );
-            opening_reply(&mut h, &query, &facts);
+            assert_eq!(document.inventory_queries.get(), 0);
             assert_eq!(focuses.borrow().last().map(String::as_str), Some(target));
         }
         assert!(trigger.calls.borrow().is_empty());
@@ -2929,8 +2997,7 @@ fn opening_uses_registered_first_last_checked_and_custom_controls_in_both_modes(
         }
         h.dom.in_runtime(|| context.focus_edge(false));
         h.settle();
-        let query = document.queries.borrow().last().unwrap().clone();
-        opening_reply(&mut h, &query, &facts);
+        assert_eq!(document.inventory_queries.get(), 0);
         assert_eq!(
             trigger.calls.borrow().len(),
             usize::from(mode == DropdownNavigationMode::ActiveDescendant),
@@ -2939,72 +3006,62 @@ fn opening_uses_registered_first_last_checked_and_custom_controls_in_both_modes(
     }
 }
 #[test]
-fn opening_inventory_await_cancels_on_new_intent_close_mode_disabled_and_drop() {
+fn opening_owned_inventory_intent_cancels_on_new_intent_close_disabled_and_drop() {
     let _guard = crate::test_event_converter_guard();
-    let document = Rc::new(OpeningDocument::default());
-    let mut h = Harness::with_document(Fixture::default(), Some(document.clone()));
+    let mut h = Harness::with_settings(Fixture {
+        empty_items: true,
+        ..Default::default()
+    });
     h.click("Menu");
     let context = h.context();
     let facts = mixed_inventory_facts();
     let focuses = mount_inventory(&h, &facts);
-    h.dom.in_runtime(|| context.focus_edge(false));
+    h.dom.in_runtime(|| {
+        context.focus_edge(false);
+        context.focus_edge(true);
+    });
     h.settle();
-    let first = document.queries.borrow().last().unwrap().clone();
-    h.dom.in_runtime(|| context.focus_edge(true));
-    h.settle();
-    assert!(
-        first.borrow().finished,
-        "newer opening intent drops the old query channel"
-    );
-    let latest = document.queries.borrow().last().unwrap().clone();
-    opening_reply(&mut h, &first, &facts);
-    assert!(focuses.borrow().is_empty());
-    opening_reply(&mut h, &latest, &facts);
     assert_eq!(*focuses.borrow(), ["mixed-native"]);
-    h.dom.in_runtime(|| context.focus_submenu_entry());
+    h.dom.in_runtime(|| {
+        context.focus_submenu_entry();
+        assert!(context.request(false, Reason::Outside, false));
+    });
     h.settle();
-    let closing = document.queries.borrow().last().unwrap().clone();
-    h.dom
-        .in_runtime(|| assert!(context.request(false, Reason::Outside, false)));
-    h.settle();
-    assert!(closing.borrow().finished);
-    opening_reply(&mut h, &closing, &facts);
-    assert_eq!(focuses.borrow().len(), 1);
+    assert_eq!(
+        focuses.borrow().len(),
+        1,
+        "closed owner cancels pending opening intent"
+    );
     h.dom.in_runtime(|| {
         assert!(context.request(true, Reason::Trigger, false));
         context.focus_edge(false);
     });
-    h.settle();
-    let old_mode = document.queries.borrow().last().unwrap().clone();
-    h.config.borrow_mut().mode = DropdownNavigationMode::RovingTabindex;
-    h.update();
-    assert!(old_mode.borrow().finished);
-    opening_reply(&mut h, &old_mode, &facts);
-    assert_eq!(focuses.borrow().len(), 1);
-    let roving = document.queries.borrow().last().unwrap().clone();
     h.config.borrow_mut().no_focus = true;
     h.update();
-    opening_reply(&mut h, &roving, &facts);
     assert_eq!(
         focuses.borrow().len(),
         1,
-        "disabled focus handling rejects a query admitted earlier"
+        "disabled handling cancels pending intent"
     );
     h.config.borrow_mut().no_focus = false;
     h.update();
+    let completed = focuses.borrow().len();
     h.dom.in_runtime(|| context.focus_edge(false));
-    h.settle();
-    let dropping = document.queries.borrow().last().unwrap().clone();
     h.config.borrow_mut().visible = false;
     h.update();
-    assert!(dropping.borrow().finished);
-    opening_reply(&mut h, &dropping, &facts);
-    assert_eq!(focuses.borrow().len(), 1);
+    assert_eq!(
+        focuses.borrow().len(),
+        completed,
+        "unmounted owner cannot complete an opening intent"
+    );
 }
 #[test]
 fn registered_native_control_keeps_ad_editing_defaults_while_escape_and_roving_still_route() {
     let _guard = crate::test_event_converter_guard();
-    let mut h = Harness::new();
+    let mut h = Harness::with_settings(Fixture {
+        empty_items: true,
+        ..Default::default()
+    });
     h.click("Menu");
     let context = h.context();
     let facts = mixed_inventory_facts();
@@ -3058,24 +3115,15 @@ fn two_linked_rows_open_their_current_controllers_after_parent_is_already_open()
         .unwrap()
         .submenu
         .unwrap();
-    let hosts = parent.entries.borrow().values().map(|entry| {
-        let attributes = &h.attrs[&h.target(&entry.label).raw()];
-        serde_json::json!({"item":entry.host_id,"capture":entry.host_id,"target":entry.host_id,
-            "registration_key":attributes["data-ix-item-key"],"kind":"dropdown",
-            "disabled_attribute":entry.disabled,"checked_attribute":entry.checked,
-            "linked_trigger":entry.submenu.and_then(DropdownHandle::try_context).map(|context|context.node_id())})
-    }).collect::<Vec<_>>();
-    let order = hosts
+    let inventory = parent_node.inventory().unwrap();
+    let order = inventory
+        .hosts
         .iter()
-        .map(|host| host["item"].clone())
+        .map(|host| host.registration_key.clone())
         .collect::<Vec<_>>();
-    let inventory: InventoryFacts =
-        serde_json::from_value(serde_json::json!({"items_host":parent.host_id(),
-        "hosts":hosts,"query_order":order,"navigation_order":order}))
-        .unwrap();
     let mut nodes = vec![
         serde_json::json!({"id":parent_node.id(),"generation":parent_node.generation(),
-        "connected":true,"discovery_ready":true,"inventory":inventory,"own_inventory":inventory}),
+        "connected":true,"discovery_ready":true,"item_order":order}),
     ];
     for handle in [linked, explicit] {
         let child = handle.context();
@@ -3145,32 +3193,12 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     let parent = h.context();
     let child = h.config.borrow().linked.get().unwrap().context();
     assert!(!parent.state.borrow().external && child.state.borrow().external);
-    let inventory = |context: &DropdownContext| {
-        let hosts = context
-            .entries
-            .borrow()
-            .values()
-            .map(|entry| {
-                let attrs = &h.attrs[&h.target(&entry.label).raw()];
-                serde_json::json!({"item":entry.host_id,"capture":entry.host_id,
-                "target":entry.host_id,"registration_key":attrs["data-ix-item-key"],
-                "kind":"dropdown","disabled_attribute":entry.disabled,
-                "checked_attribute":entry.checked,"visible_focus":entry.label=="Detached leaf",
-                "linked_trigger":entry.submenu.and_then(DropdownHandle::try_context).map(|child|child.node_id())})
-            })
-            .collect::<Vec<_>>();
-        let order = hosts
-            .iter()
-            .map(|host| host["item"].clone())
-            .collect::<Vec<_>>();
-        serde_json::from_value::<InventoryFacts>(serde_json::json!({"items_host":context.host_id(),
-            "hosts":hosts,"query_order":order,"navigation_order":order}))
-        .unwrap()
-    };
+    let inventory =
+        |context: &DropdownContext| context.node.borrow().as_ref().unwrap().inventory().unwrap();
     let parent_facts = inventory(&parent);
     let child_facts = inventory(&child);
     let parent_focus = mount_inventory(&h, &parent_facts);
-    let child_focus = mount_inventory(&h, &child_facts);
+    let child_focus = mount_inventory_for(&h, &child, &child_facts);
     let parent_node = parent.node.borrow().clone().unwrap();
     let child_node = child.node.borrow().clone().unwrap();
     let runtime = parent_node.runtime().unwrap();
@@ -3182,9 +3210,9 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
         .unwrap();
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
         {"id":parent_node.id(),"generation":parent_node.generation(),"connected":true,"discovery_ready":true,
-            "root_capture":"parent-root","mode":"active-descendant","inventory":parent_facts,"own_inventory":parent_facts},
+            "mode":"active-descendant","item_order":parent_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()},
         {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,
-            "root_capture":"child-root","mode":"active-descendant","trigger_ancestors":[parent_node.id()],"inventory":child_facts}
+            "mode":"active-descendant","trigger_ancestors":[parent_node.id()],"item_order":child_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()}
     ]}).to_string());
     let trigger = parent_facts
         .hosts
@@ -3205,6 +3233,11 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     });
     h.settle();
     assert!(*parent.open.peek() && *child.open.peek());
+    assert!(h.key("Menu", Key::Home).0);
+    assert_eq!(
+        child_focus.borrow().last().map(String::as_str),
+        Some(child_facts.hosts[0].target.as_str())
+    );
     assert!(h.key("Detached leaf", Key::ArrowDown).0);
     let next = child
         .entries
@@ -3231,6 +3264,9 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
         generic: true,
         runtime: runtime.clone(),
         context: Some(child.clone()),
+        inventory_owner: Some(child_node.clone()),
+        identity: 0,
+        kind: host.kind,
     };
     let event = || {
         KeyboardEvent::new(
@@ -3263,9 +3299,10 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     });
     let mut native_facts = child_facts.clone();
     native_facts.hosts[0].kind = ItemKind::NativeOptIn;
+    register_inventory(&child, &native_facts);
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"kind":"observe","nodes":[
         {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,
-            "root_capture":"child-root","inventory":native_facts}
+            "item_order":native_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()}
     ]}).to_string());
     h.dom.in_runtime(|| {
         assert!(
@@ -3273,4 +3310,216 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
             "registered native controls retain their editing route"
         )
     });
+}
+
+#[component]
+fn OwnedMetadataCapture(context: Rc<RefCell<Option<DropdownContext>>>) -> Element {
+    let current = use_context::<DropdownContext>();
+    *context.borrow_mut() = Some(current);
+    rsx! {}
+}
+#[component]
+fn OwnedMetadataCustom(changed: bool) -> Element {
+    let authored = if changed { -1 } else { 2 };
+    let item = use_dropdown_item_with_options(
+        "owned-custom",
+        DropdownItemOptions {
+            disabled: changed,
+            hidden: changed,
+            checked: changed,
+            tabindex: Some(authored),
+        },
+    );
+    rsx! { input {
+        id:"owned-custom",disabled:changed,hidden:changed,
+        tabindex:item.tabindex.unwrap_or(authored),onmounted:item.onmounted,
+        ..item.attributes()
+    } }
+}
+#[derive(Clone)]
+struct OwnedMetadataFixture {
+    changed: Rc<Cell<bool>>,
+    context: Rc<RefCell<Option<DropdownContext>>>,
+}
+impl PartialEq for OwnedMetadataFixture {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.changed, &other.changed)
+    }
+}
+fn owned_metadata_fixture(fixture: OwnedMetadataFixture) -> Element {
+    let changed = fixture.changed.get();
+    let authored = if changed { -1 } else { 2 };
+    rsx! { Dropdown { label:"Owned metadata",
+        OwnedMetadataCapture {context:fixture.context.clone()}
+        DropdownItem {id:"owned-typed",label:"Typed",disabled:changed,hidden:changed,checked:changed,tabindex:authored}
+        OwnedMetadataCustom {changed}
+        DropdownSubmenu {label:"Owned child",DropdownItem {id:"owned-nested",label:"Nested"}}
+    } }
+}
+#[test]
+fn component_descriptions_follow_current_props_and_keep_exact_overlay_membership_without_native_inventory()
+ {
+    let fixture = OwnedMetadataFixture {
+        changed: Rc::new(Cell::new(false)),
+        context: Rc::new(RefCell::new(None)),
+    };
+    let mut dom = VirtualDom::new_with_props(owned_metadata_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let context = fixture.context.borrow().clone().unwrap();
+    let node = context.node.borrow().clone().unwrap();
+    let child = context
+        .entries
+        .borrow()
+        .values()
+        .find(|entry| entry.label == "Owned child")
+        .unwrap()
+        .submenu
+        .unwrap()
+        .context();
+    for changed in [false, true] {
+        if changed {
+            fixture.changed.set(true);
+            dom.mark_dirty(ScopeId::APP);
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+        }
+        let inventory = node.inventory().unwrap();
+        assert_eq!(inventory.hosts.len(), 3);
+        for target in ["owned-typed", "owned-custom"] {
+            let host = inventory
+                .hosts
+                .iter()
+                .find(|host| host.target == target)
+                .unwrap();
+            assert_eq!(host.disabled_attribute, changed, "{target} disabled");
+            assert_eq!(host.hidden_attribute, changed, "{target} hidden");
+            assert_eq!(host.checked_attribute, changed, "{target} checked");
+            assert_eq!(
+                host.tabindex_attribute.as_deref(),
+                Some(if changed { "-1" } else { "2" }),
+                "{target} authored tabindex"
+            );
+            assert_eq!(host.root_path.len(), 1);
+            assert_eq!(host.root_path[0].id, node.id());
+            assert_eq!(host.root_path[0].generation, node.generation());
+        }
+        assert!(
+            !inventory
+                .hosts
+                .iter()
+                .any(|host| host.target == "owned-nested")
+        );
+        let child_node = child.node.borrow().clone().unwrap();
+        let child_inventory = child_node.inventory().unwrap();
+        assert_eq!(child_inventory.hosts.len(), 1);
+        assert_eq!(child_inventory.hosts[0].target, "owned-nested");
+        assert_eq!(child_inventory.hosts[0].root_path[0].id, child_node.id());
+    }
+}
+
+#[test]
+fn top_layer_opening_waits_for_current_surface_visibility_before_focusing_a_custom_control() {
+    let _guard = crate::test_event_converter_guard();
+    for mode in [
+        DropdownNavigationMode::ActiveDescendant,
+        DropdownNavigationMode::RovingTabindex,
+    ] {
+        let mut h = Harness::with_settings(Fixture {
+            layer: true,
+            empty_items: true,
+            mode,
+            ..Default::default()
+        });
+        let context = h.context();
+        let node = context.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let mut facts = mixed_inventory_facts();
+        facts
+            .hosts
+            .retain(|host| host.kind == ItemKind::NativeOptIn);
+        facts.navigation_order = facts.hosts.iter().map(|host| host.item.clone()).collect();
+        facts.query_order = facts.navigation_order.clone();
+        let focuses = mount_inventory(&h, &facts);
+        let surface = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("id") == Some(&context.host_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+
+        assert!(h.key("Menu", Key::ArrowDown).0);
+        assert!(*context.open.peek());
+        assert!(
+            focuses.borrow().is_empty(),
+            "{mode:?}: hidden popover cannot receive opening focus"
+        );
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+        assert!(context.state.borrow().focus_pending.is_some());
+        dispatch(
+            &h.dom,
+            "visible",
+            surface,
+            TestVisible::new(false, [0.0; 4]),
+        );
+        h.settle();
+        assert!(
+            focuses.borrow().is_empty(),
+            "nonvisible report leaves opening intent pending"
+        );
+
+        h.dom
+            .in_runtime(|| assert!(context.request(false, Reason::Outside, false)));
+        h.settle();
+        dispatch(
+            &h.dom,
+            "visible",
+            surface,
+            TestVisible::new(true, [0.0, 40.0, 0.0, 100.0]),
+        );
+        h.settle();
+        assert!(
+            focuses.borrow().is_empty(),
+            "late visible report after close cannot focus"
+        );
+        assert!(context.state.borrow().focus_pending.is_none());
+
+        assert!(h.key("Menu", Key::ArrowDown).0);
+        assert!(
+            focuses.borrow().is_empty(),
+            "new opening waits for its current surface report"
+        );
+        dispatch(
+            &h.dom,
+            "visible",
+            surface,
+            TestVisible::new(true, [0.0, 40.0, 0.0, 100.0]),
+        );
+        h.settle();
+        assert_eq!(focuses.borrow().as_slice(), ["mixed-native"]);
+        assert!(context.state.borrow().focus_pending.is_none());
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+        dispatch(
+            &h.dom,
+            "visible",
+            surface,
+            TestVisible::new(true, [0.0, 40.0, 0.0, 100.0]),
+        );
+        h.settle();
+        assert_eq!(
+            focuses.borrow().len(),
+            1,
+            "repeat visible notification cannot replay completed focus"
+        );
+        h.config.borrow_mut().visible = false;
+        h.update();
+        h.dom.in_runtime(|| context.surface_visibility(true));
+        h.settle();
+        assert_eq!(
+            focuses.borrow().len(),
+            1,
+            "a removed surface cannot release focus through an old context"
+        );
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+    }
 }

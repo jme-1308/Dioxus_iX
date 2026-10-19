@@ -3,7 +3,8 @@
 //! Copyright (c) 2023-2026 Siemens AG. SPDX-License-Identifier: MIT.
 use crate::Icon;
 use crate::dropdown_inventory::{
-    Activation, Inventory, InventoryFacts, InventoryMode, ItemKind, ItemRef,
+    Activation, HostFacts, HostPartFacts, HostRootFact, Inventory, InventoryFacts, InventoryMode,
+    ItemKind, ItemRef,
 };
 use crate::overlay_registry::{CloseBehavior, OverlayKind};
 use crate::overlay_runtime::{self, Callbacks, Change, KeyDecision, KeyFacts, NodeHandle, Reason};
@@ -19,8 +20,31 @@ static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 static NEXT_SOURCE_ITEM: AtomicUsize = AtomicUsize::new(1);
 
-/// Descriptive host identity is separate from inventory membership. A source
-/// light-DOM descendant can be queried by more than one Dropdown.
+/// Explicit Dioxus composition owns item membership; native observations only
+/// provide order for these registered keys.
+#[derive(Clone)]
+pub(crate) struct ItemInventoryOwner(pub(crate) NodeHandle);
+
+pub(crate) struct ItemDescription {
+    pub(crate) disabled: bool,
+    pub(crate) hidden: bool,
+    pub(crate) checked: bool,
+    pub(crate) source_focusable: bool,
+    pub(crate) linked_trigger: Option<String>,
+    pub(crate) parts: Vec<HostPartFacts>,
+}
+impl Default for ItemDescription {
+    fn default() -> Self {
+        Self {
+            disabled: false,
+            hidden: false,
+            checked: false,
+            source_focusable: true,
+            linked_trigger: None,
+            parts: Vec::new(),
+        }
+    }
+}
 #[derive(Clone)]
 pub(crate) struct ItemHostBinding {
     pub(crate) key: String,
@@ -28,21 +52,60 @@ pub(crate) struct ItemHostBinding {
     pub(crate) generic: bool,
     pub(crate) runtime: overlay_runtime::RuntimeHandle,
     context: Option<DropdownContext>,
+    inventory_owner: Option<NodeHandle>,
+    identity: usize,
+    kind: ItemKind,
 }
 impl ItemHostBinding {
     pub(crate) fn mount(&self, target: &str, node: Rc<MountedData>) {
         self.mount_control(target, target, node);
     }
     pub(crate) fn mount_control(&self, target: &str, focus_id: &str, node: Rc<MountedData>) {
-        let owner = self.context.as_ref().and_then(|context| {
-            context
-                .node
-                .borrow()
-                .as_ref()
-                .map(|node| (node.id().to_string(), node.generation()))
-        });
+        let owner = self
+            .inventory_owner
+            .as_ref()
+            .map(|node| (node.id().to_string(), node.generation()));
         self.runtime
             .register_owned_item_control_mount(&self.key, target, focus_id, node, owner);
+    }
+    pub(crate) fn describe(
+        &self,
+        target: &str,
+        attributes: &[Attribute],
+        options: ItemDescription,
+    ) {
+        let owner = self
+            .inventory_owner
+            .as_ref()
+            .map(|node| (node.id().to_string(), node.generation()));
+        let root_path = owner
+            .as_ref()
+            .map(|(id, generation)| HostRootFact {
+                id: id.clone(),
+                generation: *generation,
+                is_host: false,
+            })
+            .into_iter()
+            .collect();
+        let host = HostFacts {
+            item: ItemRef(self.key.clone()),
+            kind: self.kind,
+            target: target.into(),
+            capture: self.key.clone(),
+            root_path,
+            registration_key: self.key.clone(),
+            source_focusable: options.source_focusable,
+            disabled_attribute: options.disabled || item_attribute_present(attributes, "disabled"),
+            hidden_attribute: options.hidden || item_attribute_present(attributes, "hidden"),
+            tabindex_attribute: item_attribute_value(attributes, "tabindex"),
+            checked_attribute: options.checked || checked_content_attribute(attributes).is_some(),
+            visible_focus: false,
+            roving_opt_in: self.kind == ItemKind::NativeOptIn,
+            linked_trigger: options.linked_trigger,
+            parts: options.parts,
+        };
+        self.runtime
+            .register_owned_item_description(&self.key, owner, host);
     }
     pub(crate) fn focus(
         &self,
@@ -150,26 +213,29 @@ impl ItemHostBinding {
 pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
     let runtime = overlay_runtime::use_overlay_runtime();
     let registry = runtime.clone();
-    let key = use_hook(move || {
-        let key = format!(
-            "ix-source-{kind}-{}",
-            NEXT_SOURCE_ITEM.fetch_add(1, Ordering::Relaxed)
-        );
-        let kind = match kind {
-            "dropdown" => ItemKind::Dropdown,
-            "select" => ItemKind::Select,
-            "menu" => ItemKind::Menu,
-            "category" => ItemKind::Category,
-            "native-opt-in" => ItemKind::NativeOptIn,
-            _ => unreachable!("typed source item kind"),
-        };
-        registry.register_item_cue(key.clone(), kind);
-        key
+    let kind_value = match kind {
+        "dropdown" => ItemKind::Dropdown,
+        "select" => ItemKind::Select,
+        "menu" => ItemKind::Menu,
+        "category" => ItemKind::Category,
+        "native-opt-in" => ItemKind::NativeOptIn,
+        _ => unreachable!("typed item kind"),
+    };
+    let (identity, key) = use_hook(move || {
+        let identity = NEXT_SOURCE_ITEM.fetch_add(1, Ordering::Relaxed);
+        let key = format!("ix-source-{kind}-{identity}");
+        registry.register_item_cue(key.clone(), kind_value);
+        (identity, key)
     });
     let cleanup = runtime.clone();
     let dropped = key.clone();
     use_drop(move || cleanup.unregister_item_cue(&dropped));
-    let context = try_use_context::<DropdownContext>();
+    let inventory_owner = try_use_context::<ItemInventoryOwner>().map(|owner| owner.0);
+    let context = try_use_context::<DropdownContext>().filter(|context| {
+        inventory_owner
+            .as_ref()
+            .is_some_and(|owner| owner.id() == context.node_id())
+    });
     let action_owner = context.clone();
     let action_key = key.clone();
     use_drop(move || {
@@ -183,6 +249,9 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         generic: context.is_some(),
         runtime,
         context,
+        inventory_owner,
+        identity,
+        kind: kind_value,
     }
 }
 
@@ -209,12 +278,38 @@ pub struct DropdownItemBinding {
     pub onkeydown: EventHandler<KeyboardEvent>,
     /// Apply to that element's `tabindex`. `None` preserves its natural tab order.
     pub tabindex: Option<i32>,
+    identity: usize,
+}
+impl DropdownItemBinding {
+    /// Spread on the registered element. The stable key lets the minimal
+    /// read-only order adapter report keyed reorder without discovering items.
+    pub fn attributes(self) -> Vec<Attribute> {
+        vec![
+            Attribute::new(
+                "data-ix-item-key",
+                format!("ix-source-native-opt-in-{}", self.identity),
+                None,
+                false,
+            ),
+            Attribute::new("data-ix-roving-item", "", None, false),
+        ]
+    }
+}
+
+/// Rust-owned eligibility for a custom Dropdown control. Keep these values in
+/// sync with its rendered attributes; Dioxus is the sole source of item state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DropdownItemOptions {
+    pub disabled: bool,
+    pub hidden: bool,
+    pub checked: bool,
+    pub tabindex: Option<i32>,
 }
 
 /// Bind a custom Dioxus control to Dropdown keyboard navigation.
 ///
-/// Apply the mounted and tabindex fields, give the control the same stable `id`, and mark
-/// it with `data-ix-roving-item`. Registered buttons and fields participate in
+/// Apply the mounted and tabindex fields, give the control the same stable `id`,
+/// and spread `item.attributes()` on it. Registered buttons and fields participate in
 /// opening focus in both navigation modes; active-descendant mode preserves
 /// native editing keys once they are focused. Nonediting buttons also attach
 /// `onkeydown` for roving navigation; editable fields leave it unbound. Dioxus owns focus, scrolling,
@@ -232,19 +327,44 @@ pub struct DropdownItemBinding {
 ///     rsx! {
 ///         button {
 ///             id: "custom-action",
-///             "data-ix-roving-item": "",
 ///             onmounted: item.onmounted,
 ///             onkeydown: item.onkeydown,
 ///             tabindex: item.tabindex,
+///             ..item.attributes(),
 ///             "Custom action"
 ///         }
 ///     }
 /// }
 /// ```
 pub fn use_dropdown_item(id: impl Into<String>) -> DropdownItemBinding {
+    use_dropdown_item_with_options(id, DropdownItemOptions::default())
+}
+
+/// Bind a custom control with explicit disabled, hidden, checked and authored
+/// tab-index state. Use the same options when rendering that control.
+pub fn use_dropdown_item_with_options(
+    id: impl Into<String>,
+    options: DropdownItemOptions,
+) -> DropdownItemBinding {
     let binding = use_item_host("native-opt-in");
     let tabindex = binding.tabindex();
     let target = id.into();
+    let attributes = options
+        .tabindex
+        .map(|value| Attribute::new("tabindex", value.to_string(), None, false))
+        .into_iter()
+        .collect::<Vec<_>>();
+    binding.describe(
+        &target,
+        &attributes,
+        ItemDescription {
+            disabled: options.disabled,
+            hidden: options.hidden,
+            checked: options.checked,
+            ..Default::default()
+        },
+    );
+    let identity = binding.identity;
     let keyboard = binding.context.clone();
     let key_target = target.clone();
     let onmounted = use_callback(move |event: MountedEvent| binding.mount(&target, event.data()));
@@ -260,6 +380,7 @@ pub fn use_dropdown_item(id: impl Into<String>) -> DropdownItemBinding {
         onmounted,
         onkeydown,
         tabindex,
+        identity,
     }
 }
 
@@ -268,14 +389,28 @@ pub fn use_dropdown_item(id: impl Into<String>) -> DropdownItemBinding {
 pub fn use_dropdown_item_mount(id: impl Into<String>) -> EventHandler<MountedEvent> {
     use_dropdown_item(id).onmounted
 }
-/// Preserve own checked content attributes where the interpreter otherwise
-/// writes only a native property. The marker carries Rust's literal value;
-/// native plumbing copies it without selecting focus or changing selection.
+/// Read the authored Rust checked declaration without querying the DOM.
 pub(crate) fn checked_content_attribute(attributes: &[Attribute]) -> Option<String> {
     attributes
         .iter()
         .rev()
         .find(|attribute| attribute.name == "checked")
+        .and_then(|attribute| match &attribute.value {
+            dioxus::core::AttributeValue::Text(value) => Some(value.clone()),
+            dioxus::core::AttributeValue::Bool(true) => Some(String::new()),
+            dioxus::core::AttributeValue::Int(value) => Some(value.to_string()),
+            dioxus::core::AttributeValue::Float(value) => Some(value.to_string()),
+            _ => None,
+        })
+}
+fn item_attribute_present(attributes: &[Attribute], name: &str) -> bool {
+    item_attribute_value(attributes, name).is_some()
+}
+fn item_attribute_value(attributes: &[Attribute], name: &str) -> Option<String> {
+    attributes
+        .iter()
+        .rev()
+        .find(|attribute| attribute.name == name)
         .and_then(|attribute| match &attribute.value {
             dioxus::core::AttributeValue::Text(value) => Some(value.clone()),
             dioxus::core::AttributeValue::Bool(true) => Some(String::new()),
@@ -416,6 +551,8 @@ struct MenuState {
     surface: bool,
     generation: u64,
     mounted: bool,
+    top_layer: bool,
+    surface_visible: bool,
     external: bool,
     blocked: bool,
     settings: Settings,
@@ -769,6 +906,7 @@ impl DropdownContext {
             let changed = *self.open.peek() != change.open;
             state.focus_epoch = state.focus_epoch.wrapping_add(1);
             if !change.open {
+                state.surface_visible = false;
                 state.active = None;
                 state.forward = None;
                 state.focus_pending = None;
@@ -1100,6 +1238,26 @@ impl DropdownContext {
             self.focus_trigger(true);
         }
     }
+    /// Native popovers become focusable after presentation. Framework visibility
+    /// owns this boundary; keep the existing intent instead of querying inventory
+    /// through JavaScript or scheduling a timer/frame retry.
+    fn surface_visibility(&self, visible: bool) {
+        let pending = {
+            let mut state = self.state.borrow_mut();
+            if !state.alive || !state.surface {
+                return;
+            }
+            let open = self.open.try_peek().is_ok_and(|open| *open);
+            state.surface_visible = visible && open;
+            if !visible || !state.top_layer || !open {
+                return;
+            }
+            state.focus_pending
+        };
+        if let Some(request) = pending {
+            self.focus_edge_with_checked(request.last, request.allow_checked);
+        }
+    }
     fn focus_edge_with_checked(&self, last: bool, allow_checked: bool) {
         let epoch = self.invalidate_focus();
         let (generation, mode) = {
@@ -1115,6 +1273,12 @@ impl DropdownContext {
         };
         if !self.opening_focus_current(epoch, generation, mode) {
             return;
+        }
+        {
+            let state = self.state.borrow();
+            if state.top_layer && !state.surface_visible {
+                return;
+            }
         }
         let Some(node) = self.node.borrow().clone() else {
             return;
@@ -1490,6 +1654,8 @@ pub fn use_dropdown() -> DropdownHandle {
                 surface: false,
                 generation: 0,
                 mounted: false,
+                top_layer: false,
+                surface_visible: false,
                 external: false,
                 blocked: false,
                 settings: Settings::default(),
@@ -1934,6 +2100,7 @@ fn DropdownSurface(
         let mut state = context.state.borrow_mut();
         state.settings = settings.clone();
         state.external = external;
+        state.top_layer = enable_top_layer;
         state.blocked = blocked;
         state.placement = placement;
         state.trigger_id = trigger.clone();
@@ -2036,6 +2203,7 @@ fn DropdownSurface(
     node.set_close_behavior(settings.behavior.into());
     node.set_trigger_visibility_check(!settings.suppress_trigger_visibility_check);
     use_context_provider(|| context.clone());
+    use_context_provider(|| ItemInventoryOwner(node.clone()));
     let drop_context = context.clone();
     let drop_node = node.clone();
     use_drop(move || {
@@ -2144,6 +2312,7 @@ fn DropdownSurface(
     let focused_out = trigger_focused.clone();
     let content_key = context.clone();
     let content_click = node.clone();
+    let surface_visibility = context.clone();
     let panel_focused = use_hook(|| Rc::new(Cell::new(false)));
     let panel_focus = panel_focused.clone();
     let panel_blur = panel_focused.clone();
@@ -2183,6 +2352,7 @@ fn DropdownSurface(
         dialog {id:host_id,class:"ix-dropdown-menu ix-dropdown-root-menu",role:"menu","aria-label":label,
             "data-ix-overlay-host":id,"data-placement":effective_placement.as_str(),"data-configured-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
             popover:enable_top_layer.then_some("manual"),
+            onvisible:move |event:VisibleEvent|{if let Ok(visible)=event.is_intersecting(){surface_visibility.surface_visibility(visible);}},
             style:format!("position-anchor:--ix-dropdown-anchor-{};--ix-dropdown-area:{};{}",context.id,effective_placement.area(),if suppress_automatic_placement {"position-try-fallbacks:none"} else {""}),
             onfocus:move |_|panel_focus.set(true),onblur:move |_|panel_blur.set(false),
             onclick:move |event:MouseEvent|{event.stop_propagation();content_click.dioxus_inside_click(&event);},
@@ -2371,6 +2541,17 @@ pub fn DropdownItem(
                 state.active == Some(id)
             });
     let trigger_marker = linked.as_ref().map(DropdownContext::node_id);
+    host_binding.describe(
+        &host_id,
+        &attributes,
+        ItemDescription {
+            disabled: blocked,
+            checked,
+            source_focusable: !blocked,
+            linked_trigger: trigger_marker.clone(),
+            ..Default::default()
+        },
+    );
     let linked_open = linked
         .as_ref()
         .map(|linked| (linked.open)())
@@ -2453,7 +2634,6 @@ pub fn DropdownItem(
         "data-ix-dropdown-owner":owner,"data-ix-dropdown-label":label.clone(),
         "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key,"data-ix-item-runtime":host_binding.runtime.owner_id(),
         "data-ix-item-focusable":(!blocked).to_string(),"checked":checked,
-        "data-ix-reflect-checked":serde_json::to_string(&checked.then_some("")).unwrap_or_default(),
         style:host_style,"data-ix-overlay-trigger":trigger_marker,
         "data-active":active.to_string(),"aria-disabled":blocked.to_string(),"disabled":blocked,
         tabindex,
@@ -2601,6 +2781,7 @@ pub(crate) const STYLES: &str = r#"
  .ix-dropdown-root-menu[data-placement=left-end],.ix-dropdown-root-menu[data-placement=right-end]{align-self:end}
  @position-try --ix-dropdown-contained{position-area:none;inset:8px;margin:auto;height:max-content;max-width:calc(100% - 16px);max-height:min(320px,calc(100dvh - 16px))}
 }
+[data-ix-item-key][hidden]{display:none!important}
 .ix-dropdown-item { display:flex;align-items:center;gap:8px;width:100%;padding:8px 16px;border:0;text-align:left;color:var(--ix-color-text);background:transparent; }
 .ix-dropdown-item>span { flex:1; }
 .ix-dropdown-item.ix-dropdown-quick-action { width:40px;height:40px;justify-content:center;padding:8px; }

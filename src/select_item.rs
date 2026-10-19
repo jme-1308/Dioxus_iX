@@ -1,7 +1,7 @@
 //! Standalone source-host option; the options-driven Select model is separate.
 //!
 //! Copyright (c) 2023-2026 Siemens AG. SPDX-License-Identifier: MIT.
-use crate::dropdown::{checked_content_attribute, item_host_id, use_item_host};
+use crate::dropdown::{ItemDescription, item_host_id, use_item_host};
 use dioxus::prelude::*;
 
 /// A rendered Select item can also participate in a generic Dropdown. Selection
@@ -44,8 +44,19 @@ pub fn SelectItem(
         crate::dropdown_inventory::HostPartKind::SelectOption,
     );
     let roving_tabindex = binding.tabindex();
-    let checked_attribute =
-        serde_json::to_string(&checked_content_attribute(&attributes)).unwrap_or_default();
+    binding.describe(
+        &host_id,
+        &attributes,
+        ItemDescription {
+            disabled,
+            parts: vec![crate::dropdown_inventory::HostPartFacts {
+                kind: crate::dropdown_inventory::HostPartKind::SelectOption,
+                capture: format!("{}-option", binding.key),
+                source_focusable: false,
+            }],
+            ..Default::default()
+        },
+    );
     let aria_label = attributes
         .iter()
         .rev()
@@ -117,7 +128,6 @@ pub fn SelectItem(
             "data-ix-item-runtime": binding.runtime.owner_id(),
             "data-ix-item-focusable": "true", "data-active": active.to_string(),
             "value": value, "label": label, "disabled": disabled,
-            "data-ix-reflect-checked": checked_attribute,
             tabindex: roving_tabindex,
             onmounted: move |event| mounted_host.mount(&mounted_id,event.data()),
             onfocus: move |event| { focus_host.focus(true,None); onfocus.call(event); },
@@ -133,7 +143,6 @@ pub fn SelectItem(
                     if option_active { " ix-focused" } else { "" }),
                 role: "option", "aria-hidden": "true", "checked": selected, "disabled": disabled,
                 "data-active": option_active.to_string(),
-                "data-ix-reflect-checked": serde_json::to_string(&selected.then_some("")).unwrap_or_default(),
                 "data-ix-item-part": "select-option", "data-ix-descendant-kind": "dropdown", "data-ix-item-focusable": "false",
                 onfocus: move |_| focus_option.focus(true,Some(crate::dropdown_inventory::HostPartKind::SelectOption)),
                 onblur: move |_| blur_option.blur(),

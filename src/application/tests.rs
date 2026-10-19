@@ -590,7 +590,7 @@ fn generic_menu_host_click_delivers_real_consumer_once_without_inner_side_effect
     );
 }
 #[test]
-fn generic_category_children_publish_own_hidden_state_and_keep_native_child_lookup() {
+fn generic_category_children_publish_own_hidden_state_and_explicit_child_ownership() {
     let capture = GenericMenuItemCapture::default();
     let (mut dom, _) = source_item_dom(capture.clone());
     let category = capture.category.borrow().clone().unwrap();
@@ -598,9 +598,7 @@ fn generic_category_children_publish_own_hidden_state_and_keep_native_child_look
     let host_id = format!("ix-menu-category-child-{}-{child_id}", category.0.id);
     let html = dioxus_ssr::render(&dom);
     assert!(item_opening_tag(&html, &host_id).contains(" hidden"));
-    assert!(
-        item_opening_tag(&html, &format!("{host_id}-control")).contains("data-menu-category-child")
-    );
+    assert!(item_opening_tag(&html, &host_id).contains("data-menu-category-child"));
     assert!(
         category
             .0

@@ -2644,10 +2644,20 @@ pub fn MenuItem(
         &attributes,
         default_id.as_deref().unwrap_or(&item_host.host_id),
     );
+    item_host.describe(
+        &host_id,
+        &attributes,
+        crate::dropdown::ItemDescription {
+            disabled,
+            hidden: source_hidden,
+            source_focusable: !disabled,
+            ..Default::default()
+        },
+    );
     let control_id = if generic {
         Some(format!("{host_id}-control"))
     } else {
-        default_id
+        Some(host_id.clone())
     };
     let mounted_host = item_host.clone();
     let mounted_id = host_id.clone();
@@ -2754,7 +2764,7 @@ pub fn MenuItem(
                 title, "aria-label": label, "aria-current": if active { Some("page") } else { None },
                 "aria-disabled": disabled.to_string(), tabindex: roving_tabindex.unwrap_or(if disabled{-1}else{tabindex}), "data-home": home.to_string(),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
-                "data-ix-item-control":generic.then_some(""),
+                "data-ix-item-control":generic.then_some(""),"data-ix-item-key":(!generic).then(||item_host.key.clone()),
                 onmounted: onmount, onfocus:oncontrolfocus,onblur:oncontrolblur,onkeydown:onkey, onclick: onactivate,
                 ..control_attributes,
                 {content}
@@ -2763,7 +2773,7 @@ pub fn MenuItem(
             button { id:control_id, class, hidden:control_hidden,style:control_style,role:menu_role,r#type: "button", disabled:native_disabled, title, "aria-label": label,"aria-disabled":disabled.to_string(),tabindex:roving_tabindex.unwrap_or(if native_disabled{-1}else{tabindex}),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "aria-current": if active { Some("page") } else { None }, "data-home": home.to_string(),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
-                "data-ix-item-control":generic.then_some(""),
+                "data-ix-item-control":generic.then_some(""),"data-ix-item-key":(!generic).then(||item_host.key.clone()),
                 onmounted: onmount, onfocus:oncontrolfocus,onblur:oncontrolblur,onkeydown:onkey, onclick: onactivate,
                 ..control_attributes,
                 {content}
@@ -3018,6 +3028,19 @@ pub fn MenuCategory(
         .any(|child| child.active);
     let parent_id = format!("ix-menu-category-parent-{id}");
     let content_id = format!("ix-category-{id}");
+    item_host.describe(
+        &host_id,
+        &attributes,
+        crate::dropdown::ItemDescription {
+            hidden,
+            parts: vec![crate::dropdown_inventory::HostPartFacts {
+                kind: crate::dropdown_inventory::HostPartKind::CategoryParent,
+                capture: format!("{}-parent", item_host.key),
+                source_focusable: true,
+            }],
+            ..Default::default()
+        },
+    );
     let consumer_style = attributes
         .iter()
         .filter_map(|attribute| {
@@ -3135,7 +3158,14 @@ fn MenuCategoryContent(children: Element, parent: usize, category: CategoryNavig
     let fallback = navigation();
     let mut context = try_consume_context::<NavigationContext>().unwrap_or(fallback);
     context.prefix.push(parent);
+    let inventory_owner = category
+        .0
+        .overlay
+        .borrow()
+        .clone()
+        .expect("Category overlay registered before children");
     context.nested = Some(category);
+    use_context_provider(|| crate::dropdown::ItemInventoryOwner(inventory_owner));
     use_context_provider(|| context);
     rsx! {{children}}
 }

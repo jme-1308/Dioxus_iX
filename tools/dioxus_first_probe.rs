@@ -47,12 +47,19 @@ fn main() {
 
 #[component]
 fn CustomDropdownAction(onmodechange: EventHandler<()>) -> Element {
-    let item = use_dropdown_item("r02-mixed-custom");
     let mut authored_index = use_signal(|| 3);
+    let item = use_dropdown_item_with_options(
+        "r02-mixed-custom",
+        DropdownItemOptions {
+            tabindex: Some(authored_index()),
+            ..Default::default()
+        },
+    );
     rsx! { button {
         id:"r02-mixed-custom", r#type:"button", "data-ix-roving-item":"",
         onmounted:item.onmounted, tabindex:item.tabindex.or(Some(authored_index())),
         onkeydown:move |event:KeyboardEvent|match event.key(){Key::F2=>authored_index.set(7),Key::F3=>onmodechange.call(()),_=>item.onkeydown.call(event)},
+        ..item.attributes(),
         "Custom control"
     } }
 }
