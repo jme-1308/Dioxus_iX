@@ -74,6 +74,7 @@ pub(crate) struct ItemHostBinding {
     context: Option<DropdownContext>,
     inventory_owner: Option<NodeHandle>,
     parent_key: Option<String>,
+    header_control: Option<crate::header_control_scope::HeaderControlRegistration>,
     identity: usize,
     kind: ItemKind,
 }
@@ -82,6 +83,9 @@ impl ItemHostBinding {
         self.mount_control(target, target, node);
     }
     pub(crate) fn mount_control(&self, target: &str, focus_id: &str, node: Rc<MountedData>) {
+        if let Some(control) = &self.header_control {
+            control.update(focus_id);
+        }
         let owner = self
             .inventory_owner
             .as_ref()
@@ -255,6 +259,7 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         registry.register_item_cue(key.clone(), kind_value);
         (identity, key)
     });
+    let header_control = crate::header_control_scope::use_header_control_registration(key.clone());
     let cleanup = runtime.clone();
     let dropped = key.clone();
     use_drop(move || cleanup.unregister_item_cue(&dropped));
@@ -286,6 +291,7 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         context,
         inventory_owner,
         parent_key,
+        header_control,
         identity,
         kind: kind_value,
     }

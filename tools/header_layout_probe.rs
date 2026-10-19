@@ -42,10 +42,15 @@ enum ContentMode {
 
 #[component]
 fn ControlPart(group: &'static str, part: &'static str, mut count: Signal<usize>) -> Element {
+    let id = format!(
+        "hlp-{group}-{}",
+        if part == "input" { "input" } else { "count" }
+    );
+    let onmounted = use_focus_mount(id);
     if part == "input" {
-        rsx! { input { id: "hlp-{group}-input", r#type: "text", "aria-label": "{group} uncontrolled value", autocomplete: "off" } }
+        rsx! { input { id: "hlp-{group}-input", r#type: "text", "aria-label": "{group} uncontrolled value", autocomplete: "off", onmounted } }
     } else {
-        rsx! { button { id: "hlp-{group}-count", r#type: "button", onclick: move |_| count += 1, "{group} count {count}" } }
+        rsx! { button { id: "hlp-{group}-count", r#type: "button", onmounted, onclick: move |_| count += 1, "{group} count {count}" } }
     }
 }
 
@@ -136,6 +141,7 @@ fn Fixture() -> Element {
                 actions: rsx! { StatefulControl { group: "default", metrics: metrics.clone(), reversed: reversed() } },
                 secondary: rsx! { StatefulControl { group: "secondary", metrics: metrics.clone(), input_present: input_present() } },
                 overflow: rsx! { StatefulControl { group: "overflow", metrics: metrics.clone(), mode: mode() } },
+                overflow_present: matches!(mode(), ContentMode::Elements | ContentMode::Hidden),
                 avatar: rsx! { StatefulControl { group: "avatar", metrics: metrics.clone() } },
             }
         })

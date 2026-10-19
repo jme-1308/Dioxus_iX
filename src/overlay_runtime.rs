@@ -68,6 +68,16 @@ pub(crate) struct KeyDecision {
 }
 type KeyCallback = Rc<dyn Fn(&KeyFacts) -> KeyDecision>;
 
+/// Shared read-only native focus facts. Consumers project only their explicitly
+/// registered Dioxus controls; this observation never enrolls new controls.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FocusObservation {
+    pub(crate) candidates: Vec<crate::popover_focus::NativeFocusCandidate>,
+    pub(crate) active_id: String,
+    pub(crate) active_default: bool,
+}
+type FocusObserver = Rc<dyn Fn(FocusObservation)>;
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub(crate) struct AnchorRect {
     pub(crate) top: f64,
@@ -118,6 +128,7 @@ struct Entry {
     trigger_visibility_check: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
+    focus_observer: Option<FocusObserver>,
     submenu: Option<SubmenuAccess>,
     navigation_mode: Option<String>,
     suppress_trigger_restore: bool,
@@ -1427,6 +1438,7 @@ impl RuntimeHandle {
                     trigger_visibility_check: kind.is_dropdown(),
                     anchor_intersection: None,
                     anchor_shape: None,
+                    focus_observer: None,
                     submenu: None,
                     navigation_mode,
                     suppress_trigger_restore,
@@ -2355,7 +2367,10 @@ impl RuntimeHandle {
                 .collect::<Vec<_>>()
         };
         for (id, entry) in &snapshots {
-            if let Some(open) = self.read_current(id, entry) {
+            if let Some(open) = self
+                .with_owner(id, entry.generation, || self.read_current(id, entry))
+                .flatten()
+            {
                 self.0.borrow_mut().registry.set_presence(id, open);
             }
         }
@@ -2381,6 +2396,27 @@ impl RuntimeHandle {
             }
         }
         self.repair_moved_item_focus(report);
+        let focus = FocusObservation::from(report);
+        for (id, snapshot) in snapshots {
+            if !report
+                .nodes
+                .iter()
+                .any(|node| node.id == id && node.generation == snapshot.generation)
+            {
+                continue;
+            }
+            // Delivery may remove or replace a later owner. Re-read its live
+            // callback rather than invoking a retained snapshot after teardown.
+            self.with_owner(&id, snapshot.generation, || {
+                if let Some(observer) = self
+                    .entry(&id)
+                    .filter(|entry| entry.mounted)
+                    .and_then(|entry| entry.focus_observer)
+                {
+                    observer(focus.clone());
+                }
+            });
+        }
         KeyDecision::default()
     }
     fn reported_kind(&self, report: &Report, id: &str) -> Option<OverlayKind> {
@@ -3249,6 +3285,32 @@ impl NodeHandle {
             entry.anchor_shape = Some(handler);
         }
     }
+    /// Reuse canonical native facts in this surface's Dioxus scope. Installing
+    /// the callback during render does not synchronously deliver observations.
+    pub(crate) fn set_focus_observer(&self, observer: FocusObserver) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        if let Some(entry) = runtime.0.borrow_mut().nodes.get_mut(&self.id)
+            && entry.generation == self.generation
+        {
+            entry.focus_observer = Some(observer);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn current_focus_observation(&self) -> Option<FocusObservation> {
+        let runtime = self.runtime()?;
+        runtime
+            .entry(&self.id)
+            .filter(|entry| entry.mounted && entry.generation == self.generation)?;
+        let state = runtime.0.borrow();
+        let report = state.observation.as_ref()?;
+        report
+            .nodes
+            .iter()
+            .any(|node| node.id == self.id && node.generation == self.generation)
+            .then(|| FocusObservation::from(report))
+    }
     /// Deliver visibility from a registered Dioxus trigger's `onvisible`.
     /// The component binding owns trigger lifetime; this handle additionally
     /// rejects dropped/replaced surfaces and dispatches in the surface owner.
@@ -3473,6 +3535,15 @@ struct Report {
     active_hosts: Vec<String>,
     #[serde(default)]
     active_popover: String,
+}
+impl From<&Report> for FocusObservation {
+    fn from(report: &Report) -> Self {
+        Self {
+            candidates: report.focus_candidates.clone(),
+            active_id: report.active_id.clone(),
+            active_default: report.active_default,
+        }
+    }
 }
 impl Report {
     fn project_focus(&mut self) {
@@ -3723,6 +3794,58 @@ mod tests {
             node.with_owner(|| panic!("stale owner cannot run work"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn shared_focus_observation_runs_in_the_live_surface_scope() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let delivered = seen.clone();
+        node.set_focus_observer(Rc::new(move |focus| {
+            assert_eq!(current_scope_id(), owner);
+            assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
+            delivered.borrow_mut().push(focus);
+        }));
+        assert!(
+            seen.borrow().is_empty(),
+            "installation never calls during render"
+        );
+        dom.in_scope(owner, || node.set_mounted());
+        let mut observation = report(
+            &runtime,
+            1,
+            "observe",
+            serde_json::json!([{"id":node.id(),"generation":node.generation()}]),
+        );
+        observation.active_id = "registered-field".into();
+        observation.focus_candidates = serde_json::from_value(serde_json::json!([
+            {"target":"registered-field","tab_index":0,"exact_active":true}
+        ]))
+        .unwrap();
+        let caller = fixture.0.caller.get().unwrap();
+        dom.in_scope(caller, || {
+            runtime.observe(&observation);
+            assert_eq!(current_scope_id(), caller);
+        });
+        assert_eq!(seen.borrow().len(), 1);
+        assert_eq!(seen.borrow()[0].active_id, "registered-field");
+        assert_eq!(seen.borrow()[0].candidates.len(), 1);
+        assert_eq!(
+            node.current_focus_observation().as_ref(),
+            Some(&seen.borrow()[0])
+        );
+        runtime.observe(&observation);
+        assert_eq!(seen.borrow().len(), 1, "stale observations are rejected");
+        dom.in_scope(owner, || node.unregister());
+        observation.sequence = 2;
+        runtime.observe(&observation);
+        assert_eq!(seen.borrow().len(), 1, "removed owners receive no callback");
+        assert!(node.current_focus_observation().is_none());
     }
 
     struct Model {

@@ -55,6 +55,7 @@ mod expanding_search_styles;
 pub mod form_control;
 pub mod forms;
 mod group_styles;
+mod header_control_scope;
 mod header_layout;
 mod icon_button_styles;
 pub mod icons;

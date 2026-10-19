@@ -2177,6 +2177,9 @@ fn HeaderStatefulSlot(
     state: HeaderSlotCapture,
     label: String,
     #[props(default)] nested: bool,
+    #[props(default)] empty: bool,
+    #[props(default)] form_controls: bool,
+    #[props(default)] form_revision: usize,
 ) -> Element {
     use_hook(|| {
         state.0.borrow_mut().entry(label.clone()).or_default().0 += 1;
@@ -2184,14 +2187,47 @@ fn HeaderStatefulSlot(
     let cleanup = state.clone();
     let cleanup_label = label.clone();
     use_drop(move || cleanup.0.borrow_mut().get_mut(&cleanup_label).unwrap().1 += 1);
-    let mut count = use_signal(|| 0_usize);
+    let count = use_signal(|| 0_usize);
+    if empty {
+        return VNode::empty();
+    }
     rsx! {div {"data-header-slot-state":label.clone(),
-        input {value:"initial uncontrolled"}
-        button {r#type:"button","data-header-slot-button":label.clone(),onclick:move |_|count+=1,"{label} count {count}"}
+        HeaderSlotControls {label:label.clone(),count}
+        if form_controls { HeaderFormControls {key:"{form_revision}",revision:form_revision} }
         if nested {crate::Dropdown {label:"Header nested",suppress_trigger_visibility_check:true,
             crate::DropdownItem {label:"Nested choice"}
         }}
     }}
+}
+#[component]
+fn HeaderSlotControls(label: String, count: Signal<usize>) -> Element {
+    let mut count = count;
+    let input_id = use_hook(|| {
+        format!(
+            "header-slot-input-{}",
+            NAV_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let input_mount = crate::use_focus_mount(input_id.clone());
+    let button_id = use_hook(|| {
+        format!(
+            "header-slot-button-{}",
+            NAV_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let button_mount = crate::use_focus_mount(button_id.clone());
+    rsx! {
+        input {id:input_id,onmounted:input_mount,value:"initial uncontrolled"}
+        button {id:button_id,onmounted:button_mount,r#type:"button","data-header-slot-button":label.clone(),onclick:move |_|count+=1,"{label} count {count}"}
+    }
+}
+#[component]
+fn HeaderFormControls(revision: usize) -> Element {
+    rsx! {
+        crate::Input {id:format!("header-form-input-{revision}"),value:"Input value"}
+        crate::Textarea {id:format!("header-form-textarea-{revision}"),value:"Textarea value"}
+        crate::Select {id:format!("header-form-select-{revision}"),options:vec![crate::SelectOption::new("a","Alpha")]}
+    }
 }
 #[derive(Clone, Default)]
 struct HeaderPeerCapture(Rc<RefCell<HeaderPeerState>>);
@@ -2265,6 +2301,10 @@ struct AppSwitchFixture {
     contained: bool,
     slot_state: HeaderSlotCapture,
     slot_top_layer: bool,
+    slot_presence: [Option<bool>; 4],
+    slot_empty: bool,
+    slot_form_controls: bool,
+    slot_form_revision: usize,
     overflow_present: bool,
     slot_nested: bool,
     overflow_veto: bool,
@@ -2364,9 +2404,10 @@ fn app_switch_fixture(settings: Rc<RefCell<AppSwitchFixture>>) -> Element {
         app_icon_src:state.image.clone(),app_icon_alt:state.image_alt.clone(),app_icon_outline:state.outline,
         company_logo:state.company.clone(),company_logo_alt:state.company_alt.clone(),logo:state.logo.then(||rsx!{span{"Neutral slot"}}),
         aria_label_app_switch_icon_button:state.switch_label.clone(),aria_label_more_menu_icon_button:state.more_label.clone(),
-        actions:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"default"}},
-        secondary:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"secondary"}},
-        overflow:state.overflow_present.then(||rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"overflow",nested:state.slot_nested}}),
+        actions:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"default",empty:state.slot_empty,form_controls:state.slot_form_controls,form_revision:state.slot_form_revision}},
+        actions_present:state.slot_presence[1],secondary_present:state.slot_presence[0],overflow_present:state.slot_presence[2],avatar_present:state.slot_presence[3],
+        secondary:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"secondary",empty:state.slot_empty}},
+        overflow:state.overflow_present.then(||rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"overflow",nested:state.slot_nested,empty:state.slot_empty}}),
         avatar:rsx!{span{"Avatar slot"}},
         children:rsx!{span{"Leading compatibility"}},
         onopenappswitch:move |event:MouseEvent| {
@@ -2448,6 +2489,10 @@ impl AppSwitchHarness {
             contained: true,
             slot_state: HeaderSlotCapture::default(),
             slot_top_layer: false,
+            slot_presence: [None; 4],
+            slot_empty: false,
+            slot_form_controls: false,
+            slot_form_revision: 0,
             overflow_present: true,
             slot_nested: false,
             overflow_veto: false,
@@ -2755,7 +2800,7 @@ impl AppSwitchHarness {
         let generation = self.header_root_attrs()["data-generation"]
             .parse::<u64>()
             .unwrap();
-        let mut report = serde_json::json!({"owner":owner,"generation":generation,"sequence":sequence,"connected":true,"kind":kind,"presence":[true,true,true,true],"focus_count":6,"focused_index":0});
+        let mut report = serde_json::json!({"owner":owner,"generation":generation,"sequence":sequence,"kind":kind,"viewport_width":1200.0});
         report
             .as_object_mut()
             .unwrap()
@@ -3013,7 +3058,7 @@ fn header_layout_dioxus_overflow_keys_preserve_veto_defaults_and_once_only_actio
     let _event_converter_guard = crate::test_event_converter_guard();
     let mut harness = AppSwitchHarness::new(None, false);
     assert_eq!(
-        harness.header_raw(harness.header_message(1, "presence", serde_json::json!({}))),
+        harness.header_raw(harness.header_message(1, "layout", serde_json::json!({}))),
         (false, false)
     );
     harness.settle();
@@ -3141,7 +3186,7 @@ fn header_layout_dioxus_overflow_keys_preserve_veto_defaults_and_once_only_actio
 fn header_completion_keeps_each_payload_and_resolves_current_committed_listener() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
     for _ in 0..3 {
         h.header_more_click(false);
     }
@@ -3173,7 +3218,7 @@ fn header_completion_keeps_each_payload_and_resolves_current_committed_listener(
 fn header_completion_allows_reentrant_observer_state_changes() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
     let owner_runtime = h.dom.in_scope(ScopeId::ROOT, || {
         dioxus::core::Runtime::try_current().unwrap()
     });
@@ -3209,7 +3254,7 @@ fn header_completion_allows_reentrant_observer_state_changes() {
 fn header_completion_survives_mode_changes_and_reports_configuration_close() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
     h.header_more_click(false);
     let registration = h.header_rendered_root_attribute("data-ix-overlay-generation");
     let private = h.header_root_attrs()["data-generation"].clone();
@@ -3247,7 +3292,7 @@ fn header_completion_survives_mode_changes_and_reports_configuration_close() {
 fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
     h.header_more_click(false);
     let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
     let old_root = h.header_root_attrs()["id"].clone();
@@ -3274,7 +3319,7 @@ fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
         "rendered observer owner: {rendered_owner:?}"
     );
     assert_eq!(rendered_owner, Some(h.header_root_attrs()["id"].as_str()));
-    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
     h.header_more_click(false);
     assert!(h.settings.borrow().overflow_changes.is_empty());
     assert_eq!(h.completion_effects(), 1);
@@ -3290,7 +3335,7 @@ fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoe
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+        h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
         h.header_peer_observe(1, false);
         if previous {
             h.header_more_click(false);
@@ -3345,7 +3390,7 @@ fn header_closed_more_activation_keys_run_post_phase_with_or_without_alt_and_vet
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+        h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
         h.header_peer_observe(1, false);
         let peers = h.seed_header_peers();
         h.settings.borrow_mut().overflow_veto = veto;
@@ -3396,7 +3441,7 @@ fn header_more_dismissal_skips_open_navigation_and_consumer_prevented_input() {
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+        h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
         h.header_peer_observe(1, false);
         let previous = case == "open-enter";
         if previous {
@@ -3444,7 +3489,7 @@ fn actual_nested_dropdown_clicks_do_not_toggle_the_header_surface() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::configured(None, false, |state| state.slot_nested = true);
     h.settle();
-    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
+    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
     let (id, _) = h
         .attrs
         .iter()
@@ -3482,9 +3527,9 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
         state.overflow_present = false;
     });
     harness.settle();
-    let presence = serde_json::json!({"presence":[true,true,false,true]});
+    let layout = serde_json::json!({});
     assert_eq!(
-        harness.header_raw(harness.header_message(1, "presence", presence.clone())),
+        harness.header_raw(harness.header_message(1, "layout", layout.clone())),
         (false, false)
     );
     harness.settle();
@@ -3527,7 +3572,7 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
         "slot projection keeps the registered controller lifetime"
     );
     assert_eq!(
-        harness.header_raw(harness.header_message(1, "presence", presence)),
+        harness.header_raw(harness.header_message(1, "layout", layout)),
         (false, false)
     );
     harness.settle();
@@ -3615,7 +3660,7 @@ fn header_layout_arbitrary_slot_components_mount_once_through_mode_changes() {
         }
         harness.update();
         assert_eq!(
-            harness.header_raw(harness.header_message(1, "presence", serde_json::json!({}))),
+            harness.header_raw(harness.header_message(1, "layout", serde_json::json!({}))),
             (false, false)
         );
         harness.settle();
@@ -4179,4 +4224,118 @@ fn header_legacy_apps_registration_tracks_responsive_hiding_and_configured_repla
     assert!(runtime.capture_registered_focus(&replacement_id).is_none());
     assert!(first.live_node().is_none());
     assert!(first.matches_node(&retained));
+}
+
+fn header_group_populated(harness: &AppSwitchHarness, group: &str) -> bool {
+    let html = harness.html();
+    let start = html
+        .find(&format!("data-header-group=\"{group}\""))
+        .expect("Header group");
+    let tag = &html[start..start + html[start..].find('>').unwrap()];
+    tag.contains("data-populated=\"true\"")
+}
+
+#[test]
+fn header_slot_presence_uses_rust_options_and_explicit_empty_wrapper_declarations() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = AppSwitchHarness::configured(None, false, |state| {
+        state.breakpoint = ApplicationBreakpoint::Small;
+        state.overflow_present = false;
+    });
+    h.settle();
+    assert!(header_group_populated(&h, "secondary"));
+    assert!(header_group_populated(&h, "default"));
+    assert!(!header_group_populated(&h, "overflow"));
+    // Historical native presence data cannot override the authored Rust slots.
+    h.header_raw(h.header_message(
+        1,
+        "layout",
+        serde_json::json!({"presence":[false,false,true,false]}),
+    ));
+    h.settle();
+    assert!(header_group_populated(&h, "default"));
+    assert!(!header_group_populated(&h, "overflow"));
+    {
+        let mut state = h.settings.borrow_mut();
+        state.slot_empty = true;
+        state.slot_presence = [Some(false); 4];
+    }
+    h.update();
+    assert!(!header_group_populated(&h, "secondary"));
+    assert!(!header_group_populated(&h, "default"));
+    assert!(!header_group_populated(&h, "overflow"));
+    assert!(!h.html().contains("default count"));
+    assert_eq!(h.settings.borrow().slot_state.0.borrow()["default"], (1, 0));
+    // Removing a declaration restores Some/None semantics, even when a custom
+    // wrapper currently returns empty content; no DOM discovery substitutes.
+    h.settings.borrow_mut().slot_presence = [None; 4];
+    h.update();
+    assert!(header_group_populated(&h, "default"));
+    assert!(!header_group_populated(&h, "overflow"));
+    {
+        let mut state = h.settings.borrow_mut();
+        state.slot_empty = false;
+        state.overflow_present = true;
+    }
+    h.update();
+    assert!(header_group_populated(&h, "overflow"));
+    assert_eq!(h.settings.borrow().slot_state.0.borrow()["default"], (1, 0));
+}
+
+#[test]
+fn header_standard_fields_register_their_native_controls_and_invalidate_replaced_scopes() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = AppSwitchHarness::configured(None, false, |state| state.slot_form_controls = true);
+    h.settle();
+    let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
+    let ids = [
+        "header-form-input-0",
+        "header-form-textarea-0",
+        "header-form-select-0",
+    ];
+    let captured: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            runtime
+                .capture_registered_focus(id)
+                .expect("mounted native focus control")
+        })
+        .collect();
+    let retained: Vec<_> = captured
+        .iter()
+        .map(|target| target.live_node().unwrap())
+        .collect();
+    assert!(
+        runtime
+            .capture_registered_focus("header-form-select-0-control")
+            .is_none(),
+        "presentation wrapper is not the Select focus target"
+    );
+    h.settings.borrow_mut().slot_form_revision = 1;
+    h.update();
+    for (id, target) in ids.iter().zip(&captured) {
+        assert!(runtime.capture_registered_focus(id).is_none());
+        assert!(target.live_node().is_none());
+    }
+    let replacements: Vec<_> = [
+        "header-form-input-1",
+        "header-form-textarea-1",
+        "header-form-select-1",
+    ]
+    .iter()
+    .map(|id| runtime.capture_registered_focus(id).unwrap())
+    .collect();
+    h.settings.borrow_mut().slot_form_controls = false;
+    h.update();
+    assert!(
+        replacements
+            .iter()
+            .all(|target| target.live_node().is_none())
+    );
+    assert!(
+        captured
+            .iter()
+            .zip(&retained)
+            .all(|(target, node)| target.matches_node(node))
+    );
 }

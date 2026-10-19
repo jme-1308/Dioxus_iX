@@ -2100,15 +2100,35 @@ pub fn ApplicationHeader(
     /// Default/right content, retained as one mounted tree across layouts.
     #[props(default)]
     actions: Option<Element>,
+    /// Explicit default/right slot presence for a wrapper that returns empty content.
+    /// Omit to derive presence from the slot's `Some`/`None` value. Declaring
+    /// absence changes layout/focus eligibility without unmounting its tree.
+    #[props(default)]
+    actions_present: Option<bool>,
     /// Source secondary content, before default actions in the small popup.
     #[props(default)]
     secondary: Option<Element>,
+    /// Explicit secondary slot presence for a wrapper that returns empty content.
+    /// Omit to derive presence from the slot's `Some`/`None` value. Declaring
+    /// absence changes layout/focus eligibility without unmounting its tree.
+    #[props(default)]
+    secondary_present: Option<bool>,
     /// Content that is always presented through More, including large layouts.
     #[props(default)]
     overflow: Option<Element>,
+    /// Explicit overflow slot presence for a wrapper that returns empty content.
+    /// Omit to derive presence from the slot's `Some`/`None` value. Declaring
+    /// absence changes layout/focus eligibility without unmounting its tree.
+    #[props(default)]
+    overflow_present: Option<bool>,
     /// Content that stays after More, outside the responsive popup.
     #[props(default)]
     avatar: Option<Element>,
+    /// Explicit avatar slot presence for a wrapper that returns empty content.
+    /// Omit to derive presence from the slot's `Some`/`None` value. Declaring
+    /// absence changes layout/focus eligibility without unmounting its tree.
+    #[props(default)]
+    avatar_present: Option<bool>,
     /// Use native top-layer rendering for the responsive overflow surface.
     #[props(default)]
     enable_top_layer: bool,
@@ -2186,7 +2206,7 @@ pub fn ApplicationHeader(
                 {children}
             }
             crate::header_layout::HeaderLayout {
-                default_content:actions,secondary,overflow,avatar,small,enable_top_layer,
+                default_content:actions,secondary,overflow,avatar,actions_present,secondary_present,overflow_present,avatar_present,small,enable_top_layer,
                 discovery_ready:viewport.is_ready(),
                 onrequest:onbeforeoverflowchange,onchange:onoverflowchange,
                 more_label:aria_label_more_menu_icon_button.unwrap_or_else(||"More Menu".into())

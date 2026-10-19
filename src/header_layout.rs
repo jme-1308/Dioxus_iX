@@ -1,10 +1,14 @@
-//! Stable arbitrary-content Header presentation. Native code reports DOM facts;
-//! Rust owns presence, open state, cancellation, keyboard choices and focus intent.
+//! Stable Dioxus Header presentation. Rust owns slot presence and mounted control
+//! groups; shared canonical focus observations supply native eligibility facts.
+use crate::header_control_scope::{HeaderControlGroup, HeaderControls};
 use crate::overlay_registry::{CloseBehavior, OverlayKind};
-use crate::overlay_runtime::{self, Callbacks, Change, KeyDecision, KeyFacts, NodeHandle, Reason};
+use crate::overlay_runtime::{
+    self, Callbacks, Change, FocusObservation, KeyDecision, KeyFacts, NodeHandle, Reason,
+};
 use dioxus::prelude::*;
 use serde::Deserialize;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -12,14 +16,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod native;
 static NEXT_OWNER: AtomicUsize = AtomicUsize::new(1);
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct FocusedControl {
     id: String,
     group: u8,
 }
 
-// One native presented-element observation; policy projections stay in Rust.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+// Rust projection of explicitly registered shared focus facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PresentedControl {
     id: String,
     tab_index: i32,
@@ -34,11 +38,6 @@ struct Report {
     generation: u64,
     sequence: u64,
     kind: String,
-    presence: [bool; 4],
-    #[serde(default)]
-    controls: Vec<PresentedControl>,
-    #[serde(default)]
-    active_default: bool,
     #[serde(default)]
     viewport_width: f64,
 }
@@ -83,6 +82,8 @@ struct Model {
     preserve: Option<FocusedControl>,
     preserve_target: Option<overlay_runtime::MountedFocusTarget>,
     active_default: bool,
+    focus_observation: Option<FocusObservation>,
+    focus_generation: u64,
     changed: Option<EventHandler<bool>>,
     viewport_width: f64,
     more_mount: Option<Rc<MountedData>>,
@@ -110,6 +111,8 @@ impl Model {
             preserve: None,
             preserve_target: None,
             active_default: false,
+            focus_observation: None,
+            focus_generation: 0,
             changed: None,
             viewport_width: 0.0,
             more_mount: None,
@@ -222,6 +225,7 @@ impl Model {
         self.invalidate_layout();
         self.sequence = 0;
         self.controls.clear();
+        self.focus_generation = 0;
         let capture = (!layer_changed && self.alive && self.mounted)
             .then_some(focused)
             .flatten()
@@ -249,6 +253,8 @@ impl Model {
         self.more_mount = None;
         self.popup_mounts = [None, None];
         self.controls.clear();
+        self.focus_observation = None;
+        self.focus_generation = 0;
         self.focus("none".into());
     }
 }
@@ -397,6 +403,34 @@ fn focus_ids<'a>(choice: &str, ids: &'a [String]) -> Vec<&'a str> {
     }
 }
 
+// Header membership is explicit Dioxus registration. Native candidates retain
+// their canonical DOM order and eligibility; there is no Header-local scanner.
+fn presented_controls(
+    observation: &FocusObservation,
+    groups: &BTreeMap<String, u8>,
+    owner: &str,
+) -> Vec<PresentedControl> {
+    let more = format!("{owner}-more");
+    observation
+        .candidates
+        .iter()
+        .filter_map(|candidate| {
+            let group = if candidate.target == more {
+                4
+            } else {
+                *groups.get(&candidate.target)?
+            };
+            Some(PresentedControl {
+                id: candidate.target.clone(),
+                tab_index: candidate.tab_index,
+                active: candidate.exact_active,
+                group: Some(group),
+                in_popup: candidate.hosts.iter().any(|host| host == owner),
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 struct Controller {
     model: Rc<RefCell<Model>>,
@@ -404,6 +438,34 @@ struct Controller {
     node: NodeHandle,
 }
 impl Controller {
+    fn project_controls(&self, groups: &BTreeMap<String, u8>) -> bool {
+        let mut model = self.model.borrow_mut();
+        if !model.alive || !model.mounted || model.focus_generation != model.generation {
+            return false;
+        }
+        let Some(observation) = model.focus_observation.as_ref() else {
+            return false;
+        };
+        let controls = presented_controls(observation, groups, self.node.id());
+        let active_default = observation.active_default;
+        let changed = model.controls != controls || model.active_default != active_default;
+        model.controls = controls;
+        model.active_default = active_default;
+        changed
+    }
+    fn observe_focus(&self, observation: FocusObservation, groups: &BTreeMap<String, u8>) {
+        {
+            let mut model = self.model.borrow_mut();
+            if !model.alive || !model.mounted {
+                return;
+            }
+            model.focus_observation = Some(observation);
+            model.focus_generation = model.generation;
+        }
+        if self.project_controls(groups) {
+            self.notify();
+        }
+    }
     fn measure_layout(&self) {
         let Some((more, popup, viewport, epoch, generation, small)) = ({
             let mut model = self.model.borrow_mut();
@@ -542,7 +604,7 @@ impl Controller {
             "preserve" => {
                 let model = self.model.borrow();
                 let valid = preserve.is_some_and(|capture| {
-                    model.sequence > 0
+                    model.focus_generation == model.generation
                         && model.group_presented(capture.group)
                         && model.presented(&capture.id)
                         && (model.active_default
@@ -594,11 +656,11 @@ impl Controller {
             return;
         }
         let Some(target) = self.registered_target(&choice) else {
-            // Opening candidates arrive with the next visible-presence report.
+            // Opening candidates arrive with the next shared focus observation.
             // Unsupported controls never become a native focus fallback.
             let awaiting_presentation = {
                 let model = self.model.borrow();
-                choice == "preserve" && model.sequence == 0
+                choice == "preserve" && model.focus_generation != model.generation
                     || matches!(choice.as_str(), "first" | "last")
                         && model.popup_controls().next().is_none()
             };
@@ -700,7 +762,7 @@ impl Controller {
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
-        if !matches!(report.kind.as_str(), "presence" | "pointer" | "layout") {
+        if !matches!(report.kind.as_str(), "pointer" | "layout") {
             return;
         }
         {
@@ -709,9 +771,6 @@ impl Controller {
                 return;
             }
             model.sequence = report.sequence;
-            model.presence = report.presence;
-            model.controls = report.controls;
-            model.active_default = report.active_default;
             if report.kind == "layout" || model.viewport_width != report.viewport_width {
                 model.layout_epoch = model.layout_epoch.wrapping_add(1);
             }
@@ -736,6 +795,10 @@ pub(crate) fn HeaderLayout(
     #[props(default)] secondary: Option<Element>,
     #[props(default)] overflow: Option<Element>,
     #[props(default)] avatar: Option<Element>,
+    #[props(default)] actions_present: Option<bool>,
+    #[props(default)] secondary_present: Option<bool>,
+    #[props(default)] overflow_present: Option<bool>,
+    #[props(default)] avatar_present: Option<bool>,
     #[props(default)] small: bool,
     #[props(default)] enable_top_layer: bool,
     #[props(default)] discovery_ready: bool,
@@ -744,7 +807,16 @@ pub(crate) fn HeaderLayout(
     #[props(default)] onchange: EventHandler<bool>,
 ) -> Element {
     let model = use_hook(|| Rc::new(RefCell::new(Model::new(small, enable_top_layer))));
-    model.borrow_mut().changed = Some(onchange);
+    {
+        let mut model = model.borrow_mut();
+        model.changed = Some(onchange);
+        model.presence = [
+            secondary_present.unwrap_or(secondary.is_some()),
+            actions_present.unwrap_or(default_content.is_some()),
+            overflow_present.unwrap_or(overflow.is_some()),
+            avatar_present.unwrap_or(avatar.is_some()),
+        ];
+    }
     let revision = use_signal(|| 0_u64);
     let runtime = overlay_runtime::use_overlay_runtime();
     let node_slot = use_hook(|| Rc::new(RefCell::new(None::<NodeHandle>)));
@@ -883,9 +955,28 @@ pub(crate) fn HeaderLayout(
         revision,
         node,
     };
+    let controls = use_hook({
+        let current = controller.clone();
+        move || {
+            HeaderControls::new(Rc::new(move || {
+                if current.model.borrow().alive {
+                    current.notify();
+                }
+            }))
+        }
+    });
+    let observer_controller = controller.clone();
+    let observer_controls = controls.clone();
+    controller
+        .node
+        .set_focus_observer(Rc::new(move |observation| {
+            observer_controller.observe_focus(observation, &observer_controls.groups());
+        }));
     let focus_controller = controller.clone();
+    let focus_controls = controls.clone();
     use_effect(move || {
         let _ = revision();
+        focus_controller.project_controls(&focus_controls.groups());
         focus_controller.dispatch_focus();
         focus_controller.measure_layout();
     });
@@ -900,6 +991,7 @@ pub(crate) fn HeaderLayout(
     let small_style = state.popup_style(true);
     let large_style = state.popup_style(false);
     let active = if small { "small" } else { "large" };
+    let transport_id = format!("{owner}-transport");
     let more_id = format!("{owner}-more");
     let small_id = format!("{owner}-small");
     let large_id = format!("{owner}-large");
@@ -953,7 +1045,7 @@ pub(crate) fn HeaderLayout(
                 *bridge.borrow_mut() = Some(dioxus::document::eval(&native::BRIDGE.replace("__OWNER__",&owner)));
             },
             overlay_runtime::OverlayTransport {runtime}
-            input {r#type:"hidden","data-header-layout-observer":owner.clone(),
+            input {id:transport_id,r#type:"hidden","data-header-layout-observer":owner.clone(),
                 oninput:move |event| controller.observation(event)
             }
             dialog {id:small_id.clone(),class:"ix-header-popup-host ix-header-popup-small",
@@ -970,8 +1062,8 @@ pub(crate) fn HeaderLayout(
                 onresize:move |_|small_resize.measure_layout(),
                 onclick:move |event|small_background.background_click(true,event),
                 onkeydown:move |event|small_key.key(event,false,Some(true)),
-                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onresize:layout_resize,onclick:move |event|secondary_click.group_click(0,event),HeaderOwnershipScope {node:secondary_scope,{secondary}}}
-                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onresize:layout_resize,onclick:move |event|default_click.group_click(1,event),HeaderOwnershipScope {node:default_scope,{default_content}}}
+                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onresize:layout_resize,onclick:move |event|secondary_click.group_click(0,event),HeaderOwnershipScope {node:secondary_scope,controls:controls.clone(),group:0,{secondary}}}
+                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onresize:layout_resize,onclick:move |event|default_click.group_click(1,event),HeaderOwnershipScope {node:default_scope,controls:controls.clone(),group:1,{default_content}}}
                 dialog {id:large_id.clone(),class:"ix-header-popup-host ix-header-popup-large",
                     "data-ix-overlay-host":(!small).then_some(owner.clone()),
                     "data-header-popup-host":"large","data-active":(!small).to_string(),"data-open":(!small&&open).to_string(),
@@ -986,7 +1078,7 @@ pub(crate) fn HeaderLayout(
                     onresize:move |_|large_resize.measure_layout(),
                     onclick:move |event|large_background.background_click(false,event),
                     onkeydown:move |event|large_key.key(event,false,Some(false)),
-                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onresize:layout_resize,onclick:move |event|overflow_click.group_click(2,event),HeaderOwnershipScope {node:overflow_scope,{overflow}}}
+                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onresize:layout_resize,onclick:move |event|overflow_click.group_click(2,event),HeaderOwnershipScope {node:overflow_scope,controls:controls.clone(),group:2,{overflow}}}
                 }
             }
             button {id:more_id,r#type:"button",class:"ix-app-icon-button ix-header-more-button",
@@ -1011,7 +1103,7 @@ pub(crate) fn HeaderLayout(
                 "aria-label":more_label,"aria-expanded":open.to_string(),"aria-controls":if active=="small" {small_id} else {large_id},
                 crate::Icon {name:"more-menu".to_string(),size:24}
             }
-            div {class:"ix-header-avatar-slot","data-header-group":"avatar",onresize:layout_resize,{avatar}}
+            div {class:"ix-header-avatar-slot","data-header-group":"avatar",onresize:layout_resize,HeaderOwnershipScope {node:None,controls:controls.clone(),group:3,{avatar}}}
         }
     }
 }
@@ -1019,8 +1111,14 @@ pub(crate) fn HeaderLayout(
 // Scope-only component: responsive ownership changes without new DOM wrappers
 // or relocating consumer content and its mounted element handles.
 #[component]
-fn HeaderOwnershipScope(node: Option<NodeHandle>, children: Element) -> Element {
+fn HeaderOwnershipScope(
+    node: Option<NodeHandle>,
+    controls: HeaderControls,
+    group: u8,
+    children: Element,
+) -> Element {
     overlay_runtime::use_overlay_scope(node);
+    use_context_provider(|| HeaderControlGroup { controls, group });
     rsx! {{children}}
 }
 
@@ -1297,7 +1395,7 @@ mod tests {
             model.controls = vec![control("registered-field", 1, 0, true, false)];
             assert!(!model.sync_mode(true, false));
             model.preserve_target = Some(captured.clone());
-            model.sequence = 1;
+            model.focus_generation = model.generation;
             model.controls = vec![control("registered-field", 1, 0, true, true)];
         }
         dom.in_runtime(|| controller.dispatch_focus());
@@ -1436,17 +1534,56 @@ mod tests {
         }
         assert!(model.focused_control().is_none());
     }
+    #[test]
+    fn canonical_focus_projection_requires_current_group_registration_and_exact_focus() {
+        let candidate =
+            |id: &str, hosts: &[&str], active: bool| crate::popover_focus::NativeFocusCandidate {
+                target: id.into(),
+                tab_index: 0,
+                hosts: hosts.iter().map(|host| (*host).into()).collect(),
+                nearest_host: String::new(),
+                popover: String::new(),
+                exact_active: active,
+                contains_active: !active,
+            };
+        let observation = FocusObservation {
+            candidates: vec![
+                candidate("outside", &["header"], false),
+                candidate("field", &["header", "nested"], true),
+                candidate("inline", &[], false),
+                candidate("header-more", &[], false),
+            ],
+            active_id: "field".into(),
+            active_default: false,
+        };
+        let groups = BTreeMap::from([("inline".into(), 1), ("field".into(), 2)]);
+        let projected = presented_controls(&observation, &groups, "header");
+        assert_eq!(
+            projected
+                .iter()
+                .map(|control| control.id.as_str())
+                .collect::<Vec<_>>(),
+            ["field", "inline", "header-more"]
+        );
+        assert!(projected[0].active && projected[0].in_popup);
+        assert_eq!(projected[0].group, Some(2));
+        assert!(!projected[1].active && !projected[1].in_popup);
+        assert_eq!(projected[2].group, Some(4));
+        let mut retired = groups;
+        retired.remove("field");
+        assert!(
+            !presented_controls(&observation, &retired, "header")
+                .iter()
+                .any(|control| control.id == "field")
+        );
+    }
+
     fn report(model: &Model, kind: &str) -> Report {
         Report {
             owner: model.owner.clone(),
             generation: model.generation,
             sequence: model.sequence + 1,
             kind: kind.into(),
-            presence: [true; 4],
-            controls: (0..6)
-                .map(|index| control(&format!("control-{index}"), 2, 0, index == 0, true))
-                .collect(),
-            active_default: false,
             viewport_width: 1000.0,
         }
     }
@@ -1651,7 +1788,7 @@ mod tests {
         model.presence = [true; 4];
         model.sequence = 42;
         model.focus("last".into());
-        let previous = report(&model, "presence");
+        let previous = report(&model, "layout");
         assert!(
             !model.sync_mode(true, true),
             "slot movement must not request close"
@@ -1750,26 +1887,26 @@ mod tests {
     }
 
     #[test]
-    fn presence_and_owner_reconciliation_reject_stale_native_work() {
+    fn rust_presence_and_owner_reconciliation_reject_stale_native_work() {
         let mut model = Model::new(false, false);
         model.mounted = true;
         model.presence = [true, true, false, true];
         assert!(!model.more_visible());
         model.small = true;
         assert!(model.more_visible());
-        let mut fact = report(&model, "presence");
+        let mut fact = report(&model, "layout");
         assert!(model.accepts(&fact));
         fact.owner.push('x');
         assert!(!model.accepts(&fact));
-        fact = report(&model, "presence");
+        fact = report(&model, "layout");
         model.sequence = fact.sequence;
         assert!(!model.accepts(&fact));
-        fact = report(&model, "presence");
+        fact = report(&model, "layout");
         model.open = true;
         assert!(model.sync_mode(false, true));
         assert!(!model.open);
         assert!(!model.accepts(&fact));
-        let fact = report(&model, "presence");
+        let fact = report(&model, "layout");
         model.invalidate();
         assert!(!model.accepts(&fact));
     }

@@ -130,6 +130,10 @@ impl GroupMode {
         !matches!(self, Self::Absent)
     }
 
+    fn has_elements(self) -> bool {
+        matches!(self, Self::Active | Self::Hidden | Self::Disabled)
+    }
+
     fn from_query(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "active" | "true" | "1" | "present" => Some(Self::Active),
@@ -501,6 +505,78 @@ fn build_app_switch_config(mode: ConfigMode) -> Option<AppSwitchConfig> {
     }
 }
 
+#[derive(Clone, PartialEq)]
+struct HeaderSlotControlState {
+    instance_id: usize,
+    stats: GroupIdentityStats,
+    count: usize,
+    hidden: bool,
+    disabled: bool,
+}
+
+// Each native control owns its registration lifetime. Empty/text group output
+// and optional input removal therefore release exactly the removed handle.
+#[component]
+fn HeaderSlotControl(
+    group: &'static str,
+    label: &'static str,
+    part: &'static str,
+    state: HeaderSlotControlState,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    let id = format!("header-layout-{group}-{part}");
+    let onmounted = use_focus_mount(id.clone());
+    let stats = &state.stats;
+    if part == "input" {
+        rsx! {
+            input {
+                key: "slot-input-{group}",
+                id,
+                class: "header-layout-slot-input",
+                r#type: "text",
+                placeholder: "{label} draft...",
+                aria_label: "{label} uncontrolled input",
+                disabled: state.disabled,
+                hidden: state.hidden,
+                "data-group": "{group}",
+                "data-instance-id": "{state.instance_id}",
+                "data-mount-count": "{stats.mount_count}",
+                "data-drop-count": "{stats.drop_count}",
+                "data-active-count": "{stats.active_count}",
+                "data-local-count": "{state.count}",
+                onmounted,
+            }
+        }
+    } else {
+        let action_aria = format!("{label} ({})", state.count);
+        let action_text = if group == "avatar" {
+            format!("A{}", state.count)
+        } else {
+            action_aria.clone()
+        };
+        rsx! {
+            button {
+                key: "slot-action-{group}",
+                id,
+                class: "header-layout-slot-action ix-button ix-button-subtle-tertiary",
+                r#type: "button",
+                aria_label: action_aria,
+                disabled: state.disabled,
+                hidden: state.hidden,
+                "data-group": "{group}",
+                "data-instance-id": "{state.instance_id}",
+                "data-mount-count": "{stats.mount_count}",
+                "data-drop-count": "{stats.drop_count}",
+                "data-active-count": "{stats.active_count}",
+                "data-local-count": "{state.count}",
+                onmounted,
+                onclick,
+                "{action_text}"
+            }
+        }
+    }
+}
+
 #[component]
 fn HeaderSlotGroup(
     group: &'static str,
@@ -558,6 +634,28 @@ fn HeaderSlotGroup(
         }
     });
 
+    let ledger_for_click = ledger.clone();
+    let onaction = use_callback(move |_: MouseEvent| {
+        let next = local_count() + 1;
+        local_count.set(next);
+        let updated = ledger_for_click
+            .borrow_mut()
+            .record_local_count(group, next);
+        diag_revision += 1;
+        push_event(
+            events,
+            json!({
+                "kind": "slot-action",
+                "group": group,
+                "instance_id": instance_id,
+                "local_count": next,
+                "mount_count": updated.mount_count,
+                "drop_count": updated.drop_count,
+                "active_count": updated.active_count,
+            }),
+        );
+    });
+
     if matches!(mode, GroupMode::EmptyComponent | GroupMode::Absent) {
         return rsx! {};
     }
@@ -571,77 +669,17 @@ fn HeaderSlotGroup(
     let is_disabled = matches!(mode, GroupMode::Disabled);
 
     let group_id = format!("header-layout-group-{group}");
-    let input_id = format!("header-layout-{group}-input");
-    let action_id = format!("header-layout-{group}-action");
     let status_id = format!("header-layout-{group}-status");
-    let placeholder_text = format!("{label} draft...");
-    let input_aria = format!("{label} uncontrolled input");
-    let action_aria = format!("{label} ({count_val})");
-    let action_text = if group == "avatar" {
-        format!("A{count_val}")
-    } else {
-        action_aria.clone()
+    let control_state = HeaderSlotControlState {
+        instance_id,
+        stats: stats.clone(),
+        count: count_val,
+        hidden: is_hidden,
+        disabled: is_disabled,
     };
-
-    let input_node = rsx! {
-        input {
-            key: "slot-input-{group}",
-            id: "{input_id}",
-            class: "header-layout-slot-input",
-            r#type: "text",
-            placeholder: "{placeholder_text}",
-            aria_label: "{input_aria}",
-            disabled: is_disabled,
-            hidden: is_hidden,
-            "data-group": "{group}",
-            "data-instance-id": "{instance_id}",
-            "data-mount-count": "{stats.mount_count}",
-            "data-drop-count": "{stats.drop_count}",
-            "data-active-count": "{stats.active_count}",
-            "data-local-count": "{count_val}",
-        }
-    };
-
-    let ledger_for_click = ledger.clone();
-    let action_node = rsx! {
-        button {
-            key: "slot-action-{group}",
-            id: "{action_id}",
-            class: "header-layout-slot-action ix-button ix-button-subtle-tertiary",
-            r#type: "button",
-            aria_label: "{action_aria}",
-            disabled: is_disabled,
-            hidden: is_hidden,
-            "data-group": "{group}",
-            "data-instance-id": "{instance_id}",
-            "data-mount-count": "{stats.mount_count}",
-            "data-drop-count": "{stats.drop_count}",
-            "data-active-count": "{stats.active_count}",
-            "data-local-count": "{count_val}",
-            onclick: move |_| {
-                let next = local_count() + 1;
-                local_count.set(next);
-                let updated = ledger_for_click.borrow_mut().record_local_count(group, next);
-                diag_revision += 1;
-                push_event(
-                    events,
-                    json!({
-                        "kind": "slot-action",
-                        "group": group,
-                        "instance_id": instance_id,
-                        "local_count": next,
-                        "mount_count": updated.mount_count,
-                        "drop_count": updated.drop_count,
-                        "active_count": updated.active_count,
-                    }),
-                );
-            },
-            "{action_text}"
-        }
-    };
-    let mut parts = vec![("input", input_node), ("action", action_node)];
+    let mut parts = vec!["input", "action"];
     if !inputs_present {
-        parts.retain(|(part, _)| *part != "input");
+        parts.retain(|part| *part != "input");
     }
     if reverse_order {
         parts.reverse();
@@ -673,8 +711,15 @@ fn HeaderSlotGroup(
                 if let Ok(mut revision) = diag_revision.try_write() { *revision += 1; }
                 push_event(events, json!({"kind": "slot-native-mounted", "group": group, "instance_id": instance_id}));
             },
-            for (part, node) in parts {
-                Fragment { key: "{part}", {node} }
+            for part in parts {
+                HeaderSlotControl {
+                    key: "{part}",
+                    group,
+                    label,
+                    part,
+                    state: control_state.clone(),
+                    onclick: onaction,
+                }
             }
             span {
                 id: "{status_id}",
@@ -949,9 +994,13 @@ pub fn HeaderLayoutReview() -> Element {
                 aria_label_more_menu_icon_button: more_aria_label(),
                 logo: logo_slot.clone(),
                 actions: default_slot.clone(),
+                actions_present: default_mode().has_elements(),
                 secondary: secondary_slot.clone(),
+                secondary_present: secondary_mode().has_elements(),
                 overflow: overflow_slot.clone(),
+                overflow_present: overflow_mode().has_elements(),
                 avatar: avatar_slot.clone(),
+                avatar_present: avatar_present(),
                 onbeforeoverflowchange: move |event: HeaderOverflowEvent| {
                     let vetoed = *veto_overflow.peek();
                     if vetoed { event.prevent_default(); }
