@@ -440,36 +440,9 @@ impl ModalHandle {
         self.result.read().clone()
     }
 
-    /// Private native-entry protocol identity; a replaced dialog cannot consume
-    /// an observation from its previous DOM instance.
+    #[cfg(test)]
     pub(crate) fn surface_generation(self) -> u64 {
         *self.surface.generation.peek()
-    }
-
-    /// Finish the unguarded application-switch dismissal in its original native
-    /// click task. The caller first validates its owned connected dialog and
-    /// entry descriptor. An observed native-open fact can reconcile the earliest
-    /// interaction before the renderer has delivered `beforetoggle`.
-    pub(crate) fn dismiss_native_entry(self, generation: u64, native_open: bool) -> bool {
-        let current = || {
-            self.surface_generation() == generation
-                && self.surface.node.peek().is_some()
-                && self.pending.peek().is_none()
-                && self.callbacks.peek().ondismissrequest.is_none()
-        };
-        if !native_open || !current() {
-            return false;
-        }
-        if !self.is_open() {
-            self.opened();
-        }
-        if !current() || !self.is_open() {
-            return false;
-        }
-        let result = ModalResult::Dismissed(ModalDismissReason::Programmatic("app-switch".into()));
-        self.finish(result.clone());
-        self.surface_generation() == generation.wrapping_add(1)
-            && self.result.peek().as_ref() == Some(&result)
     }
 
     fn finish(mut self, result: ModalResult) {
@@ -2218,82 +2191,7 @@ mod tests {
     }
 
     #[test]
-    fn app_switch_native_dismiss_reconciles_early_open_and_rejects_duplicate_generation() {
-        let capture = Rc::new(RefCell::new(None));
-        let mut dom = VirtualDom::new(controller_fixture).with_root_context(capture.clone());
-        dom.rebuild_in_place();
-        let mut modal: ModalHandle = capture.borrow().unwrap();
-        dom.in_scope(ScopeId::ROOT, || {
-            let generation = modal.surface_generation();
-            assert!(!modal.dismiss_native_entry(generation, true), "unmounted");
-            modal.surface.node.set(Some(Rc::new(MountedData::new(()))));
-            assert!(
-                !modal.dismiss_native_entry(generation, false),
-                "native closed"
-            );
-            assert!(
-                !modal.dismiss_native_entry(generation + 1, true),
-                "wrong instance"
-            );
-            assert_eq!(modal.result(), None);
-
-            // Native entry dispatch can precede the renderer's opening callback.
-            assert!(!modal.is_open());
-            assert!(modal.dismiss_native_entry(generation, true));
-            assert!(!modal.is_open());
-            assert_eq!(modal.surface_generation(), generation + 1);
-            assert_eq!(
-                modal.result(),
-                Some(ModalResult::Dismissed(ModalDismissReason::Programmatic(
-                    "app-switch".into()
-                )))
-            );
-            assert!(
-                !modal.dismiss_native_entry(generation, true),
-                "already consumed"
-            );
-        });
-    }
-
-    #[test]
-    fn app_switch_native_dismiss_rejects_guard_and_reentrant_open_supersession() {
-        let capture = Rc::new(RefCell::new(None));
-        let mut dom = VirtualDom::new(controller_fixture).with_root_context(capture.clone());
-        dom.rebuild_in_place();
-        let mut modal: ModalHandle = capture.borrow().unwrap();
-        dom.in_scope(ScopeId::ROOT, || {
-            modal.surface.node.set(Some(Rc::new(MountedData::new(()))));
-            modal.callbacks.set(ModalCallbacks {
-                ondismissrequest: Some(EventHandler::new(|_| -> () {
-                    panic!("private entry cannot use a deferred guard")
-                })),
-                ..Default::default()
-            });
-            let generation = modal.surface_generation();
-            assert!(!modal.dismiss_native_entry(generation, true));
-            assert!(!modal.is_open());
-            assert!(!modal.is_dismiss_pending());
-
-            modal.callbacks.set(ModalCallbacks {
-                onopenchange: Some(EventHandler::new(move |open| {
-                    if open {
-                        modal.surface.replace(false);
-                    }
-                })),
-                ..Default::default()
-            });
-            assert!(!modal.dismiss_native_entry(generation, true));
-            assert_eq!(modal.surface_generation(), generation + 1);
-            assert_eq!(
-                modal.result(),
-                None,
-                "superseding callback was not overwritten"
-            );
-        });
-    }
-
-    #[test]
-    fn app_switch_native_dismiss_orders_callbacks_and_rejects_pending_or_superseded_finish() {
+    fn programmatic_dismissal_preserves_reason_and_completes_callbacks_once() {
         let capture = Rc::new(RefCell::new(None));
         let mut dom = VirtualDom::new(controller_fixture).with_root_context(capture.clone());
         dom.rebuild_in_place();
@@ -2301,40 +2199,48 @@ mod tests {
         let order = Rc::new(RefCell::new(Vec::new()));
         dom.in_scope(ScopeId::ROOT, || {
             modal.surface.node.set(Some(Rc::new(MountedData::new(()))));
-            modal.opened();
             let visibility = order.clone();
             let dismissal = order.clone();
-            let result = order.clone();
+            let completed = order.clone();
+            let reason = ModalDismissReason::Programmatic("app-switch".into());
+            let expected = reason.clone();
             modal.callbacks.set(ModalCallbacks {
                 onopenchange: Some(EventHandler::new(move |open| {
-                    assert!(!open);
-                    visibility.borrow_mut().push("closed");
+                    visibility
+                        .borrow_mut()
+                        .push(if open { "opened" } else { "closed" });
                 })),
-                ondismiss: Some(EventHandler::new(move |_| {
-                    dismissal.borrow_mut().push("dismiss")
+                ondismiss: Some(EventHandler::new(move |received| {
+                    assert_eq!(received, expected);
+                    dismissal.borrow_mut().push("dismissed");
                 })),
-                onresult: Some(EventHandler::new(move |_| {
-                    result.borrow_mut().push("result")
+                onresult: Some(EventHandler::new(move |result| {
+                    assert_eq!(
+                        result,
+                        ModalResult::Dismissed(ModalDismissReason::Programmatic(
+                            "app-switch".into()
+                        ))
+                    );
+                    completed.borrow_mut().push("result");
                 })),
                 ..Default::default()
             });
-            assert!(modal.dismiss_native_entry(modal.surface_generation(), true));
-            assert_eq!(&*order.borrow(), &["closed", "dismiss", "result"]);
-
-            modal.callbacks.set(ModalCallbacks::default());
+            modal.dismiss(reason.clone());
+            assert!(
+                order.borrow().is_empty(),
+                "a closed dialog cannot emit a dismissal"
+            );
             modal.opened();
-            modal.pending.set(Some(42));
             let generation = modal.surface_generation();
-            assert!(!modal.dismiss_native_entry(generation, true));
-            assert!(modal.is_open());
-            assert_eq!(modal.result(), None);
-            modal.pending.set(None);
-            modal.callbacks.set(ModalCallbacks {
-                onresult: Some(EventHandler::new(move |_| modal.surface.replace(false))),
-                ..Default::default()
-            });
-            assert!(!modal.dismiss_native_entry(generation, true));
-            assert_eq!(modal.surface_generation(), generation + 2);
+            modal.dismiss(reason.clone());
+            assert!(!modal.is_open());
+            assert_eq!(modal.result(), Some(ModalResult::Dismissed(reason.clone())));
+            assert_eq!(modal.surface_generation(), generation + 1);
+            modal.dismiss(reason);
+            assert_eq!(
+                &*order.borrow(),
+                &["opened", "closed", "dismissed", "result"]
+            );
         });
     }
 

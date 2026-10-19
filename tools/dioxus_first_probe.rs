@@ -3,6 +3,8 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 #[path = "dioxus_first_probe/application_focus_review.rs"]
 mod application_focus_review;
+#[path = "dioxus_first_probe/application_shell_review.rs"]
+mod application_shell_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
@@ -119,6 +121,9 @@ fn Preview() -> Element {
     }
     if scope == "?tooltip" {
         return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
+    }
+    if scope == "?applicationshell" || scope.starts_with("?applicationshell&destination=") {
+        return rsx! { application_shell_review::ApplicationShellReview {} };
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };

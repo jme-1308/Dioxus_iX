@@ -1689,71 +1689,6 @@ fn navigation_item() -> (usize, Option<NavigationContext>) {
     (id, context)
 }
 
-#[derive(serde::Deserialize)]
-struct SidebarPresenceObservation {
-    owner: String,
-    sequence: u64,
-    connected: bool,
-    present: bool,
-}
-
-#[component]
-fn ApplicationSidebar(children: Element, mut presence: Signal<bool>) -> Element {
-    let owner = use_hook(|| {
-        format!(
-            "ix-application-sidebar-{}",
-            NAV_ID.fetch_add(1, Ordering::Relaxed)
-        )
-    });
-    let alive = use_hook(|| Rc::new(Cell::new(true)));
-    let mounted = use_hook(|| Rc::new(Cell::new(false)));
-    let sequence = use_hook(|| Rc::new(Cell::new(0_u64)));
-    let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let cleanup_alive = alive.clone();
-    let cleanup_bridge = bridge.clone();
-    use_drop(move || {
-        cleanup_alive.set(false);
-        if let Some(bridge) = cleanup_bridge.borrow_mut().take() {
-            let _ = bridge.send("finish");
-        }
-        if presence.try_peek().is_ok_and(|value| *value)
-            && let Ok(mut value) = presence.try_write()
-        {
-            *value = false;
-        }
-    });
-    let mount_owner = owner.clone();
-    let observation_owner = owner.clone();
-    let root_mounted = mounted.clone();
-    rsx! {
-        aside {id:owner,class:"ix-application-sidebar",
-            onmounted:move |_| {
-                root_mounted.set(true);
-                let owner = serde_json::to_string(&mount_owner).expect("sidebar owner serialization");
-                *bridge.borrow_mut() = Some(dioxus::document::eval(&format!(r#"
-const root=document.getElementById({owner}),transport=root?.querySelector(':scope > input[data-application-sidebar-observer]');
-if(!root||!transport)return;
-let sequence=0;
-const report=()=>{{transport.value=JSON.stringify({{owner:{owner},sequence:++sequence,connected:root.isConnected,present:Array.from(root.children).some(node=>node!==transport)}});transport.dispatchEvent(new Event('input',{{bubbles:true}}));}};
-const observer=new MutationObserver(report);observer.observe(root,{{childList:true}});root.dataset.sidebarNative='true';report();
-try{{await dioxus.recv();}}finally{{observer.disconnect();delete root.dataset.sidebarNative;}}
-"#)));
-            },
-            input {r#type:"hidden","data-application-sidebar-observer":observation_owner.clone(),
-                oninput:move |event:FormEvent| {
-                    event.stop_propagation();
-                    if !alive.get() || !mounted.get() { return; }
-                    let Ok(observation) = serde_json::from_str::<SidebarPresenceObservation>(&event.value()) else { return; };
-                    if observation.owner != observation_owner || !observation.connected || observation.sequence <= sequence.get() { return; }
-                    sequence.set(observation.sequence);
-                    if *presence.peek() != observation.present { presence.set(observation.present); }
-                }
-            }
-            {children}
-        }
-    }
-}
-
 /// Forces the upstream responsive frame mode, useful for embedded previews and testing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplicationBreakpoint {
@@ -1785,6 +1720,10 @@ pub fn Application(
     #[props(default)] header: Option<Element>,
     #[props(default)] menu: Option<Element>,
     #[props(default)] sidebar: Option<Element>,
+    /// Explicit visibility for the sidebar slot. Dynamic custom content that
+    /// renders no children sets this false; rendered DOM is never inspected.
+    #[props(default = true)]
+    sidebar_visible: bool,
     #[props(default)] footer: Option<Element>,
     #[props(default)] menu_expanded: Option<Signal<bool>>,
     #[props(default)] start_expanded: bool,
@@ -1798,7 +1737,7 @@ pub fn Application(
     let pinned = use_memo(use_reactive((&pinned_menu,), |(pinned,)| pinned));
     let app_switch = crate::use_modal();
     let has_app_switch = use_memo(move || app_switch_config().is_some());
-    let sidebar_present = use_signal(|| false);
+    let sidebar_present = sidebar.is_some() && sidebar_visible;
     let mut header_revision = use_signal(|| 0_u64);
     let menu_request = use_signal(|| Rc::new(RefCell::new(None::<MenuExpansionRegistration>)));
     let baseline_config = use_hook(|| app_switch_config.peek().clone());
@@ -1810,14 +1749,14 @@ pub fn Application(
             header_revision.set(next);
         }
     });
-    let sidebar_initialized = use_hook(|| Rc::new(Cell::new(false)));
-    use_effect(move || {
-        let current = sidebar_present();
-        if sidebar_initialized.replace(true) || current {
+    let previous_sidebar = use_hook(|| Rc::new(Cell::new(None::<bool>)));
+    use_effect(use_reactive((&sidebar_present,), move |(current,)| {
+        let previous = previous_sidebar.replace(Some(current));
+        if previous.map_or(current, |previous| previous != current) {
             let next = header_revision.peek().wrapping_add(1);
             header_revision.set(next);
         }
-    });
+    }));
     let viewport = crate::application_viewport::use_application_viewport(
         force_breakpoint,
         Some(vec![
@@ -1846,7 +1785,7 @@ pub fn Application(
             {header}
             div { class: "ix-application-body",
                 if menu.is_some() { aside { class: "ix-application-menu-slot", {menu} } }
-                if let Some(sidebar) = sidebar { ApplicationSidebar {presence:sidebar_present,children:sidebar} }
+                if sidebar_present { aside { class:"ix-application-sidebar", {sidebar} } }
                 div { class: "ix-application-content-area",
                     main { class: "ix-application-main", onclick: move |_| if !pinned_menu { expanded.set(false); }, {children} }
                     if footer.is_some() { footer { class: "ix-application-footer", {footer} } }
@@ -1857,27 +1796,11 @@ pub fn Application(
     }
 }
 
-#[derive(serde::Deserialize)]
-struct AppSwitchObservation {
-    owner: String,
-    mount: usize,
-    generation: u64,
-    dialog: String,
-    connected: bool,
-    native_open: bool,
-    sequence: u64,
-    revision: u64,
-    occurrence: usize,
-    url: String,
-    target: String,
-}
 struct AppSwitchNavigationModel {
     alive: bool,
     mounted: bool,
     owner: String,
-    mount: usize,
     revision: u64,
-    sequence: u64,
     display: AppSwitchConfig,
 }
 #[derive(Clone)]
@@ -1894,94 +1817,81 @@ impl AppSwitchNavigation {
             model.revision = model.revision.wrapping_add(1);
         }
     }
-    fn observation(&self, event: FormEvent) {
-        // This private ACK must not be granted by unrelated ancestor oninput.
-        // Original native entry clicks retain their ordinary propagation/default.
-        event.stop_propagation();
-        let Ok(message) = serde_json::from_str::<AppSwitchObservation>(&event.value()) else {
-            return;
-        };
-        if !self.model.borrow().alive {
-            return;
-        }
-        let current = self.authority.peek().clone();
-        let valid = {
-            let mut model = self.model.borrow_mut();
-            if !model.mounted
-                || message.owner != model.owner
-                || message.mount != model.mount
-                || message.sequence == 0
-                || message.sequence <= model.sequence
-            {
-                return;
-            }
-            // Reserve before any callback; an invalid/replayed attempt must not
-            // become a second authorization after state changes.
-            model.sequence = message.sequence;
-            message.connected
-                && message.native_open
-                && message.revision == model.revision
-                && current
-                    .as_ref()
-                    .is_none_or(|config| config == &model.display)
-                && model
-                    .display
-                    .apps
-                    .get(message.occurrence)
-                    .is_some_and(|app| app.url == message.url && app.target == message.target)
-        };
-        if !valid
-            || message.dialog != self.modal.id()
-            || message.generation != self.modal.surface_generation()
-        {
-            return;
-        }
-        // The helper also handles a verified native-open observation if the
-        // synchronous beforetoggle callback has not already recorded it.
-        if !self
-            .modal
-            .dismiss_native_entry(message.generation, message.native_open)
-        {
-            return;
-        }
-        if !self.model.borrow().alive {
-            return;
-        }
-        let current = self.authority.peek().clone();
-        let still_current = {
+    fn activate(&self, revision: u64, occurrence: usize) -> Option<AppSwitchEntry> {
+        let entry = {
             let model = self.model.borrow();
-            current
-                .as_ref()
-                .is_none_or(|config| config == &model.display)
-                && model.revision == message.revision
+            if !model.alive
+                || !model.mounted
+                || model.revision != revision
+                || self
+                    .authority
+                    .peek()
+                    .as_ref()
+                    .is_some_and(|config| config != &model.display)
+            {
+                return None;
+            }
+            model.display.apps.get(occurrence)?.clone()
         };
-        if still_current {
-            event.prevent_default();
+        if !self.modal.is_open() {
+            return None;
         }
+        let reason = crate::ModalDismissReason::Programmatic("app-switch".into());
+        self.modal.dismiss(reason.clone());
+        if self.modal.is_open()
+            || self.modal.result() != Some(crate::ModalResult::Dismissed(reason))
+        {
+            return None;
+        }
+        let model = self.model.borrow();
+        if !model.alive
+            || model.revision != revision
+            || self
+                .authority
+                .peek()
+                .as_ref()
+                .is_some_and(|config| config != &model.display)
+        {
+            return None;
+        }
+        Some(entry)
     }
-}
-
-fn app_switch_navigation_bridge(owner: &str, mount: usize) -> String {
-    let owner = serde_json::to_string(owner).expect("switch identity serialization");
-    format!(
-        r#"
-const root=document.getElementById({owner}),dialog=root?.closest('dialog'),transport=root?.querySelector('input[data-app-switch-observer]');
-if(!root||!dialog||!transport)return;
-const events=new AbortController();let sequence=0;
-root.dataset.appSwitchNative='true';
-root.addEventListener('click',event=>{{
-  const entry=event.composedPath().find(node=>node instanceof HTMLButtonElement&&node.hasAttribute('data-app-switch-occurrence')&&node.closest('[data-app-switch-root]')===root);
-  if(!entry)return;
-  const url=entry.getAttribute('data-app-switch-url'),target=entry.getAttribute('data-app-switch-target');
-  const message={{owner:{owner},mount:{mount},generation:Number(dialog.dataset.surfaceGeneration),dialog:dialog.id,connected:root.isConnected&&dialog.isConnected&&dialog.contains(root),native_open:dialog.open,sequence:++sequence,revision:Number(root.dataset.appSwitchRevision),occurrence:Number(entry.dataset.appSwitchOccurrence),url,target}};
-  transport.value=JSON.stringify(message);
-  // Cancellation acknowledges only this internal transport. The original
-  // button click/default is untouched; native Enter/Space synthesize it.
-  if(!transport.dispatchEvent(new Event('input',{{bubbles:true,cancelable:true}})))window.open(url,target);
-}},{{signal:events.signal}});
-try{{await dioxus.recv();}}finally{{events.abort();delete root.dataset.appSwitchNative;}}
-"#
-    )
+    fn click(&self, revision: u64, occurrence: usize, event: MouseEvent) {
+        if !event.default_action_enabled() {
+            return;
+        }
+        let Some(entry) = self.activate(revision, occurrence) else {
+            event.prevent_default();
+            return;
+        };
+        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+        {
+            event.prevent_default();
+            // Pinned dioxus-interpreter-js native.ts handleClickNavigate sends
+            // only href; desktop app.rs handle_browser_open ignores target.
+            // MountedData has no target-aware navigation API. This primary
+            // operation preserves _self/_parent/_top/_blank and named targets;
+            // it neither discovers DOM entries nor installs a click transport.
+            let url = serde_json::to_string(&entry.url).expect("application URL serialization");
+            let target =
+                serde_json::to_string(&entry.target).expect("application target serialization");
+            let script = format!(
+                "const destination=window.open({url},{target});if(!destination)throw new Error('Application navigation was blocked');"
+            );
+            // Issue the one native operation in the click handler, before its
+            // dismissed entry subtree can unmount and cancel scoped tasks.
+            let operation = crate::dom_query::eval(&script);
+            // Only this bounded diagnostic reply outlives the dismissed entry;
+            // it never updates component state or schedules another operation.
+            dioxus::core::spawn_forever(async move {
+                if let Err(error) = operation.join::<()>().await {
+                    eprintln!("Application switch navigation failed: {error}");
+                }
+            });
+        }
+        #[cfg(not(all(feature = "desktop", not(target_arch = "wasm32"))))]
+        let _ = entry;
+    }
 }
 
 #[component]
@@ -2020,9 +1930,7 @@ fn ApplicationSwitchEntries(
                 alive: true,
                 mounted: false,
                 owner: format!("ix-app-switch-{mount}"),
-                mount,
                 revision: 0,
-                sequence: 0,
                 display: display.clone(),
             })),
             authority,
@@ -2034,23 +1942,17 @@ fn ApplicationSwitchEntries(
     if let Some(capture) = try_consume_context::<tests::AppSwitchCapture>() {
         *capture.0.borrow_mut() = Some(navigation.clone());
     }
-    let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let cleanup_bridge = bridge.clone();
     let cleanup = navigation.clone();
     use_drop(move || {
-        cleanup.model.borrow_mut().alive = false;
-        if let Some(bridge) = cleanup_bridge.borrow_mut().take() {
-            let _ = bridge.send("finish");
-        }
+        let mut model = cleanup.model.borrow_mut();
+        model.alive = false;
+        model.mounted = false;
     });
     let model = navigation.model.borrow();
     let owner = model.owner.clone();
-    let revision = model.revision.to_string();
-    let mount = model.mount;
+    let revision = model.revision;
     drop(model);
-    let mount_owner = owner.clone();
     let mounted = navigation.clone();
-    let input = navigation;
     let loading = if display.loading_label.is_empty() {
         "Loading available applications...".to_string()
     } else {
@@ -2058,16 +1960,14 @@ fn ApplicationSwitchEntries(
     };
     let current = display.current_app_id;
     rsx! {
-        div {id:owner,class:"ix-application-switch-apps","data-app-switch-root":"","data-app-switch-revision":revision,
-            onmounted:move |_| {
-                mounted.model.borrow_mut().mounted=true;
-                *bridge.borrow_mut()=Some(dioxus::document::eval(&app_switch_navigation_bridge(&mount_owner,mount)));
-            },
-            input {r#type:"hidden","data-app-switch-observer":mount.to_string(),oninput:move |event|input.observation(event)},
+        div {id:owner,class:"ix-application-switch-apps",
+            onmounted:move |_| {let mut model=mounted.model.borrow_mut();if model.alive {model.mounted=true;}},
             if display.apps.is_empty(){div {class:"ix-application-switch-loading",crate::Spinner{} "{loading}"}}
             for (occurrence,app) in display.apps.into_iter().enumerate() {
-                button {key:"{occurrence}",r#type:"button",class:"ix-application-switch-entry",
-                    "data-app-switch-occurrence":occurrence.to_string(),"data-app-switch-url":app.url,"data-app-switch-target":app.target.clone(),
+                // Links retain native Enter/navigation semantics; Space is not
+                // adapted into button activation.
+                a {key:"{occurrence}",class:"ix-application-switch-entry",href:app.url,target:app.target.clone(),
+                    onclick:{let navigation=navigation.clone();move |event:MouseEvent|navigation.click(revision,occurrence,event)},
                     "data-selected":(app.id==current).to_string(),"aria-current":if app.id==current{Some("page")}else{None},
                     img {src:app.icon_src,alt:""}
                     div {h3 {"{app.name}" if !matches!(app.target.as_str(),"_self"|"_parent"|"_top"){crate::Icon{name:"open-external",size:12}}} p {"{app.description}"}}
@@ -2078,8 +1978,9 @@ fn ApplicationSwitchEntries(
 }
 
 // A header request must commit its latest configuration before the native dialog
-// opens. Unlike an entry's window.open, opening this dialog needs no trusted
-// activation; the source also opens asynchronously after its request callback.
+// opens. Opening this dialog needs no trusted activation; the source also opens
+// asynchronously after its request callback. Entries use ordinary web links and
+// a minimal target-aware desktop navigation operation.
 type AppSwitchOpeningState = Rc<RefCell<AppSwitchOpeningModel>>;
 struct AppSwitchOpeningModel {
     alive: bool,
@@ -2097,6 +1998,13 @@ fn ApplicationSwitchOpener(
     label: String,
     onrequest: EventHandler<MouseEvent>,
 ) -> Element {
+    let opener_id = use_hook(|| {
+        format!(
+            "ix-app-switch-opener-{}",
+            NAV_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let opener_mount = crate::dropdown::use_focus_mount(opener_id.clone());
     let model: AppSwitchOpeningState = use_hook(|| {
         Rc::new(RefCell::new(AppSwitchOpeningModel {
             alive: true,
@@ -2169,7 +2077,7 @@ fn ApplicationSwitchOpener(
     });
     rsx! {
         span {class:"ix-header-app-switch",
-            button {class:"ix-button ix-button-subtle-tertiary",r#type:"button",
+            button {id:opener_id,onmounted:opener_mount,class:"ix-button ix-button-subtle-tertiary",r#type:"button",
                 "data-app-switch-opener":"","aria-haspopup":"dialog","aria-controls":modal.id(),"aria-label":label,
                 onclick:move |event:MouseEvent| {
                     onrequest.call(event.clone());

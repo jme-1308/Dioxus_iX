@@ -2552,6 +2552,8 @@ struct AppSwitchFixture {
     overflow_peers: Option<HeaderPeerCapture>,
     show_menu: bool,
     sidebar: bool,
+    sidebar_visible: bool,
+    sidebar_empty: bool,
     breakpoint: ApplicationBreakpoint,
     name: String,
     suffix: Option<String>,
@@ -2656,13 +2658,14 @@ fn app_switch_fixture(settings: Rc<RefCell<AppSwitchFixture>>) -> Element {
             MenuItem {label:"Only item",close_on_select:false}
         }});
     let peers = state.overflow_peers.clone();
+    let sidebar=state.sidebar.then(||if state.sidebar_empty {VNode::empty()}else{rsx!{div {input {id:format!("sidebar-child-{}","input"),value:"Sidebar",oninput:move |_|{}}}}});
     rsx! {div {oninput:move |event:FormEvent|{input.borrow_mut().ancestor_inputs+=1;event.prevent_default();},
         if state.visible {
             if !state.contained {{header}}
             else if state.snapshot {Application {app_switch_config:authority(),header,menu,menu_expanded,force_breakpoint:state.breakpoint,
-                sidebar:state.sidebar.then(||rsx!{div{"Sidebar"}})}}
+                sidebar_visible:state.sidebar_visible,sidebar}}
             else {Application {app_switch_config:authority,header,menu,menu_expanded,force_breakpoint:state.breakpoint,
-                sidebar:state.sidebar.then(||rsx!{div{"Sidebar"}})}}
+                sidebar_visible:state.sidebar_visible,sidebar}}
         }
         if let Some(capture) = peers { HeaderOverflowPeers { capture } }
     }}
@@ -2671,12 +2674,12 @@ struct AppSwitchHarness {
     dom: VirtualDom,
     settings: Rc<RefCell<AppSwitchFixture>>,
     attrs: BTreeMap<usize, BTreeMap<String, String>>,
-    input: Option<dioxus::core::ElementId>,
+    entries: BTreeMap<String, dioxus::core::ElementId>,
     trigger: Option<dioxus::core::ElementId>,
     dialog: Option<dioxus::core::ElementId>,
     menu_trigger: Option<dioxus::core::ElementId>,
     menu_control: Option<dioxus::core::ElementId>,
-    sidebar_input: Option<dioxus::core::ElementId>,
+    sidebar_child_input: Option<dioxus::core::ElementId>,
     header_input: Option<dioxus::core::ElementId>,
     overlay_input: Option<dioxus::core::ElementId>,
     slot_buttons: BTreeMap<String, dioxus::core::ElementId>,
@@ -2731,6 +2734,8 @@ impl AppSwitchHarness {
             overflow_peers: None,
             show_menu: false,
             sidebar: false,
+            sidebar_visible: true,
+            sidebar_empty: false,
             breakpoint: ApplicationBreakpoint::Large,
             name: String::new(),
             suffix: None,
@@ -2751,12 +2756,12 @@ impl AppSwitchHarness {
             dom,
             settings,
             attrs: BTreeMap::new(),
-            input: None,
+            entries: BTreeMap::new(),
             trigger: None,
             dialog: None,
             menu_trigger: None,
             menu_control: None,
-            sidebar_input: None,
+            sidebar_child_input: None,
             header_input: None,
             overlay_input: None,
             slot_buttons: BTreeMap::new(),
@@ -2781,6 +2786,9 @@ impl AppSwitchHarness {
                     value: dioxus::core::AttributeValue::Text(value),
                     ..
                 } => {
+                    if name == "href" {
+                        self.entries.insert(value.clone(), current);
+                    }
                     if name == "aria-controls" && value.starts_with("ix-modal-") {
                         self.trigger = Some(current);
                     }
@@ -2802,9 +2810,11 @@ impl AppSwitchHarness {
                     match name.as_str() {
                         "input" => {
                             if self.attrs.get(&current.raw()).is_some_and(|attrs| {
-                                attrs.contains_key("data-application-sidebar-observer")
+                                attrs
+                                    .get("id")
+                                    .is_some_and(|id| id == "sidebar-child-input")
                             }) {
-                                self.sidebar_input = Some(current);
+                                self.sidebar_child_input = Some(current);
                             } else if self.attrs.get(&current.raw()).is_some_and(|attrs| {
                                 attrs.contains_key("data-header-layout-observer")
                             }) {
@@ -2813,12 +2823,6 @@ impl AppSwitchHarness {
                                 attrs.contains_key("data-ix-overlay-transport")
                             }) {
                                 self.overlay_input = Some(current);
-                            } else if self
-                                .attrs
-                                .get(&current.raw())
-                                .is_some_and(|attrs| attrs.contains_key("data-app-switch-observer"))
-                            {
-                                self.input = Some(current);
                             }
                         }
                         "beforetoggle" => {
@@ -2841,8 +2845,8 @@ impl AppSwitchHarness {
                     if self.menu_control == Some(current) {
                         self.menu_control = None;
                     }
-                    if self.sidebar_input == Some(current) {
-                        self.sidebar_input = None;
+                    if self.sidebar_child_input == Some(current) {
+                        self.sidebar_child_input = None;
                     }
                 }
                 _ => {}
@@ -2986,11 +2990,6 @@ impl AppSwitchHarness {
             (),
         )
     }
-    fn sidebar_report(&self, sequence: u64, present: bool) -> (bool, bool) {
-        let input = self.sidebar_input.unwrap();
-        let owner = &self.attrs[&input.raw()]["data-application-sidebar-observer"];
-        menu_dispatch(&self.dom,"input",input,serde_json::json!({"owner":owner,"sequence":sequence,"connected":true,"present":present}).to_string())
-    }
     fn header_root_attrs(&self) -> &BTreeMap<String, String> {
         let input = self.header_input.unwrap();
         let owner = &self.attrs[&input.raw()]["data-header-layout-observer"];
@@ -3099,14 +3098,12 @@ impl AppSwitchHarness {
     fn beforetoggle(&self) {
         menu_dispatch(&self.dom, "beforetoggle", self.dialog.unwrap(), ());
     }
-    fn message(&self, sequence: u64, occurrence: usize) -> serde_json::Value {
+    fn entry_click(&self, occurrence: usize) -> (bool, bool) {
         let navigation = self.navigation();
-        let model = navigation.model.borrow();
-        let entry = &model.display.apps[occurrence];
-        serde_json::json!({"owner":model.owner,"mount":model.mount,"generation":navigation.modal.surface_generation(),"dialog":navigation.modal.id(),"connected":true,"native_open":true,"sequence":sequence,"revision":model.revision,"occurrence":occurrence,"url":entry.url,"target":entry.target})
-    }
-    fn raw(&self, message: serde_json::Value) -> (bool, bool) {
-        menu_dispatch(&self.dom, "input", self.input.unwrap(), message.to_string())
+        let url = navigation.model.borrow().display.apps[occurrence]
+            .url
+            .clone();
+        menu_dispatch(&self.dom, "click", self.entries[&url], ())
     }
 }
 
@@ -3143,36 +3140,55 @@ fn header_layout_context_reset_and_direct_same_value_writes_use_actual_handlers(
     harness.settings.borrow_mut().sidebar = true;
     harness.update();
     assert!(
-        harness.html().contains("ix-header-menu-toggle"),
-        "Option presence alone is not assigned-element evidence"
-    );
-    assert_eq!(harness.sidebar_report(1, true), (false, false));
-    harness.settle();
-    assert!(
         !harness.html().contains("ix-header-menu-toggle"),
-        "actual mounted sidebar element report resets override"
+        "Rust sidebar slot presence resets the override"
     );
+    assert!(!harness.html().contains("data-application-sidebar-observer"));
     harness.write_show_menu(true);
-    assert_eq!(harness.sidebar_report(2, true), (false, false));
-    harness.settle();
+    harness.settings.borrow_mut().name = "Another unrelated title".into();
+    harness.update();
     assert!(
         harness.html().contains("ix-header-menu-toggle"),
-        "unchanged presence emits no new context"
+        "unchanged effective sidebar presence does not emit a context change"
     );
-    assert_eq!(harness.sidebar_report(1, false), (false, false));
-    harness.settle();
-    assert!(
-        harness.html().contains("ix-header-menu-toggle"),
-        "stale report is ignored"
+    assert_eq!(
+        menu_dispatch(
+            &harness.dom,
+            "input",
+            harness.sidebar_child_input.unwrap(),
+            "ordinary edit".to_string()
+        ),
+        (true, true)
     );
     assert_eq!(
         harness.settings.borrow().ancestor_inputs,
-        0,
-        "private observer does not reach consumer input callbacks"
+        1,
+        "ordinary sidebar input reaches the consumer callback"
     );
-    assert_eq!(harness.sidebar_report(3, false), (false, false));
-    harness.settle();
-    assert!(!harness.html().contains("ix-header-menu-toggle"));
+    harness.settings.borrow_mut().sidebar_visible = false;
+    harness.update();
+    assert!(
+        !harness.html().contains("ix-header-menu-toggle"),
+        "hiding the slot changes effective presence"
+    );
+    harness.write_show_menu(true);
+    harness.settings.borrow_mut().sidebar = false;
+    harness.update();
+    assert!(
+        harness.html().contains("ix-header-menu-toggle"),
+        "removing an already hidden slot preserves unchanged context"
+    );
+    {
+        let mut state = harness.settings.borrow_mut();
+        state.sidebar_visible = true;
+        state.sidebar = true;
+        state.sidebar_empty = true;
+    }
+    harness.update();
+    assert!(
+        !harness.html().contains("ix-header-menu-toggle"),
+        "explicit Some(empty Dioxus content) is a present Rust slot without DOM discovery"
+    );
 }
 
 #[test]
@@ -4112,11 +4128,14 @@ fn app_switch_queued_open_owner_drop_and_snapshot_request_removal_abort() {
 }
 
 #[test]
-fn app_switch_actual_ack_dismisses_before_authorizing_exact_duplicate_id_occurrence() {
+fn app_switch_entry_click_dismisses_and_preserves_exact_duplicate_id_destinations() {
     let _event_converter_guard = crate::test_event_converter_guard();
     let mut harness = AppSwitchHarness::new(Some(app_switch_config_fixture()), false);
     let navigation = harness.navigation();
-    assert!(!navigation.modal.is_open());
+    let (owner, revision) = {
+        let model = navigation.model.borrow();
+        (model.owner.clone(), model.revision)
+    };
     let html = harness.html();
     assert_eq!(
         html.matches("data-selected=\"true\"").count(),
@@ -4128,10 +4147,25 @@ fn app_switch_actual_ack_dismisses_before_authorizing_exact_duplicate_id_occurre
         2,
         "entry images remain decorative"
     );
-    let message = harness.message(1, 1);
-    assert_eq!(message["url"], "/beta");
-    assert_eq!(message["target"], "named-destination");
-    assert_eq!(harness.raw(message.clone()), (true, false));
+    assert!(html.contains("href=\"/alpha\" target=\"_self\""));
+    assert!(html.contains("href=\"/beta\" target=\"named-destination\""));
+    assert_eq!(
+        harness.entry_click(1),
+        (true, true),
+        "closed dialog entries cannot navigate"
+    );
+    assert_eq!(navigation.modal.result(), None);
+    harness.beforetoggle();
+    assert!(navigation.modal.is_open());
+    let result = harness.entry_click(1);
+    assert_eq!(
+        result,
+        (
+            cfg!(all(feature = "desktop", not(target_arch = "wasm32"))),
+            true
+        ),
+        "web uses the native anchor default; desktop handles its exact target"
+    );
     assert_eq!(
         navigation.modal.result(),
         Some(crate::ModalResult::Dismissed(
@@ -4140,75 +4174,80 @@ fn app_switch_actual_ack_dismisses_before_authorizing_exact_duplicate_id_occurre
     );
     assert!(!navigation.modal.is_open());
     assert_eq!(
-        navigation.modal.surface_generation(),
-        message["generation"].as_u64().unwrap() + 1
+        harness.entry_click(1),
+        (true, true),
+        "closed owner rejects a repeated click"
     );
     assert_eq!(
-        harness.raw(message.clone()),
-        (false, false),
-        "the same original transaction is consumed only once"
+        harness.settings.borrow().ancestor_inputs,
+        0,
+        "entry clicks have no private input transport"
     );
-    assert_eq!(harness.settings.borrow().ancestor_inputs, 0);
     harness.settle();
     assert!(
         !navigation.model.borrow().alive,
-        "replaced modal subtree drops its entry owner"
+        "dismissed subtree drops its entry owner"
     );
-    assert_ne!(
-        harness.navigation().model.borrow().owner,
-        message["owner"].as_str().unwrap()
-    );
-    assert_eq!(
-        harness.raw(message),
-        (false, false),
-        "old entry descriptor cannot navigate in a replacement mount"
+    assert_ne!(harness.navigation().model.borrow().owner, owner);
+    assert!(
+        harness
+            .dom
+            .in_runtime(|| navigation.activate(revision, 1))
+            .is_none(),
+        "retained old owner cannot authorize a replacement mount"
     );
 }
 
 #[test]
-fn app_switch_actual_ack_rejects_stale_or_mismatched_native_descriptors() {
+fn app_switch_entry_handlers_reject_unmounted_and_changed_authority() {
     let _event_converter_guard = crate::test_event_converter_guard();
-    for (field, value) in [
-        ("owner", serde_json::json!("other")),
-        ("mount", serde_json::json!(0)),
-        ("generation", serde_json::json!(100)),
-        ("dialog", serde_json::json!("other-dialog")),
-        ("connected", serde_json::json!(false)),
-        ("native_open", serde_json::json!(false)),
-        ("revision", serde_json::json!(100)),
-        ("occurrence", serde_json::json!(9)),
-        ("url", serde_json::json!("/wrong")),
-        ("target", serde_json::json!("_blank")),
-    ] {
-        let harness = AppSwitchHarness::new(Some(app_switch_config_fixture()), false);
-        let navigation = harness.navigation();
-        let mut message = harness.message(1, 1);
-        message[field] = value;
-        assert_eq!(harness.raw(message), (false, false), "invalid {field}");
-        assert_eq!(navigation.modal.surface_generation(), 0);
-        assert_eq!(navigation.modal.result(), None);
-        assert_eq!(harness.settings.borrow().ancestor_inputs, 0);
-    }
     let unmounted = AppSwitchHarness::unmounted(Some(app_switch_config_fixture()), false);
     assert!(!unmounted.navigation().model.borrow().mounted);
+    unmounted.beforetoggle();
     assert_eq!(
-        unmounted.raw(unmounted.message(1, 0)),
-        (false, false),
-        "the real input handler rejects before mounted delivery"
+        unmounted.entry_click(0),
+        (true, true),
+        "entry cannot act before its Dioxus mounted delivery"
     );
-    let harness = AppSwitchHarness::new(Some(app_switch_config_fixture()), false);
-    let message = harness.message(1, 0);
+    assert!(unmounted.navigation().modal.is_open());
+    let mut harness = AppSwitchHarness::new(Some(app_switch_config_fixture()), false);
+    harness.beforetoggle();
+    let navigation = harness.navigation();
+    let revision = navigation.model.borrow().revision;
+    assert!(
+        harness
+            .dom
+            .in_runtime(|| navigation.activate(revision, 99))
+            .is_none(),
+        "missing occurrence cannot dismiss or navigate"
+    );
     let mut authority = harness.authority();
-    let mut next = app_switch_config_fixture();
-    next.apps[0].url = "/new-authority".into();
+    let mut replacement = app_switch_config_fixture();
+    replacement.apps[0].url = "/new-authority".into();
     harness
         .dom
-        .in_scope(ScopeId::ROOT, || authority.set(Some(next)));
+        .in_scope(ScopeId::ROOT, || authority.set(Some(replacement)));
     assert_eq!(
-        harness.raw(message),
-        (false, false),
-        "direct present config supersedes an old rendered entry before rerender"
+        harness.entry_click(0),
+        (true, true),
+        "latest direct config invalidates an old rendered entry before rerender"
     );
+    assert!(navigation.modal.is_open());
+    assert_eq!(navigation.modal.result(), None);
+    harness.settle();
+    assert!(
+        harness
+            .dom
+            .in_runtime(|| navigation.activate(revision, 0))
+            .is_none(),
+        "prior render revision stays invalid"
+    );
+    assert!(harness.html().contains("href=\"/new-authority\""));
+    assert_eq!(
+        harness.entry_click(0).0,
+        cfg!(all(feature = "desktop", not(target_arch = "wasm32")))
+    );
+    assert!(!navigation.modal.is_open());
 }
 
 #[test]
@@ -4217,30 +4256,43 @@ fn app_switch_live_none_retains_display_and_new_config_and_owner_invalidate_stal
     let mut harness = AppSwitchHarness::new(Some(app_switch_config_fixture()), false);
     harness.beforetoggle();
     let old = harness.navigation();
-    let stale = harness.message(1, 0);
+    let revision = old.model.borrow().revision;
     harness.set(None);
     assert!(Rc::ptr_eq(&old.model, &harness.navigation().model));
     assert!(old.modal.is_open());
     assert!(harness.html().contains("Alpha"));
     assert!(!harness.html().contains("ix-header-app-switch"));
-    let retained = harness.message(2, 1);
     assert_eq!(
-        harness.raw(retained),
-        (true, false),
-        "visible last-present entries remain usable after public None"
+        harness.entry_click(1).0,
+        cfg!(all(feature = "desktop", not(target_arch = "wasm32"))),
+        "visible retained entries stay usable after public None"
     );
+    assert!(!old.modal.is_open());
     harness.settle();
     let mut replacement = app_switch_config_fixture();
     replacement.label = "Updated title".into();
     replacement.apps[0].name = "Updated Alpha".into();
     harness.set(Some(replacement));
-    assert_eq!(harness.raw(stale), (false, false));
+    assert!(
+        harness
+            .dom
+            .in_runtime(|| old.activate(revision, 0))
+            .is_none()
+    );
     assert!(harness.html().contains("Updated title") && harness.html().contains("Updated Alpha"));
     let current = harness.navigation();
+    let revision = current.model.borrow().revision;
     harness.settings.borrow_mut().visible = false;
     harness.update();
     assert!(!current.model.borrow().alive);
     assert!(!harness.html().contains("<dialog"));
+    assert!(
+        harness
+            .dom
+            .in_runtime(|| current.activate(revision, 0))
+            .is_none(),
+        "removed owner rejects retained work"
+    );
 }
 
 #[test]
@@ -4250,18 +4302,26 @@ fn app_switch_snapshot_rsx_caller_keeps_forwarded_authority_current_across_rende
     assert!(!harness.html().contains("ix-header-app-switch"));
     harness.set(Some(app_switch_config_fixture()));
     assert!(harness.html().contains("ix-header-app-switch"));
-    let old = harness.message(1, 0);
-    let same_owner = harness.navigation().model.borrow().owner.clone();
+    let old = harness.navigation();
+    let (same_owner, revision) = {
+        let model = old.model.borrow();
+        (model.owner.clone(), model.revision)
+    };
     let mut next = app_switch_config_fixture();
     next.label = "Snapshot title".into();
     next.apps[0].url = "/snapshot-new".into();
     harness.set(Some(next.clone()));
     assert_eq!(harness.navigation().model.borrow().owner, same_owner);
-    assert_eq!(harness.raw(old), (false, false));
+    assert!(
+        harness
+            .dom
+            .in_runtime(|| old.activate(revision, 0))
+            .is_none()
+    );
     assert_eq!(
         harness.click(),
         (false, true),
-        "context-captured ReadSignal follows the new lifted snapshot"
+        "captured ReadSignal follows the new lifted snapshot"
     );
     harness.beforetoggle();
     harness.set(None);
@@ -4269,19 +4329,16 @@ fn app_switch_snapshot_rsx_caller_keeps_forwarded_authority_current_across_rende
     assert!(harness.navigation().modal.is_open());
     assert_eq!(harness.navigation().model.borrow().display, next);
     assert_eq!(
-        harness.raw(harness.message(2, 0)),
-        (true, false),
-        "retained snapshot navigation remains authorized after None"
+        harness.entry_click(0).0,
+        cfg!(all(feature = "desktop", not(target_arch = "wasm32"))),
+        "retained snapshot entries stay usable after None"
     );
 }
 
 #[test]
-fn app_switch_renders_native_buttons_with_exact_descriptors_and_dialog() {
+fn app_switch_renders_exact_target_anchors_without_native_descriptors() {
     fn probe() -> Element {
-        rsx! { Application {
-            app_switch_config: AppSwitchConfig { current_app_id: "chosen".into(), apps: vec![AppSwitchEntry { id: "chosen".into(), name: "Example app".into(), description: "Example description".into(), icon_src: "data:image/svg+xml,%3Csvg/%3E".into(), url: "https://example.com/".into(), target: "_blank".into() }], ..Default::default() },
-            header: rsx! { ApplicationHeader {} }
-        } }
+        rsx! {Application {app_switch_config:AppSwitchConfig {current_app_id:"chosen".into(),apps:vec![AppSwitchEntry {id:"chosen".into(),name:"Example app".into(),description:"Example description".into(),icon_src:"data:image/svg+xml,%3Csvg/%3E".into(),url:"https://example.com/".into(),target:"_blank".into()}],..Default::default()},header:rsx!{ApplicationHeader{}}}}
     }
     let mut dom = VirtualDom::new(probe);
     dom.rebuild_in_place();
@@ -4290,9 +4347,14 @@ fn app_switch_renders_native_buttons_with_exact_descriptors_and_dialog() {
     assert!(html.contains("data-app-switch-opener"));
     assert!(html.contains("aria-haspopup=\"dialog\""));
     assert!(html.contains("<dialog"));
-    assert!(html.contains("data-app-switch-url=\"https://example.com/\""));
-    assert!(html.contains("data-app-switch-target=\"_blank\""));
-    assert!(!html.contains("href=\"https://example.com/\""));
+    assert!(html.contains("<a class=\"ix-application-switch-entry\""));
+    assert!(html.contains("href=\"https://example.com/\""));
+    assert!(html.contains("target=\"_blank\""));
+    assert!(
+        !html.contains("data-app-switch-url")
+            && !html.contains("data-app-switch-target")
+            && !html.contains("data-app-switch-observer")
+    );
     assert!(html.contains("data-selected=\"true\""));
     assert!(html.contains("aria-current=\"page\""));
 }
