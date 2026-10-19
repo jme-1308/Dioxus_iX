@@ -219,6 +219,11 @@ pub(crate) struct MountedFocusTarget {
     renderer: Option<Weak<dioxus::core::Runtime>>,
 }
 impl MountedFocusTarget {
+    /// Cleanup compares the captured element even after its registration was
+    /// removed. Identity alone does not authorize a new focus operation.
+    pub(crate) fn matches_node(&self, node: &Rc<MountedData>) -> bool {
+        Weak::ptr_eq(&self.node, &Rc::downgrade(node))
+    }
     pub(crate) fn live_node(&self) -> Option<Rc<MountedData>> {
         // Component cleanup unregisters its handle. Also reject a retained
         // registry after the renderer VirtualDom itself has been dropped.
@@ -404,6 +409,11 @@ impl RuntimeHandle {
             document: state.document.clone(),
             renderer: mount.renderer.clone(),
         })
+    }
+    pub(crate) fn capture_registered_focus(&self, id: &str) -> Option<MountedFocusTarget> {
+        self.mounted_focus_target(id)
+            .or_else(|| self.domain()?.focus_target(id))
+            .filter(|target| target.live_node().is_some())
     }
     pub(crate) fn register_item_control_mount(
         &self,
@@ -3028,12 +3038,9 @@ impl NodeHandle {
         let runtime = self.runtime()?;
         runtime
             .with_owner(&self.id, self.generation, || {
-                runtime
-                    .mounted_focus_target(id)
-                    .or_else(|| runtime.domain()?.focus_target(id))
+                runtime.capture_registered_focus(id)
             })
             .flatten()
-            .filter(|target| target.live_node().is_some())
     }
     pub(crate) fn queue_registered_focus(
         &self,
@@ -5878,6 +5885,50 @@ mod tests {
         assert!(runtime.mounted_focus_target("unregistered").is_none());
         node.unregister();
         assert!(runtime.0.borrow().nodes.is_empty());
+    }
+    #[test]
+    fn runtime_capture_uses_registered_physical_ids_and_keeps_cleanup_identity_after_removal() {
+        let runtime = RuntimeHandle::new();
+        let mounted = Rc::new(MountedData::new(ItemMountMock::default()));
+        runtime.register_item_control_mount(
+            "capture-key",
+            "logical-host",
+            "physical-control",
+            mounted.clone(),
+        );
+        assert!(runtime.capture_registered_focus("unregistered").is_none());
+        assert!(runtime.capture_registered_focus("logical-host").is_none());
+        let captured = runtime
+            .capture_registered_focus("physical-control")
+            .unwrap();
+        assert!(captured.matches_node(&mounted));
+        assert!(Rc::ptr_eq(&captured.live_node().unwrap(), &mounted));
+        runtime.unregister_item_cue("capture-key");
+        assert!(
+            runtime
+                .capture_registered_focus("physical-control")
+                .is_none()
+        );
+        assert!(captured.live_node().is_none());
+        assert!(
+            captured.matches_node(&mounted),
+            "cleanup still identifies the removed invoker"
+        );
+        let replacement = Rc::new(MountedData::new(ItemMountMock::default()));
+        runtime.register_item_control_mount(
+            "capture-key",
+            "logical-host",
+            "physical-control",
+            replacement.clone(),
+        );
+        assert!(!captured.matches_node(&replacement));
+        assert!(captured.live_node().is_none());
+        assert!(
+            runtime
+                .capture_registered_focus("physical-control")
+                .unwrap()
+                .matches_node(&replacement)
+        );
     }
     #[test]
     fn accepted_close_cancels_prior_focus_but_preserves_return_admitted_by_apply() {

@@ -36,7 +36,7 @@ fn canceled_opening_future_releases_admission_for_another_show() {
                 seen.set(seen.get() + 1);
             })));
         let mut context = Context::from_waker(Waker::noop());
-        let mut first = Box::pin(popover.show_native(false));
+        let mut first = Box::pin(popover.show_native());
         assert!(first.as_mut().poll(&mut context).is_pending());
         let first_generation = *popover.surface.generation.peek();
         assert!(*popover.opening.peek());
@@ -57,7 +57,7 @@ fn canceled_opening_future_releases_admission_for_another_show() {
         assert_eq!(*popover.surface.generation.peek(), first_generation);
         assert!(popover.surface.node.peek().is_some());
 
-        let mut second = Box::pin(popover.show_native(false));
+        let mut second = Box::pin(popover.show_native());
         assert!(second.as_mut().poll(&mut context).is_pending());
         assert!(*popover.opening.peek());
         assert_eq!(*popover.surface.generation.peek(), first_generation + 1);
@@ -80,7 +80,7 @@ fn dropping_superseded_opening_future_preserves_newer_admission() {
             .node
             .set(Some(Rc::new(MountedData::new(()))));
         let mut context = Context::from_waker(Waker::noop());
-        let mut first = Box::pin(popover.show_native(false));
+        let mut first = Box::pin(popover.show_native());
         assert!(first.as_mut().poll(&mut context).is_pending());
         let first_generation = *popover.surface.generation.peek();
         assert!(*popover.opening.peek());
@@ -89,7 +89,7 @@ fn dropping_superseded_opening_future_preserves_newer_admission() {
         // replacement operation below is real and owns a distinct generation.
         popover.surface.generation.set(first_generation + 1);
         popover.opening.set(false);
-        let mut second = Box::pin(popover.show_native(false));
+        let mut second = Box::pin(popover.show_native());
         assert!(second.as_mut().poll(&mut context).is_pending());
         let second_generation = *popover.surface.generation.peek();
         assert!(second_generation > first_generation);

@@ -6,11 +6,11 @@
 //! browser/WebView supporting invoker commands; there is no JavaScript fallback.
 //! [`ModalHandle::close`] replaces the native dialog with a closed instance.
 //! [`PopoverHandle::hide`] retains its native surface and nested component state.
-//! Both restore the registered invoker's focus in Rust.
+//! Both restore registered Dioxus invokers through mounted element handles.
 //!
-//! Native top-layer visibility uses DOM methods on web and desktop. Popover
+//! Native top-layer visibility uses DOM methods on web and desktop. Programmatic
 //! focus uses registered Dioxus mounted handles; native observations provide
-//! candidate eligibility only. Rust owns visibility, dismissal and hover state.
+//! candidate eligibility/current-focus facts only. Rust owns dismissal and hover state.
 use dioxus::prelude::*;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,6 +21,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ))]
 #[path = "popover_native.rs"]
 mod popover_native;
+
+#[cfg(test)]
+#[path = "modal_focus_tests.rs"]
+mod modal_focus_tests;
 
 #[cfg(test)]
 #[path = "popover_lifetime_tests.rs"]
@@ -41,13 +45,6 @@ pub enum NativeSurfaceError {
     Superseded,
     /// The browser rejected the operation, for example for a disconnected node.
     Rejected(String),
-}
-
-#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-#[derive(Clone, serde::Deserialize)]
-struct BridgeFocusTarget {
-    id: String,
-    temporary: bool,
 }
 
 impl std::fmt::Display for NativeSurfaceError {
@@ -72,29 +69,19 @@ struct Surface {
     generation: Signal<u64>,
     open: Signal<bool>,
     node: Signal<Option<Rc<MountedData>>>,
-    invoker: Signal<Option<Rc<MountedData>>>,
+    invoker: Signal<Option<crate::overlay_runtime::MountedFocusTarget>>,
     restore_after_mount: Signal<Option<u64>>,
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    native_invoker: Signal<Option<web_sys::HtmlElement>>,
-    #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-    bridge_invoker: Signal<Option<BridgeFocusTarget>>,
 }
 
 fn use_surface(prefix: &'static str) -> Surface {
-    let surface = Surface {
+    Surface {
         id: use_signal(|| format!("ix-{prefix}-{}", DIALOG_ID.fetch_add(1, Ordering::Relaxed))),
         generation: use_signal(|| 0),
         open: use_signal(|| false),
         node: use_signal(|| None),
         invoker: use_signal(|| None),
         restore_after_mount: use_signal(|| None),
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        native_invoker: use_signal(|| None),
-        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-        bridge_invoker: use_signal(|| None),
-    };
-    use_drop(move || surface.cleanup_temporary_focus_id());
-    surface
+    }
 }
 
 impl Surface {
@@ -106,22 +93,6 @@ impl Surface {
                 .expect("string serialization");
             let script = format!(
                 "const panel=document.getElementById({id});if(panel&&panel.matches('.ix-popover')&&!panel.matches(':popover-open')&&panel.getAttribute('data-surface-generation')==={generation}){{panel.style.setProperty('position-anchor','--'+{id});panel.removeAttribute('data-unanchored');}}"
-            );
-            let _ = dioxus::document::eval(&script);
-        }
-    }
-
-    fn cleanup_temporary_focus_id(self) {
-        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-        if let Some(target) = self
-            .bridge_invoker
-            .peek()
-            .clone()
-            .filter(|target| target.temporary)
-        {
-            let id = serde_json::to_string(&target.id).expect("string serialization");
-            let script = format!(
-                "const target=document.getElementById({id});if(target)target.removeAttribute('id');"
             );
             let _ = dioxus::document::eval(&script);
         }
@@ -147,36 +118,18 @@ impl Surface {
             return;
         }
         self.restore_after_mount.set(None);
-        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-        if let Some(target) = self.bridge_invoker.peek().clone() {
-            spawn(async move {
-                if *self.generation.peek() != generation || *self.open.peek() {
-                    return;
-                }
-                let id = serde_json::to_string(&target.id).expect("string serialization");
-                let script = format!(
-                    "const target=document.getElementById({id});if(target instanceof HTMLElement){{target.focus();if({})target.removeAttribute('id');}}",
-                    target.temporary
-                );
-                let _ = crate::dom_query::eval(&script).await;
-            });
-            return;
-        }
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        if let Some(invoker) = self.native_invoker.peek().clone() {
-            spawn(async move {
-                if *self.generation.peek() == generation && !*self.open.peek() {
-                    let _ = invoker.focus();
-                }
-            });
-            return;
-        }
         if let Some(invoker) = self.invoker.peek().clone() {
             spawn(async move {
                 // The prior native dialog has now been removed. Restoring before
                 // this mount lets browser dialog teardown overwrite the focus.
-                if *self.generation.peek() == generation && !*self.open.peek() {
-                    let _ = invoker.set_focus(true).await;
+                if self
+                    .generation
+                    .try_peek()
+                    .is_ok_and(|current| *current == generation)
+                    && self.open.try_peek().is_ok_and(|open| !*open)
+                    && let Some(node) = invoker.live_node()
+                {
+                    let _ = node.set_focus(true).await;
                 }
             });
         }
@@ -202,11 +155,9 @@ impl Surface {
             .ok_or(NativeSurfaceError::UnsupportedRenderer)
     }
 
-    async fn native_open(
-        self,
-        modal: bool,
-        remember_focus: bool,
-    ) -> Result<(), NativeSurfaceError> {
+    // MountedData has no top-layer showModal/showPopover operation. This native
+    // integration only presents the surface; it never discovers or executes focus.
+    async fn native_open(self, modal: bool) -> Result<(), NativeSurfaceError> {
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
         {
             use wasm_bindgen::JsCast;
@@ -225,15 +176,6 @@ impl Surface {
                     return Err(NativeSurfaceError::Superseded);
                 }
                 let _ = element.set_attribute("data-ix-surface-command", &generation.to_string());
-            }
-            let active = element
-                .owner_document()
-                .and_then(|document| document.active_element())
-                .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok());
-            if remember_focus && !element.matches(".ix-popover").unwrap_or(false) {
-                let mut surface = self;
-                surface.native_invoker.set(active.clone());
-                surface.invoker.set(None);
             }
             if modal {
                 let dialog = element
@@ -262,12 +204,6 @@ impl Surface {
                                         == Some(&self.id())
                                 })
                         });
-                    if remember_focus {
-                        if let Some(trigger) = explicit.as_ref() {
-                            let mut surface = self;
-                            surface.native_invoker.set(Some(trigger.clone()));
-                        }
-                    }
                     let source = explicit.filter(|source| {
                         source.is_connected()
                             && !matches!(source.tag_name().as_str(), "BODY" | "HTML")
@@ -299,7 +235,6 @@ impl Surface {
             struct NativeReply {
                 opened: bool,
                 error: Option<String>,
-                focus_target: Option<BridgeFocusTarget>,
                 #[serde(default)]
                 superseded: bool,
             }
@@ -307,27 +242,22 @@ impl Surface {
             let expected_generation =
                 serde_json::to_string(&generation.to_string()).expect("string serialization");
             let id = serde_json::to_string(&self.id()).expect("string serialization");
-            let focus_id = serde_json::to_string(&format!("{}-return-{generation}", self.id()))
-                .expect("string serialization");
             let script = format!(
                 r#"
                 const element=document.getElementById({id});
-                if(!element)return {{opened:false,error:'surface is not mounted',focus_target:null}};
+                if(!element)return {{opened:false,error:'surface is not mounted'}};
                 if({modal}){{
-                    if(element.getAttribute('data-surface-generation')!=={expected_generation})return {{opened:false,error:null,focus_target:null,superseded:true}};
+                    if(element.getAttribute('data-surface-generation')!=={expected_generation})return {{opened:false,error:null,superseded:true}};
                 }}else{{
                     const expected=Number({expected_generation}),published=Number(element.getAttribute('data-surface-generation')||0),command=Number(element.getAttribute('data-ix-surface-command')||0);
-                    if(!element.isConnected||published>expected||command>expected)return {{opened:false,error:null,focus_target:null,superseded:true}};
+                    if(!element.isConnected||published>expected||command>expected)return {{opened:false,error:null,superseded:true}};
                     element.setAttribute('data-ix-surface-command',String(expected));
                 }}
-                const active=document.activeElement;
-                let returnTarget=active;
                 try{{
                     if({modal})element.showModal();else{{
                         let source;
                         if(element.matches('.ix-popover')){{
                             const explicit=Array.from(document.querySelectorAll('[popovertarget]')).find(trigger=>trigger.getAttribute('popovertarget')==={id});
-                            if(explicit instanceof HTMLElement)returnTarget=explicit;
                             source=explicit;
                             if(source instanceof HTMLElement&&source.isConnected&&!['BODY','HTML'].includes(source.tagName)&&!element.contains(source)&&source.getBoundingClientRect().width>0&&source.getBoundingClientRect().height>0){{
                                 element.removeAttribute('data-unanchored');
@@ -336,14 +266,8 @@ impl Surface {
                         element.showPopover();
                     }}
                     const opened={modal}?element.open:element.matches(':popover-open');
-                    let focus_target=null;
-                    if(opened&&{remember_focus}&&!element.matches('.ix-popover')&&returnTarget instanceof HTMLElement){{
-                        const temporary=!returnTarget.id;
-                        if(temporary)returnTarget.id={focus_id};
-                        focus_target={{id:returnTarget.id,temporary}};
-                    }}
-                    return {{opened,error:null,focus_target}};
-                }}catch(error){{return {{opened:false,error:String(error),focus_target:null}};}}
+                    return {{opened,error:null}};
+                }}catch(error){{return {{opened:false,error:String(error)}};}}
             "#
             );
             let reply = crate::dom_query::eval(&script)
@@ -352,7 +276,7 @@ impl Surface {
                 .map_err(|error| NativeSurfaceError::Rejected(error.to_string()))?;
             // Native dispatch and its response cross the desktop event loop.
             // Neither a newer element with the same stable ID nor a late reply
-            // may revive a closed generation or overwrite its focus target.
+            // may revive a closed generation.
             if *self.generation.peek() != generation || reply.superseded {
                 return Err(NativeSurfaceError::Superseded);
             }
@@ -362,11 +286,6 @@ impl Surface {
             if !reply.opened {
                 return Err(NativeSurfaceError::Prevented);
             }
-            if remember_focus {
-                let mut surface = self;
-                surface.bridge_invoker.set(reply.focus_target);
-                surface.invoker.set(None);
-            }
             Ok(())
         }
         #[cfg(not(any(
@@ -374,7 +293,7 @@ impl Surface {
             all(feature = "desktop", not(target_arch = "wasm32"))
         )))]
         {
-            let _ = (modal, remember_focus);
+            let _ = modal;
             if self.node.peek().is_none() {
                 Err(NativeSurfaceError::NotMounted)
             } else {
@@ -383,12 +302,8 @@ impl Surface {
         }
     }
 
-    fn remember_invoker(mut self, invoker: Option<Rc<MountedData>>) {
+    fn remember_invoker(mut self, invoker: Option<crate::overlay_runtime::MountedFocusTarget>) {
         self.invoker.set(invoker);
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        self.native_invoker.set(None);
-        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-        self.bridge_invoker.set(None);
     }
 
     async fn contains_focus(self) -> bool {
@@ -489,10 +404,12 @@ pub struct ModalHandle {
     result: Signal<Option<ModalResult>>,
     pending: Signal<Option<u64>>,
     request_sequence: Signal<u64>,
+    focus_runtime: Signal<crate::overlay_runtime::RuntimeHandle>,
 }
 
 /// Create a stable dialog controller in a component, following the rules of hooks.
 pub fn use_modal() -> ModalHandle {
+    let runtime = crate::overlay_runtime::use_overlay_runtime();
     ModalHandle {
         surface: use_surface("modal"),
         non_blocking: use_signal(|| false),
@@ -500,6 +417,7 @@ pub fn use_modal() -> ModalHandle {
         result: use_signal(|| None),
         pending: use_signal(|| None),
         request_sequence: use_signal(|| 0),
+        focus_runtime: use_signal(move || runtime),
     }
 }
 
@@ -511,10 +429,31 @@ impl ModalHandle {
         if self.is_open() {
             return Ok(());
         }
+        if self.surface.node.peek().is_none() {
+            return Err(NativeSurfaceError::NotMounted);
+        }
         let generation = *self.surface.generation.peek();
-        self.surface
-            .native_open(!*self.non_blocking.peek(), true)
-            .await?;
+        // Pinned MountedData can focus a handle but cannot query the current
+        // active element. Read only its existing ID; resolve the Dioxus mount
+        // before native activation. Unregistered controls get no JS fallback.
+        #[cfg(any(
+            all(feature = "web", target_arch = "wasm32"),
+            all(feature = "desktop", not(target_arch = "wasm32"))
+        ))]
+        {
+            let id = crate::dom_query::eval("return document.activeElement?.id||'';")
+                .join::<String>()
+                .await
+                .ok();
+            self.surface.remember_invoker(
+                id.as_deref()
+                    .and_then(|id| self.focus_runtime.peek().capture_registered_focus(id)),
+            );
+        }
+        if *self.surface.generation.peek() != generation {
+            return Err(NativeSurfaceError::Superseded);
+        }
+        self.surface.native_open(!*self.non_blocking.peek()).await?;
         if *self.surface.generation.peek() != generation {
             return Err(NativeSurfaceError::Superseded);
         }
@@ -687,16 +626,21 @@ pub fn ModalTrigger(
 ) -> Element {
     let id = modal.id();
     let non_blocking = (modal.non_blocking)();
-    let mut trigger = use_signal(|| None::<Rc<MountedData>>);
+    let trigger_id =
+        use_hook(|| format!("{id}-trigger-{}", DIALOG_ID.fetch_add(1, Ordering::Relaxed)));
+    let binding = crate::dropdown::use_item_host("native-opt-in");
+    let mounted = binding.clone();
+    let mount_id = trigger_id.clone();
+    let focus_id = trigger_id.clone();
     rsx! {
-        button { class: "ix-button ix-button-{variant.as_str()}", r#type: "button", disabled, autofocus,
+        button { id:trigger_id, class: "ix-button ix-button-{variant.as_str()}", r#type: "button", disabled, autofocus,
             "commandfor": if non_blocking { None } else { Some(id.clone()) },
             "command": if non_blocking { None } else { Some("show-modal") },
             "popovertarget": if non_blocking { Some(id.clone()) } else { None },
             "popovertargetaction": if non_blocking { Some("show") } else { None },
             "aria-haspopup": "dialog", "aria-controls": id,
-            onmounted: move |event| { trigger.set(Some(event.data())); },
-            onclick: move |_| modal.surface.remember_invoker(trigger.peek().clone()),
+            onmounted: move |event| mounted.mount(&mount_id,event.data()),
+            onclick: move |_| modal.surface.remember_invoker(binding.runtime.capture_registered_focus(&focus_id)),
             {children}
         }
     }
@@ -794,7 +738,6 @@ pub fn Modal(
                         let callbacks = *modal.callbacks.peek();
                         if visible { let mut result = modal.result; result.set(None); }
                         else {
-                            modal.surface.cleanup_temporary_focus_id();
                             let mut result = modal.result; result.set(Some(ModalResult::NativeClosed));
                             let mut pending = modal.pending; pending.set(None);
                             if let Some(callback) = callbacks.onresult { callback.call(ModalResult::NativeClosed); }
@@ -960,10 +903,10 @@ impl PopoverHandle {
     /// Show the real native top-layer popover. Dismissal restores its configured
     /// trigger when the opening had focusable content. Opening is cancelable.
     pub async fn show(self) -> Result<(), NativeSurfaceError> {
-        self.show_native(true).await
+        self.show_native().await
     }
 
-    async fn show_native(mut self, remember_focus: bool) -> Result<(), NativeSurfaceError> {
+    async fn show_native(mut self) -> Result<(), NativeSurfaceError> {
         self.cancel_hover_hide();
         if self.is_open() || *self.opening.peek() {
             return Ok(());
@@ -1017,8 +960,7 @@ impl PopoverHandle {
         if let Some(node) = &node {
             node.did_present();
         }
-        let _ = remember_focus;
-        let result = self.surface.native_open(false, false).await;
+        let result = self.surface.native_open(false).await;
         if *self.surface.generation.peek() != generation {
             return Err(NativeSurfaceError::Superseded);
         }
@@ -1335,7 +1277,7 @@ pub fn use_popover_trigger_mount(
             && popover.surface.invoker.try_peek().is_ok_and(|current| {
                 current
                     .as_ref()
-                    .is_some_and(|current| Rc::ptr_eq(current, &own))
+                    .is_some_and(|current| current.matches_node(&own))
             })
         {
             let mut popover = popover;
@@ -1355,7 +1297,7 @@ pub fn use_popover_trigger_mount(
             .invoker
             .peek()
             .as_ref()
-            .is_some_and(|previous| !Rc::ptr_eq(previous, &target))
+            .is_some_and(|previous| !previous.matches_node(&target))
         {
             popover.focus_trigger.set(None);
             if let Some(node) = popover.overlay.peek().clone() {
@@ -1364,7 +1306,9 @@ pub fn use_popover_trigger_mount(
         }
         binding.mount(&id, target.clone());
         *mounted.borrow_mut() = Some(target.clone());
-        popover.surface.remember_invoker(Some(target));
+        popover
+            .surface
+            .remember_invoker(binding.runtime.capture_registered_focus(&id));
         popover.trigger_id.set(Some(id.clone()));
     })
 }
@@ -1398,23 +1342,23 @@ pub fn PopoverTrigger(
                 event.prevent_default();
                 if trigger_mode == PopoverTriggerMode::Click {
                     if popover.is_open() { popover.hide(); }
-                    else { spawn(async move { let _=popover.show_native(false).await; }); }
+                    else { spawn(async move { let _=popover.show_native().await; }); }
                 }
             },
             onkeydown: move |event| if trigger_mode==PopoverTriggerMode::Click && (event.key()==Key::Enter || event.key()==Key::Character(" ".into())) {
                 event.prevent_default();
                 if popover.is_open() { popover.hide(); }
-                else { spawn(async move { let _=popover.show_native(false).await; }); }
+                else { spawn(async move { let _=popover.show_native().await; }); }
             },
             onmouseenter: move |_| if !disabled && trigger_mode == PopoverTriggerMode::Hover {
                 popover.cancel_hover_hide();
-                spawn(async move { let _ = popover.show_native(false).await; });
+                spawn(async move { let _ = popover.show_native().await; });
             },
             onmouseleave: move |_| popover.schedule_hover_hide(false),
             onfocus: move |_| if !disabled && trigger_mode == PopoverTriggerMode::Hover {
                 popover.cancel_hover_hide();
                 if !popover.hover_focus_allowed() { return; }
-                spawn(async move { let _ = popover.show_native(false).await; });
+                spawn(async move { let _ = popover.show_native().await; });
             },
             onblur: move |_| {let mut suppressed=popover.suppress_focus_open;suppressed.set(false);popover.schedule_hover_hide(true);},
             {children}
@@ -1525,10 +1469,6 @@ pub fn Popover(
             popover.onbeforechange.set(None);
             popover.cancel_hover_hide();
             surface.invoker.set(None);
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
-            surface.native_invoker.set(None);
-            #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-            surface.bridge_invoker.set(None);
         }
     });
     let mut callback = popover.onshowchanged;
@@ -2011,9 +1951,16 @@ mod tests {
             acknowledgements: Rc<std::cell::Cell<usize>>,
         }
         impl Document for DelayedDocument {
-            fn eval(&self, _: String) -> Eval {
+            fn eval(&self, script: String) -> Eval {
+                let reply = if script.contains("document.activeElement") {
+                    Rc::new(RefCell::new(Some(serde_json::json!(
+                        "retained-focus-target"
+                    ))))
+                } else {
+                    self.reply.clone()
+                };
                 Eval::new(self.owner.insert(Box::new(DelayedNativeReply {
-                    reply: self.reply.clone(),
+                    reply,
                     acknowledgements: self.acknowledgements.clone(),
                 }) as Box<dyn Evaluator>))
             }
@@ -2034,35 +1981,54 @@ mod tests {
         let mut modal: ModalHandle = capture.borrow().unwrap();
         dom.in_scope(ScopeId::ROOT, || {
             modal.surface.node.set(Some(Rc::new(MountedData::new(()))));
-            modal.surface.bridge_invoker.set(Some(BridgeFocusTarget {
-                id: "retained-focus-target".into(),
-                temporary: false,
-            }));
+            let invoker = Rc::new(MountedData::new(()));
+            modal.focus_runtime.peek().register_item_mount(
+                "modal-opener",
+                "retained-focus-target",
+                invoker.clone(),
+            );
             let mut operation = std::pin::pin!(modal.open());
             let mut context = Context::from_waker(Waker::noop());
             assert!(operation.as_mut().poll(&mut context).is_pending());
-            assert_eq!(acknowledgements.get(), 0);
+            assert_eq!(
+                acknowledgements.get(),
+                1,
+                "identity query completed before native open"
+            );
+            assert!(
+                modal
+                    .surface
+                    .invoker
+                    .peek()
+                    .as_ref()
+                    .unwrap()
+                    .matches_node(&invoker)
+            );
             // A native opening notification and application close can arrive
             // before the queued bridge result reaches this Rust task.
             modal.surface.open.set(true);
             modal.close("saved before native reply");
             *reply.borrow_mut() = Some(serde_json::json!({
-                "opened": true, "error": null,
-                "focus_target": { "id": "stale-focus-target", "temporary": false }
+                "opened": true, "error": null
             }));
             assert!(matches!(
                 operation.as_mut().poll(&mut context),
                 Poll::Ready(Err(NativeSurfaceError::Superseded))
             ));
-            assert_eq!(acknowledgements.get(), 1);
+            assert_eq!(acknowledgements.get(), 2);
             assert!(!modal.is_open());
             assert_eq!(
                 modal.result(),
                 Some(ModalResult::Closed("saved before native reply".into()))
             );
-            assert_eq!(
-                modal.surface.bridge_invoker.peek().as_ref().unwrap().id,
-                "retained-focus-target"
+            assert!(
+                modal
+                    .surface
+                    .invoker
+                    .peek()
+                    .as_ref()
+                    .unwrap()
+                    .matches_node(&invoker)
             );
         });
     }
