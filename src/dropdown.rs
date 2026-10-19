@@ -626,6 +626,7 @@ struct MenuState {
 }
 #[derive(Clone)]
 struct TriggerMount {
+    focus_id: String,
     in_dropdown_item: bool,
     node: Rc<MountedData>,
     blocked: Rc<Cell<bool>>,
@@ -740,6 +741,7 @@ impl DropdownContext {
             .is_some_and(|runtime| runtime.keyboard_mode())
     }
     fn notify(&self) {
+        self.sync_surface_metadata();
         if !self.state.borrow().alive || !self.state.borrow().surface {
             return;
         }
@@ -775,6 +777,7 @@ impl DropdownContext {
     }
     fn mount_trigger(
         &self,
+        focus_id: String,
         node: Rc<MountedData>,
         blocked: Rc<Cell<bool>>,
         in_dropdown_item: bool,
@@ -784,11 +787,12 @@ impl DropdownContext {
             (
                 current.as_ref().is_none_or(|current| {
                     !Rc::ptr_eq(&current.node, &node)
+                        || current.focus_id != focus_id
                         || current.in_dropdown_item != in_dropdown_item
                 }),
-                current
-                    .as_ref()
-                    .is_some_and(|current| !Rc::ptr_eq(&current.node, &node)),
+                current.as_ref().is_some_and(|current| {
+                    !Rc::ptr_eq(&current.node, &node) || current.focus_id != focus_id
+                }),
             )
         };
         if replaced {
@@ -804,6 +808,7 @@ impl DropdownContext {
             .filter(|current| Rc::ptr_eq(&current.node, &node))
             .and_then(|current| current.visibility);
         *self.trigger.borrow_mut() = Some(TriggerMount {
+            focus_id,
             in_dropdown_item,
             node,
             blocked,
@@ -829,7 +834,22 @@ impl DropdownContext {
             self.notify();
         }
     }
+    fn sync_surface_metadata(&self) {
+        if let Some(node) = self.node.borrow().clone() {
+            node.set_surface_metadata(overlay_runtime::SurfaceMetadata {
+                trigger_id: self
+                    .trigger
+                    .borrow()
+                    .as_ref()
+                    .map(|trigger| trigger.focus_id.clone())
+                    .unwrap_or_default(),
+                items_host: self.navigation_owner(false).host_id(),
+                popover_host: String::new(),
+            });
+        }
+    }
     fn sync_ownership(&self) {
+        self.sync_surface_metadata();
         let trigger = self.trigger.borrow().clone();
         if let Some(node) = self.node.borrow().clone() {
             let ready = trigger.is_some();
@@ -2045,7 +2065,7 @@ fn use_trigger_binding(
                     .unwrap_or_else(|| context.trigger_id())
             });
             focus_binding.mount(&target, node.clone());
-            context.mount_trigger(node.clone(), blocked.clone(), in_dropdown_item);
+            context.mount_trigger(target, node.clone(), blocked.clone(), in_dropdown_item);
             context.update_trigger_metadata(&node, ancestors.clone(), in_dropdown_item);
             *owned.borrow_mut() = Some((context.clone(), node));
         }
@@ -2433,6 +2453,16 @@ fn DropdownSurface(
     drop(state);
     let navigation_owner = context.navigation_owner(true);
     let items_owner = navigation_owner.node_id();
+    node.set_surface_metadata(overlay_runtime::SurfaceMetadata {
+        trigger_id: context
+            .trigger
+            .borrow()
+            .as_ref()
+            .map(|trigger| trigger.focus_id.clone())
+            .unwrap_or_default(),
+        items_host: navigation_owner.host_id(),
+        popover_host: String::new(),
+    });
     let active_id = context.active_dom_id();
     let id = context.node_id();
     let host_id = context.host_id();

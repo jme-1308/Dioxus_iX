@@ -3,9 +3,9 @@
 
 //! Native DOM observations and execution for the per-root overlay runtime.
 //! Document identity and minimal input delivery sequence are shared across roots.
-//! Read-only observations include marked roots across renderer owners so cached
-//! Tab/Header projections preserve cross-owner composition. Rust registrations
-//! alone authorize ownership and actions; the shared hub delivers global input.
+//! Read-only focus candidates span renderer owners; Dioxus registrations supply
+//! current surface descriptors for Tab/Header projections. The shared hub
+//! delivers global input, while Rust alone authorizes ownership and actions.
 //! `__OWNER__` is replaced by a serialized runtime owner ID. Rust owns all
 //! hierarchy, item membership/metadata, menu/focus policy, and open/close decisions;
 //! All deliveries use noncancelable `input`; typed Dioxus controls own keyboard
@@ -21,9 +21,9 @@ let alive=true,sequence=0,lastSignature='',documentEvents=null,lastFocus=null,mo
 // Mounted focus registration uses Rust-authored IDs; unidentified DOM controls
 // have no programmatic focus fallback and need no native identity registry.
 function nativeId(el){return el instanceof HTMLElement?el.id:'';}
-// Dioxus owns overlay lifetimes and relationships. These document lookups
-// supply only remaining native focus/geometry/presentation facts for its marked
-// light-DOM surfaces. Foreign shadow-tree discovery is unsupported.
+// Dioxus owns overlay lifetimes, relationships and surface descriptors. The
+// remaining native lookups provide current focus/eligibility, keyed-move and
+// global outside-event facts. Foreign shadow-tree discovery is unsupported.
 function transport(){
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input instanceof HTMLInputElement&&input.isConnected&&input.getAttribute('data-ix-overlay-transport')===owner)return input;
   return null;
@@ -52,21 +52,6 @@ function isActiveHost(n){
   if(!isHeaderPopupHost(n))return true;
   const hr=n.closest('[data-small],[data-ix-overlay-root]');
   return n.getAttribute('data-header-popup-host')===(hr?.getAttribute('data-small')==='true'?'small':'large');
-}
-function findHost(id){
-  for(const n of document.querySelectorAll('[data-ix-overlay-host]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-host')===id&&isActiveHost(n))return n;
-  return null;
-}
-function findItemsHost(root,id){
-  const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?document.getElementById(configured):null;
-  return element instanceof HTMLElement&&element.isConnected?element:findHost(root.getAttribute('data-ix-overlay-items-owner')||id);
-}
-// Trigger metadata and anchor style are rendered by the owning Dioxus
-// component. This lookup observes current markers, including cross-owner
-// controls; an ID alone never installs behavior or supplies a fallback.
-function findTrigger(id){
-  for(const element of document.querySelectorAll('[data-ix-overlay-trigger]'))if(element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-trigger')===id)return element;
-  return null;
 }
 function findAnchor(root){
   const id=root?.getAttribute('data-ix-overlay-anchor-id'),el=id?document.getElementById(id):null;
@@ -139,24 +124,11 @@ function movedRegisteredFocus(records,active){
   return removed&&added?current:null;
 }
 function collectFacts(){
-  const active=deepActive(),nodes=[];
-  // Candidate metadata spans renderer owners; it never creates graph members.
-  // Rust validates the current registered generation/kind before projection.
-  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
-    if(!(root instanceof HTMLElement)||!root.isConnected)continue;
-    const id=root.getAttribute('data-ix-overlay-root')||'';if(!id)continue;
-    const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
-    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id);
-    nodes.push({
-      id,generation,trigger_id:nativeId(trigger),
-      items_host:nativeId(itemsHost),
-      popover_host:root.getAttribute('data-ix-overlay-native-surface')==='popover'?nativeId(host):''
-    });
-  }
+  const active=deepActive();
   return {
     owner,document:nativeDocument.identity,sequence:++sequence,kind:'observe',active_id:nativeId(active),
     active_default:!active||active===document.body||active===document.documentElement||active.matches('[data-ix-overlay-host]'),
-    nodes,focus_candidates:focusCandidates(active),
+    focus_candidates:focusCandidates(active),
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
@@ -180,7 +152,7 @@ function reportObserve(records=[],focusChanged=false,focusoutMove=null){
   const report=collectFacts();
   report.focus_changed=focusChanged||explicitBlur;
   if(moved)report.moved_focus=moved;
-  const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,active_default:report.active_default,focus_candidates:report.focus_candidates});
+  const sig=JSON.stringify({active_id:report.active_id,active_default:report.active_default,focus_candidates:report.focus_candidates});
   if(moved||report.focus_changed||sig!==lastSignature){lastSignature=sig;send(report);}
   if(!documentEvents)documentEvents=subscribeDocumentEvents();
 }

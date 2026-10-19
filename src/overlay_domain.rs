@@ -8,7 +8,7 @@
 //! module never retains a domain globally, or borrows it across a callback.
 
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
-use crate::overlay_runtime::{Change, MountedFocusTarget, Reason};
+use crate::overlay_runtime::{Change, MountedFocusTarget, Reason, SurfaceMetadata};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -36,10 +36,14 @@ struct Entry {
     registration: u64,
     kind: OverlayKind,
     callbacks: DomainCallbacks,
+    surface_reader: Option<SurfaceReader>,
+    surface_metadata: SurfaceMetadata,
 }
 
 type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 type FocusReader = Rc<dyn Fn(&str) -> Option<MountedFocusTarget>>;
+pub(crate) type SurfaceValidity = Rc<dyn Fn() -> bool>;
+type SurfaceReader = Rc<dyn Fn() -> Option<SurfaceValidity>>;
 
 #[derive(Clone)]
 struct CategoryEntry {
@@ -155,6 +159,18 @@ impl Domain {
             .get(&id)
             .filter(|_| !replacement)
             .map_or(incarnation, |entry| entry.registration);
+        let surface_reader = state
+            .entries
+            .get(&id)
+            .filter(|_| !replacement)
+            .and_then(|entry| entry.surface_reader.clone());
+        let surface_metadata = state
+            .entries
+            .get(&id)
+            .filter(|_| !replacement)
+            .map_or_else(SurfaceMetadata::default, |entry| {
+                entry.surface_metadata.clone()
+            });
         state.entries.insert(
             id,
             Entry {
@@ -164,8 +180,91 @@ impl Domain {
                 registration,
                 kind,
                 callbacks,
+                surface_reader,
+                surface_metadata,
             },
         );
+    }
+
+    pub(crate) fn set_surface_reader(
+        &self,
+        owner: &str,
+        id: &str,
+        generation: u64,
+        reader: SurfaceReader,
+    ) {
+        if let Some(entry) = self
+            .0
+            .borrow_mut()
+            .entries
+            .get_mut(id)
+            .filter(|entry| entry.owner == owner && entry.generation == generation)
+        {
+            entry.surface_reader = Some(reader);
+        }
+    }
+
+    pub(crate) fn set_surface_metadata(
+        &self,
+        owner: &str,
+        id: &str,
+        generation: u64,
+        metadata: SurfaceMetadata,
+    ) {
+        if let Some(entry) = self
+            .0
+            .borrow_mut()
+            .entries
+            .get_mut(id)
+            .filter(|entry| entry.owner == owner && entry.generation == generation)
+        {
+            entry.surface_metadata = metadata;
+        }
+    }
+
+    /// Current Dioxus-authored descriptors shared only inside this document.
+    /// Readers run outside domain borrows and validate renderer/scope lifetime.
+    /// Recheck all registrations after callbacks: a later reader can remove an
+    /// earlier one, or replace its generation, without a native notification.
+    pub(crate) fn surface_metadata(&self) -> Vec<(String, u64, SurfaceMetadata)> {
+        let snapshots = {
+            let state = self.0.borrow();
+            state
+                .order
+                .iter()
+                .filter_map(|id| {
+                    let entry = state.entries.get(id)?;
+                    state
+                        .registry
+                        .is_connected(id)
+                        .then(|| (id.clone(), entry.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let surfaces = snapshots
+            .into_iter()
+            .filter_map(|(id, entry)| {
+                if !self.current(&id, &entry) {
+                    return None;
+                }
+                let valid = (entry.surface_reader.as_ref()?)()?;
+                self.current(&id, &entry).then_some((id, entry, valid))
+            })
+            .collect::<Vec<_>>();
+        surfaces
+            .into_iter()
+            .filter_map(|(id, entry, valid)| {
+                if !valid() || !self.current(&id, &entry) {
+                    return None;
+                }
+                let state = self.0.borrow();
+                let current = state.entries.get(&id)?;
+                state
+                    .registry
+                    .is_connected(&id)
+                    .then(|| (id, current.generation, current.surface_metadata.clone()))
+            })
+            .collect()
     }
 
     fn entry(&self, id: &str) -> Option<Entry> {
@@ -1574,6 +1673,68 @@ mod tests {
         domain.unregister("node", 1);
         domain.remove_owner("a");
         assert_eq!(domain.entry("node").unwrap().generation, 2);
+    }
+
+    #[test]
+    fn surface_metadata_rechecks_reentrant_updates_removal_and_disconnection() {
+        let domain = Domain::join("authored surface reentry");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        model(&domain, "a", "a", OverlayKind::Dropdown, log.clone());
+        model(&domain, "b", "b", OverlayKind::Popover, log.clone());
+        model(&domain, "c", "c", OverlayKind::Dropdown, log);
+        domain.observe_all(&[fact("a", &[]), fact("b", &[]), fact("c", &[])]);
+        let metadata = |trigger: &str| SurfaceMetadata {
+            trigger_id: trigger.into(),
+            ..Default::default()
+        };
+        domain.set_surface_metadata("a", "a", 1, metadata("old"));
+        domain.set_surface_metadata("b", "b", 1, metadata("b-trigger"));
+        domain.set_surface_reader("a", "a", 1, Rc::new(|| Some(Rc::new(|| true))));
+        domain.set_surface_reader(
+            "c",
+            "c",
+            1,
+            Rc::new(|| panic!("removed reader must not run")),
+        );
+        let update = domain.clone();
+        domain.set_surface_reader(
+            "b",
+            "b",
+            1,
+            Rc::new(move || {
+                update.set_surface_metadata(
+                    "a",
+                    "a",
+                    1,
+                    SurfaceMetadata {
+                        trigger_id: "current".into(),
+                        ..Default::default()
+                    },
+                );
+                update.remove_owner("c");
+                Some(Rc::new(|| true))
+            }),
+        );
+        let surfaces = domain.surface_metadata();
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(
+            surfaces[0].2.trigger_id, "current",
+            "read current metadata after later callbacks"
+        );
+        assert_eq!(surfaces[1].2.trigger_id, "b-trigger");
+        domain.set_surface_reader("a", "a", 1, Rc::new(|| None));
+        assert_eq!(
+            domain
+                .surface_metadata()
+                .iter()
+                .map(|surface| surface.0.as_str())
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+        let mut disconnected = fact("b", &[]);
+        disconnected.connected = false;
+        domain.observe_all(&[disconnected]);
+        assert!(domain.surface_metadata().is_empty());
     }
 
     #[test]

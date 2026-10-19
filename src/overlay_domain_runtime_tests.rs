@@ -551,8 +551,9 @@ fn fixture_focus_candidate(target: &str, hosts: &[&str], active: bool) -> serde_
     })
 }
 
-// A node descriptor groups each fixture's document-order candidates for authoring.
-// Only the canonical single document array reaches the real transport handler.
+// Fixture groups author document-order candidates and direct Rust key facts.
+// Surface relationships are registered explicitly by the authoring helpers, never
+// recovered from the retired native node inventory by the transport handler.
 fn collect_fixture_focus_candidates(report: &mut serde_json::Value) {
     if report["kind"] == "document" {
         return;
@@ -591,11 +592,19 @@ fn trap_node(
     candidates: &[(&str, &[&str], bool)],
 ) -> serde_json::Value {
     set_fixture_ownership(id, ancestors);
-    let is_popover =
-        fixture_node(id).runtime().unwrap().entry(id).unwrap().kind == OverlayKind::Popover;
+    let node = fixture_node(id);
+    let is_popover = node.runtime().unwrap().entry(id).unwrap().kind == OverlayKind::Popover;
+    node.set_surface_metadata(SurfaceMetadata {
+        items_host: format!("{id}-host"),
+        popover_host: if is_popover {
+            format!("{id}-host")
+        } else {
+            String::new()
+        },
+        ..Default::default()
+    });
     serde_json::json!({
-        "id":id,"generation":1,"items_host":format!("{id}-host"),
-        "popover_host":if is_popover {format!("{id}-host")} else {String::new()},
+        "id":id,"generation":node.generation(),
         "focus_candidates":candidates.iter().map(|(target,hosts,active)|
             fixture_focus_candidate(target,hosts,*active)
         ).collect::<Vec<_>>()
@@ -729,6 +738,179 @@ fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, mut report: serde_json::Val
 }
 
 #[test]
+fn current_rust_surface_metadata_crosses_owners_without_native_inventory_or_stale_destinations() {
+    let origin = Fixture::new("surface-metadata-origin", 821);
+    let peer = Fixture::new("surface-metadata-peer", 822);
+    let foreign = Fixture::new("surface-metadata-foreign", 823);
+    let dom = build(&origin);
+    let peer_dom = build(&peer);
+    let foreign_dom = build(&foreign);
+    let document = "Rust surface metadata document";
+    attach(&dom, &origin, document);
+    attach(&peer_dom, &peer, document);
+    attach(&foreign_dom, &foreign, "different surface document");
+    let metadata = |trigger: &str, host: &str| SurfaceMetadata {
+        trigger_id: trigger.into(),
+        items_host: host.into(),
+        popover_host: host.into(),
+    };
+    origin
+        .node()
+        .set_surface_metadata(metadata("origin-trigger", "origin-host"));
+    peer.node()
+        .set_surface_metadata(metadata("peer-trigger", "peer-old-host"));
+    foreign
+        .node()
+        .set_surface_metadata(metadata("foreign-trigger", "foreign-host"));
+    let candidate = |target: &str, host: &str| {
+        serde_json::json!({
+            "target":target,"tab_index":0,"nearest_host":host,"popover":host
+        })
+    };
+    let value = serde_json::json!({
+        "owner":origin.runtime().owner_id(),"document":document,"sequence":1,"kind":"observe",
+        "nodes":[
+            {"id":origin.node().id(),"generation":1,"trigger_id":"forged-trigger","items_host":"forged-host"},
+            {"id":"unregistered-native-surface","generation":1,"items_host":"forged-host"}
+        ],
+        "focus_candidates":[
+            candidate("origin-control", "origin-host"),
+            candidate("peer-old-control", "peer-old-host"),
+            candidate("peer-new-control", "peer-forwarded-host"),
+            candidate("forged-control", "forged-host")
+        ]
+    });
+    deliver_trap(&dom, &origin, value);
+    let runtime = origin.runtime();
+    let cached = runtime.0.borrow().observation.clone().unwrap();
+    let root = cached
+        .nodes
+        .iter()
+        .find(|node| node.id == origin.node().id())
+        .unwrap();
+    assert_eq!(root.trigger_id, "origin-trigger");
+    assert_eq!(root.focusable_ids, ["origin-control"]);
+    let peer_facts = cached
+        .nodes
+        .iter()
+        .find(|node| node.id == peer.node().id())
+        .unwrap();
+    assert_eq!(peer_facts.trigger_id, "peer-trigger");
+    assert_eq!(peer_facts.focusable_ids, ["peer-old-control"]);
+    assert!(
+        !cached
+            .nodes
+            .iter()
+            .any(|node| node.id == foreign.node().id() || node.id == "unregistered-native-surface")
+    );
+
+    // A responsive/forwarded Rust host update takes effect on the next key's
+    // projection, without waiting for another native observation.
+    peer.node()
+        .set_surface_metadata(metadata("peer-replaced-trigger", "peer-forwarded-host"));
+    let current = runtime.project_report(cached.clone());
+    let peer_facts = current
+        .nodes
+        .iter()
+        .find(|node| node.id == peer.node().id())
+        .unwrap();
+    assert_eq!(peer_facts.trigger_id, "peer-replaced-trigger");
+    assert_eq!(peer_facts.items_host, "peer-forwarded-host");
+    assert_eq!(peer_facts.popover_host, "peer-forwarded-host");
+    assert_eq!(peer_facts.focusable_ids, ["peer-new-control"]);
+    assert_eq!(peer_facts.tab_candidates.len(), 1);
+
+    let old = peer.node();
+    let same = peer_dom.in_scope(peer.scope(), || {
+        let runtime = peer.runtime();
+        let entry = runtime.entry(old.id()).unwrap();
+        runtime.register(
+            old.id().into(),
+            old.generation(),
+            entry.kind,
+            entry.behavior,
+            entry.callbacks,
+        )
+    });
+    let current = runtime.project_report(cached.clone());
+    assert_eq!(
+        current
+            .nodes
+            .iter()
+            .find(|node| node.id == old.id())
+            .unwrap()
+            .trigger_id,
+        "peer-replaced-trigger",
+        "same-generation render registration preserves the declaration"
+    );
+    let replacement = peer_dom.in_scope(peer.scope(), || {
+        let runtime = peer.runtime();
+        let entry = runtime.entry(old.id()).unwrap();
+        runtime.register(
+            old.id().into(),
+            old.generation() + 1,
+            entry.kind,
+            entry.behavior,
+            entry.callbacks,
+        )
+    });
+    same.set_surface_metadata(metadata("stale-trigger", "stale-host"));
+    assert!(
+        !runtime
+            .project_report(cached.clone())
+            .nodes
+            .iter()
+            .any(|node| node.id == old.id()),
+        "an unmounted replacement cannot inherit its predecessor's destinations"
+    );
+    replacement.set_ownership(Vec::new(), true);
+    replacement.set_mounted();
+    let current = runtime.project_report(cached.clone());
+    let peer_facts = current
+        .nodes
+        .iter()
+        .find(|node| node.id == old.id())
+        .unwrap();
+    assert_eq!(peer_facts.generation, old.generation() + 1);
+    assert!(
+        peer_facts.trigger_id.is_empty()
+            && peer_facts.items_host.is_empty()
+            && peer_facts.popover_host.is_empty()
+            && peer_facts.focusable_ids.is_empty()
+            && peer_facts.tab_candidates.is_empty(),
+        "new registrations require explicit metadata"
+    );
+    replacement.set_surface_metadata(metadata("peer-current-trigger", "peer-forwarded-host"));
+    peer.0.borrow_mut().node = Some(replacement);
+    attach(&peer_dom, &peer, "moved surface document");
+    assert!(
+        !runtime
+            .project_report(cached.clone())
+            .nodes
+            .iter()
+            .any(|node| node.id == old.id()),
+        "a peer in another document cannot supply destinations"
+    );
+    attach(&peer_dom, &peer, document);
+    assert!(
+        runtime
+            .project_report(cached.clone())
+            .nodes
+            .iter()
+            .any(|node| node.id == old.id())
+    );
+    drop(peer_dom);
+    assert!(
+        !runtime
+            .project_report(cached)
+            .nodes
+            .iter()
+            .any(|node| node.id == old.id()),
+        "retained runtime and node handles do not keep a dropped renderer eligible"
+    );
+}
+
+#[test]
 fn dioxus_popover_tab_preserves_interior_empty_prevented_and_focuses_registered_boundary_once() {
     let fixture = Fixture::new("document-trap-policy", 501);
     let mut dom = build_popover_fixture(&fixture);
@@ -857,6 +1039,9 @@ fn dioxus_popover_tab_rejects_closed_reopened_and_replaced_focus_authorizations(
         "same-generation reopen changes revision"
     );
     assert!(!deliver_trap(&dom, &fixture, report(4)).default_action_enabled());
+    // Capture the old fixture observation before replacement. Authoring a fresh
+    // fixture would explicitly register the replacement's new metadata.
+    let stale_report = report(5);
     dom.in_scope(fixture.scope(), || {
         let runtime = fixture.runtime();
         let callbacks = runtime.entry("document-trap-stale").unwrap().callbacks;
@@ -877,8 +1062,8 @@ fn dioxus_popover_tab_rejects_closed_reopened_and_replaced_focus_authorizations(
         "new registration cannot inherit old focus admission"
     );
     assert!(
-        deliver_trap(&dom, &fixture, report(5)).default_action_enabled(),
-        "old native generation cannot authorize replacement"
+        deliver_trap(&dom, &fixture, stale_report).default_action_enabled(),
+        "old observation cannot authorize an undeclared replacement surface"
     );
 }
 
@@ -1014,6 +1199,10 @@ fn build_exit_fixture(fixture: &Fixture) -> VirtualDom {
 
 fn exit_report(fixture: &Fixture, document: &str, sequence: u64) -> serde_json::Value {
     let id = fixture.0.borrow().id;
+    fixture.node().set_surface_metadata(SurfaceMetadata {
+        trigger_id: "trigger".into(),
+        ..Default::default()
+    });
     serde_json::json!({
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
         "kind":"key","key":"Tab","hosts":[id],"triggers":[id],
@@ -1023,7 +1212,7 @@ fn exit_report(fixture: &Fixture, document: &str, sequence: u64) -> serde_json::
             fixture_focus_candidate("after", &[], false)
         ],
         "nodes":[{"id":id,"generation":fixture.node().generation(),
-            "mode":"roving-tabindex","trigger_id":"trigger",
+            "mode":"roving-tabindex",
             "inside":true,"on_trigger":true}]
     })
 }
@@ -1386,17 +1575,22 @@ fn header_exit_nodes(
         true,
     );
     fixture.child.node().set_mounted();
+    fixture.child.node().set_surface_metadata(SurfaceMetadata {
+        trigger_id: "header-child-trigger".into(),
+        items_host: format!("{}-host", fixture.child.node().id()),
+        ..Default::default()
+    });
+    fixture.header.set_surface_metadata(SurfaceMetadata {
+        trigger_id: "header-more".into(),
+        items_host: format!("{}-host", fixture.header.id()),
+        ..Default::default()
+    });
     vec![
         serde_json::json!({
             "id":fixture.child.0.borrow().id,"generation":1,
-            "mode":"active-descendant","trigger_id":"header-child-trigger",
-            "inside":true,"on_trigger":true,"items_host":format!("{}-host",fixture.child.node().id())
+            "mode":"active-descendant","inside":true,"on_trigger":true
         }),
-        serde_json::json!({
-            "id":fixture.header.id(),"generation":1,
-            "trigger_id":"header-more",
-            "items_host":format!("{}-host",fixture.header.id())
-        }),
+        serde_json::json!({"id":fixture.header.id(),"generation":1}),
         trap_node(
             parent_id,
             &[],
@@ -2022,8 +2216,11 @@ fn anchor_focus_nodes(nodes: &[(&Fixture, &[&str])]) -> Vec<serde_json::Value> {
         .map(|(fixture, ancestors)| {
             let id = fixture.0.borrow().id;
             set_fixture_ownership(id, ancestors);
+            fixture.node().set_surface_metadata(SurfaceMetadata {
+                trigger_id: format!("{id}-trigger"),
+                ..Default::default()
+            });
             serde_json::json!({"id":id,"generation":fixture.node().generation(),
-            "trigger_id":format!("{id}-trigger"),
             "mode":"roving-tabindex","on_trigger":true})
         })
         .collect()
@@ -2431,12 +2628,19 @@ fn linked_roving_trigger_owns_tab_before_enclosing_active_descendant_host() {
     root.set_mounted();
     child.node().set_ownership(vec![root.clone()], true);
     child.node().set_mounted();
+    root.set_surface_metadata(SurfaceMetadata {
+        trigger_id: "linked-root-trigger".into(),
+        ..Default::default()
+    });
+    child.node().set_surface_metadata(SurfaceMetadata {
+        trigger_id: "linked-child-trigger".into(),
+        ..Default::default()
+    });
     let nodes = serde_json::json!([
         {"id":root.id(),"generation":1,
-         "mode":"active-descendant","trigger_id":"linked-root-trigger","inside":true},
+         "mode":"active-descendant","inside":true},
         {"id":child.node().id(),"generation":1,
-         "mode":"roving-tabindex",
-         "trigger_id":"linked-child-trigger","on_trigger":true}
+         "mode":"roving-tabindex","on_trigger":true}
     ]);
     deliver_trap(
         &dom,

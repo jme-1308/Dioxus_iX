@@ -1010,6 +1010,17 @@ pub(crate) fn HeaderLayout(
     let more_id = format!("{owner}-more");
     let small_id = format!("{owner}-small");
     let large_id = format!("{owner}-large");
+    controller
+        .node
+        .set_surface_metadata(overlay_runtime::SurfaceMetadata {
+            trigger_id: more_id.clone(),
+            items_host: if small {
+                small_id.clone()
+            } else {
+                large_id.clone()
+            },
+            popover_host: String::new(),
+        });
     drop(state);
     let more_mount = crate::dropdown::use_focus_mount(more_id.clone());
     let small_popover = crate::native_popover::use_native_popover(
@@ -1252,6 +1263,10 @@ mod tests {
         let mut dom = VirtualDom::new_with_props(ownership_fixture, fixture.clone());
         dom.rebuild_in_place();
         let header = fixture.0.groups.borrow()["overflow"][0].clone();
+        let metadata = header.surface_metadata().unwrap();
+        assert_eq!(metadata.trigger_id, format!("{}-more", header.id()));
+        assert_eq!(metadata.items_host, format!("{}-large", header.id()));
+        assert!(metadata.popover_host.is_empty());
         for group in ["secondary", "default", "avatar"] {
             assert!(fixture.0.groups.borrow()[group].is_empty());
         }
@@ -1261,11 +1276,19 @@ mod tests {
             assert!(fixture.0.groups.borrow()[group] == [header.clone()]);
         }
         assert!(fixture.0.groups.borrow()["avatar"].is_empty());
+        assert_eq!(
+            header.surface_metadata().unwrap().items_host,
+            format!("{}-small", header.id())
+        );
         dom.in_scope(ScopeId::ROOT, || fixture.0.small.get().unwrap().set(false));
         settle_focus(&mut dom);
         for group in ["secondary", "default", "avatar"] {
             assert!(fixture.0.groups.borrow()[group].is_empty());
         }
+        assert_eq!(
+            header.surface_metadata().unwrap().items_host,
+            format!("{}-large", header.id())
+        );
         assert!(fixture.0.groups.borrow()["overflow"] == [header]);
     }
 

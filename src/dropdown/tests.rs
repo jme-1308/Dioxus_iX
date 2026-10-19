@@ -1874,14 +1874,15 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
             .unwrap();
         register_inventory(&context, &facts);
         let before = h.config.borrow().requests.clone();
+        node.set_surface_metadata(overlay_runtime::SurfaceMetadata {
+            items_host: "mixed-items-host".into(),
+            ..Default::default()
+        });
         let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
             "focus_candidates":focusable_ids.iter().enumerate().map(|(candidate, target)| serde_json::json!({
                 "target":target,"tab_index":0,"hosts":[node.id()],"nearest_host":"mixed-items-host",
                 "popover":"","exact_active":inside && candidate == index,"contains_active":inside && candidate == index
-            })).collect::<Vec<_>>(),
-            "nodes":[{
-                "id":node.id(),"generation":node.generation(),"items_host":"mixed-items-host"
-            }]
+            })).collect::<Vec<_>>()
         });
         dispatch(&h.dom, "input", transport, report.to_string());
         let revision_before = *context.revision.peek();
@@ -2818,6 +2819,7 @@ fn custom_trigger_scope_cleanup_preserves_newer_registration_and_releases_remove
     assert!(previous_second.calls.borrow().is_empty());
     let current = context.trigger.borrow().clone().unwrap();
     context.mount_trigger(
+        current.focus_id.clone(),
         current.node.clone(),
         current.blocked.clone(),
         current.in_dropdown_item,
@@ -3999,4 +4001,61 @@ fn trigger_replacement_current_metadata_and_scope_cleanup_reset_item_placement()
     assert!(context.trigger.borrow().is_none());
     assert!(!context.anchor_in_dropdown_item());
     assert!(placement_tag(&h, &context).contains("data-placement=\"bottom-end\""));
+}
+
+#[test]
+fn surface_metadata_follows_current_registered_trigger_and_forwarded_items_host() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = Harness::new();
+    let parent = h.context();
+    let child = h.config.borrow().linked.get().unwrap().context();
+    let parent_node = parent.node.borrow().clone().unwrap();
+    let child_node = child.node.borrow().clone().unwrap();
+    let own = parent_node.surface_metadata().unwrap();
+    assert_eq!(own.trigger_id, parent.trigger_id());
+    assert_eq!(own.items_host, parent.host_id());
+    assert!(own.popover_host.is_empty());
+    mount_trigger_mock(&mut h, "Linked");
+    let linked_id = child.trigger.borrow().as_ref().unwrap().focus_id.clone();
+    assert_eq!(child_node.surface_metadata().unwrap().trigger_id, linked_id);
+    let linked = parent_node
+        .inventory()
+        .unwrap()
+        .hosts
+        .into_iter()
+        .find(|host| host.target == linked_id)
+        .unwrap();
+    h.dom.in_runtime(|| {
+        assert!(parent.request(true, Reason::Trigger, false));
+        parent.open_submenu(&linked);
+    });
+    h.settle();
+    assert!(*child.open.peek());
+    assert_eq!(
+        parent_node.surface_metadata().unwrap().items_host,
+        child.host_id()
+    );
+    // A configured ID is not the current mounted trigger declaration.
+    child.state.borrow_mut().trigger_id = Some("stale-configured-trigger".into());
+    child.sync_surface_metadata();
+    assert_eq!(child_node.surface_metadata().unwrap().trigger_id, linked_id);
+    let previous = child.trigger.borrow().as_ref().unwrap().node.clone();
+    mount_trigger_mock(&mut h, "External trigger");
+    let replacement_id = child.trigger.borrow().as_ref().unwrap().focus_id.clone();
+    assert_ne!(replacement_id, linked_id);
+    child.unmount_trigger(&previous);
+    assert_eq!(
+        child_node.surface_metadata().unwrap().trigger_id,
+        replacement_id
+    );
+    let current = child.trigger.borrow().as_ref().unwrap().node.clone();
+    child.unmount_trigger(&current);
+    assert!(child_node.surface_metadata().unwrap().trigger_id.is_empty());
+    h.dom
+        .in_runtime(|| child.request(false, Reason::Trigger, false));
+    h.settle();
+    assert_eq!(
+        parent_node.surface_metadata().unwrap().items_host,
+        parent.host_id()
+    );
 }

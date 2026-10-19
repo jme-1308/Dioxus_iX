@@ -1300,6 +1300,21 @@ fn menu_category_overlay_anchor_does_not_install_a_generic_trigger() {
         category.0.id
     )));
     assert!(!html.contains(&format!("data-ix-overlay-trigger=\"{overlay_id}\"")));
+    assert_eq!(
+        category
+            .0
+            .overlay
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .surface_metadata(),
+        Some(crate::overlay_runtime::SurfaceMetadata {
+            trigger_id: String::new(),
+            items_host: category.0.host_id.borrow().clone(),
+            popover_host: String::new(),
+        }),
+        "the category anchor is an explicit items host, not a generic trigger"
+    );
     h.toggle_expanded();
     h.pointer("Category", "host", "pointerenter", "mouse");
     assert!(category.is_open());

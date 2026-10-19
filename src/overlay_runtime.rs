@@ -5,7 +5,7 @@ use crate::dropdown_inventory::{
     HostFacts, HostPartFacts, HostPartKind, InventoryFacts, ItemKind, ItemRef,
 };
 use crate::overlay_completion::CompletionQueue;
-use crate::overlay_domain::{Domain, DomainCallbacks};
+use crate::overlay_domain::{Domain, DomainCallbacks, SurfaceValidity};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -85,6 +85,15 @@ pub(crate) enum SurfaceObservation {
 }
 type SurfaceObserver = Rc<dyn Fn(SurfaceObservation)>;
 
+/// Dioxus-authored physical surfaces used to partition canonical native facts.
+/// Empty fields do not enroll arbitrary DOM or supply focus destinations.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SurfaceMetadata {
+    pub(crate) trigger_id: String,
+    pub(crate) items_host: String,
+    pub(crate) popover_host: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub(crate) struct AnchorRect {
     pub(crate) top: f64,
@@ -133,6 +142,7 @@ struct Entry {
     trigger_visibility_check: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
     surface_observer: Option<SurfaceObserver>,
+    surface_metadata: SurfaceMetadata,
     submenu: Option<SubmenuAccess>,
     navigation_mode: Option<String>,
     suppress_trigger_restore: bool,
@@ -1405,6 +1415,13 @@ impl RuntimeHandle {
             let suppress_trigger_restore = runtime.nodes.get(&id).is_some_and(|entry| {
                 entry.generation == generation && entry.suppress_trigger_restore
             });
+            let surface_metadata = runtime
+                .nodes
+                .get(&id)
+                .filter(|entry| entry.generation == generation)
+                .map_or_else(SurfaceMetadata::default, |entry| {
+                    entry.surface_metadata.clone()
+                });
             let navigation_mode = runtime
                 .nodes
                 .get(&id)
@@ -1442,6 +1459,7 @@ impl RuntimeHandle {
                     trigger_visibility_check: kind.is_dropdown(),
                     anchor_intersection: None,
                     surface_observer: None,
+                    surface_metadata,
                     submenu: None,
                     navigation_mode,
                     suppress_trigger_restore,
@@ -1525,12 +1543,114 @@ impl RuntimeHandle {
                 }),
             },
         );
+        let metadata_runtime = Rc::downgrade(&self.0);
+        let metadata_id = id.to_owned();
+        domain.set_surface_reader(
+            &self.owner_id(),
+            id,
+            generation,
+            Rc::new(move || {
+                RuntimeHandle(metadata_runtime.upgrade()?)
+                    .surface_validity(&metadata_id, generation)
+            }),
+        );
+        domain.set_surface_metadata(
+            &self.owner_id(),
+            id,
+            generation,
+            entry.surface_metadata.clone(),
+        );
         if let Some(open) = self
             .with_owner(id, generation, || self.read_current(id, &entry))
             .flatten()
         {
             domain.sync_open(id, generation, open);
         }
+    }
+    /// Read after the owning callback: a callback may replace/unmount a surface
+    /// or update its current trigger/forwarded host without a native mutation.
+    fn surface_metadata(&self, id: &str, generation: u64) -> Option<SurfaceMetadata> {
+        self.with_owner(id, generation, || {
+            let snapshot = self.entry(id).filter(|entry| entry.mounted)?;
+            self.read_current(id, &snapshot)?;
+            self.entry(id)
+                .filter(|entry| entry.mounted && self.current(id, generation, snapshot.revision))
+                .map(|entry| entry.surface_metadata)
+        })
+        .flatten()
+    }
+    /// A callback-free final lease rejects a renderer dropped or registration
+    /// removed/replaced by a later surface read, without replaying callbacks.
+    fn surface_validity(&self, id: &str, generation: u64) -> Option<SurfaceValidity> {
+        self.surface_metadata(id, generation)?;
+        let revision = self.entry(id)?.revision;
+        let weak = Rc::downgrade(&self.0);
+        let id = id.to_owned();
+        Some(Rc::new(move || {
+            let Some(runtime) = weak.upgrade().map(RuntimeHandle) else {
+                return false;
+            };
+            runtime.current(&id, generation, revision)
+                && runtime.entry(&id).is_some_and(|entry| {
+                    entry.mounted
+                        && entry
+                            .scope
+                            .is_none_or(|(owner, _)| owner.upgrade().is_some())
+                })
+        }))
+    }
+    fn project_report(&self, mut report: Report) -> Report {
+        let surfaces = if let Some(domain) = self.domain() {
+            domain.surface_metadata()
+        } else {
+            let snapshots = {
+                let state = self.0.borrow();
+                state
+                    .order
+                    .iter()
+                    .filter_map(|id| {
+                        state
+                            .nodes
+                            .get(id)
+                            .map(|entry| (id.clone(), entry.generation, entry.revision))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let surfaces = snapshots
+                .into_iter()
+                .filter_map(|(id, generation, revision)| {
+                    self.surface_validity(&id, generation)
+                        .map(|valid| (id, generation, revision, valid))
+                })
+                .collect::<Vec<_>>();
+            // A later read may remove an earlier surface. Never retain that
+            // stale destination in a projection after callback reentry.
+            surfaces
+                .into_iter()
+                .filter_map(|(id, generation, revision, valid)| {
+                    if !valid() || !self.current(&id, generation, revision) {
+                        return None;
+                    }
+                    self.entry(&id)
+                        .filter(|entry| entry.mounted)
+                        .map(|entry| (id, generation, entry.surface_metadata))
+                })
+                .collect()
+        };
+        report.nodes = surfaces
+            .into_iter()
+            .map(|(id, generation, metadata)| NodeFacts {
+                id,
+                generation,
+                trigger_id: metadata.trigger_id,
+                items_host: metadata.items_host,
+                popover_host: metadata.popover_host,
+                focusable_ids: Vec::new(),
+                tab_candidates: Vec::new(),
+            })
+            .collect();
+        report.project_focus();
+        report
     }
     /// Dioxus lifetimes and authored relationships are the only graph input.
     /// Native observations are limited to read-only geometry/focus/Tab facts.
@@ -2347,10 +2467,9 @@ impl RuntimeHandle {
             }
             runtime.sequence = report.sequence;
         }
-        let mut projected = report.clone();
-        projected.project_focus();
-        let report = &projected;
         self.attach_document(&report.document);
+        let projected = self.project_report(report.clone());
+        let report = &projected;
         {
             let mut runtime = self.0.borrow_mut();
             // A snapshot supplies read-only order, focus and Tab destinations.
@@ -2491,7 +2610,11 @@ impl RuntimeHandle {
             };
             // Capture the mounted destination before close callbacks cancel old
             // focus intents or change the current graph. Admission occurs after.
-            let tab_release = self.tab_release_target(id, &facts, report);
+            let current_report = self.project_report(report.clone());
+            if !self.current(id, entry.generation, entry.revision) {
+                return KeyDecision::default();
+            }
+            let tab_release = self.tab_release_target(id, &facts, &current_report);
             let mut decision = callback(&facts);
             if !self.current(id, entry.generation, entry.revision)
                 || self.read_current(id, &entry) != Some(true)
@@ -2659,6 +2782,34 @@ impl RuntimeHandle {
 }
 
 impl NodeHandle {
+    /// Publish current authored metadata without signal writes or callbacks.
+    /// Domain readers share this current registration, never a native fallback.
+    pub(crate) fn set_surface_metadata(&self, metadata: SurfaceMetadata) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        {
+            let mut state = runtime.0.borrow_mut();
+            let Some(entry) = state
+                .nodes
+                .get_mut(&self.id)
+                .filter(|entry| entry.generation == self.generation)
+            else {
+                return;
+            };
+            entry.surface_metadata = metadata.clone();
+        }
+        if let Some(domain) = runtime.domain() {
+            domain.set_surface_metadata(&runtime.owner_id(), &self.id, self.generation, metadata);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn surface_metadata(&self) -> Option<SurfaceMetadata> {
+        self.runtime()?
+            .entry(&self.id)
+            .filter(|entry| entry.generation == self.generation)
+            .map(|entry| entry.surface_metadata)
+    }
     pub(crate) fn set_ownership(&self, ancestors: Vec<NodeHandle>, ready: bool) {
         let Some(runtime) = self.runtime() else {
             return;
@@ -2742,7 +2893,8 @@ impl NodeHandle {
                 if runtime.read_current(&self.id, &entry) != Some(true) {
                     return KeyDecision::default();
                 }
-                let Some(report) = runtime.0.borrow().observation.clone() else {
+                let observation = runtime.0.borrow().observation.clone();
+                let Some(report) = observation.map(|report| runtime.project_report(report)) else {
                     return KeyDecision::default();
                 };
                 let Some(node) = report
@@ -2827,8 +2979,13 @@ impl NodeHandle {
                     .filter(|root| runtime.entry(root).is_some());
                 let navigation_id = navigation_root.as_deref().unwrap_or(&self.id);
                 let navigation_entry = runtime.entry(navigation_id)?;
+                let observation = runtime.0.borrow().observation.clone();
+                let projected = observation.map(|report| runtime.project_report(report));
+                let observed = projected.as_ref();
+                if !runtime.current(&self.id, self.generation, entry.revision) {
+                    return None;
+                }
                 let state = runtime.0.borrow();
-                let observed = state.observation.as_ref();
                 let owner = observed.and_then(|report| {
                     report
                         .nodes
@@ -3521,7 +3678,9 @@ struct Report {
     hosts: Vec<String>,
     #[serde(default)]
     triggers: Vec<String>,
-    #[serde(default)]
+    // Root descriptors belong to Dioxus registrations. Ignore legacy native
+    // input even when supplied; unknown DOM cannot enroll itself here.
+    #[serde(skip)]
     nodes: Vec<NodeFacts>,
     #[serde(default)]
     focus_candidates: Vec<crate::popover_focus::NativeFocusCandidate>,
@@ -3607,19 +3766,14 @@ enum DocumentAction {
         key: String,
     },
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Default)]
 struct NodeFacts {
     id: String,
     generation: u64,
-    #[serde(default)]
     trigger_id: String,
-    #[serde(default)]
     items_host: String,
-    #[serde(default)]
     popover_host: String,
-    #[serde(skip)]
     focusable_ids: Vec<String>,
-    #[serde(skip)]
     tab_candidates: Vec<crate::popover_focus::TabCandidate>,
 }
 
@@ -5894,6 +6048,29 @@ mod tests {
                 {"target":"unrelated","tab_index":0}
             ]
         })).unwrap();
+        // Isolate the pure projection with authored descriptors. Production
+        // deserialization intentionally ignores the legacy native nodes field.
+        report.nodes = vec![
+            NodeFacts {
+                id: "outer".into(),
+                generation: 1,
+                items_host: "outer-host".into(),
+                popover_host: "outer-host".into(),
+                ..Default::default()
+            },
+            NodeFacts {
+                id: "inner".into(),
+                generation: 1,
+                items_host: "inner-host".into(),
+                popover_host: "inner-host".into(),
+                ..Default::default()
+            },
+            NodeFacts {
+                id: "missing".into(),
+                generation: 1,
+                ..Default::default()
+            },
+        ];
         report.project_focus();
         assert_eq!(
             report.nodes[0].focusable_ids,
@@ -5916,6 +6093,140 @@ mod tests {
     }
 
     #[test]
+    fn direct_key_facts_reproject_current_metadata_without_native_nodes_or_new_observation() {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "current-surface",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        root.open.set(true);
+        root.node.set_surface_metadata(SurfaceMetadata {
+            items_host: "old-host".into(),
+            ..Default::default()
+        });
+        let observed: Report = serde_json::from_value(serde_json::json!({
+            "owner":runtime.owner_id(),"sequence":1,"kind":"observe",
+            "nodes":[{"id":"current-surface","generation":1,"items_host":"forged-host","trigger_id":"forged-trigger"}],
+            "focus_candidates":[
+                {"target":"old-control","tab_index":0,"nearest_host":"old-host"},
+                {"target":"current-control","tab_index":0,"nearest_host":"current-host"},
+                {"target":"forged-control","tab_index":0,"nearest_host":"forged-host"}
+            ]
+        })).unwrap();
+        assert!(
+            observed.nodes.is_empty(),
+            "native metadata is ignored during deserialization"
+        );
+        runtime.observe(&observed);
+        root.node.set_surface_metadata(SurfaceMetadata {
+            items_host: "current-host".into(),
+            ..Default::default()
+        });
+        let key = typed_keyboard("Tab", Modifiers::empty());
+        let facts = root
+            .node
+            .dioxus_key_facts(&key, false, Some("current-control".into()), true)
+            .unwrap();
+        assert_eq!(facts.focusable_ids, ["current-control"]);
+        assert_eq!(facts.focused_index, Some(0));
+        assert_eq!(runtime.0.borrow().observation.as_ref().unwrap().sequence, 1);
+
+        // A later liveness callback may update an earlier descriptor. Final
+        // assembly uses the current value without rerunning those callbacks.
+        let peer = model(
+            &runtime,
+            "later-surface",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        let update = root.node.clone();
+        runtime
+            .0
+            .borrow_mut()
+            .nodes
+            .get_mut("later-surface")
+            .unwrap()
+            .callbacks
+            .read = Rc::new(move || {
+            update.set_surface_metadata(SurfaceMetadata {
+                items_host: "latest-host".into(),
+                ..Default::default()
+            });
+            Some(false)
+        });
+        let projected = runtime.project_report(observed);
+        assert_eq!(
+            projected
+                .nodes
+                .iter()
+                .find(|node| node.id == root.node.id())
+                .unwrap()
+                .items_host,
+            "latest-host"
+        );
+        peer.node.unregister();
+    }
+
+    #[test]
+    fn metadata_projection_rejects_owner_dropped_by_a_later_reader() {
+        let first = RuntimeHandle::new();
+        let first_node = model(
+            &first,
+            "dropped-surface",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        )
+        .node;
+        first_node.set_surface_metadata(SurfaceMetadata {
+            trigger_id: "dropped-trigger".into(),
+            ..Default::default()
+        });
+        first.attach_document("surface lease drop");
+        let retained = Rc::new(RefCell::new(Some(first)));
+        let second = RuntimeHandle::new();
+        model(
+            &second,
+            "survivor",
+            OverlayKind::Popover,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        second.attach_document("surface lease drop");
+        let release = retained.clone();
+        second
+            .0
+            .borrow_mut()
+            .nodes
+            .get_mut("survivor")
+            .unwrap()
+            .callbacks
+            .read = Rc::new(move || {
+            release.borrow_mut().take();
+            Some(false)
+        });
+        let projected = second.project_report(Report::default());
+        assert!(retained.borrow().is_none());
+        assert!(first_node.runtime().is_none());
+        assert_eq!(
+            projected
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            ["survivor"]
+        );
+        assert!(
+            second
+                .domain()
+                .unwrap()
+                .node_kind("dropped-surface", 1)
+                .is_none(),
+            "dropping an owner also removes its shared descriptor"
+        );
+    }
+
+    #[test]
     fn key_facts_derive_positive_tabindex_order_from_native_candidates() {
         let runtime = RuntimeHandle::new();
         let root = model(
@@ -5925,6 +6236,10 @@ mod tests {
             Rc::new(RefCell::new(Vec::new())),
         );
         root.open.set(true);
+        root.node.set_surface_metadata(SurfaceMetadata {
+            items_host: "tab-report-host".into(),
+            ..Default::default()
+        });
         let delivered = Rc::new(RefCell::new(Vec::new()));
         let captured = delivered.clone();
         runtime

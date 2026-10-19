@@ -839,6 +839,16 @@ pub fn use_popover() -> PopoverHandle {
 }
 
 impl PopoverHandle {
+    fn sync_surface_metadata(self) {
+        if let Some(node) = self.overlay.peek().clone() {
+            let id = self.id();
+            node.set_surface_metadata(crate::overlay_runtime::SurfaceMetadata {
+                trigger_id: self.trigger_id.peek().clone().unwrap_or_default(),
+                items_host: id.clone(),
+                popover_host: id,
+            });
+        }
+    }
     fn update_trigger_anchor(mut self, ownership: u64, target: &Rc<MountedData>, visible: bool) {
         if !self.trigger_anchor.try_peek().is_ok_and(|anchor| {
             anchor
@@ -1361,6 +1371,7 @@ fn use_popover_trigger_registration(
             let mut popover = popover;
             popover.surface.invoker.set(None);
             popover.trigger_id.set(None);
+            popover.sync_surface_metadata();
             popover.focus_trigger.set(None);
             if let Some(node) = popover.overlay.peek().clone() {
                 node.cancel_registered_focus();
@@ -1390,6 +1401,7 @@ fn use_popover_trigger_registration(
             .surface
             .remember_invoker(binding.runtime.capture_registered_focus(&id));
         popover.trigger_id.set(Some(id.clone()));
+        popover.sync_surface_metadata();
         popover
             .trigger_anchor
             .set(anchored.then_some(PopoverAnchor {
@@ -1565,6 +1577,11 @@ pub fn Popover(
         .map(|(_, ancestors)| ancestors.clone())
         .unwrap_or(surface_ancestors);
     node.set_ownership(ancestors.clone(), true);
+    node.set_surface_metadata(crate::overlay_runtime::SurfaceMetadata {
+        trigger_id: popover.trigger_id.read().clone().unwrap_or_default(),
+        items_host: id.clone(),
+        popover_host: id.clone(),
+    });
     crate::overlay_runtime::use_overlay_scope_with_ancestors(Some(node.clone()), ancestors);
     node.set_close_behavior(close_behavior);
     let mounted_node = node.clone();
@@ -1800,6 +1817,105 @@ mod tests {
                 PopoverContent { "Release details" }
             }
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct MetadataFixture(Rc<MetadataFixtureState>);
+    #[derive(Default)]
+    struct MetadataFixtureState {
+        popover: std::cell::Cell<Option<PopoverHandle>>,
+        visible: std::cell::Cell<Option<Signal<bool>>>,
+        id: RefCell<Option<Signal<String>>>,
+        mounted: RefCell<Option<EventHandler<MountedEvent>>>,
+    }
+    impl PartialEq for MetadataFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    #[component]
+    fn MetadataTrigger(popover: PopoverHandle, id: String, fixture: MetadataFixture) -> Element {
+        let mounted = use_popover_trigger_mount(popover, id.clone());
+        *fixture.0.mounted.borrow_mut() = Some(mounted);
+        rsx! { button { id, onmounted:mounted, "Custom trigger" } }
+    }
+    fn metadata_fixture(fixture: MetadataFixture) -> Element {
+        let popover = use_popover();
+        let visible = use_signal(|| true);
+        let id = use_signal(|| "custom-popover-trigger".to_string());
+        fixture.0.popover.set(Some(popover));
+        fixture.0.visible.set(Some(visible));
+        *fixture.0.id.borrow_mut() = Some(id);
+        rsx! {
+            if visible() { MetadataTrigger {key:"{id}",popover, id:id(), fixture:fixture.clone()} }
+            Popover {popover,label:"Metadata panel", "Panel content"}
+        }
+    }
+    #[test]
+    fn popover_surface_metadata_follows_registered_trigger_id_and_cleanup() {
+        let fixture = MetadataFixture::default();
+        let mut dom = VirtualDom::new_with_props(metadata_fixture, fixture.clone());
+        dom.rebuild_in_place();
+        let popover = fixture.0.popover.get().unwrap();
+        let node = popover.overlay.peek().clone().unwrap();
+        let metadata = node.surface_metadata().unwrap();
+        assert!(metadata.trigger_id.is_empty());
+        assert_eq!(metadata.items_host, popover.id());
+        assert_eq!(metadata.popover_host, popover.id());
+        let mounted = fixture.0.mounted.borrow().unwrap();
+        dom.in_scope(ScopeId::ROOT, || {
+            mounted.call(Event::new(Rc::new(MountedData::new(())), false))
+        });
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert_eq!(
+            node.surface_metadata().unwrap().trigger_id,
+            "custom-popover-trigger"
+        );
+        dom.in_scope(ScopeId::ROOT, || {
+            fixture
+                .0
+                .id
+                .borrow()
+                .unwrap()
+                .set("renamed-popover-trigger".into())
+        });
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert!(
+            node.surface_metadata().unwrap().trigger_id.is_empty(),
+            "a replacement must mount before supplying a destination"
+        );
+        let replacement = fixture.0.mounted.borrow().unwrap();
+        dom.in_scope(ScopeId::ROOT, || {
+            replacement.call(Event::new(Rc::new(MountedData::new(())), false))
+        });
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert_eq!(
+            node.surface_metadata().unwrap().trigger_id,
+            "renamed-popover-trigger"
+        );
+        assert!(
+            popover
+                .surface
+                .invoker
+                .peek()
+                .as_ref()
+                .unwrap()
+                .live_node()
+                .is_some()
+        );
+        dom.in_scope(ScopeId::ROOT, || {
+            fixture.0.visible.get().unwrap().set(false)
+        });
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert!(node.surface_metadata().unwrap().trigger_id.is_empty());
     }
 
     #[test]

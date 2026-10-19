@@ -2858,6 +2858,11 @@ pub fn MenuCategory(
         }
     });
     overlay_node.set_ownership(crate::overlay_runtime::use_overlay_ancestors(), true);
+    overlay_node.set_surface_metadata(crate::overlay_runtime::SurfaceMetadata {
+        trigger_id: String::new(),
+        items_host: host_id.clone(),
+        popover_host: String::new(),
+    });
     let mounted_overlay = overlay_node.clone();
     let overlay_sync = overlay_node.clone();
     use_effect(move || overlay_sync.sync_open(flyout() == Some(id)));
@@ -3015,7 +3020,7 @@ pub fn MenuCategory(
             "data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
             "data-ix-item-kind":"category","data-ix-item-key":item_host.key.clone(),"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
             "data-ix-overlay-root":overlay_id.clone(),"data-ix-overlay-owner":overlay_runtime.owner_id(),
-            "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-items-host-id":host_id,"data-ix-overlay-native-surface":"category",
+            "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-native-surface":"category",
             "data-menu-category-root":id.to_string(),"data-menu-category":id.to_string(),"data-menu-category-mode":if expanded{"expanded"}else{"collapsed"},
             "data-open":is_open.to_string(),
             "data-menu-category-popup-open":popup_open.to_string(),"data-menu-category-panel-open":panel_open.to_string(),"data-menu-category-body-surface":if body_in_panel{"panel"}else{"popup"},
