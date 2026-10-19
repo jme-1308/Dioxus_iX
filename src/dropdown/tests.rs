@@ -2935,6 +2935,100 @@ fn registered_native_control_keeps_ad_editing_defaults_while_escape_and_roving_s
     assert!(!*context.open.peek());
 }
 #[test]
+fn two_linked_rows_open_their_current_controllers_after_parent_is_already_open() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = Harness::new();
+    h.click("Menu");
+    let parent = h.context();
+    let parent_node = parent.node.borrow().clone().unwrap();
+    let runtime = parent_node.runtime().unwrap();
+    let linked = h.config.borrow().linked.get().unwrap();
+    let explicit = parent
+        .entries
+        .borrow()
+        .values()
+        .find(|entry| entry.label == "Explicit")
+        .unwrap()
+        .submenu
+        .unwrap();
+    let hosts = parent.entries.borrow().values().map(|entry| {
+        let attributes = &h.attrs[&h.target(&entry.label).raw()];
+        serde_json::json!({"item":entry.host_id,"capture":entry.host_id,"target":entry.host_id,
+            "registration_key":attributes["data-ix-item-key"],"kind":"dropdown",
+            "disabled_attribute":entry.disabled,"checked_attribute":entry.checked,
+            "linked_trigger":entry.submenu.and_then(DropdownHandle::try_context).map(|context|context.node_id())})
+    }).collect::<Vec<_>>();
+    let order = hosts
+        .iter()
+        .map(|host| host["item"].clone())
+        .collect::<Vec<_>>();
+    let inventory: InventoryFacts =
+        serde_json::from_value(serde_json::json!({"items_host":parent.host_id(),
+        "hosts":hosts,"query_order":order,"navigation_order":order}))
+        .unwrap();
+    let mut nodes = vec![
+        serde_json::json!({"id":parent_node.id(),"generation":parent_node.generation(),
+        "connected":true,"discovery_ready":true,"inventory":inventory,"own_inventory":inventory}),
+    ];
+    for handle in [linked, explicit] {
+        let child = handle.context();
+        let node = child.node.borrow().clone().unwrap();
+        nodes.push(
+            serde_json::json!({"id":node.id(),"generation":node.generation(),"connected":true,
+            "discovery_ready":true,"trigger_ancestors":[parent_node.id()]}),
+        );
+    }
+    let transport = h
+        .attrs
+        .iter()
+        .find(|(_, attributes)| {
+            attributes.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
+        })
+        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+        .unwrap();
+    dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":nodes})
+            .to_string(),
+    );
+    h.settle();
+    for handle in [linked, explicit] {
+        let child_id = handle.context().node_id();
+        let host = inventory
+            .hosts
+            .iter()
+            .find(|host| host.linked_trigger.as_deref() == Some(child_id.as_str()))
+            .unwrap();
+        assert!(
+            parent_node.linked_submenu(host) == Some(handle),
+            "each row resolves its explicit current handle"
+        );
+    }
+    h.key("Menu", Key::Home);
+    h.key("Menu", Key::ArrowDown);
+    h.key("Menu", Key::ArrowRight);
+    assert!(
+        linked.is_open() && !explicit.is_open(),
+        "the Linked row opens its own controller"
+    );
+    h.dom.in_runtime(|| linked.close(false));
+    h.settle();
+    h.key("Menu", Key::End);
+    h.key("Menu", Key::ArrowRight);
+    assert!(
+        !linked.is_open() && explicit.is_open(),
+        "the second row does not reuse the first sibling's controller"
+    );
+    h.key("Menu", Key::Escape);
+    assert!(
+        !*parent.open.peek() && !linked.is_open() && !explicit.is_open(),
+        "parent dismissal includes children admitted after opening"
+    );
+}
+
+#[test]
 fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::with_settings(Fixture {
@@ -2954,7 +3048,8 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
                 serde_json::json!({"item":entry.host_id,"capture":entry.host_id,
                 "target":entry.host_id,"registration_key":attrs["data-ix-item-key"],
                 "kind":"dropdown","disabled_attribute":entry.disabled,
-                "checked_attribute":entry.checked,"visible_focus":entry.label=="Detached leaf"})
+                "checked_attribute":entry.checked,"visible_focus":entry.label=="Detached leaf",
+                "linked_trigger":entry.submenu.and_then(DropdownHandle::try_context).map(|child|child.node_id())})
             })
             .collect::<Vec<_>>();
         let order = hosts
@@ -2995,9 +3090,8 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
                 .any(|entry| entry.label == "Linked" && entry.host_id == host.target)
         })
         .unwrap();
-    assert!(parent_node.first_assigned_submenu() == h.config.borrow().linked.get());
-    // Discovery precedes opening, as it does for mounted native surfaces.
-    // Opening before the first report would retain an empty parent cache.
+    assert!(parent_node.linked_submenu(trigger) == h.config.borrow().linked.get());
+    // Current admitted ancestry supplies the registered parent relationship.
     h.dom.in_runtime(|| {
         assert!(parent.request(true, Reason::Trigger, false));
         parent.open_submenu(trigger);

@@ -1589,9 +1589,6 @@ impl RuntimeHandle {
         }
         self.sync_domain_open(id, generation, change.open);
         if !change.open {
-            if let Some(domain) = self.domain() {
-                domain.forget_children(id, generation);
-            }
             // Cancel the previous open-state intent before apply. A synchronous
             // close completion may admit a new expected-closed return target.
             self.cancel_owned_item_focus(id);
@@ -2021,7 +2018,6 @@ impl RuntimeHandle {
                     connected: node.is_some(),
                     discovery_ready: node.is_some_and(|node| node.discovery_ready),
                     assignment_ancestors: node.and_then(|node| node.assignment_ancestors.clone()),
-                    assignment_emissions: None,
                     trigger_ancestors: node
                         .map_or_else(Vec::new, |node| node.trigger_ancestors.clone()),
                 }
@@ -2039,7 +2035,6 @@ impl RuntimeHandle {
                         connected: node.connected,
                         discovery_ready: node.discovery_ready,
                         assignment_ancestors: node.assignment_ancestors.clone(),
-                        assignment_emissions: None,
                         trigger_ancestors: node.trigger_ancestors.clone(),
                     })
                     .collect::<Vec<_>>();
@@ -3371,16 +3366,9 @@ impl NodeHandle {
                 );
             }
         }
-        let mut state = runtime.0.borrow_mut();
-        if !state
-            .nodes
-            .get(&self.id)
+        runtime
+            .entry(&self.id)
             .is_some_and(|entry| entry.generation == self.generation)
-        {
-            return false;
-        }
-        state.registry.snapshot_children(&self.id);
-        true
     }
     pub(crate) fn did_present(&self) {
         if let Some(runtime) = self.runtime() {
@@ -4062,7 +4050,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_discovery_history_controls_escape_and_header_focus_adapter() {
+    fn current_parent_controls_escape_and_header_focus_adapter() {
         let runtime = RuntimeHandle::new();
         let log = Rc::new(RefCell::new(Vec::new()));
         let header = model(&runtime, "header", OverlayKind::Header, log.clone());
@@ -4130,8 +4118,8 @@ mod tests {
         });
         assert!(!decision.stop && !decision.prevent);
         assert!(
-            header.open.get() && !child.open.get(),
-            "relocation alone must not rewrite cached assignment"
+            !header.open.get() && !child.open.get(),
+            "current assignment routes child Escape through its enclosing Header"
         );
         header.node.unregister();
         child.node.unregister();
@@ -4143,6 +4131,48 @@ mod tests {
         assert!(child.node.request(true, Reason::Trigger, false));
         assert!(runtime.dismiss_root("child", Reason::Escape, true));
         assert!(!header.open.get() && !child.open.get());
+    }
+
+    #[test]
+    fn submenu_bound_after_parent_open_still_closes_through_its_current_parent() {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let parent = model(&runtime, "late-parent", OverlayKind::Dropdown, log.clone());
+        let child = model(&runtime, "late-child", OverlayKind::Dropdown, log);
+        assert!(parent.node.request(true, Reason::Trigger, false));
+        let mut observed = report(
+            &runtime,
+            1,
+            "observe",
+            serde_json::json!([
+                {"id":"late-parent","generation":1,"connected":true,"discovery_ready":true},
+                {"id":"late-child","generation":1,"connected":true,"discovery_ready":false,
+                    "assignment_ancestors":["late-parent"],"trigger_ancestors":["late-parent"]}
+            ]),
+        );
+        runtime.observe(&observed);
+        assert!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_children("late-parent")
+                .is_empty()
+        );
+        observed.sequence = 2;
+        observed.nodes[1].discovery_ready = true;
+        runtime.observe(&observed);
+        assert_eq!(
+            runtime.0.borrow().registry.cached_children("late-parent"),
+            ["late-child"]
+        );
+        assert!(child.node.request(true, Reason::Keyboard, false));
+        runtime.close_submenu(child.node.id());
+        assert!(parent.open.get(), "return keeps the enclosing menu open");
+        assert!(
+            !child.open.get(),
+            "a newly bound child belongs to its open parent"
+        );
     }
 
     #[test]

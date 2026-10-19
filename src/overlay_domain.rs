@@ -323,9 +323,8 @@ impl Domain {
         }
     }
 
-    /// Source PopoverController.presentAndWait runs same-type dismissal and
-    /// child-cache synchronization after willPresent and before native opening.
-    /// Acceptance of another host's dismissal never gates this presentation.
+    /// Run same-type dismissal against the current registered hierarchy before
+    /// native opening. Another host's veto does not gate this presentation.
     pub(crate) fn prepare_present(&self, id: &str) -> bool {
         let Some(target) = self.entry(id) else {
             return false;
@@ -374,18 +373,7 @@ impl Domain {
                 }
             }
         }
-        if self.read(id, &target).is_none() {
-            return false;
-        }
-        self.sync_children(id, target.generation);
-        true
-    }
-
-    pub(crate) fn sync_children(&self, id: &str, generation: u64) {
-        let mut state = self.0.borrow_mut();
-        if state.registry.generation(id) == Some(generation) {
-            state.registry.snapshot_children(id);
-        }
+        self.read(id, &target).is_some()
     }
 
     pub(crate) fn presented(&self, id: &str, generation: u64) {
@@ -395,30 +383,9 @@ impl Domain {
             .get(id)
             .is_some_and(|entry| entry.generation == generation)
         {
-            if state
-                .entries
-                .get(id)
-                .is_some_and(|entry| entry.kind == OverlayKind::Popover)
-            {
-                // Popover synchronized its cache before native presentation;
-                // didPresent only records actual presence/order after await.
-                state.registry.set_presence(id, true);
-            } else {
-                state.registry.set_open(id, true);
-            }
+            state.registry.set_open(id, true);
             state.presentation.retain(|candidate| candidate != id);
             state.presentation.push(id.to_owned());
-        }
-    }
-
-    pub(crate) fn forget_children(&self, id: &str, generation: u64) {
-        let mut state = self.0.borrow_mut();
-        if state
-            .entries
-            .get(id)
-            .is_some_and(|entry| entry.generation == generation)
-        {
-            state.registry.forget_children(id);
         }
     }
 
@@ -592,6 +559,7 @@ impl Domain {
         })
     }
 
+    /// Historical query names retained internally; relationships are current.
     pub(crate) fn cached_root(&self, id: &str) -> Option<String> {
         self.0.borrow().registry.cached_root(id)
     }
@@ -793,7 +761,7 @@ impl Domain {
         )
     }
 
-    /// Source Tab release suppresses each currently open cached Dropdown
+    /// Tab release suppresses each currently open related Dropdown
     /// before the root's cancelable before callback. Veto leaves that state.
     pub(crate) fn close_and_release_focus(&self, id: &str) -> bool {
         self.refresh();
@@ -956,7 +924,6 @@ mod tests {
             connected: true,
             trigger_ancestors: ancestors.iter().map(|id| (*id).to_owned()).collect(),
             assignment_ancestors: None,
-            assignment_emissions: None,
             discovery_ready: true,
         }
     }
@@ -970,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn popover_prepare_uses_cached_ancestors_policy_veto_and_registration_order() {
+    fn popover_prepare_uses_current_ancestors_policy_veto_and_registration_order() {
         let domain = Domain::join("popover controller prepare");
         let log = Rc::new(RefCell::new(Vec::new()));
         let parent = model(&domain, "a", "parent", OverlayKind::Popover, log.clone());
@@ -994,8 +961,6 @@ mod tests {
         }
         domain.set_close_behavior("sticky", 1, CloseBehavior::Inside);
         veto.allow.set(false);
-        // Moving the target's trigger does not erase the source controller path.
-        domain.observe_owner("a", &[fact("parent", &[]), fact("target", &[])]);
         assert!(domain.prepare_present("target"));
         assert!(parent.open.get() && sticky.open.get() && veto.open.get());
         assert!(dropdown.open.get());
@@ -1010,31 +975,44 @@ mod tests {
         );
         assert_eq!(domain.cached_parent("target").as_deref(), Some("parent"));
         assert_ne!(domain.topmost().as_deref(), Some("target"));
+        domain.observe_owner("a", &[fact("parent", &[]), fact("target", &[])]);
+        assert_eq!(
+            domain.cached_parent("target"),
+            None,
+            "detachment updates the current relationship"
+        );
     }
 
     #[test]
-    fn popover_did_present_does_not_resnapshot_cache_after_native_wait() {
-        let domain = Domain::join("popover did present cache boundary");
+    fn popover_children_follow_late_binding_and_detach_while_parent_is_open() {
+        let domain = Domain::join("popover current children");
         let log = Rc::new(RefCell::new(Vec::new()));
         let parent = model(&domain, "a", "parent", OverlayKind::Popover, log.clone());
-        model(&domain, "b", "child", OverlayKind::Popover, log);
-        domain.observe_all(&[fact("parent", &[]), fact("child", &["parent"])]);
+        let child = model(&domain, "b", "child", OverlayKind::Popover, log);
+        let mut pending = fact("child", &["parent"]);
+        pending.discovery_ready = false;
+        domain.observe_all(&[fact("parent", &[]), pending.clone()]);
         assert!(domain.prepare_present("parent"));
-        assert_eq!(domain.cached_children("parent"), ["child"]);
-        domain.forget_children("parent", 1);
         parent.open.set(true);
         domain.presented("parent", 1);
         assert!(domain.cached_children("parent").is_empty());
-        assert_eq!(domain.topmost().as_deref(), Some("parent"));
-        // A subsequent explicit presentation prepare is the next sync boundary.
-        parent.open.set(false);
-        domain.sync_open("parent", 1, false);
-        assert!(domain.prepare_present("parent"));
+        pending.discovery_ready = true;
+        domain.observe_owner("b", &[pending]);
         assert_eq!(domain.cached_children("parent"), ["child"]);
+        assert_eq!(domain.topmost().as_deref(), Some("parent"));
+        child.open.set(true);
+        domain.presented("child", 1);
+        domain.observe_owner("b", &[fact("child", &[])]);
+        assert!(domain.cached_children("parent").is_empty());
+        domain.close_children("parent", Reason::Parent, true);
+        assert!(
+            parent.open.get() && child.open.get(),
+            "a detached child is no longer dismissed by its former parent"
+        );
     }
 
     #[test]
-    fn presenting_popover_ancestor_dismisses_cached_descendant() {
+    fn presenting_popover_ancestor_dismisses_current_descendant() {
         let domain = Domain::join("popover descendant opening");
         let log = Rc::new(RefCell::new(Vec::new()));
         let parent = model(&domain, "a", "parent", OverlayKind::Popover, log.clone());
@@ -1285,8 +1263,8 @@ mod tests {
     }
 
     #[test]
-    fn cached_assignment_and_live_cross_owner_trigger_ancestry_stay_separate() {
-        let domain = Domain::join("cached versus live");
+    fn current_assignment_follows_cross_owner_trigger_detachment() {
+        let domain = Domain::join("current cross-owner detachment");
         let log = Rc::new(RefCell::new(Vec::new()));
         let parent = model(&domain, "a", "parent", OverlayKind::Dropdown, log.clone());
         let child = model(&domain, "b", "child", OverlayKind::Dropdown, log.clone());
@@ -1300,13 +1278,10 @@ mod tests {
         assert!(domain.owns_topmost("parent"));
         domain.observe_owner("b", &[fact("child", &[])]);
         assert!(domain.live_ancestors("child").is_empty());
-        assert_eq!(domain.cached_root("child").as_deref(), Some("parent"));
+        assert_eq!(domain.cached_root("child").as_deref(), Some("child"));
         assert!(domain.escape());
-        assert_eq!(*log.borrow(), ["parent:false:Escape:true"]);
-        assert!(
-            child.open.get(),
-            "owner callback, not domain routing, performs a child cascade"
-        );
+        assert_eq!(*log.borrow(), ["child:false:Escape:true"]);
+        assert!(parent.open.get() && !child.open.get());
     }
 
     #[test]
@@ -1334,10 +1309,10 @@ mod tests {
     }
 
     #[test]
-    fn cached_child_focus_policy_propagates_only_same_type_popover_restore() {
+    fn current_child_focus_policy_propagates_only_same_type_popover_restore() {
         for kind in [OverlayKind::Popover, OverlayKind::Dropdown] {
             for restore in [false, true] {
-                let domain = Domain::join(&format!("cached child focus {kind:?} {restore}"));
+                let domain = Domain::join(&format!("current child focus {kind:?} {restore}"));
                 let log = Rc::new(RefCell::new(Vec::new()));
                 let parent = model(&domain, "a", "parent", kind, log.clone());
                 let child = model(&domain, "b", "child", kind, log.clone());
@@ -1348,9 +1323,6 @@ mod tests {
                 domain.presented("child", 1);
                 assert_eq!(domain.cached_children("parent"), ["child"]);
 
-                // Cached controller assignment survives a later native move.
-                domain.observe_owner("b", &[fact("child", &[])]);
-                assert!(domain.live_ancestors("child").is_empty());
                 domain.close_children("parent", Reason::Parent, restore);
                 assert!(parent.open.get() && !child.open.get());
                 let expected_restore = kind == OverlayKind::Popover && restore;
@@ -1389,7 +1361,7 @@ mod tests {
                 [format!("child:false:Parent:{expected_restore}")]
             );
 
-            // Cross-type ancestry is live, unlike the cached same-type graph.
+            // Detachment also removes cross-type focus ancestry.
             log.borrow_mut().clear();
             child.open.set(true);
             domain.presented("child", 1);
@@ -1426,9 +1398,9 @@ mod tests {
             log.clone(),
         );
         domain.observe_owner("parent owner", &[fact("parent", &[])]);
-        // The next child-partition report retries its pending discovery after
-        // the ancestor's owner becomes known and discovery-ready.
-        domain.observe_owner("child owner", &[fact("child", &["parent"])]);
+        // Parent readiness admits the retained current ancestry immediately;
+        // no replay or child presentation is required.
+        assert_eq!(domain.cached_root("child").as_deref(), Some("parent"));
         parent.open.set(true);
         domain.presented("parent", 1);
         assert_eq!(domain.cached_children("parent"), ["child"]);

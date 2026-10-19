@@ -991,7 +991,7 @@ impl DropdownContext {
         let Some(node) = self.node.borrow().clone() else {
             return;
         };
-        let Some(handle) = node.first_assigned_submenu() else {
+        let Some(handle) = node.linked_submenu(host) else {
             return;
         };
         let Some(child) = handle.try_context().filter(|child| child.id != self.id) else {

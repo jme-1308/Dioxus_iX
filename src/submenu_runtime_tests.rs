@@ -353,8 +353,8 @@ fn submenu_close_preserves_child_veto_and_returns_to_live_parent() {
 #[test]
 fn submenu_return_rejects_closed_parent_and_cancels_when_parent_is_removed() {
     let mut closed = return_fixture(false, true);
-    // A controlled prop can already be false while the cached relation is
-    // still being reconciled. It cannot authorize a return-focus request.
+    // A current registered relation does not authorize return focus when the
+    // controlled parent is already closed.
     closed.state.0.open.set(false);
     closed.runtime.close_submenu("nested-return");
     tests::settle_item_effects(&mut closed.dom);

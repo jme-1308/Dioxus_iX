@@ -3,14 +3,11 @@
 
 //! Pure overlay hierarchy graph for Header overflow, Dropdown and Popover instances.
 //!
-//! Tracks two distinct source-derived graphs without DOM or callbacks:
-//! 1. Cached submenu assignment and presented parent->children snapshots
-//!    (`dropdown.tsx:313-340`, `dropdown-controller.ts:68-149`, `nested-overlay-registry.ts:58-94`).
-//!    Popover discovery synchronizes its controller cache even while closed.
-//! 2. Live composed-trigger overlay ancestry and presentation order
-//!    (`overlay-coordinator.ts:96-119, 188-363`).
+//! Latest connected, ready trigger facts determine logical same-kind parents.
+//! Dropdown and Header are compatible; cross-kind live focus ancestry remains
+//! a separate relation. Visibility changes never freeze a hierarchy snapshot.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) enum OverlayKind {
@@ -45,16 +42,6 @@ impl CloseBehavior {
     }
 }
 
-/// One resolved trigger's discovery, captured before a later move or rebind.
-/// Sequences are positive and increase within one registered node generation.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-pub(crate) struct AssignmentEmission {
-    #[serde(default)]
-    pub(crate) sequence: u64,
-    #[serde(default)]
-    pub(crate) ancestors: Vec<String>,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct NativeFact {
     #[serde(default)]
@@ -65,14 +52,11 @@ pub(crate) struct NativeFact {
     pub(crate) connected: bool,
     #[serde(default)]
     pub(crate) trigger_ancestors: Vec<String>,
-    /// Discovery is emitted from a real trigger, while live coordinator
-    /// ancestry may come from an anchor. None preserves legacy fact producers.
+    /// Explicit trigger ancestry determines logical membership; live focus
+    /// ancestry may also come from an anchor. None uses current trigger ancestry,
+    /// while Some([]) explicitly declares no logical parent.
     #[serde(default)]
     pub(crate) assignment_ancestors: Option<Vec<String>>,
-    /// None retains legacy once-ready discovery. Some records actual emissions;
-    /// an empty list emits nothing, including for an anchor-only Dropdown.
-    #[serde(default)]
-    pub(crate) assignment_emissions: Option<Vec<AssignmentEmission>>,
     #[serde(default)]
     pub(crate) discovery_ready: bool,
 }
@@ -86,12 +70,8 @@ struct NodeEntry {
     open: bool,
     connected: bool,
     discovery_ready: bool,
-    discovered: bool,
     trigger_ancestors: Vec<String>,
     assignment_ancestors: Option<Vec<String>>,
-    assignment_sequence: u64,
-    pending_assignments: VecDeque<AssignmentEmission>,
-    assigned_children: Vec<String>,
 }
 
 impl NodeEntry {
@@ -109,12 +89,8 @@ impl NodeEntry {
             open: false,
             connected: false,
             discovery_ready: false,
-            discovered: false,
             trigger_ancestors: Vec::new(),
             assignment_ancestors: None,
-            assignment_sequence: 0,
-            pending_assignments: VecDeque::new(),
-            assigned_children: Vec::new(),
         }
     }
 }
@@ -124,7 +100,6 @@ pub(crate) struct Registry {
     nodes: BTreeMap<String, NodeEntry>,
     order: Vec<String>,
     presentation_order: Vec<String>,
-    presented_children: Vec<(String, Vec<String>)>,
     registration: u64,
 }
 
@@ -170,189 +145,61 @@ impl Registry {
     }
 
     pub(crate) fn observe(&mut self, facts: &[NativeFact]) {
-        let mut newly_ready = Vec::new();
-        let mut rediscover_all = false;
-
         for fact in facts {
-            if self.generation(&fact.id) != Some(fact.generation) {
+            let Some(node) = self
+                .nodes
+                .get_mut(&fact.id)
+                .filter(|node| node.generation == fact.generation)
+            else {
                 continue;
-            }
-            if !fact.connected {
-                let should_prune = self.nodes.get(&fact.id).is_some_and(|n| {
-                    n.connected
-                        || n.discovered
-                        || !n.assigned_children.is_empty()
-                        || !n.trigger_ancestors.is_empty()
-                        || n.assignment_sequence != 0
-                        || !n.pending_assignments.is_empty()
-                });
-                if should_prune {
-                    self.prune_hierarchy_references(&fact.id);
-                    if let Some(node) = self.nodes.get_mut(&fact.id) {
-                        node.connected = false;
-                        node.discovery_ready = false;
-                        node.discovered = false;
-                        node.trigger_ancestors.clear();
-                        node.assignment_ancestors = None;
-                        node.assignment_sequence = 0;
-                        node.pending_assignments.clear();
-                        node.assigned_children.clear();
-                    }
-                }
-                continue;
-            }
-
-            let mut cleaned_ancestors = Vec::with_capacity(fact.trigger_ancestors.len());
-            for anc in &fact.trigger_ancestors {
-                if anc != &fact.id && !cleaned_ancestors.contains(anc) {
-                    cleaned_ancestors.push(anc.clone());
-                }
-            }
-            let assignment_ancestors = fact.assignment_ancestors.as_ref().map(|ancestors| {
-                let mut cleaned = Vec::with_capacity(ancestors.len());
+            };
+            node.connected = fact.connected;
+            node.discovery_ready = fact.connected && fact.discovery_ready;
+            let clean = |ancestors: &[String]| {
+                let mut current = Vec::new();
                 for ancestor in ancestors {
-                    if ancestor != &fact.id && !cleaned.contains(ancestor) {
-                        cleaned.push(ancestor.clone());
+                    if ancestor != &fact.id && !current.contains(ancestor) {
+                        current.push(ancestor.clone());
                     }
                 }
-                cleaned
-            });
-
-            if let Some(node) = self.nodes.get_mut(&fact.id) {
-                node.connected = true;
-                node.discovery_ready = fact.discovery_ready;
-                node.trigger_ancestors = cleaned_ancestors;
-                node.assignment_ancestors = assignment_ancestors;
-                if let Some(emissions) = &fact.assignment_emissions {
-                    for emission in emissions {
-                        if emission.sequence == 0 || emission.sequence <= node.assignment_sequence {
-                            continue;
-                        }
-                        let mut ancestors = Vec::with_capacity(emission.ancestors.len());
-                        for ancestor in &emission.ancestors {
-                            if ancestor != &fact.id && !ancestors.contains(ancestor) {
-                                ancestors.push(ancestor.clone());
-                            }
-                        }
-                        node.assignment_sequence = emission.sequence;
-                        node.pending_assignments.push_back(AssignmentEmission {
-                            sequence: emission.sequence,
-                            ancestors,
-                        });
-                    }
-                }
-                if node.discovery_ready && !node.discovered {
-                    if node.kind == OverlayKind::Header {
-                        node.discovered = true;
-                        rediscover_all = true;
-                    } else if fact.assignment_emissions.is_none() {
-                        newly_ready.push(fact.id.clone());
-                    }
-                }
-            }
-        }
-
-        // Retry immutable event-time ancestry, including when only a formerly
-        // missing foreign parent was observed in this partition. Keeping the
-        // head pending preserves emission order across that renderer adapter.
-        for id in self.order.clone() {
-            self.discover_pending(&id);
-        }
-
-        if rediscover_all {
-            for id in self.order.clone() {
-                if self
-                    .nodes
-                    .get(&id)
-                    .is_some_and(|n| n.connected && n.discovery_ready)
-                {
-                    self.discover_one(&id);
-                }
-            }
-        } else {
-            for id in newly_ready {
-                self.discover_one(&id);
+                current
+            };
+            if fact.connected {
+                node.trigger_ancestors = clean(&fact.trigger_ancestors);
+                node.assignment_ancestors = fact
+                    .assignment_ancestors
+                    .as_ref()
+                    .map(|ancestors| clean(ancestors));
+            } else {
+                node.trigger_ancestors.clear();
+                node.assignment_ancestors = None;
             }
         }
     }
 
     pub(crate) fn set_open(&mut self, id: &str, open: bool) {
-        let Some(currently_open) = self.nodes.get(id).map(|n| n.open) else {
-            return;
-        };
-        if open {
-            if currently_open {
-                return;
-            }
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.open = true;
-            }
-            self.presentation_order.retain(|k| k != id);
-            self.presentation_order.push(id.to_string());
-
-            self.snapshot_children(id);
-        } else {
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.open = false;
-            }
-            self.presentation_order.retain(|k| k != id);
-            self.presented_children.retain(|(parent, _)| parent != id);
-        }
+        self.set_presence(id, open);
     }
 
-    /// Synchronize controller assignments without presenting the surface.
-    /// Popover discovery does this while closed; Dropdown does it only when its
-    /// controller presents, so property visibility must never call this method.
-    pub(crate) fn snapshot_children(&mut self, id: &str) {
-        if !self.nodes.contains_key(id) {
-            return;
-        }
-        let assigned = self.assigned_children(id);
-        if let Some(node) = self.nodes.get_mut(id) {
-            node.assigned_children.clone_from(&assigned);
-        }
-        let mut snapshot = Vec::with_capacity(assigned.len());
-        for child_id in assigned {
-            if child_id != id
-                && !snapshot.contains(&child_id)
-                && !self.presented_reaches(&child_id, id)
-            {
-                snapshot.push(child_id);
-            }
-        }
-        if let Some((_, existing)) = self
-            .presented_children
-            .iter_mut()
-            .find(|(parent, _)| parent == id)
-        {
-            *existing = snapshot;
-        } else {
-            self.presented_children.push((id.to_string(), snapshot));
-        }
-    }
-
-    /// Source buildPathIncluding contains the target and cached ancestors, not
-    /// descendants or siblings. Opening a Popover may therefore dismiss those.
+    /// Historical name retained for clients: this is the current logical path,
+    /// including the target and ancestors, never siblings or descendants.
     pub(crate) fn cached_path_including(&self, id: &str) -> Vec<String> {
         if !self.nodes.contains_key(id) {
             return Vec::new();
         }
+        let parents = self.logical_parents();
         let mut path = vec![id.to_string()];
-        let mut cursor = 0;
-        while cursor < path.len() {
-            let current = path[cursor].clone();
-            for (parent, children) in &self.presented_children {
-                if children.contains(&current) && !path.contains(parent) {
-                    path.push(parent.clone());
-                }
+        while let Some(parent) = parents.get(path.last().unwrap()) {
+            if path.contains(parent) {
+                break;
             }
-            cursor += 1;
+            path.push(parent.clone());
         }
         path
     }
 
-    /// Dropdown trigger dismissal protects cached ancestors and current live
-    /// Dropdown ancestors, including those reached through a Popover parent.
+    /// Dropdown trigger dismissal protects current logical and live Dropdown
+    /// ancestors, including those reached through a Popover parent.
     /// Descendants and siblings remain eligible for the subsequent pass.
     pub(crate) fn dropdown_dismiss_exclusions(&self, id: &str) -> Vec<String> {
         let mut excluded = self.cached_path_including(id);
@@ -369,7 +216,7 @@ impl Registry {
         excluded
     }
 
-    /// Select the next connected-lifetime registration in source Map order.
+    /// Select the next registration lifetime in current registration order.
     /// The caller marks it visited before checking policy, exclusions or open
     /// state, so a later callback cannot revisit an already passed instance.
     pub(crate) fn next_dropdown_dismiss_other(
@@ -383,7 +230,7 @@ impl Registry {
         })
     }
 
-    /// Property-only visibility does not erase controller child assignments.
+    /// Visibility only changes presentation order, independently of hierarchy.
     pub(crate) fn set_presence(&mut self, id: &str, open: bool) {
         let Some(node) = self.nodes.get_mut(id) else {
             return;
@@ -396,10 +243,6 @@ impl Registry {
                 self.presentation_order.push(id.to_string());
             }
         }
-    }
-
-    pub(crate) fn forget_children(&mut self, id: &str) {
-        self.presented_children.retain(|(parent, _)| parent != id);
     }
 
     pub(crate) fn set_close_behavior(&mut self, id: &str, close_behavior: CloseBehavior) {
@@ -424,61 +267,29 @@ impl Registry {
         self.nodes.get(id).map(|n| n.close_behavior)
     }
 
-    pub(crate) fn assigned_children(&self, id: &str) -> Vec<String> {
-        let Some(node) = self.nodes.get(id) else {
-            return Vec::new();
-        };
-        node.assigned_children
-            .iter()
-            .filter(|cid| self.nodes.get(*cid).is_some_and(|n| n.connected))
-            .cloned()
-            .collect()
-    }
-
+    /// Historical compatibility names now query only current ready relations.
     pub(crate) fn cached_parent(&self, id: &str) -> Option<String> {
-        for (parent, children) in &self.presented_children {
-            if children.iter().any(|c| c == id) {
-                return Some(parent.clone());
-            }
-        }
-        None
+        self.logical_parents().get(id).cloned()
     }
 
     pub(crate) fn cached_root(&self, id: &str) -> Option<String> {
-        if !self.nodes.contains_key(id) {
-            return None;
-        }
-        let mut cur = id.to_string();
-        let mut visited = vec![cur.clone()];
-        while let Some(parent) = self.cached_parent(&cur) {
-            if visited.contains(&parent) {
-                break;
-            }
-            visited.push(parent.clone());
-            cur = parent;
-        }
-        Some(cur)
+        self.cached_path_including(id).last().cloned()
     }
 
     pub(crate) fn cached_children(&self, id: &str) -> Vec<String> {
-        self.presented_children
+        let parents = self.logical_parents();
+        self.order
             .iter()
-            .find(|(parent, _)| parent == id)
-            .map(|(_, children)| {
-                children
-                    .iter()
-                    .filter(|cid| self.nodes.contains_key(*cid))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+            .filter(|child| parents.get(*child).is_some_and(|parent| parent == id))
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn live_parent(&self, id: &str) -> Option<String> {
         self.parent_matching(id)
     }
 
-    /// Focus uses the live source coordinator chain, including Header overflow.
+    /// Focus follows the current open cross-kind ancestry, including Header.
     pub(crate) fn focus_parent(&self, id: &str) -> Option<String> {
         self.parent_matching(id)
     }
@@ -596,344 +407,279 @@ impl Registry {
             .collect()
     }
 
-    fn discover_one(&mut self, child_id: &str) {
-        let Some(ancestors) = self
-            .nodes
-            .get(child_id)
-            .filter(|n| n.connected && n.discovery_ready)
-            .map(|n| {
-                n.assignment_ancestors
-                    .as_ref()
-                    .unwrap_or(&n.trigger_ancestors)
-                    .clone()
-            })
-        else {
-            return;
-        };
-        self.discover_assignment(child_id, &ancestors);
-    }
-
-    fn discover_pending(&mut self, child_id: &str) {
-        loop {
-            let Some(emission) = self
-                .nodes
-                .get(child_id)
-                .filter(|node| node.connected && node.discovery_ready)
-                .and_then(|node| node.pending_assignments.front())
-                .cloned()
-            else {
-                return;
-            };
-            if !self.discover_assignment(child_id, &emission.ancestors) {
-                return;
+    fn logical_parents(&self) -> BTreeMap<String, String> {
+        let mut parents = BTreeMap::new();
+        for (id, node) in &self.nodes {
+            if !node.connected || !node.discovery_ready {
+                continue;
             }
-            if let Some(node) = self.nodes.get_mut(child_id) {
-                node.pending_assignments.pop_front();
-            }
-        }
-    }
-
-    /// True means the event found a receiver or definitively had no receiver.
-    fn discover_assignment(&mut self, child_id: &str, ancestors: &[String]) -> bool {
-        let kind = self.nodes.get(child_id).map(|node| node.kind);
-        let unknown_ancestor = ancestors.iter().any(|id| !self.nodes.contains_key(id));
-        let nearest = ancestors.iter().find(|anc_id| {
-            anc_id.as_str() != child_id
-                && self.nodes.get(*anc_id).is_some_and(|node| {
-                    Some(node.kind) == kind
-                        || kind.is_some_and(|kind| kind.is_dropdown() && node.kind.is_dropdown())
-                })
-        });
-        let Some(parent_id) = nearest else {
-            // A foreign renderer may have committed its native host before its
-            // Rust owner joins. Retry discovery instead of latching no parent.
-            if unknown_ancestor {
-                return false;
-            }
-            if let Some(child) = self.nodes.get_mut(child_id) {
-                child.discovered = true;
-            }
-            return true;
-        };
-        if !self
-            .nodes
-            .get(parent_id)
-            .is_some_and(|n| n.connected && n.discovery_ready)
-        {
-            return false;
-        }
-        if let Some(child) = self.nodes.get_mut(child_id) {
-            child.discovered = true;
-        }
-        if let Some(parent) = self.nodes.get_mut(parent_id)
-            && !parent.assigned_children.iter().any(|c| c == child_id)
-        {
-            parent.assigned_children.push(child_id.to_string());
-            if parent.kind == OverlayKind::Popover {
-                // cacheNestedPopoverId immediately syncs, including while the
-                // parent is closed; Dropdown deliberately retains its separate
-                // controller-presentation snapshot boundary.
-                self.snapshot_children(parent_id);
-            }
-        }
-        true
-    }
-
-    fn presented_reaches(&self, start: &str, target: &str) -> bool {
-        let mut stack = vec![start];
-        let mut visited = Vec::new();
-        while let Some(cur) = stack.pop() {
-            if cur == target {
-                return true;
-            }
-            if !visited.contains(&cur) {
-                visited.push(cur);
-                if let Some((_, children)) = self.presented_children.iter().find(|(p, _)| p == cur)
+            for ancestor in node
+                .assignment_ancestors
+                .as_ref()
+                .unwrap_or(&node.trigger_ancestors)
+            {
+                // An unknown nearer owner cannot be classified yet. Retain the
+                // ID in the latest fact so its later admission needs no replay.
+                let Some(parent) = self.nodes.get(ancestor) else {
+                    break;
+                };
+                if parent.kind == node.kind || parent.kind.is_dropdown() && node.kind.is_dropdown()
                 {
-                    stack.extend(children.iter().map(String::as_str));
+                    if parent.connected && parent.discovery_ready {
+                        parents.insert(id.clone(), ancestor.clone());
+                    }
+                    break;
                 }
             }
         }
-        false
-    }
-
-    fn prune_hierarchy_references(&mut self, id: &str) {
-        self.presented_children.retain(|(parent, _)| parent != id);
-        for (_, children) in &mut self.presented_children {
-            children.retain(|c| c != id);
+        // Malformed mutually enclosing facts must still produce a forest.
+        // The earliest registered member of a cycle becomes its root.
+        for id in &self.order {
+            let mut path = Vec::new();
+            let mut current = id.clone();
+            while let Some(parent) = parents.get(&current).cloned() {
+                if let Some(at) = path.iter().position(|seen| seen == &current) {
+                    let root = path[at..]
+                        .iter()
+                        .min_by_key(|id| self.nodes[*id].registration)
+                        .cloned()
+                        .unwrap();
+                    parents.remove(&root);
+                    break;
+                }
+                path.push(current);
+                current = parent;
+            }
         }
-        for node in self.nodes.values_mut() {
-            node.assigned_children.retain(|c| c != id);
-        }
+        parents
     }
 
     fn prune_node_references(&mut self, id: &str) {
-        self.presentation_order.retain(|k| k != id);
-        self.prune_hierarchy_references(id);
+        self.presentation_order.retain(|candidate| candidate != id);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn fact(id: &str, generation: u64, ancestors: &[&str], ready: bool) -> NativeFact {
         NativeFact {
-            id: id.to_string(),
+            id: id.into(),
             generation,
             connected: true,
-            trigger_ancestors: ancestors.iter().map(|s| (*s).to_string()).collect(),
+            trigger_ancestors: ancestors.iter().map(|id| (*id).into()).collect(),
             assignment_ancestors: None,
-            assignment_emissions: None,
             discovery_ready: ready,
         }
     }
-
-    fn emission_fact(
-        id: &str,
-        generation: u64,
-        live_ancestors: &[&str],
-        emissions: &[(u64, &[&str])],
-    ) -> NativeFact {
-        let mut observed = fact(id, generation, live_ancestors, true);
-        observed.assignment_ancestors = Some(
-            live_ancestors
-                .iter()
-                .map(|ancestor| (*ancestor).to_owned())
-                .collect(),
-        );
-        observed.assignment_emissions = Some(
-            emissions
-                .iter()
-                .map(|(sequence, ancestors)| AssignmentEmission {
-                    sequence: *sequence,
-                    ancestors: ancestors
-                        .iter()
-                        .map(|ancestor| (*ancestor).to_owned())
-                        .collect(),
-                })
-                .collect(),
-        );
-        observed
+    fn dropdowns(ids: &[&str]) -> Registry {
+        let mut reg = Registry::new();
+        for id in ids {
+            reg.register((*id).into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+        }
+        reg
     }
 
     #[test]
-    fn resolved_rebind_retains_assignments_and_controller_snapshot_boundary() {
-        let mut reg = Registry::new();
-        for id in ["a", "b", "moved", "child", "peer"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
+    fn current_children_admit_after_parent_open_and_follow_rebind_and_detach() {
+        let mut reg = dropdowns(&["a", "b", "child", "peer"]);
         reg.observe(&[
-            emission_fact("a", 1, &[], &[]),
-            emission_fact("b", 1, &[], &[]),
-            emission_fact("moved", 1, &[], &[]),
-            emission_fact("child", 1, &["a"], &[(1, &["child", "a", "a"])]),
-            emission_fact("peer", 1, &["a"], &[(1, &["a"])]),
+            fact("a", 1, &[], true),
+            fact("b", 1, &[], true),
+            fact("peer", 1, &["a"], true),
         ]);
         reg.set_open("a", true);
-        reg.set_open("b", true);
-        reg.set_open("moved", true);
+        reg.observe(&[fact("child", 1, &["a"], true)]);
         assert_eq!(reg.cached_children("a"), ["child", "peer"]);
-        assert!(reg.cached_children("b").is_empty());
-
-        reg.observe(&[emission_fact("child", 1, &["b"], &[(2, &["b"])])]);
-        assert_eq!(reg.assigned_children("a"), ["child", "peer"]);
-        assert_eq!(reg.assigned_children("b"), ["child"]);
-        assert_eq!(reg.live_parent("child").as_deref(), Some("b"));
         assert_eq!(reg.cached_parent("child").as_deref(), Some("a"));
-        assert!(reg.cached_children("b").is_empty());
-
-        // The same resolution, reported after its actual trigger moved, cannot
-        // emit into a third parent or rewrite either existing cache.
-        reg.observe(&[emission_fact("child", 1, &["moved"], &[(2, &["moved"])])]);
-        assert_eq!(reg.live_parent("child").as_deref(), Some("moved"));
-        assert!(reg.assigned_children("moved").is_empty());
-        assert_eq!(reg.cached_children("a"), ["child", "peer"]);
-        reg.set_open("b", false);
-        reg.set_open("b", true);
+        reg.observe(&[fact("child", 1, &["b"], true)]);
+        assert_eq!(reg.cached_children("a"), ["peer"]);
         assert_eq!(reg.cached_children("b"), ["child"]);
-
-        // A successful return binding emits again but does not reorder the
-        // parent's first assignments or change the child's lifetime.
-        reg.observe(&[emission_fact("child", 1, &["a"], &[(3, &["a"])])]);
-        assert_eq!(reg.assigned_children("a"), ["child", "peer"]);
-        assert_eq!(reg.assigned_children("b"), ["child"]);
-        assert_eq!(reg.generation("child"), Some(1));
+        reg.observe(&[fact("child", 1, &[], true)]);
+        assert!(reg.cached_children("b").is_empty());
+        assert_eq!(reg.cached_root("child").as_deref(), Some("child"));
     }
 
     #[test]
-    fn pending_resolution_uses_captured_ancestry_and_preserves_emission_order() {
-        let mut reg = Registry::new();
-        for id in ["b", "moved", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
+    fn current_nearest_parent_readiness_and_unknown_owner_need_no_child_replay() {
+        let mut reg = dropdowns(&["outer", "child"]);
         reg.observe(&[
-            emission_fact("b", 1, &[], &[]),
-            emission_fact("moved", 1, &[], &[]),
-            emission_fact("child", 1, &["b"], &[(1, &["late"]), (2, &["b"])]),
+            fact("outer", 1, &[], true),
+            fact("child", 1, &["late", "outer"], true),
         ]);
-        assert!(reg.assigned_children("b").is_empty());
-        assert_eq!(reg.nodes["child"].pending_assignments.len(), 2);
-
-        reg.observe(&[emission_fact(
-            "child",
-            1,
-            &["moved"],
-            &[(0, &["moved"]), (1, &["moved"]), (2, &["moved"])],
-        )]);
-        assert!(reg.assigned_children("moved").is_empty());
-        assert_eq!(reg.nodes["child"].pending_assignments.len(), 2);
-
+        assert_eq!(reg.cached_parent("child"), None);
         reg.register("late".into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        // Registration is not readiness; neither pending event may overtake it.
-        reg.observe(&[emission_fact("b", 1, &[], &[])]);
-        assert!(reg.assigned_children("late").is_empty());
-        assert!(reg.assigned_children("b").is_empty());
-        // A parent-only owner partition can release an already stored event.
-        reg.observe(&[emission_fact("late", 1, &[], &[])]);
-        assert_eq!(reg.assigned_children("late"), ["child"]);
-        assert_eq!(reg.assigned_children("b"), ["child"]);
-        assert!(reg.assigned_children("moved").is_empty());
-        assert!(reg.nodes["child"].pending_assignments.is_empty());
-        assert_eq!(reg.nodes["child"].assignment_sequence, 2);
-    }
-
-    #[test]
-    fn explicit_empty_emissions_do_not_assign_anchor_but_it_receives_children() {
-        let mut reg = Registry::new();
-        for id in ["root", "anchor", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
-        reg.observe(&[
-            emission_fact("root", 1, &[], &[]),
-            emission_fact("anchor", 1, &["root"], &[]),
-            emission_fact("child", 1, &["anchor", "root"], &[(1, &["anchor", "root"])]),
-        ]);
-        assert!(reg.assigned_children("root").is_empty());
-        assert_eq!(reg.assigned_children("anchor"), ["child"]);
-        reg.set_open("root", true);
-        reg.set_open("anchor", true);
-        assert_eq!(reg.live_parent("anchor").as_deref(), Some("root"));
-        assert!(reg.cached_children("root").is_empty());
-        assert_eq!(reg.cached_children("anchor"), ["child"]);
-        reg.observe(&[emission_fact("anchor", 1, &["root"], &[])]);
-        assert!(reg.assigned_children("root").is_empty());
-    }
-
-    #[test]
-    fn assignment_sequences_follow_registration_and_disconnect_lifetimes() {
-        let mut reg = Registry::new();
-        for id in ["a", "b", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
-        reg.observe(&[
-            emission_fact("a", 1, &[], &[]),
-            emission_fact("b", 1, &[], &[]),
-            emission_fact("child", 1, &["a"], &[(5, &["a"])]),
-        ]);
-        reg.register(
-            "child".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Inside,
+        reg.observe(&[fact("late", 1, &["outer"], false)]);
+        assert_eq!(reg.cached_parent("child"), None);
+        reg.observe(&[fact("late", 1, &["outer"], true)]);
+        assert_eq!(
+            reg.cached_path_including("child"),
+            ["child", "late", "outer"]
         );
-        reg.observe(&[emission_fact("child", 1, &["b"], &[(1, &["b"])])]);
-        assert!(reg.assigned_children("b").is_empty());
-        assert_eq!(reg.assigned_children("a"), ["child"]);
+        reg.observe(&[fact("child", 1, &["late", "outer"], false)]);
+        assert!(reg.cached_children("late").is_empty());
+        reg.observe(&[fact("child", 1, &["late", "outer"], true)]);
+        assert_eq!(reg.cached_children("late"), ["child"]);
+        reg.observe(&[fact("late", 1, &["outer"], false)]);
+        assert_eq!(reg.cached_parent("child"), None);
+    }
 
+    #[test]
+    fn generation_disconnect_and_registration_changes_reject_stale_facts() {
+        let mut reg = dropdowns(&["parent", "child"]);
+        reg.observe(&[
+            fact("parent", 1, &[], true),
+            fact("child", 1, &["parent"], true),
+        ]);
         reg.register(
             "child".into(),
             2,
             OverlayKind::Dropdown,
             CloseBehavior::Both,
         );
-        reg.observe(&[emission_fact("child", 1, &["a"], &[(99, &["a"])])]);
-        assert!(reg.assigned_children("a").is_empty());
-        reg.observe(&[emission_fact("child", 2, &["b"], &[(1, &["b"])])]);
-        assert_eq!(reg.assigned_children("b"), ["child"]);
-        reg.observe(&[emission_fact("child", 2, &["b"], &[(2, &["missing"])])]);
-        assert_eq!(reg.nodes["child"].pending_assignments.len(), 1);
-        let mut disconnected = emission_fact("child", 2, &[], &[]);
+        reg.unregister("child", 1);
+        reg.observe(&[fact("child", 1, &["parent"], true)]);
+        assert!(reg.cached_children("parent").is_empty());
+        reg.observe(&[fact("child", 2, &["parent"], true)]);
+        assert_eq!(reg.cached_children("parent"), ["child"]);
+        let mut disconnected = fact("child", 2, &["parent"], true);
         disconnected.connected = false;
         reg.observe(&[disconnected]);
-        assert!(reg.assigned_children("b").is_empty());
-        assert!(reg.nodes["child"].pending_assignments.is_empty());
-        assert_eq!(reg.nodes["child"].assignment_sequence, 0);
-        reg.observe(&[emission_fact("child", 2, &["a"], &[(1, &["a"])])]);
-        assert_eq!(reg.assigned_children("a"), ["child"]);
-    }
-
-    #[test]
-    fn header_discover_all_still_emits_current_trigger_without_a_new_binding() {
-        let mut reg = Registry::new();
-        reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
+        assert!(reg.cached_children("parent").is_empty());
+        reg.observe(&[fact("child", 2, &["parent"], true)]);
+        reg.unregister("parent", 1);
+        assert_eq!(reg.cached_parent("child"), None);
         reg.register(
-            "child".into(),
-            1,
+            "parent".into(),
+            2,
             OverlayKind::Dropdown,
             CloseBehavior::Both,
         );
-        let mut header = emission_fact("header", 1, &[], &[]);
-        header.discovery_ready = false;
-        reg.observe(&[header.clone(), emission_fact("child", 1, &[], &[(1, &[])])]);
-        // The binding itself has not changed. Only explicit discover-all may
-        // turn this later live move into a remembered assignment.
-        reg.observe(&[emission_fact("child", 1, &["header"], &[])]);
-        assert!(reg.assigned_children("header").is_empty());
-        header.discovery_ready = true;
-        reg.observe(&[header]);
-        assert_eq!(reg.assigned_children("header"), ["child"]);
-        assert!(reg.cached_children("header").is_empty());
-        reg.set_open("header", true);
-        assert_eq!(reg.cached_children("header"), ["child"]);
+        reg.observe(&[fact("parent", 1, &[], true)]);
+        assert_eq!(reg.cached_parent("child"), None);
+        reg.observe(&[fact("parent", 2, &[], true)]);
+        assert_eq!(reg.cached_parent("child").as_deref(), Some("parent"));
     }
 
     #[test]
-    fn dropdown_trigger_exclusions_keep_cached_and_live_ancestors_through_popover() {
-        let mut reg = Registry::new();
-        for id in ["old", "active", "sibling", "descendant", "live"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
+    fn header_layout_moves_update_logical_parent_and_cross_kind_focus_stays_distinct() {
+        let mut reg = dropdowns(&["child", "sub"]);
+        reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
+        reg.register(
+            "popover".into(),
+            1,
+            OverlayKind::Popover,
+            CloseBehavior::Both,
+        );
+        reg.observe(&[
+            fact("header", 1, &[], true),
+            fact("popover", 1, &["header"], true),
+            fact("child", 1, &[], true),
+            fact("sub", 1, &["child"], true),
+        ]);
+        for id in ["header", "popover", "child", "sub"] {
+            reg.set_open(id, true);
         }
+        reg.observe(&[
+            fact("child", 1, &["popover", "header"], true),
+            fact("sub", 1, &["child", "popover", "header"], true),
+        ]);
+        assert_eq!(reg.cached_root("sub").as_deref(), Some("header"));
+        assert_eq!(reg.cached_parent("child").as_deref(), Some("header"));
+        assert_eq!(reg.focus_parent("child").as_deref(), Some("popover"));
+        assert_eq!(reg.live_ancestors("sub"), ["child", "popover", "header"]);
+        assert!(reg.path_in_hierarchy("header", &["sub".into()], &[]));
+        reg.observe(&[fact("child", 1, &[], true)]);
+        assert_eq!(reg.cached_root("sub").as_deref(), Some("child"));
+    }
+
+    #[test]
+    fn explicit_empty_logical_ancestry_keeps_anchor_parentless_but_accepts_its_children() {
+        let mut reg = dropdowns(&["root", "anchor", "child"]);
+        let mut anchor = fact("anchor", 1, &["root"], true);
+        anchor.assignment_ancestors = Some(Vec::new());
+        reg.observe(&[
+            fact("root", 1, &[], true),
+            anchor.clone(),
+            fact("child", 1, &["anchor", "root"], true),
+        ]);
+        for id in ["root", "anchor", "child"] {
+            reg.set_open(id, true);
+        }
+        assert!(reg.cached_children("root").is_empty());
+        assert_eq!(reg.cached_children("anchor"), ["child"]);
+        assert_eq!(reg.cached_root("child").as_deref(), Some("anchor"));
+        assert_eq!(reg.live_parent("anchor").as_deref(), Some("root"));
+        reg.register(
+            "anchor".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Inside,
+        );
+        assert_eq!(reg.cached_parent("anchor"), None);
+        reg.observe(&[fact("anchor", 1, &["root"], true)]);
+        assert_eq!(reg.cached_parent("anchor").as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn current_graph_deduplicates_ancestry_and_cuts_cycles_at_first_registration() {
+        let mut reg = dropdowns(&["a", "b", "c"]);
+        reg.observe(&[
+            fact("a", 1, &["a", "b", "b"], true),
+            fact("b", 1, &["c"], true),
+            fact("c", 1, &["a"], true),
+        ]);
+        assert_eq!(reg.nodes["a"].trigger_ancestors, ["b"]);
+        assert_eq!(reg.cached_parent("a"), None);
+        assert_eq!(reg.cached_root("b").as_deref(), Some("a"));
+        assert_eq!(reg.cached_children("a"), ["c"]);
+        assert_eq!(reg.cached_path_including("b"), ["b", "c", "a"]);
+        reg.observe(&[fact("a", 1, &[], true)]);
+        assert_eq!(reg.cached_path_including("b"), ["b", "c", "a"]);
+    }
+
+    #[test]
+    fn current_popover_children_do_not_depend_on_open_presence_or_policy() {
+        let mut reg = Registry::new();
+        for id in ["parent", "child"] {
+            reg.register(id.into(), 1, OverlayKind::Popover, CloseBehavior::Both);
+        }
+        reg.observe(&[
+            fact("parent", 1, &[], true),
+            fact("child", 1, &["parent"], true),
+        ]);
+        assert_eq!(reg.cached_children("parent"), ["child"]);
+        assert!(reg.topmost().is_none());
+        reg.set_presence("parent", true);
+        reg.set_open("child", true);
+        reg.set_presence("parent", false);
+        reg.set_close_behavior("parent", CloseBehavior::None);
+        assert!(reg.is_open("child"));
+        assert_eq!(reg.cached_parent("child").as_deref(), Some("parent"));
+        reg.observe(&[fact("child", 1, &[], true)]);
+        assert!(reg.cached_children("parent").is_empty());
+    }
+
+    #[test]
+    fn current_paths_exclude_siblings_and_descendants() {
+        let mut reg = dropdowns(&["outer", "parent", "sibling", "child"]);
+        reg.observe(&[
+            fact("outer", 1, &[], true),
+            fact("parent", 1, &["outer"], true),
+            fact("sibling", 1, &["outer"], true),
+            fact("child", 1, &["parent", "outer"], true),
+        ]);
+        assert_eq!(reg.cached_path_including("parent"), ["parent", "outer"]);
+        assert_eq!(
+            reg.cached_path_including("child"),
+            ["child", "parent", "outer"]
+        );
+        assert!(reg.cached_path_including("missing").is_empty());
+    }
+
+    #[test]
+    fn dropdown_exclusions_follow_current_logical_and_live_cross_kind_ancestors() {
+        let mut reg = dropdowns(&["old", "active", "sibling", "descendant", "live"]);
         reg.register(
             "middle".into(),
             1,
@@ -952,11 +698,11 @@ mod tests {
             reg.set_open(id, true);
         }
         reg.observe(&[fact("active", 1, &["middle", "live"], true)]);
-        assert_eq!(reg.cached_parent("active").as_deref(), Some("old"));
+        assert_eq!(reg.cached_parent("active").as_deref(), Some("live"));
         assert_eq!(reg.live_ancestors("active"), ["middle", "live"]);
         assert_eq!(
             reg.dropdown_dismiss_exclusions("active"),
-            ["active", "old", "live"]
+            ["active", "live"]
         );
     }
 
@@ -1009,279 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn popover_discovery_syncs_closed_cache_without_changing_presence() {
-        let mut reg = Registry::new();
-        for id in ["parent", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Popover, CloseBehavior::Both);
-        }
-        reg.observe(&[
-            fact("parent", 1, &[], true),
-            fact("child", 1, &["parent"], true),
-        ]);
-        assert!(!reg.is_open("parent") && !reg.is_open("child"));
-        assert!(reg.topmost().is_none());
-        assert_eq!(reg.cached_children("parent"), ["child"]);
-        reg.observe(&[fact("child", 1, &[], true)]);
-        assert!(reg.live_ancestors("child").is_empty());
-        assert_eq!(reg.cached_parent("child").as_deref(), Some("parent"));
-        reg.forget_children("parent");
-        assert!(reg.cached_children("parent").is_empty());
-        reg.snapshot_children("parent");
-        assert_eq!(reg.cached_children("parent"), ["child"]);
-        assert!(!reg.is_open("parent"));
-    }
-
-    #[test]
-    fn cached_path_including_excludes_siblings_and_descendants() {
-        let mut reg = Registry::new();
-        for id in ["outer", "parent", "sibling", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Popover, CloseBehavior::Both);
-        }
-        reg.observe(&[
-            fact("outer", 1, &[], true),
-            fact("parent", 1, &["outer"], true),
-            fact("sibling", 1, &["outer"], true),
-            fact("child", 1, &["parent", "outer"], true),
-        ]);
-        assert_eq!(reg.cached_path_including("parent"), ["parent", "outer"]);
-        assert_eq!(
-            reg.cached_path_including("child"),
-            ["child", "parent", "outer"]
-        );
-        assert!(reg.cached_path_including("missing").is_empty());
-    }
-
-    #[test]
-    fn property_open_does_not_snapshot_controller_children() {
-        let mut reg = Registry::new();
-        for id in ["parent", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
-        reg.observe(&[
-            fact("parent", 1, &[], true),
-            fact("child", 1, &["parent"], true),
-        ]);
-        reg.set_presence("parent", true);
-        assert!(reg.cached_children("parent").is_empty());
-        reg.set_presence("parent", false);
-        reg.set_open("parent", true);
-        assert_eq!(reg.cached_children("parent"), vec!["child"]);
-    }
-
-    #[test]
-    fn partial_owner_observation_defers_discovery_until_registered_parent_connects() {
-        let mut reg = Registry::new();
-        for id in ["parent", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
-        reg.observe(&[fact("child", 1, &["parent"], true)]);
-        reg.observe(&[
-            fact("parent", 1, &[], true),
-            fact("child", 1, &["parent"], true),
-        ]);
-        reg.set_open("parent", true);
-        assert_eq!(reg.cached_children("parent"), vec!["child"]);
-    }
-
-    #[test]
-    fn property_hidden_parent_retains_cached_assignment_until_controller_cleanup() {
-        let mut reg = Registry::new();
-        for id in ["parent", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
-        reg.observe(&[
-            fact("parent", 1, &[], true),
-            fact("child", 1, &["parent"], true),
-        ]);
-        reg.set_open("parent", true);
-        reg.set_open("child", true);
-        reg.set_presence("parent", false);
-        assert!(reg.is_open("child"));
-        assert_eq!(reg.cached_root("child").as_deref(), Some("parent"));
-        assert_eq!(reg.cached_children("parent"), vec!["child"]);
-        reg.forget_children("parent");
-        assert_eq!(reg.cached_root("child").as_deref(), Some("child"));
-    }
-
-    #[test]
-    fn cached_discovery_skips_foreign_type_while_live_parent_uses_it() {
-        let mut reg = Registry::new();
-        reg.register(
-            "outer".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-        );
-        reg.register(
-            "middle".into(),
-            1,
-            OverlayKind::Popover,
-            CloseBehavior::Both,
-        );
-        reg.register(
-            "inner".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-        );
-        reg.observe(&[
-            fact("outer", 1, &[], true),
-            fact("middle", 1, &["outer"], true),
-            fact("inner", 1, &["middle", "outer"], true),
-        ]);
-        for id in ["outer", "middle", "inner"] {
-            reg.set_open(id, true);
-        }
-        assert_eq!(reg.cached_root("inner").as_deref(), Some("outer"));
-        assert_eq!(reg.cached_root("middle").as_deref(), Some("middle"));
-        assert_eq!(reg.live_parent("inner").as_deref(), Some("middle"));
-    }
-
-    #[test]
-    fn anchor_only_live_ancestor_does_not_emit_assignment_but_receives_real_children() {
-        let mut reg = Registry::new();
-        for id in ["root", "category", "child"] {
-            reg.register(id.into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        }
-        let mut category = fact("category", 1, &["root"], true);
-        category.assignment_ancestors = Some(Vec::new());
-        let mut child = fact("child", 1, &["category", "root"], true);
-        child.assignment_ancestors = Some(vec!["category".into(), "root".into()]);
-        reg.observe(&[fact("root", 1, &[], true), category.clone(), child]);
-        assert!(reg.assigned_children("root").is_empty());
-        assert_eq!(reg.assigned_children("category"), ["child"]);
-
-        for id in ["root", "category", "child"] {
-            reg.set_open(id, true);
-        }
-        assert_eq!(reg.live_parent("category").as_deref(), Some("root"));
-        assert_eq!(reg.live_ancestors("child"), ["category", "root"]);
-        assert!(reg.cached_children("root").is_empty());
-        assert_eq!(reg.cached_children("category"), ["child"]);
-        assert_eq!(reg.cached_root("child").as_deref(), Some("category"));
-
-        // A callback/policy refresh is the same lifetime: it keeps the explicit
-        // no-emission fact and the accepted controller child snapshot.
-        reg.register(
-            "category".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Inside,
-        );
-        reg.observe(&[category.clone()]);
-        assert!(reg.assigned_children("root").is_empty());
-        assert_eq!(reg.cached_children("category"), ["child"]);
-
-        // Replacement starts a fresh capture namespace. The retired explicit
-        // empty list cannot suppress a new legacy producer's real trigger.
-        reg.register(
-            "category".into(),
-            2,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-        );
-        assert!(reg.nodes["category"].assignment_ancestors.is_none());
-        reg.observe(&[category]);
-        assert!(reg.assigned_children("root").is_empty());
-        assert!(reg.cached_children("category").is_empty());
-        assert_eq!(reg.cached_parent("child"), None);
-        reg.observe(&[fact("category", 2, &["root"], true)]);
-        assert_eq!(reg.assigned_children("root"), ["category"]);
-        assert!(
-            reg.cached_children("root").is_empty(),
-            "discovery is not presentation"
-        );
-        reg.set_open("root", false);
-        reg.set_open("root", true);
-        assert_eq!(reg.cached_children("root"), ["category"]);
-    }
-
-    #[test]
-    fn nearest_first_discovery_and_separate_snapshots() {
-        let mut reg = Registry::new();
-        reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
-        reg.register(
-            "child".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-        );
-        reg.register("sub".into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        reg.observe(&[
-            fact("header", 1, &[], true),
-            fact("child", 1, &["header"], true),
-            fact("sub", 1, &["child", "header"], true),
-        ]);
-        assert_eq!(reg.assigned_children("header"), vec!["child"]);
-        assert_eq!(reg.assigned_children("child"), vec!["sub"]);
-        assert!(reg.cached_children("header").is_empty());
-
-        reg.set_open("header", true);
-        reg.set_open("child", true);
-        reg.set_open("sub", true);
-        assert_eq!(reg.cached_children("header"), vec!["child"]);
-        assert_eq!(reg.cached_root("sub").as_deref(), Some("header"));
-
-        reg.set_open("child", false);
-        assert!(reg.cached_children("child").is_empty());
-        assert_eq!(reg.cached_children("header"), vec!["child"]);
-    }
-
-    #[test]
-    fn header_discovery_gated_until_ready_and_rediscovers_all() {
-        let mut reg = Registry::new();
-        reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
-        reg.register(
-            "child".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-        );
-        reg.observe(&[fact("header", 1, &[], false), fact("child", 1, &[], true)]);
-        assert!(reg.assigned_children("header").is_empty());
-
-        reg.observe(&[
-            fact("header", 1, &[], true),
-            fact("child", 1, &["header"], true),
-        ]);
-        assert_eq!(reg.assigned_children("header"), vec!["child"]);
-    }
-
-    #[test]
-    fn md_to_sm_projection_preserves_cached_root_vs_live_parent_split() {
-        let mut reg = Registry::new();
-        reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
-        reg.register(
-            "child".into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-        );
-        reg.register("sub".into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        reg.observe(&[
-            fact("header", 1, &[], true),
-            fact("child", 1, &[], true),
-            fact("sub", 1, &["child"], true),
-        ]);
-        reg.observe(&[
-            fact("header", 1, &[], true),
-            fact("child", 1, &["header"], true),
-            fact("sub", 1, &["child", "header"], true),
-        ]);
-        reg.set_open("header", true);
-        reg.set_open("child", true);
-        reg.set_open("sub", true);
-        assert_eq!(reg.cached_root("sub").as_deref(), Some("child"));
-        assert_eq!(reg.live_parent("child").as_deref(), Some("header"));
-        assert_eq!(reg.focus_parent("child").as_deref(), Some("header"));
-        assert_eq!(reg.live_ancestors("sub"), vec!["child", "header"]);
-        assert_eq!(reg.focus_ancestors("sub"), vec!["child", "header"]);
-        assert!(reg.path_in_hierarchy("header", &["sub".into()], &[]));
-        assert!(reg.child_path("header", &[], &["child".into()]));
-    }
-
-    #[test]
-    fn outside_candidates_newest_first_policy_and_more_click_quirk() {
+    fn outside_candidates_follow_presentation_order_policy_and_current_paths() {
         let mut reg = Registry::new();
         reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
         reg.register(
@@ -1330,36 +804,26 @@ mod tests {
     }
 
     #[test]
-    fn generations_reconnect_cycles_and_stale_pruning() {
-        let mut reg = Registry::new();
-        reg.register("a".into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        reg.register("b".into(), 1, OverlayKind::Dropdown, CloseBehavior::Both);
-        reg.observe(&[fact("a", 1, &["b"], true), fact("b", 1, &["a"], true)]);
-        reg.set_open("a", true);
-        reg.set_open("b", true);
-        assert_eq!(reg.cached_children("a"), vec!["b"]);
-        assert!(reg.cached_children("b").is_empty());
-        assert_eq!(reg.cached_root("b").as_deref(), Some("a"));
-        assert_eq!(reg.live_ancestors("a"), vec!["b"]);
-
-        reg.observe(&[NativeFact {
-            id: "b".into(),
-            generation: 1,
-            connected: false,
-            trigger_ancestors: Vec::new(),
-            assignment_ancestors: None,
-            assignment_emissions: None,
-            discovery_ready: false,
-        }]);
-        assert!(reg.cached_children("a").is_empty());
-        assert!(reg.assigned_children("a").is_empty());
-        reg.observe(&[fact("b", 1, &["a"], true)]);
-        assert_eq!(reg.assigned_children("a"), vec!["b"]);
-
-        reg.register("b".into(), 2, OverlayKind::Dropdown, CloseBehavior::Both);
-        reg.unregister("b", 1);
-        reg.observe(&[fact("b", 1, &["a"], true)]);
-        assert!(!reg.is_open("b"));
-        assert!(reg.assigned_children("a").is_empty());
+    fn disconnected_visibility_is_not_topmost_and_policy_refresh_preserves_current_facts() {
+        let mut reg = dropdowns(&["parent", "child"]);
+        reg.observe(&[
+            fact("parent", 1, &[], true),
+            fact("child", 1, &["parent"], true),
+        ]);
+        reg.set_open("parent", true);
+        reg.set_open("child", true);
+        reg.register(
+            "child".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Outside,
+        );
+        assert_eq!(reg.cached_parent("child").as_deref(), Some("parent"));
+        assert_eq!(reg.close_behavior("child"), Some(CloseBehavior::Outside));
+        let mut disconnected = fact("child", 1, &[], false);
+        disconnected.connected = false;
+        reg.observe(&[disconnected]);
+        assert_eq!(reg.topmost().as_deref(), Some("parent"));
+        assert!(!reg.is_connected("child"));
     }
 }

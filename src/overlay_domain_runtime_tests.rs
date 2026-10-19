@@ -1281,7 +1281,7 @@ fn prepare_header_exit(
     dom_child: &VirtualDom,
     fixture: &HeaderExitFixture,
     document: &str,
-    retained: bool,
+    relocate_after_open: bool,
 ) -> u64 {
     attach(dom_parent, parent, document);
     attach(dom_child, &fixture.child, document);
@@ -1294,23 +1294,30 @@ fn prepare_header_exit(
         false,
         &[parent.0.borrow().id],
     );
-    observe_header_exit(dom_child, fixture, parent, document, 1, !retained);
+    observe_header_exit(
+        dom_child,
+        fixture,
+        parent,
+        document,
+        1,
+        !relocate_after_open,
+    );
     present(dom_parent, parent);
     dom_child.in_scope(fixture.child.scope(), || {
         assert!(fixture.header.request(true, Reason::Trigger, false));
     });
     present(dom_child, &fixture.child);
-    if retained {
+    if relocate_after_open {
         // Same registered instances: Large initially projects the default-slot
         // trigger outside Header overflow, then Small moves its live ancestry.
         observe_header_exit(dom_child, fixture, parent, document, 2, true);
     }
     fixture.order.borrow_mut().clear();
-    if retained { 3 } else { 2 }
+    if relocate_after_open { 3 } else { 2 }
 }
 
 #[test]
-fn header_cached_root_veto_is_owner_scoped_and_child_veto_is_requested_once_synchronously() {
+fn header_logical_root_veto_is_owner_scoped_and_child_veto_is_requested_once() {
     let parent = Fixture::new("header-veto-parent", 701);
     let child = Fixture::new("header-veto-child", 702);
     let dom_parent = build_popover_fixture(&parent);
@@ -1360,14 +1367,18 @@ fn header_cached_root_veto_is_owner_scoped_and_child_veto_is_requested_once_sync
         ]
     );
     assert!(!fixture.header_open.get() && child.open());
-    assert!(domain.cached_children(fixture.header.id()).is_empty());
+    assert_eq!(
+        domain.cached_children(fixture.header.id()),
+        [child.node().id()],
+        "closing visibility preserves the current logical child"
+    );
     assert!(parent.open());
     // Source's later second child veto is caused by native trigger visibility;
     // direct Rust dismissal must not manufacture it via a cross-type pass.
 }
 
 #[test]
-fn header_retained_relocation_preserves_child_cached_root_and_same_type_cascade_boundary() {
+fn header_current_relocation_updates_logical_root_and_close_cascade() {
     let parent = Fixture::new("header-retained-parent", 703);
     let child = Fixture::new("header-retained-child", 704);
     let dom_parent = build_popover_fixture(&parent);
@@ -1383,7 +1394,7 @@ fn header_retained_relocation_preserves_child_cached_root_and_same_type_cascade_
     let domain = child.runtime().domain().unwrap();
     assert_eq!(
         domain.cached_root(child.node().id()).as_deref(),
-        Some(child.node().id())
+        Some(fixture.header.id())
     );
     assert_eq!(
         domain.live_ancestors(child.node().id()),
@@ -1402,25 +1413,36 @@ fn header_retained_relocation_preserves_child_cached_root_and_same_type_cascade_
     });
     assert_eq!(
         *fixture.order.borrow(),
-        ["header:before:false", "header:apply:false"]
+        [
+            "header:before:false",
+            "child:before:false",
+            "child:apply:false",
+            "header:apply:false"
+        ]
     );
     assert!(
-        child.open(),
-        "uncached same-type live child is not a cross-type child"
+        !child.open() && !fixture.header_open.get() && parent.open(),
+        "current relocation participates in the Header close cascade"
     );
     fixture.order.borrow_mut().clear();
     dom_child.in_scope(child.scope(), || {
         assert!(fixture.header.request(true, Reason::Trigger, false));
     });
+    present(&dom_child, &child);
     fixture.order.borrow_mut().clear();
     dom_parent.in_scope(parent.scope(), || {
         assert!(domain.dismiss_root(child.node().id(), Reason::Keyboard, false));
     });
     assert_eq!(
         *fixture.order.borrow(),
-        ["child:before:false", "child:apply:false"]
+        [
+            "header:before:false",
+            "child:before:false",
+            "child:apply:false",
+            "header:apply:false"
+        ]
     );
-    assert!(fixture.header_open.get() && !child.open() && parent.open());
+    assert!(!fixture.header_open.get() && !child.open() && parent.open());
 }
 
 #[test]
@@ -2009,7 +2031,7 @@ fn vetoed_tab_marks_cached_owners_before_reentrant_before_and_later_hide_consume
 }
 
 #[test]
-fn child_veto_retains_own_latch_after_parent_cache_is_cleared_then_consumes_on_instance_hide() {
+fn child_veto_keeps_current_parent_relation_and_consumes_latch_on_own_hide() {
     let root = Fixture::new("anchor-veto-root", 727);
     let child = Fixture::new("anchor-veto-child", 728);
     let dom_root = build(&root);
@@ -2025,12 +2047,13 @@ fn child_veto_retains_own_latch_after_parent_cache_is_cleared_then_consumes_on_i
     release_anchor_tab(&dom_child, &child, document, 2, &nodes);
     assert!(!root.open() && child.open());
     assert!(!trigger_suppressed(&root) && trigger_suppressed(&child));
-    assert!(
+    assert_eq!(
         root.runtime()
             .domain()
             .unwrap()
-            .cached_children("anchor-veto-root")
-            .is_empty()
+            .cached_children("anchor-veto-root"),
+        [child.node().id()],
+        "visibility veto leaves the current child relationship intact"
     );
     child.0.borrow().veto.set(false);
     negative_anchor_focus(&dom_child, &child, document, 3, &nodes);
@@ -2048,7 +2071,7 @@ fn child_veto_retains_own_latch_after_parent_cache_is_cleared_then_consumes_on_i
 }
 
 #[test]
-fn suppression_stops_at_closed_cached_intermediate_and_pointer_hide_consumes_registration_state() {
+fn suppression_stops_at_closed_logical_intermediate_and_pointer_hide_consumes_registration_state() {
     let root = Fixture::new("anchor-closed-root", 729);
     let middle = Fixture::new("anchor-closed-middle", 730);
     let leaf = Fixture::new("anchor-closed-leaf", 731);
@@ -2532,7 +2555,7 @@ fn standalone_trigger_others_cascade_consumes_veto_retained_latches_then_restore
 }
 
 #[test]
-fn trigger_others_freezes_exclusions_but_reads_current_policy_and_appended_registration() {
+fn trigger_others_captures_exclusions_but_cascades_current_reentrant_parent_and_new_registration() {
     let active = Fixture::new("others-mut-active", 752);
     let passed = Fixture::new("others-mut-passed", 753);
     let first = Fixture::new("others-mut-first", 754);
@@ -2662,10 +2685,14 @@ fn trigger_others_freezes_exclusions_but_reads_current_policy_and_appended_regis
         [
             "others-mut-first",
             "others-mut-new-parent",
+            "others-mut-active",
             "others-mut-appended"
         ]
     );
-    assert!(active.open() && passed.open() && first.open() && later.open());
+    assert!(
+        !active.open() && passed.open() && first.open() && later.open(),
+        "the active control moved beneath a dismissed parent during a callback, so the current child cascade includes it"
+    );
     assert!(!new_parent.open() && !dynamic_result.get());
     assert!(
         retained_dynamic_node
@@ -2782,7 +2809,7 @@ fn trigger_others_skips_dropped_owner_and_visits_replacement_at_new_connection_p
 }
 
 #[test]
-fn trigger_others_keeps_cached_old_and_live_new_ancestors_but_closes_sibling_descendant() {
+fn trigger_others_preserves_current_ancestors_and_closes_former_parent_sibling_and_descendant() {
     let old = Fixture::new("others-old-parent", 746);
     let active = Fixture::new("others-relocated", 747);
     let sibling = Fixture::new("others-sibling", 748);
@@ -2833,7 +2860,7 @@ fn trigger_others_keeps_cached_old_and_live_new_ancestors_but_closes_sibling_des
     );
     assert_eq!(
         domain.cached_parent(active.node().id()).as_deref(),
-        Some(old.node().id())
+        Some(live.node().id())
     );
     assert_eq!(
         domain.live_ancestors(active.node().id()),
@@ -2857,9 +2884,9 @@ fn trigger_others_keeps_cached_old_and_live_new_ancestors_but_closes_sibling_des
     });
     assert_eq!(
         others_before_ids(&journal),
-        [sibling.node().id(), descendant.node().id()]
+        [old.node().id(), sibling.node().id(), descendant.node().id()]
     );
-    assert!(old.open() && active.open() && live.open() && middle.open());
+    assert!(!old.open() && active.open() && live.open() && middle.open());
     assert!(!sibling.open() && !descendant.open());
 }
 

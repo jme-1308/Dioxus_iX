@@ -90,7 +90,7 @@ fn current_ancestry_binds_nested_lifetimes_without_requesting_visibility() {
     let facts = [observed("root", 1, &[]), observed("child", 1, &["root"])];
     input(&runtime, report(&runtime, 1, "", &facts));
     assert_eq!(
-        runtime.0.borrow().registry.assigned_children("root"),
+        runtime.0.borrow().registry.cached_children("root"),
         ["child"]
     );
     assert_eq!(
@@ -143,7 +143,7 @@ fn current_ancestry_rejects_retired_generation_and_rebinds_the_live_registration
         ),
     );
     assert_eq!(
-        runtime.0.borrow().registry.assigned_children("root"),
+        runtime.0.borrow().registry.cached_children("root"),
         ["child"]
     );
     let current = register(&runtime, "child", 2);
@@ -161,7 +161,7 @@ fn current_ancestry_rejects_retired_generation_and_rebinds_the_live_registration
             .0
             .borrow()
             .registry
-            .assigned_children("root")
+            .cached_children("root")
             .is_empty()
     );
     assert!(!old.node.request(true, Reason::Trigger, false));
@@ -175,7 +175,7 @@ fn current_ancestry_rejects_retired_generation_and_rebinds_the_live_registration
         ),
     );
     assert_eq!(
-        runtime.0.borrow().registry.assigned_children("root"),
+        runtime.0.borrow().registry.cached_children("root"),
         ["child"]
     );
     assert!(root.node.request(true, Reason::Trigger, false));
@@ -216,7 +216,7 @@ fn current_ancestry_coordinates_foreign_owner_children_in_the_same_document() {
             .0
             .borrow()
             .registry
-            .assigned_children("root")
+            .cached_children("root")
             .is_empty(),
         "foreign ownership stays in the shared Domain"
     );

@@ -91,19 +91,62 @@ impl NodeHandle {
             })
             .flatten()
     }
-    pub(crate) fn first_assigned_submenu(&self) -> Option<crate::dropdown::DropdownHandle> {
+    pub(crate) fn linked_submenu(
+        &self,
+        host: &HostFacts,
+    ) -> Option<crate::dropdown::DropdownHandle> {
         let runtime = self.runtime()?;
-        runtime
+        let owner = runtime
             .entry(&self.id)
             .filter(|entry| entry.generation == self.generation)?;
-        let first = runtime
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                runtime.read_current(&self.id, &owner)
+            })
+            .flatten()?;
+        if host.disabled_attribute || host.hidden_attribute || !self.is_item_registered(host) {
+            return None;
+        }
+        let linked = host.linked_trigger.as_deref()?;
+        let child = runtime
+            .entry(linked)
+            .filter(|entry| entry.kind == OverlayKind::Dropdown)?;
+        runtime
+            .with_owner(linked, child.generation, || {
+                runtime.read_current(linked, &child)
+            })
+            .flatten()?;
+        let parent = if let Some(domain) = runtime.domain() {
+            if domain.node_kind(&self.id, self.generation).is_none()
+                || domain.node_kind(linked, child.generation) != Some(OverlayKind::Dropdown)
+            {
+                return None;
+            }
+            domain.cached_parent(linked)
+        } else {
+            runtime.0.borrow().registry.cached_parent(linked)
+        };
+        if parent.as_deref() != Some(&self.id) {
+            return None;
+        }
+        let current = runtime
             .0
             .borrow()
-            .registry
-            .assigned_children(&self.id)
-            .first()?
-            .clone();
-        runtime.entry(&first)?.submenu.map(|access| access.handle)
+            .submenu_own
+            .get(&self.id)
+            .filter(|(generation, _)| *generation == self.generation)
+            .is_some_and(|(_, facts)| {
+                facts.hosts.iter().any(|current| {
+                    current.item == host.item
+                        && current.target == host.target
+                        && current.registration_key == host.registration_key
+                        && current.linked_trigger == host.linked_trigger
+                })
+            });
+        if !current {
+            return None;
+        }
+        child.submenu.map(|access| access.handle)
     }
     pub(crate) fn mark_submenu_trigger(&self, host: &HostFacts) {
         let Some(runtime) = self.runtime() else {

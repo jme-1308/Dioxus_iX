@@ -16,6 +16,9 @@ pub fn TriggerPreview() -> Element {
     let custom = use_dropdown();
     let builtin = use_dropdown();
     let child = use_dropdown();
+    let second_child = use_dropdown();
+    let late_child = use_dropdown();
+    let mut tools_loaded = use_signal(|| false);
     let mut revision = use_signal(|| 1_usize);
     let mut roving = use_signal(|| true);
     let mut show = use_signal(|| true);
@@ -52,14 +55,25 @@ pub fn TriggerPreview() -> Element {
                 }
             }
             section {
-                h2 { "Linked submenu return" }
+                h2 { "Linked submenus and loaded actions" }
                 Dropdown { label:"Linked navigation", class:"r02-linked-parent", navigation_mode:DropdownNavigationMode::RovingTabindex,
                     DropdownItem { id:"r02-linked-trigger", label:"Open child actions", dropdown:child }
-                    DropdownItem { label:"Another parent action" }
+                    DropdownItem { id:"r0222-second-trigger", label:"Open maintenance actions", dropdown:second_child }
+                    DropdownItem { id:"r0222-load", label:"Load inspection tools", keep_open:true, onitemclick:move |_|tools_loaded.set(true) }
+                    if tools_loaded() { DropdownItem { id:"r0222-late-trigger", label:"Open inspection tools", dropdown:late_child } }
                 }
                 Dropdown { controller:child, label:"Child equipment actions", class:"r02-linked-child", navigation_mode:DropdownNavigationMode::RovingTabindex,
                     DropdownItem { id:"r02-linked-first", label:"Child action" }
                 }
+                Dropdown { controller:second_child, label:"Maintenance actions", class:"r0222-second-child", navigation_mode:DropdownNavigationMode::RovingTabindex,
+                    DropdownItem { id:"r0222-second-first", label:"Review maintenance history" }
+                }
+                if tools_loaded() {
+                    Dropdown { controller:late_child, label:"Inspection tools", class:"r0222-late-child", navigation_mode:DropdownNavigationMode::RovingTabindex,
+                        DropdownItem { id:"r0222-late-first", label:"Read sensor status" }
+                    }
+                }
+                p { "Each row opens its own menu. Load inspection tools while this menu is open to add another group of actions." }
             }
             div { onmounted:move |_| {
                 #[cfg(all(feature="desktop",not(target_arch="wasm32")))]
@@ -104,6 +118,14 @@ const parent=document.querySelector('.r02-linked-parent'),child=document.querySe
 await wait('parent open',()=>parent.getAttribute('aria-expanded')==='true');parent.querySelector('[role=menu]').focus();key('Home');await wait('linked trigger focus',()=>document.activeElement===byId('r02-linked-trigger'));
 key('ArrowRight');await wait('child open/focus',()=>child.getAttribute('data-ix-overlay-open')==='true'&&document.activeElement===byId('r02-linked-first'));
 key('ArrowLeft');await wait('linked return',()=>child.getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-linked-trigger'));
+key('ArrowDown');await wait('second linked row',()=>document.activeElement===byId('r0222-second-trigger'));
+key('ArrowRight');await wait('correct second submenu',()=>document.querySelector('.r0222-second-child').getAttribute('data-ix-overlay-open')==='true'&&child.getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r0222-second-first'));
+key('ArrowLeft');await wait('second submenu return',()=>document.querySelector('.r0222-second-child').getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r0222-second-trigger'));
+key('End');await wait('load action focus',()=>document.activeElement===byId('r0222-load'));
+key('Enter');await wait('late child mounted while parent open',()=>byId('r0222-late-trigger')&&document.querySelector('.r0222-late-child')&&parent.getAttribute('aria-expanded')==='true');
+key('End');await wait('late linked row focus',()=>document.activeElement===byId('r0222-late-trigger'));
+key('ArrowRight');await wait('late submenu opens',()=>document.querySelector('.r0222-late-child').getAttribute('data-ix-overlay-open')==='true'&&document.activeElement===byId('r0222-late-first'));
+key('ArrowLeft');await wait('late submenu returns to current parent',()=>document.querySelector('.r0222-late-child').getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r0222-late-trigger'));
 key('Escape');await wait('parent return',()=>parent.getAttribute('aria-expanded')==='false'&&document.activeElement===parent);
-return {ok:true,customEscape:true,liveMode:true,outsidePreserved:true,explicitReturn:true,replacement:true,remount:true,libraryEscape:true,linkedArrowLeft:true};
+return {ok:true,customEscape:true,liveMode:true,outsidePreserved:true,explicitReturn:true,replacement:true,remount:true,libraryEscape:true,linkedArrowLeft:true,distinctLinkedTargets:true,lateChildAfterParentOpen:true};
 "#;
