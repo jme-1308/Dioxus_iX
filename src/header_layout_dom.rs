@@ -46,7 +46,7 @@ function facts(kind){
     focusable_ids:items.map(node=>node.id),presented_ids:focusables(root,false).map(node=>node.id),
     focused_control:active?.id&&focusGroup(active)!==null?{id:active.id,group:focusGroup(active)}:null,
     active_default:active===document.body||active===document.documentElement,
-    focused_index:index<0?null:index
+    focused_index:index<0?null:index,viewport_width:document.documentElement.clientWidth
   };
 }
 function send(report){
@@ -58,48 +58,22 @@ function reportPresence(){
   const report=facts('presence');
   const signature=JSON.stringify({generation:report.generation,connected:report.connected,
     small:root.getAttribute('data-small'),open:root.getAttribute('data-open'),top:root.getAttribute('data-top-layer'),
-    presence:report.presence,focus_count:report.focus_count,focused_index:report.focused_index,
+    presence:report.presence,focus_count:report.focus_count,focused_index:report.focused_index,viewport_width:report.viewport_width,
     focusable_ids:report.focusable_ids,presented_ids:report.presented_ids,focused_control:report.focused_control,active_default:report.active_default});
   if(signature!==lastReport){lastReport=signature;send(report);}
 }
-function popoverOpen(host){try{return !!host?.matches(':popover-open');}catch{return false;}}
-function position(host){
-  const trigger=more();if(!trigger)return;
-  const rect=trigger.getBoundingClientRect();
-  const viewportWidth=document.documentElement.clientWidth;
-  host.style.maxWidth=Math.max(0,viewportWidth-16)+'px';
-  const width=host.getBoundingClientRect().width;
-  const left=Math.max(8,Math.min(rect.left,viewportWidth-width-8));
-  host.style.position='fixed';host.style.margin='0';host.style.left=left+'px';host.style.top=rect.bottom+'px';
-}
-function syncPopups(){
-  const active=activeHost(),shown=open(),native=topLayer();
-  for(const host of hosts){
-    if(!host)continue;
-    const show=host===active&&shown&&native&&host.hasAttribute('popover');
-    if(host===active&&shown)position(host);
-    if(show){
-      if(!popoverOpen(host)&&typeof host.showPopover==='function'){
-        const inert=host.inert;host.inert=true;
-        try{host.showPopover();}finally{host.inert=inert;}
-      }
-      position(host);
-    }else if(popoverOpen(host)){
-      host.hidePopover();
-    }
-    if(host!==active){
-      for(const property of ['position','margin','left','top','max-width'])host.style.removeProperty(property);
-    }
-  }
-}
-function sync(){if(!alive||!root.isConnected)return;syncPopups();reportPresence();}
+// Dioxus mounted handles own geometry. The pinned MountedData API has no
+// viewport query or global scroll/resize listeners, so report only invalidation
+// and document width; no element measurements or presentation writes occur here.
+function sync(){if(!alive||!root.isConnected)return;reportPresence();}
+function reportLayout(){if(alive&&root.isConnected)send(facts('layout'));}
 document.addEventListener('pointerdown',event=>{
   if(open()||event.composedPath().includes(root))send(facts('pointer'));
 },{capture:true,signal});
 document.addEventListener('focusin',reportPresence,{capture:true,passive:true,signal});
 root.addEventListener('focusout',()=>queueMicrotask(()=>{if(alive)reportPresence();}),{passive:true,signal});
-window.addEventListener('resize',sync,{passive:true,signal});
-window.addEventListener('scroll',sync,{capture:true,passive:true,signal});
+window.addEventListener('resize',reportLayout,{passive:true,signal});
+window.addEventListener('scroll',reportLayout,{capture:true,passive:true,signal});
 // Observe Rust state, element eligibility and child topology. Native popup
 // geometry and readiness writes do not trigger another observation.
 const observer=new MutationObserver(sync);
@@ -110,9 +84,6 @@ observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilt
 root.dataset.headerLayoutNative='true';
 try{sync();await dioxus.recv();}finally{
   alive=false;listeners.abort();observer.disconnect();
-  for(const host of hosts)if(popoverOpen(host)){
-    try{host.hidePopover();}catch{}
-  }
   delete root.dataset.headerLayoutNative;
 }
 "#;

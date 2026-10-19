@@ -180,33 +180,10 @@ function send(report){
   input.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));
 }
 
-function syncNativeSurfaces(){
-  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
-    if(!(root instanceof HTMLElement)||!root.isConnected)continue;
-    const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
-    if(!id||ro!==owner)continue;
-    if(root.hasAttribute('data-ix-overlay-native-surface'))continue;
-    const host=findHost(id);
-    if(host&&!isHeaderPopupHost(host)){
-      const open=root.getAttribute('data-ix-overlay-open')==='true',top=root.getAttribute('data-ix-overlay-top-layer')==='true';
-      const dialog=host.matches('dialog[popover]')?host:host.querySelector('dialog[popover]');
-      if(dialog instanceof HTMLElement){
-        let isOpen=false;try{isOpen=dialog.matches(':popover-open');}catch{}
-        if(open&&top&&!isOpen&&typeof dialog.showPopover==='function'){
-          const prev=dialog.inert;dialog.inert=true;
-          try{dialog.showPopover();}catch{}finally{dialog.inert=prev;}
-        }else if((!open||!top)&&isOpen&&typeof dialog.hidePopover==='function'){
-          try{dialog.hidePopover();}catch{}
-        }
-      }
-    }
-  }
-}
 function reportObserve(){
   if(!alive)return;
   if(!transport())return;
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
-  syncNativeSurfaces();
   const report=collectFacts();
   const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
   if(sig!==lastSignature){lastSignature=sig;send(report);}

@@ -530,3 +530,193 @@ fn externally_rendered_popover_body_inherits_current_trigger_ancestry() {
         "the same retained body follows restored trigger ownership"
     );
 }
+
+#[derive(Clone, Default)]
+struct AnchorFixture(Rc<AnchorState>);
+#[derive(Default)]
+struct AnchorState {
+    popover: Cell<Option<PopoverHandle>>,
+    bindings: RefCell<std::collections::BTreeMap<String, PopoverTriggerBinding>>,
+    first: Cell<Option<Signal<bool>>>,
+    second: Cell<Option<Signal<bool>>>,
+}
+impl PartialEq for AnchorFixture {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+#[component]
+fn ExplicitAnchorTrigger(popover: PopoverHandle, id: String, fixture: AnchorFixture) -> Element {
+    let binding = use_popover_trigger_binding(popover, id.clone());
+    fixture.0.bindings.borrow_mut().insert(id, binding.clone());
+    rsx! {button {onmounted:binding.onmounted,onvisible:binding.onvisible,..binding.attributes_with_style("color:red"),"Custom trigger"}}
+}
+fn anchor_fixture(fixture: AnchorFixture) -> Element {
+    let popover = use_popover();
+    fixture.0.popover.set(Some(popover));
+    let first = use_signal(|| true);
+    let second = use_signal(|| true);
+    fixture.0.first.set(Some(first));
+    fixture.0.second.set(Some(second));
+    rsx! {
+        if first() {ExplicitAnchorTrigger {popover,id:"anchor-first",fixture:fixture.clone()}}
+        if second() {ExplicitAnchorTrigger {popover,id:"anchor-second",fixture:fixture.clone()}}
+        Popover {popover,label:"Explicit anchor panel",PopoverContent {"Body"}}
+    }
+}
+#[derive(Clone)]
+struct AnchorMount {
+    width: f64,
+    height: f64,
+}
+impl dioxus::html::RenderedElementBacking for AnchorMount {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn get_client_rect(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = dioxus::html::MountedResult<dioxus::html::geometry::PixelsRect>>>,
+    > {
+        let width = self.width;
+        let height = self.height;
+        Box::pin(async move {
+            Ok(dioxus::html::geometry::PixelsRect::new(
+                Default::default(),
+                dioxus::html::geometry::PixelsSize::new(width, height),
+            ))
+        })
+    }
+}
+struct AnchorVisible {
+    width: f64,
+    height: f64,
+}
+impl dioxus::html::HasVisibleData for AnchorVisible {
+    fn get_bounding_client_rect(
+        &self,
+    ) -> dioxus::html::VisibleResult<dioxus::html::geometry::PixelsRect> {
+        Ok(dioxus::html::geometry::PixelsRect::new(
+            Default::default(),
+            dioxus::html::geometry::PixelsSize::new(self.width, self.height),
+        ))
+    }
+    fn get_intersection_rect(
+        &self,
+    ) -> dioxus::html::VisibleResult<dioxus::html::geometry::PixelsRect> {
+        self.get_bounding_client_rect()
+    }
+    fn get_root_bounds(&self) -> dioxus::html::VisibleResult<dioxus::html::geometry::PixelsRect> {
+        self.get_bounding_client_rect()
+    }
+    fn is_intersecting(&self) -> dioxus::html::VisibleResult<bool> {
+        Ok(self.width > 0.0 && self.height > 0.0)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+fn anchor_panel_tag(html: &str, id: &str) -> String {
+    let at = html.find(&format!("id=\"{id}\"")).unwrap();
+    let start = html[..at].rfind('<').unwrap();
+    html[start..at + html[at..].find('>').unwrap()].to_string()
+}
+#[test]
+fn explicit_custom_anchor_metadata_follows_mounted_visibility_replacement_and_unmount() {
+    let fixture = AnchorFixture::default();
+    let mut dom = VirtualDom::new_with_props(anchor_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let popover = fixture.0.popover.get().unwrap();
+    let id = popover.id();
+    let first = fixture.0.bindings.borrow()["anchor-first"].clone();
+    let second = fixture.0.bindings.borrow()["anchor-second"].clone();
+    assert_ne!(
+        first.style(),
+        second.style(),
+        "each bound element has a unique authored anchor"
+    );
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("color:red;anchor-name:--ix-popover-trigger-"));
+    assert!(
+        !html.contains("popovertarget="),
+        "custom anchoring does not require arbitrary invoker discovery"
+    );
+    assert!(html.contains(&format!("data-ix-overlay-trigger=\"{id}\"")));
+    assert!(
+        anchor_panel_tag(&html, &id).contains("data-unanchored=\"true\""),
+        "imperative surface without a registered mounted anchor centers"
+    );
+    dom.in_scope(ScopeId::ROOT, || {
+        first.onmounted.call(Event::new(
+            Rc::new(MountedData::new(AnchorMount {
+                width: 100.0,
+                height: 32.0,
+            })),
+            false,
+        ))
+    });
+    settle_focus(&mut dom);
+    let tag = anchor_panel_tag(&dioxus_ssr::render(&dom), &id);
+    assert!(!tag.contains("data-unanchored"));
+    assert!(tag.contains(&format!(
+        "position-anchor:--ix-popover-trigger-{}",
+        first.ownership
+    )));
+    dom.in_scope(ScopeId::ROOT, || {
+        first.onvisible.call(Event::new(
+            Rc::new(dioxus::html::VisibleData::new(AnchorVisible {
+                width: 0.0,
+                height: 0.0,
+            })),
+            false,
+        ))
+    });
+    settle_focus(&mut dom);
+    assert!(anchor_panel_tag(&dioxus_ssr::render(&dom), &id).contains("data-unanchored=\"true\""));
+    dom.in_scope(ScopeId::ROOT, || {
+        second.onmounted.call(Event::new(
+            Rc::new(MountedData::new(AnchorMount {
+                width: 80.0,
+                height: 28.0,
+            })),
+            false,
+        ))
+    });
+    settle_focus(&mut dom);
+    dom.in_scope(ScopeId::ROOT, || {
+        first.onvisible.call(Event::new(
+            Rc::new(dioxus::html::VisibleData::new(AnchorVisible {
+                width: 120.0,
+                height: 40.0,
+            })),
+            false,
+        ))
+    });
+    settle_focus(&mut dom);
+    assert_eq!(
+        popover.trigger_anchor.peek().as_ref().unwrap().ownership,
+        second.ownership,
+        "old visibility cannot claim a replacement anchor"
+    );
+    dom.in_scope(ScopeId::ROOT, || fixture.0.first.get().unwrap().set(false));
+    settle_focus(&mut dom);
+    assert!(
+        anchor_panel_tag(&dioxus_ssr::render(&dom), &id).contains(&format!(
+            "position-anchor:--ix-popover-trigger-{}",
+            second.ownership
+        ))
+    );
+    dom.in_scope(ScopeId::ROOT, || fixture.0.second.get().unwrap().set(false));
+    settle_focus(&mut dom);
+    assert!(popover.trigger_anchor.peek().is_none());
+    assert!(popover.surface.invoker.peek().is_none());
+    assert!(anchor_panel_tag(&dioxus_ssr::render(&dom), &id).contains("data-unanchored=\"true\""));
+    dom.in_scope(ScopeId::ROOT, || fixture.0.first.get().unwrap().set(true));
+    settle_focus(&mut dom);
+    let replacement = fixture.0.bindings.borrow()["anchor-first"].clone();
+    assert_ne!(first.ownership, replacement.ownership);
+    assert!(
+        popover.trigger_anchor.peek().is_none(),
+        "new scope does not inherit an older element's anchor admission"
+    );
+}

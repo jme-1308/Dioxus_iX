@@ -62,6 +62,7 @@ mod input_geometry;
 mod input_styles;
 pub mod layout;
 mod menu_hover_dom;
+mod native_popover;
 pub mod notifications;
 mod number_input_styles;
 mod overlay_completion;

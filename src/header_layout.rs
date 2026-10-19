@@ -38,6 +38,33 @@ struct Report {
     presented_ids: Vec<String>,
     #[serde(default)]
     active_default: bool,
+    #[serde(default)]
+    viewport_width: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PopupPosition {
+    left: f64,
+    top: f64,
+}
+fn popup_position(
+    viewport: f64,
+    trigger_left: f64,
+    trigger_bottom: f64,
+    width: f64,
+) -> Option<PopupPosition> {
+    if ![viewport, trigger_left, trigger_bottom, width]
+        .into_iter()
+        .all(f64::is_finite)
+        || viewport <= 0.0
+        || width <= 0.0
+    {
+        return None;
+    }
+    Some(PopupPosition {
+        left: 8.0_f64.max(trigger_left.min(viewport - width - 8.0)),
+        top: trigger_bottom,
+    })
 }
 
 struct Model {
@@ -60,6 +87,11 @@ struct Model {
     focus_count: usize,
     focused_index: Option<usize>,
     changed: Option<EventHandler<bool>>,
+    viewport_width: f64,
+    more_mount: Option<Rc<MountedData>>,
+    popup_mounts: [Option<Rc<MountedData>>; 2],
+    position: Option<PopupPosition>,
+    layout_epoch: u64,
 }
 impl Model {
     fn new(small: bool, top_layer: bool) -> Self {
@@ -86,7 +118,40 @@ impl Model {
             focus_count: 0,
             focused_index: None,
             changed: None,
+            viewport_width: 0.0,
+            more_mount: None,
+            popup_mounts: [None, None],
+            position: None,
+            layout_epoch: 0,
         }
+    }
+    fn invalidate_layout(&mut self) {
+        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.position = None;
+    }
+    fn accepts_layout(&self, epoch: u64, generation: u64, small: bool) -> bool {
+        self.alive
+            && self.mounted
+            && self.open
+            && self.small == small
+            && self.generation == generation
+            && self.layout_epoch == epoch
+    }
+    fn popup_style(&self, small: bool) -> Option<String> {
+        if !self.open || self.small != small {
+            return None;
+        }
+        let mut style = String::from("position:fixed;margin:0;");
+        if self.viewport_width > 0.0 {
+            style.push_str(&format!(
+                "max-width:{}px;",
+                (self.viewport_width - 16.0).max(0.0)
+            ));
+        }
+        if let Some(position) = self.position {
+            style.push_str(&format!("left:{}px;top:{}px;", position.left, position.top));
+        }
+        Some(style)
     }
     fn more_visible(&self) -> bool {
         self.presence[2] || (self.small && (self.presence[0] || self.presence[1]))
@@ -137,6 +202,7 @@ impl Model {
             self.open = false;
         }
         self.generation = self.generation.wrapping_add(1);
+        self.invalidate_layout();
         self.sequence = 0;
         self.focus_count = 0;
         self.focused_index = None;
@@ -167,6 +233,9 @@ impl Model {
         self.mounted = false;
         self.open = false;
         self.generation = self.generation.wrapping_add(1);
+        self.invalidate_layout();
+        self.more_mount = None;
+        self.popup_mounts = [None, None];
         self.focused_control = None;
         self.focus("none".into());
     }
@@ -323,6 +392,72 @@ struct Controller {
     node: NodeHandle,
 }
 impl Controller {
+    fn measure_layout(&self) {
+        let Some((more, popup, viewport, epoch, generation, small)) = ({
+            let mut model = self.model.borrow_mut();
+            model.layout_epoch = model.layout_epoch.wrapping_add(1);
+            if !model.alive || !model.mounted || !model.open || model.viewport_width <= 0.0 {
+                None
+            } else {
+                model
+                    .more_mount
+                    .clone()
+                    .zip(model.popup_mounts[usize::from(!model.small)].clone())
+                    .map(|(more, popup)| {
+                        (
+                            more,
+                            popup,
+                            model.viewport_width,
+                            model.layout_epoch,
+                            model.generation,
+                            model.small,
+                        )
+                    })
+            }
+        }) else {
+            return;
+        };
+        let controller = self.clone();
+        spawn(async move {
+            let Ok(trigger) = more.get_client_rect().await else {
+                return;
+            };
+            let Ok(bounds) = popup.get_client_rect().await else {
+                return;
+            };
+            let Some(position) =
+                popup_position(viewport, trigger.min_x(), trigger.max_y(), bounds.width())
+            else {
+                return;
+            };
+            let changed = {
+                let mut model = controller.model.borrow_mut();
+                if !model.accepts_layout(epoch, generation, small) {
+                    return;
+                }
+                if model.position == Some(position) {
+                    false
+                } else {
+                    model.position = Some(position);
+                    true
+                }
+            };
+            if changed {
+                controller.notify();
+            }
+        });
+    }
+    fn mount_layout(&self, index: Option<usize>, node: Rc<MountedData>) {
+        {
+            let mut model = self.model.borrow_mut();
+            model.invalidate_layout();
+            match index {
+                Some(index) => model.popup_mounts[index] = Some(node),
+                None => model.more_mount = Some(node),
+            }
+        }
+        self.measure_layout();
+    }
     fn more_click(&self, event: MouseEvent) {
         if !event.default_action_enabled() {
             return;
@@ -551,7 +686,7 @@ impl Controller {
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
-        if !matches!(report.kind.as_str(), "presence" | "pointer") {
+        if !matches!(report.kind.as_str(), "presence" | "pointer" | "layout") {
             return;
         }
         {
@@ -567,6 +702,12 @@ impl Controller {
             model.active_default = report.active_default;
             model.focus_count = report.focus_count;
             model.focused_index = report.focused_index;
+            if report.kind == "layout" || model.viewport_width != report.viewport_width {
+                model.layout_epoch = model.layout_epoch.wrapping_add(1);
+            }
+            if report.viewport_width.is_finite() && report.viewport_width > 0.0 {
+                model.viewport_width = report.viewport_width;
+            }
             if report.kind == "pointer" {
                 model.focus("none".into());
             }
@@ -642,6 +783,7 @@ pub(crate) fn HeaderLayout(
                         model.open = change.open;
                         if changed {
                             model.focusable_ids.clear();
+                            model.invalidate_layout();
                         }
                         model.apply_focus(change.restore_focus);
                         changed
@@ -734,6 +876,7 @@ pub(crate) fn HeaderLayout(
     use_effect(move || {
         let _ = revision();
         focus_controller.dispatch_focus();
+        focus_controller.measure_layout();
     });
     let mount_model = model.clone();
     let _ = revision();
@@ -743,12 +886,31 @@ pub(crate) fn HeaderLayout(
     let open = state.open;
     let visible = state.more_visible();
     let presence = state.presence;
+    let small_style = state.popup_style(true);
+    let large_style = state.popup_style(false);
     let active = if small { "small" } else { "large" };
     let more_id = format!("{owner}-more");
     let small_id = format!("{owner}-small");
     let large_id = format!("{owner}-large");
     drop(state);
     let more_mount = crate::dropdown::use_focus_mount(more_id.clone());
+    let small_popover = crate::native_popover::use_native_popover(
+        small_id.clone(),
+        small && open && enable_top_layer,
+    );
+    let large_popover = crate::native_popover::use_native_popover(
+        large_id.clone(),
+        !small && open && enable_top_layer,
+    );
+    let small_layout = controller.clone();
+    let large_layout = controller.clone();
+    let more_layout = controller.clone();
+    let small_resize = controller.clone();
+    let large_resize = controller.clone();
+    let more_resize = controller.clone();
+    let visible_layout = controller.clone();
+    let layout_controller = controller.clone();
+    let layout_resize = use_callback(move |_: ResizeEvent| layout_controller.measure_layout());
     let visible_model = model.clone();
     let visible_node = controller.node.clone();
     let runtime_owner = runtime.owner_id();
@@ -763,6 +925,7 @@ pub(crate) fn HeaderLayout(
     let large_background = controller.clone();
     rsx! {
         div { id:owner.clone(), class:"ix-header-layout",
+            onresize:layout_resize,
             "data-ix-overlay-owner":runtime_owner,
             "data-ix-overlay-root":owner.clone(),"data-ix-overlay-generation":"1",
             "data-ix-overlay-open":open.to_string(),"data-ix-overlay-ready":discovery_ready.to_string(),
@@ -787,22 +950,40 @@ pub(crate) fn HeaderLayout(
                 "data-header-popup-host":"small","data-active":small.to_string(),"data-open":(small&&open).to_string(),
                 role:if small {Some("presentation")} else {None},
                 popover:if small&&enable_top_layer {Some("manual")} else {None},
+                "data-ix-native-popover":small_popover.marker,
+                style:small_style,
+                onmounted:move |event:MountedEvent| {
+                    small_popover.onmounted.call(event.clone());
+                    small_layout.mount_layout(Some(0),event.data());
+                },
+                onresize:move |_|small_resize.measure_layout(),
                 onclick:move |event|small_background.background_click(true,event),
                 onkeydown:move |event|small_key.key(event,false,Some(true)),
-                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onclick:move |event|secondary_click.group_click(0,event),HeaderOwnershipScope {node:secondary_scope,{secondary}}}
-                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onclick:move |event|default_click.group_click(1,event),HeaderOwnershipScope {node:default_scope,{default_content}}}
+                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onresize:layout_resize,onclick:move |event|secondary_click.group_click(0,event),HeaderOwnershipScope {node:secondary_scope,{secondary}}}
+                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onresize:layout_resize,onclick:move |event|default_click.group_click(1,event),HeaderOwnershipScope {node:default_scope,{default_content}}}
                 dialog {id:large_id.clone(),class:"ix-header-popup-host ix-header-popup-large",
                     "data-ix-overlay-host":(!small).then_some(owner.clone()),
                     "data-header-popup-host":"large","data-active":(!small).to_string(),"data-open":(!small&&open).to_string(),
                     role:if !small {Some("presentation")} else {None},
                     popover:if !small&&enable_top_layer {Some("manual")} else {None},
+                    "data-ix-native-popover":large_popover.marker,
+                    style:large_style,
+                    onmounted:move |event:MountedEvent| {
+                        large_popover.onmounted.call(event.clone());
+                        large_layout.mount_layout(Some(1),event.data());
+                    },
+                    onresize:move |_|large_resize.measure_layout(),
                     onclick:move |event|large_background.background_click(false,event),
                     onkeydown:move |event|large_key.key(event,false,Some(false)),
-                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onclick:move |event|overflow_click.group_click(2,event),HeaderOwnershipScope {node:overflow_scope,{overflow}}}
+                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onresize:layout_resize,onclick:move |event|overflow_click.group_click(2,event),HeaderOwnershipScope {node:overflow_scope,{overflow}}}
                 }
             }
             button {id:more_id,r#type:"button",class:"ix-app-icon-button ix-header-more-button",
-                onmounted:more_mount,
+                onmounted:move |event:MountedEvent| {
+                    more_mount.call(event.clone());
+                    more_layout.mount_layout(None,event.data());
+                },
+                onresize:move |_|more_resize.measure_layout(),
                 onclick:move |event|more_click.more_click(event),
                 onkeydown:move |event|more_key.key(event,true,None),
                 onvisible:move |event:VisibleEvent| {
@@ -811,6 +992,7 @@ pub(crate) fn HeaderLayout(
                         && let Ok(intersecting) = event.is_intersecting()
                     {
                         visible_node.observe_anchor_visibility(intersecting, None);
+                        visible_layout.measure_layout();
                     }
                 },
                 "data-ix-overlay-trigger":owner.clone(),
@@ -818,7 +1000,7 @@ pub(crate) fn HeaderLayout(
                 "aria-label":more_label,"aria-expanded":open.to_string(),"aria-controls":if active=="small" {small_id} else {large_id},
                 crate::Icon {name:"more-menu".to_string(),size:24}
             }
-            div {class:"ix-header-avatar-slot","data-header-group":"avatar",{avatar}}
+            div {class:"ix-header-avatar-slot","data-header-group":"avatar",onresize:layout_resize,{avatar}}
         }
     }
 }
@@ -1177,6 +1359,7 @@ mod tests {
             focusable_ids: (0..6).map(|index| format!("control-{index}")).collect(),
             presented_ids: Vec::new(),
             active_default: false,
+            viewport_width: 1000.0,
         }
     }
     fn key_input(_: &Model) -> KeyInput {
@@ -1187,6 +1370,73 @@ mod tests {
             ..KeyInput::default()
         }
     }
+    #[test]
+    fn mounted_popup_placement_clamps_and_rejects_obsolete_layout_work() {
+        assert_eq!(
+            popup_position(1000.0, 64.0, 48.0, 240.0),
+            Some(PopupPosition {
+                left: 64.0,
+                top: 48.0
+            })
+        );
+        assert_eq!(
+            popup_position(360.0, 330.0, 48.0, 200.0),
+            Some(PopupPosition {
+                left: 152.0,
+                top: 48.0
+            })
+        );
+        assert_eq!(
+            popup_position(360.0, -20.0, 48.0, 344.0),
+            Some(PopupPosition {
+                left: 8.0,
+                top: 48.0
+            })
+        );
+        assert!(
+            popup_position(360.0, 16.0, 48.0, 0.0).is_none(),
+            "hidden native surface waits for its visible resize"
+        );
+        assert!(popup_position(f64::NAN, 16.0, 48.0, 200.0).is_none());
+        let mut model = Model::new(true, true);
+        model.mounted = true;
+        model.open = true;
+        model.viewport_width = 360.0;
+        let epoch = model.layout_epoch;
+        let generation = model.generation;
+        assert!(model.accepts_layout(epoch, generation, true));
+        model.position = popup_position(360.0, 330.0, 48.0, 200.0);
+        assert!(
+            model
+                .popup_style(true)
+                .unwrap()
+                .contains("max-width:344px;left:152px;top:48px;")
+        );
+        assert!(
+            model.popup_style(false).is_none(),
+            "inactive host retains no geometry writes"
+        );
+        model.invalidate_layout();
+        assert!(!model.accepts_layout(epoch, generation, true));
+        let epoch = model.layout_epoch;
+        model.sync_mode(false, true);
+        assert!(
+            !model.accepts_layout(epoch, generation, true),
+            "responsive replacement invalidates pending measurement"
+        );
+        let epoch = model.layout_epoch;
+        let generation = model.generation;
+        model.open = false;
+        assert!(!model.accepts_layout(epoch, generation, false));
+        assert!(model.popup_style(false).is_none());
+        model.open = true;
+        model.invalidate();
+        assert!(
+            !model.accepts_layout(epoch, generation, false),
+            "unmounted owner cannot publish geometry"
+        );
+    }
+
     #[test]
     fn decision_preserves_opening_defaults_veto_intent_and_boundary_keys() {
         let mut model = Model::new(true, false);

@@ -85,19 +85,6 @@ fn use_surface(prefix: &'static str) -> Surface {
 }
 
 impl Surface {
-    fn cleanup_native_position(self) {
-        #[cfg(any(feature = "web", feature = "desktop"))]
-        {
-            let id = serde_json::to_string(&self.id()).expect("string serialization");
-            let generation = serde_json::to_string(&self.generation.peek().to_string())
-                .expect("string serialization");
-            let script = format!(
-                "const panel=document.getElementById({id});if(panel&&panel.matches('.ix-popover')&&!panel.matches(':popover-open')&&panel.getAttribute('data-surface-generation')==={generation}){{panel.style.setProperty('position-anchor','--'+{id});panel.removeAttribute('data-unanchored');}}"
-            );
-            let _ = dioxus::document::eval(&script);
-        }
-    }
-
     fn id(self) -> String {
         self.id.read().clone()
     }
@@ -191,32 +178,6 @@ impl Surface {
                 let panel = element
                     .dyn_into::<web_sys::HtmlElement>()
                     .map_err(|_| NativeSurfaceError::UnsupportedRenderer)?;
-                if panel.matches(".ix-popover").unwrap_or(false) {
-                    let explicit = panel
-                        .owner_document()
-                        .and_then(|document| document.query_selector_all("[popovertarget]").ok())
-                        .and_then(|triggers| {
-                            (0..triggers.length())
-                                .filter_map(|index| triggers.item(index))
-                                .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
-                                .find(|trigger| {
-                                    trigger.get_attribute("popovertarget").as_deref()
-                                        == Some(&self.id())
-                                })
-                        });
-                    let source = explicit.filter(|source| {
-                        source.is_connected()
-                            && !matches!(source.tag_name().as_str(), "BODY" | "HTML")
-                            && !panel.contains(Some(source.as_ref()))
-                            && source.get_bounding_client_rect().width() > 0.0
-                            && source.get_bounding_client_rect().height() > 0.0
-                    });
-                    if source.is_some() {
-                        let _ = panel.remove_attribute("data-unanchored");
-                    } else {
-                        let _ = panel.set_attribute("data-unanchored", "true");
-                    }
-                }
                 panel
                     .show_popover()
                     .map_err(|error| NativeSurfaceError::Rejected(format!("{error:?}")))?;
@@ -254,17 +215,7 @@ impl Surface {
                     element.setAttribute('data-ix-surface-command',String(expected));
                 }}
                 try{{
-                    if({modal})element.showModal();else{{
-                        let source;
-                        if(element.matches('.ix-popover')){{
-                            const explicit=Array.from(document.querySelectorAll('[popovertarget]')).find(trigger=>trigger.getAttribute('popovertarget')==={id});
-                            source=explicit;
-                            if(source instanceof HTMLElement&&source.isConnected&&!['BODY','HTML'].includes(source.tagName)&&!element.contains(source)&&source.getBoundingClientRect().width>0&&source.getBoundingClientRect().height>0){{
-                                element.removeAttribute('data-unanchored');
-                            }}else{{source=undefined;element.setAttribute('data-unanchored','true');}}
-                        }}
-                        element.showPopover();
-                    }}
+                    if({modal})element.showModal();else element.showPopover();
                     const opened={modal}?element.open:element.matches(':popover-open');
                     return {{opened,error:null}};
                 }}catch(error){{return {{opened:false,error:String(error)}};}}
@@ -852,8 +803,20 @@ pub struct PopoverHandle {
     focusable_at_open: Signal<bool>,
     focus_trigger: Signal<Option<crate::overlay_runtime::MountedFocusTarget>>,
     trigger_id: Signal<Option<String>>,
+    trigger_anchor: Signal<Option<PopoverAnchor>>,
     overlay: Signal<Option<crate::overlay_runtime::NodeHandle>>,
     trigger_ownership: Signal<Option<(u64, Vec<crate::overlay_runtime::NodeHandle>)>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PopoverAnchor {
+    ownership: u64,
+    visible: bool,
+}
+impl PopoverAnchor {
+    fn name(self) -> String {
+        format!("--ix-popover-trigger-{}", self.ownership)
+    }
 }
 
 // A caller can drop its show future while the Popover itself remains mounted.
@@ -896,12 +859,50 @@ pub fn use_popover() -> PopoverHandle {
         focusable_at_open: use_signal(|| false),
         focus_trigger: use_signal(|| None),
         trigger_id: use_signal(|| None),
+        trigger_anchor: use_signal(|| None),
         overlay: use_signal(|| None),
         trigger_ownership: use_signal(|| None),
     }
 }
 
 impl PopoverHandle {
+    fn update_trigger_anchor(mut self, ownership: u64, target: &Rc<MountedData>, visible: bool) {
+        if !self.trigger_anchor.try_peek().is_ok_and(|anchor| {
+            anchor
+                .as_ref()
+                .is_some_and(|anchor| anchor.ownership == ownership)
+        }) || !self.surface.invoker.try_peek().is_ok_and(|invoker| {
+            invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.matches_node(target))
+        }) {
+            return;
+        }
+        let next = Some(PopoverAnchor { ownership, visible });
+        if self.trigger_anchor.peek().as_ref() != next.as_ref() {
+            self.trigger_anchor.set(next);
+        }
+    }
+    async fn refresh_trigger_anchor(self) {
+        let Some(anchor) = *self.trigger_anchor.peek() else {
+            return;
+        };
+        let target = self
+            .surface
+            .invoker
+            .peek()
+            .as_ref()
+            .and_then(crate::overlay_runtime::MountedFocusTarget::live_node);
+        let Some(target) = target else {
+            return;
+        };
+        let visible = target
+            .get_client_rect()
+            .await
+            .is_ok_and(|bounds| bounds.size.width > 0.0 && bounds.size.height > 0.0);
+        self.update_trigger_anchor(anchor.ownership, &target, visible);
+    }
+
     /// Show the real native top-layer popover. Dismissal restores its configured
     /// trigger when the opening had focusable content. Opening is cancelable.
     pub async fn show(self) -> Result<(), NativeSurfaceError> {
@@ -952,6 +953,16 @@ impl PopoverHandle {
         })
         .await;
         if *self.surface.generation.peek() != generation
+            || node.as_ref().is_some_and(|node| !node.is_registered())
+        {
+            return Err(NativeSurfaceError::Superseded);
+        }
+        self.refresh_trigger_anchor().await;
+        if !self
+            .surface
+            .generation
+            .try_peek()
+            .is_ok_and(|current| *current == generation)
             || node.as_ref().is_some_and(|node| !node.is_registered())
         {
             return Err(NativeSurfaceError::Superseded);
@@ -1260,18 +1271,84 @@ pub enum PopoverTriggerMode {
     Hover,
 }
 
-/// Register a custom Popover trigger's mounted element for return focus.
-///
+/// A Dioxus-owned Popover trigger's focus and CSS anchor metadata.
+/// Apply `onmounted`, `onvisible` and `attributes()` to the same stable control.
+/// Use `attributes_with_style()` to preserve a caller-authored style alongside
+/// the binding's anchor metadata.
+#[derive(Clone)]
+pub struct PopoverTriggerBinding {
+    /// Register the control's mounted handle and current owner.
+    pub onmounted: EventHandler<MountedEvent>,
+    /// Update the registered anchor's visible geometry through Dioxus.
+    pub onvisible: EventHandler<VisibleEvent>,
+    ownership: u64,
+    id: String,
+    popover: PopoverHandle,
+}
+impl PopoverTriggerBinding {
+    /// CSS anchor declaration for advanced attribute composition.
+    pub fn style(&self) -> String {
+        format!("anchor-name:--ix-popover-trigger-{}", self.ownership)
+    }
+    /// Stable ID, anchor style and accessible overlay relationships.
+    pub fn attributes(&self) -> Vec<Attribute> {
+        self.attributes_with_style("")
+    }
+    /// Preserve caller styling while adding the binding's anchor and relationships.
+    pub fn attributes_with_style(&self, style: impl Into<String>) -> Vec<Attribute> {
+        let mut style = style.into();
+        if !style.is_empty() {
+            style.push(';');
+        }
+        style.push_str(&self.style());
+        vec![
+            Attribute::new("id", self.id.clone(), None, false),
+            Attribute::new("style", style, None, false),
+            Attribute::new("data-ix-overlay-trigger", self.popover.id(), None, false),
+            Attribute::new("aria-controls", self.popover.id(), None, false),
+            Attribute::new("aria-haspopup", "dialog", None, false),
+            Attribute::new(
+                "aria-expanded",
+                self.popover.is_open().to_string(),
+                None,
+                false,
+            ),
+        ]
+    }
+}
+
+/// Register an explicitly anchored custom Popover trigger.
+/// Give the control the same stable `id`, attach both event fields and spread
+/// `binding.attributes()`. Activation uses the controller's `show`/`hide` methods.
+/// A replacement control must have a new component key. Dioxus owns anchor
+/// styling, measurements, focus and cleanup; no arbitrary DOM discovery occurs.
+pub fn use_popover_trigger_binding(
+    popover: PopoverHandle,
+    id: impl Into<String>,
+) -> PopoverTriggerBinding {
+    use_popover_trigger_registration(popover, id.into(), true)
+}
+
+/// Register a custom Popover trigger's mounted element for return focus/ownership.
 /// Give the control the same stable `id` and attach this handler to `onmounted`.
-/// Use the controller's `show`/`hide` methods for activation. The calling scope
-/// must unmount with the control; use a new component key for a replacement.
+/// This mount-only hook does not author an anchor; use
+/// [`use_popover_trigger_binding`] for positioned custom triggers. A panel with
+/// no visible explicitly anchored trigger centers. The calling scope must
+/// unmount with the control; use a new component key for a replacement.
 /// Custom content controls register separately with [`crate::use_focus_mount`].
 pub fn use_popover_trigger_mount(
     popover: PopoverHandle,
     id: impl Into<String>,
 ) -> EventHandler<MountedEvent> {
+    use_popover_trigger_registration(popover, id.into(), false).onmounted
+}
+
+fn use_popover_trigger_registration(
+    popover: PopoverHandle,
+    id: String,
+    anchored: bool,
+) -> PopoverTriggerBinding {
     let binding = crate::dropdown::use_item_host("native-opt-in");
-    let id = id.into();
     let ancestors = crate::overlay_runtime::use_overlay_ancestors();
     let ownership = use_hook(|| DIALOG_ID.fetch_add(1, Ordering::Relaxed) as u64);
     let mut trigger_ownership = popover.trigger_ownership;
@@ -1292,6 +1369,14 @@ pub fn use_popover_trigger_mount(
                 .is_some_and(|(token, _)| *token == ownership)
         }) {
             trigger_ownership.set(None);
+            let mut anchor = popover.trigger_anchor;
+            if anchor.try_peek().is_ok_and(|anchor| {
+                anchor
+                    .as_ref()
+                    .is_some_and(|anchor| anchor.ownership == ownership)
+            }) {
+                anchor.set(None);
+            }
         }
         if let Some(own) = cleanup.borrow_mut().take()
             && popover.surface.invoker.try_peek().is_ok_and(|current| {
@@ -1309,7 +1394,9 @@ pub fn use_popover_trigger_mount(
             }
         }
     });
-    use_callback(move |event: MountedEvent| {
+    let visible_owner = mounted.clone();
+    let binding_id = id.clone();
+    let onmounted = use_callback(move |event: MountedEvent| {
         let mut popover = popover;
         let target = event.data();
         if popover
@@ -1330,13 +1417,46 @@ pub fn use_popover_trigger_mount(
             .surface
             .remember_invoker(binding.runtime.capture_registered_focus(&id));
         popover.trigger_id.set(Some(id.clone()));
+        popover
+            .trigger_anchor
+            .set(anchored.then_some(PopoverAnchor {
+                ownership,
+                visible: false,
+            }));
+        if anchored {
+            spawn(async move {
+                popover.refresh_trigger_anchor().await;
+            });
+        }
         if trigger_ownership.peek().as_ref() != Some(&(ownership, ancestors.clone())) {
             trigger_ownership.set(Some((ownership, ancestors.clone())));
         }
-    })
+    });
+    let onvisible = use_callback(move |event: VisibleEvent| {
+        if !anchored {
+            return;
+        }
+        let Some(target) = visible_owner.borrow().clone() else {
+            return;
+        };
+        if let Ok(bounds) = event.get_bounding_client_rect() {
+            popover.update_trigger_anchor(
+                ownership,
+                &target,
+                bounds.size.width > 0.0 && bounds.size.height > 0.0,
+            );
+        }
+    });
+    PopoverTriggerBinding {
+        onmounted,
+        onvisible,
+        ownership,
+        id: binding_id,
+        popover,
+    }
 }
 
-/// Native popover invoker with an implicit CSS anchor and accessible relationship.
+/// Native popover invoker with a Dioxus-authored CSS anchor and accessible relationship.
 #[component]
 pub fn PopoverTrigger(
     popover: PopoverHandle,
@@ -1349,7 +1469,7 @@ pub fn PopoverTrigger(
     #[props(default)] trigger_mode: PopoverTriggerMode,
 ) -> Element {
     let id = popover.id();
-    let trigger_mount = use_popover_trigger_mount(popover, format!("{id}-trigger"));
+    let trigger_binding = use_popover_trigger_binding(popover, format!("{id}-trigger"));
     let mut hover_mode = popover.hover_mode;
     use_effect(use_reactive((&trigger_mode,), move |(mode,)| {
         hover_mode.set(mode == PopoverTriggerMode::Hover)
@@ -1358,9 +1478,8 @@ pub fn PopoverTrigger(
         button { id:"{id}-trigger",class: "ix-button ix-button-{variant.as_str()}", r#type: "button", disabled,
             "popovertarget": id.clone(), "popovertargetaction": "toggle", "aria-haspopup": "dialog",
             "data-ix-overlay-trigger": id.clone(),
-            style: "anchor-name:--{id}",
             "aria-controls": id.clone(), "aria-expanded": popover.is_open().to_string(), "aria-label": aria_label,
-            onmounted: trigger_mount,
+            onmounted: trigger_binding.onmounted,onvisible:trigger_binding.onvisible,
             onclick: move |event| {
                 event.prevent_default();
                 if trigger_mode == PopoverTriggerMode::Click {
@@ -1384,6 +1503,7 @@ pub fn PopoverTrigger(
                 spawn(async move { let _ = popover.show_native().await; });
             },
             onblur: move |_| {let mut suppressed=popover.suppress_focus_open;suppressed.set(false);popover.schedule_hover_hide(true);},
+            ..trigger_binding.attributes(),
             {children}
         }
     }
@@ -1503,6 +1623,7 @@ pub fn Popover(
             popover.onbeforechange.set(None);
             popover.cancel_hover_hide();
             surface.invoker.set(None);
+            popover.trigger_anchor.set(None);
         }
     });
     let mut callback = popover.onshowchanged;
@@ -1516,6 +1637,26 @@ pub fn Popover(
             typed_callback.set(typed);
         },
     ));
+    let anchor = popover
+        .trigger_anchor
+        .read()
+        .as_ref()
+        .filter(|anchor| anchor.visible)
+        .map(|anchor| anchor.name());
+    let anchored_style = anchor
+        .as_ref()
+        .map(|anchor| {
+            format!(
+                "position-anchor:{anchor};position-area:{}",
+                placement.as_str()
+            )
+        })
+        // A centered panel has no anchor placement to retry. Chromium tests
+        // overflow before the centering transform; the viewport try would
+        // otherwise center it once and then apply that transform a second time.
+        .unwrap_or_else(|| {
+            "position-anchor:auto;position-area:none;position-try-fallbacks:none".into()
+        });
     rsx! {
         crate::overlay_runtime::OverlayTransport {runtime:runtime.clone()}
             div { id: id.clone(), class: "ix-popover", role: "dialog", "aria-label": label.clone(), tabindex: "-1",
@@ -1525,7 +1666,8 @@ pub fn Popover(
                 "data-ix-overlay-host":id.clone(),"data-ix-overlay-native-surface":"popover",
                 "popover": "manual",
                 "data-placement": placement.as_str(), "data-spike": has_spike.to_string(),
-                style: "position-anchor:--{id};position-area:{placement.as_str()}",
+                "data-unanchored":anchor.is_none().then_some("true"),
+                style: anchored_style,
                 onkeydown: move |event: KeyboardEvent| {
                     let decision = keyboard_node.dioxus_popover_tab(&event, *popover.focusable_at_open.peek());
                     if decision.prevent { event.prevent_default(); }
@@ -1542,9 +1684,6 @@ pub fn Popover(
                     // Rust intent. Such an observation cannot revive a closed
                     // generation or cancel an opening still awaiting native work.
                     if (visible && !*surface.open.peek()) || (!visible && *popover.opening.peek()) { return; }
-                    if !visible {
-                        surface.cleanup_native_position();
-                    }
                     surface.open.set(visible);
                     let mut reported = popover.reported_open;
                     if !(visible && *popover.opening.peek()) { reported.set(visible); }

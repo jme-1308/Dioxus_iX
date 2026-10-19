@@ -2355,6 +2355,8 @@ fn DropdownSurface(
     let id = context.node_id();
     let host_id = context.host_id();
     let trigger_id = context.trigger_id();
+    let native_popup =
+        crate::native_popover::use_native_popover(host_id.clone(), open && enable_top_layer);
     let aria_name = aria_label.unwrap_or_else(|| label.clone());
     let mount_context = context.clone();
     let mounted_node = node.clone();
@@ -2416,6 +2418,8 @@ fn DropdownSurface(
         dialog {id:host_id,class:"ix-dropdown-menu ix-dropdown-root-menu",role:"menu","aria-label":label,
             "data-ix-overlay-host":id,"data-placement":effective_placement.as_str(),"data-configured-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
             popover:enable_top_layer.then_some("manual"),
+            "data-ix-native-popover":native_popup.marker,
+            onmounted:native_popup.onmounted,
             onvisible:move |event:VisibleEvent|{if let Ok(visible)=event.is_intersecting(){surface_visibility.surface_visibility(visible);}},
             style:format!("position-anchor:--ix-dropdown-anchor-{};--ix-dropdown-area:{};{}",context.id,effective_placement.area(),if suppress_automatic_placement {"position-try-fallbacks:none"} else {""}),
             onfocus:move |_|panel_focus.set(true),onblur:move |_|panel_blur.set(false),
