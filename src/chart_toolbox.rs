@@ -268,6 +268,8 @@ fn editor_focus_index(current: usize, reverse: bool) -> usize {
 /// switch, editable data view and an actual PNG export of the rendered plot.
 /// `onexport` receives a ready PNG; requesting a browser download does not prove
 /// that the host saved a file. A native Download PNG link remains available.
+/// Replacing the input dataset resets zoom and discards an open data-view draft
+/// without emitting `onchange`. Restore then uses that replacement as its baseline.
 #[component]
 pub fn ChartToolbox(
     categories: Vec<String>,
@@ -297,6 +299,14 @@ pub fn ChartToolbox(
     use_effect(use_reactive!(|input| {
         if state.peek().original != input {
             state.set(ChartToolboxState::new(input));
+            // A draft belongs to the input dataset that opened it. Replacing
+            // that input must not let Refresh overwrite the new data with it.
+            // Leave focus with the host control that requested the update.
+            editor.set(false);
+            draft.set(String::new());
+            error.set(String::new());
+            brush.set(false);
+            restore_editor_focus.set(false);
             invalidate_chart_image(export_generation, last_png, export_status, exporting);
         }
     }));
@@ -422,6 +432,10 @@ pub(crate) const STYLES: &str = r#"
 .ix-chart-toolbox-download{display:inline-block;padding:8px 0;font:14px var(--ix-font);text-underline-offset:3px}
 .ix-chart-data-editor{position:absolute;inset:0 0 auto;z-index:5;display:flex;flex-direction:column;gap:12px;padding:20px;height:100%;max-height:calc(100dvh - 32px);overflow:hidden;scroll-margin-block:16px;background:var(--ix-color-surface-1);color:var(--ix-color-text);box-sizing:border-box}.ix-chart-data-editor h4{flex:none;margin:0;font-size:16px}.ix-chart-data-editor>p{flex:none;margin:0;font-size:12px}.ix-chart-data-editor textarea{flex:1 1 0;min-height:0;width:100%;resize:none;box-sizing:border-box;padding:12px;border:1px solid var(--ix-color-border);background:var(--ix-color-surface);color:var(--ix-color-text);font:14px/1.6 ui-monospace,monospace;tab-size:12}.ix-chart-data-editor-actions{display:flex;flex:none;justify-content:flex-end;gap:12px}.ix-chart-data-editor-actions button{padding:6px 12px;background:var(--ix-color-primary);color:var(--ix-color-on-primary);border:0;border-radius:3px;cursor:pointer}.ix-chart-data-error{color:var(--ix-color-danger-text)}.ix-chart-data-error[hidden]{display:none}
 "#;
+
+#[cfg(test)]
+#[path = "chart_toolbox_tests.rs"]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

@@ -80,6 +80,7 @@ fn valid_page(page: &str) -> bool {
             | "layout"
             | "datetime"
             | "grid"
+            | "charts"
             | "tree"
             | "application"
             | "feedback"

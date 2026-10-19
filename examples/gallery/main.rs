@@ -9,6 +9,7 @@ mod application;
 mod application_scenarios;
 mod button_review;
 mod chart_scenarios;
+mod chart_workflows;
 mod chat;
 mod chat_composer_review;
 mod chat_scenarios;
@@ -81,6 +82,7 @@ enum GalleryPage {
     Layout,
     DateTime,
     DataGrid,
+    Charts,
     Tree,
     Application,
     Feedback,
@@ -101,6 +103,7 @@ impl GalleryPage {
         Self::Layout,
         Self::DateTime,
         Self::DataGrid,
+        Self::Charts,
         Self::Tree,
         Self::Application,
         Self::Feedback,
@@ -120,6 +123,7 @@ impl GalleryPage {
             Self::Layout => "layout",
             Self::DateTime => "datetime",
             Self::DataGrid => "grid",
+            Self::Charts => "charts",
             Self::Tree => "tree",
             Self::Application => "application",
             Self::Feedback => "feedback",
@@ -152,6 +156,7 @@ impl GalleryPage {
             Self::Dialogs => "Dialogs & popovers",
             Self::DateTime => "Date & time",
             Self::DataGrid => "Data grid",
+            Self::Charts => "Charts",
             Self::Tree => "Tree",
             Self::Application => "Application shell",
             Self::Icons => "Icons",
@@ -174,6 +179,7 @@ impl GalleryPage {
             Self::Theme => "shapes",
             Self::DateTime => "calendar",
             Self::DataGrid => "editor-grid",
+            Self::Charts => "chart-diagram",
             Self::Tree => "hierarchy",
             Self::Application => "application-screen",
             Self::Coverage => "list",
@@ -217,6 +223,7 @@ fn Gallery() -> Element {
         style { {toast_review::STYLES} }
         style { {grid_scenarios::STYLES} }
         style { {grid_worklist::STYLES} }
+        style { {chart_workflows::STYLES} }
         IxTheme {
             scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
             density: if compact { Density::Compact } else { Density::Normal },
@@ -265,6 +272,7 @@ fn Gallery() -> Element {
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { grid_scenarios::GridExamples {} },
+                        GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
                         GalleryPage::Application => rsx! { header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
                         GalleryPage::Feedback => rsx! { dropdown_review::DropdownOrderReview {} FeedbackExamples {} },

@@ -9,6 +9,8 @@ mod application_shell_review;
 mod application_viewport_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
+#[path = "dioxus_first_probe/chart_workflows_review.rs"]
+mod chart_workflows_review;
 #[path = "dioxus_first_probe/chat_composer_review.rs"]
 mod chat_composer_review;
 #[path = "dioxus_first_probe/chip_workflows_review.rs"]
@@ -160,6 +162,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridworklist" {
         return rsx! { grid_worklist_review::GridWorklistPreview {} };
+    }
+    if scope == "?chartworkflows" {
+        return rsx! { chart_workflows_review::ChartWorkflowsPreview {} };
     }
     if scope == "?chipworkflows" {
         return rsx! { chip_workflows_review::ChipWorkflowsPreview {} };
