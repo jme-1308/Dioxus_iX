@@ -51,6 +51,10 @@ struct Observation {
     owner: u64,
     generation: u64,
     sequence: u64,
+    #[serde(default)]
+    width: f64,
+    #[serde(default)]
+    height: f64,
     #[serde(flatten)]
     facts: MediaFacts,
 }
@@ -88,6 +92,7 @@ struct ViewportModel {
     force: Option<ApplicationBreakpoint>,
     supported: Option<Vec<ApplicationBreakpoint>>,
     facts: Option<MediaFacts>,
+    viewport_size: Option<(f64, f64)>,
     #[cfg(any(feature = "web", feature = "desktop"))]
     eval: Option<dioxus::document::Eval>,
     #[cfg(any(feature = "web", feature = "desktop"))]
@@ -108,6 +113,7 @@ impl ViewportModel {
             force,
             supported,
             facts: None,
+            viewport_size: None,
             #[cfg(any(feature = "web", feature = "desktop"))]
             eval: None,
             #[cfg(any(feature = "web", feature = "desktop"))]
@@ -144,13 +150,21 @@ impl ViewportModel {
             return false;
         }
         self.sequence = observation.sequence;
-        let changed = self.facts != Some(observation.facts);
+        let viewport_size = (observation.facts.available
+            && observation.width.is_finite()
+            && observation.width > 0.0
+            && observation.height.is_finite()
+            && observation.height > 0.0)
+            .then_some((observation.width, observation.height));
+        let changed = self.facts != Some(observation.facts) || self.viewport_size != viewport_size;
         self.facts = Some(observation.facts);
+        self.viewport_size = viewport_size;
         changed
     }
 
     fn invalidate(&mut self) {
         self.alive = false;
+        self.viewport_size = None;
         self.generation = self.generation.wrapping_add(1);
     }
 }
@@ -167,7 +181,9 @@ if(typeof window==='undefined'||typeof window.matchMedia!=='function'){{
   dioxus.send({{owner,generation,sequence:++sequence,sm:false,md:false,lg:false,available:false}});return;
 }}
 const sm=window.matchMedia({SMALL_QUERY:?}),md=window.matchMedia({MEDIUM_QUERY:?}),lg=window.matchMedia({LARGE_QUERY:?});
-const report=()=>dioxus.send({{owner,generation,sequence:++sequence,sm:sm.matches,md:md.matches,lg:lg.matches,available:true}});
+// Pinned MountedData measures elements, but exposes no document viewport size.
+// Reuse these existing resize/media subscriptions for the missing raw facts.
+const report=()=>dioxus.send({{owner,generation,sequence:++sequence,sm:sm.matches,md:md.matches,lg:lg.matches,available:true,width:document.documentElement.clientWidth,height:document.documentElement.clientHeight}});
 const unbind=[sm,md,lg].map(query=>{{
   if(typeof query.addEventListener==='function'){{query.addEventListener('change',report);return()=>query.removeEventListener('change',report);}}
   if(typeof query.addListener==='function'){{query.addListener(report);return()=>query.removeListener(report);}}
@@ -194,6 +210,13 @@ impl ApplicationViewport {
     pub(crate) fn breakpoint(&self) -> ApplicationBreakpoint {
         let _ = (self.revision)();
         self.model.borrow().breakpoint()
+    }
+
+    /// Raw document viewport dimensions, unavailable before native observation
+    /// (including SSR). Element-based layouts should use mounted measurements.
+    pub(crate) fn viewport_size(&self) -> Option<(f64, f64)> {
+        let _ = (self.revision)();
+        self.model.borrow().viewport_size
     }
 }
 
@@ -365,8 +388,97 @@ mod tests {
             owner: model.owner,
             generation: model.generation,
             sequence,
+            width: 0.0,
+            height: 0.0,
             facts,
         }
+    }
+
+    fn sized_observation(
+        model: &ViewportModel,
+        sequence: u64,
+        width: f64,
+        height: f64,
+    ) -> Observation {
+        let mut report = observation(model, sequence, facts(false, true, false));
+        report.width = width;
+        report.height = height;
+        report
+    }
+
+    #[test]
+    fn viewport_resize_notifies_when_only_dimensions_change() {
+        let mut model = ViewportModel::new(None, None);
+        assert_eq!(model.viewport_size, None, "SSR has no document dimensions");
+        assert!(model.observe(sized_observation(&model, 1, 1000.0, 700.0)));
+        assert_eq!(model.breakpoint(), Medium);
+        assert!(
+            model.observe(sized_observation(&model, 2, 1100.0, 760.0)),
+            "geometry changes must notify existing subscribers"
+        );
+        assert_eq!(model.breakpoint(), Medium);
+        assert_eq!(model.viewport_size, Some((1100.0, 760.0)));
+        assert!(!model.observe(sized_observation(&model, 3, 1100.0, 760.0)));
+        assert_eq!(model.sequence, 3);
+    }
+
+    #[test]
+    fn viewport_dimensions_reject_invalid_or_unavailable_native_facts() {
+        let mut model = ViewportModel::new(Some(Small), None);
+        assert!(model.observe(sized_observation(&model, 1, 1000.0, 700.0)));
+        for (index, (width, height)) in [
+            (0.0, 700.0),
+            (-1.0, 700.0),
+            (1000.0, 0.0),
+            (f64::NAN, 700.0),
+            (1000.0, f64::INFINITY),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            model.observe(sized_observation(&model, index as u64 + 2, width, height));
+            assert_eq!(model.viewport_size, None);
+            assert_eq!(
+                model.breakpoint(),
+                Small,
+                "geometry cannot override forced breakpoint"
+            );
+        }
+        let mut unavailable = sized_observation(&model, 7, 1000.0, 700.0);
+        unavailable.facts.available = false;
+        model.observe(unavailable);
+        assert_eq!(model.viewport_size, None);
+        let missing: Observation = serde_json::from_value(serde_json::json!({
+            "owner":model.owner,"generation":model.generation,"sequence":8,
+            "sm":false,"md":true,"lg":false,"available":true
+        }))
+        .unwrap();
+        model.observe(missing);
+        assert_eq!(
+            model.viewport_size, None,
+            "missing dimensions are unavailable"
+        );
+    }
+
+    #[test]
+    fn viewport_dimensions_ignore_stale_owner_generation_and_sequence() {
+        let mut model = ViewportModel::new(None, None);
+        assert!(model.observe(sized_observation(&model, 2, 1000.0, 700.0)));
+        let mut wrong_owner = sized_observation(&model, 3, 1200.0, 900.0);
+        wrong_owner.owner += 1;
+        assert!(!model.observe(wrong_owner));
+        let mut wrong_generation = sized_observation(&model, 3, 1200.0, 900.0);
+        wrong_generation.generation += 1;
+        assert!(!model.observe(wrong_generation));
+        assert!(!model.observe(sized_observation(&model, 1, 1200.0, 900.0)));
+        assert_eq!(model.viewport_size, Some((1000.0, 700.0)));
+        let late = sized_observation(&model, 3, 1200.0, 900.0);
+        model.invalidate();
+        assert!(!model.observe(late));
+        assert_eq!(
+            model.viewport_size, None,
+            "owner teardown clears dimensions"
+        );
     }
 
     #[test]

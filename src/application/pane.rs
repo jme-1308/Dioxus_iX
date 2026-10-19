@@ -50,6 +50,7 @@ struct PaneContext {
 #[derive(Clone, Copy)]
 struct PaneLayoutContext {
     close_requested: Signal<u64>,
+    dimensions: Signal<Option<(f64, f64)>>,
 }
 
 /// Cancelable expansion request. Vetoing it preserves both the current pane
@@ -107,6 +108,87 @@ fn PaneSlot(
     rsx! { div { class: "ix-pane-slot ix-pane-slot-{composition.class()}", {children} } }
 }
 
+struct PaneLayoutMeasureModel {
+    alive: bool,
+    epoch: u64,
+    root: Option<Rc<MountedData>>,
+}
+#[derive(Clone)]
+struct PaneLayoutMeasure {
+    model: Rc<RefCell<PaneLayoutMeasureModel>>,
+    dimensions: Signal<Option<(f64, f64)>>,
+}
+impl PaneLayoutMeasure {
+    fn mount(&self, root: Rc<MountedData>) {
+        {
+            let mut model = self.model.borrow_mut();
+            if !model.alive {
+                return;
+            }
+            model.root = Some(root);
+        }
+        self.measure();
+    }
+    fn measure(&self) {
+        let snapshot = {
+            let mut model = self.model.borrow_mut();
+            if !model.alive {
+                return;
+            }
+            model.epoch = model.epoch.wrapping_add(1);
+            model.root.clone().map(|root| (model.epoch, root))
+        };
+        let Some((epoch, root)) = snapshot else {
+            return;
+        };
+        let controller = self.clone();
+        spawn(async move {
+            let Ok(rect) = root.get_client_rect().await else {
+                return;
+            };
+            let dimensions = (rect.width(), rect.height());
+            let model = controller.model.borrow();
+            if !model.alive
+                || model.epoch != epoch
+                || !model
+                    .root
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &root))
+                || !valid_pane_dimensions(dimensions)
+            {
+                return;
+            }
+            let mut value = controller.dimensions;
+            if *value.peek() != Some(dimensions) {
+                value.set(Some(dimensions));
+            }
+        });
+    }
+    fn dispose(&self) {
+        let mut model = self.model.borrow_mut();
+        model.alive = false;
+        model.epoch = model.epoch.wrapping_add(1);
+        model.root = None;
+    }
+}
+fn valid_pane_dimensions((width, height): (f64, f64)) -> bool {
+    width.is_finite() && height.is_finite() && width >= 0.0 && height >= 0.0
+}
+fn pane_available_dimensions(
+    explicit: Option<(f64, f64)>,
+    layout: Option<(f64, f64)>,
+    viewport: Option<(f64, f64)>,
+) -> (f64, f64) {
+    explicit
+        .filter(|size| valid_pane_dimensions(*size))
+        .or(layout)
+        .or(viewport)
+        .unwrap_or((0.0, 0.0))
+}
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct PaneLayoutMeasureCapture(Rc<RefCell<Option<PaneLayoutMeasure>>>);
+
 /// Layout with independently collapsible left, right, top and bottom pane slots.
 #[component]
 pub fn PaneLayout(
@@ -120,9 +202,30 @@ pub fn PaneLayout(
     #[props(default)] borderless: bool,
 ) -> Element {
     let mut close_requested = use_signal(|| 0_u64);
-    use_context_provider(|| PaneLayoutContext { close_requested });
+    let dimensions = use_signal(|| None::<(f64, f64)>);
+    let measurement = use_hook(|| PaneLayoutMeasure {
+        model: Rc::new(RefCell::new(PaneLayoutMeasureModel {
+            alive: true,
+            epoch: 0,
+            root: None,
+        })),
+        dimensions,
+    });
+    #[cfg(test)]
+    if let Some(capture) = try_consume_context::<PaneLayoutMeasureCapture>() {
+        *capture.0.borrow_mut() = Some(measurement.clone());
+    }
+    let cleanup = measurement.clone();
+    use_drop(move || cleanup.dispose());
+    use_context_provider(|| PaneLayoutContext {
+        close_requested,
+        dimensions,
+    });
+    let resized = measurement.clone();
     rsx! {
         div { class: "ix-pane-layout", "data-layout": if layout == PaneLayoutOrder::FullVertical { "full-vertical" } else { "full-horizontal" },
+            onmounted:move |event:MountedEvent|measurement.mount(event.data()),
+            onresize:move |_:ResizeEvent|resized.measure(),
             if let Some(left) = left { PaneSlot { composition: PaneComposition::Left, variant, borderless, {left} } }
             if let Some(right) = right { PaneSlot { composition: PaneComposition::Right, variant, borderless, {right} } }
             if let Some(top) = top { PaneSlot { composition: PaneComposition::Top, variant, borderless, {top} } }
@@ -155,12 +258,6 @@ struct PaneObservation {
     kind: String,
     #[serde(default)]
     epoch: u64,
-    #[serde(default)]
-    width: f64,
-    #[serde(default)]
-    height: f64,
-    #[serde(default)]
-    mobile: bool,
     #[serde(flatten)]
     focus: PaneFocusFacts,
 }
@@ -380,8 +477,10 @@ impl PaneFocusController {
 /// Collapsible pane with mutable expansion and optional external state updates.
 /// Changing `expanded` synchronizes the local state; user requests can be vetoed
 /// through `onbeforeexpandedchange`. The owning layout supplies composition and
-/// default styling. Desktop size is capped at half of the parent dimension;
-/// the upstream small breakpoint (48em) uses full-height mobile overlays.
+/// default styling. Desktop size is capped at half the owning PaneLayout's
+/// measured dimension. Standalone panes use the shared viewport dimensions;
+/// constrained standalone containers supply `available_size` explicitly.
+/// The upstream small breakpoint (48em) uses full-height mobile overlays.
 #[component]
 pub fn Pane(
     children: Element,
@@ -390,6 +489,10 @@ pub fn Pane(
     #[props(default)] composition: PaneComposition,
     #[props(default)] variant: PaneVariant,
     #[props(default = "240px".to_string())] size: String,
+    /// Available container width/height, overriding PaneLayout or viewport size.
+    /// Supply finite nonnegative dimensions for constrained standalone panes.
+    #[props(default)]
+    available_size: Option<(f64, f64)>,
     #[props(default)] icon: Option<String>,
     #[props(default)] header: Option<Element>,
     #[props(default)] hide_on_collapse: bool,
@@ -439,8 +542,11 @@ pub fn Pane(
             }
         }
     }));
-    let mut dimensions = use_signal(|| (0.0, 0.0, false));
-    let (width, height, mobile) = dimensions();
+    let viewport = crate::application_viewport::use_application_viewport(None, None);
+    let layout_dimensions = layout.and_then(|layout| (layout.dimensions)());
+    let (width, height) =
+        pane_available_dimensions(available_size, layout_dimensions, viewport.viewport_size());
+    let mobile = viewport.breakpoint() == ApplicationBreakpoint::Small;
     let vertical = matches!(composition, PaneComposition::Left | PaneComposition::Right);
     let size = pane_expanded_size(&size, if vertical { width } else { height });
     let expanded = state();
@@ -474,7 +580,6 @@ pub fn Pane(
     let sync_focus = focus.clone();
     let sync_bridge = bridge.clone();
     use_effect(use_reactive((&variant,), move |(variant,)| {
-        let _ = dimensions();
         sync_focus.transition(state(), variant == PaneVariant::Floating);
         sync_focus.refresh(&sync_bridge);
     }));
@@ -533,7 +638,6 @@ pub fn Pane(
                     spawn(async move {
                         while let Ok(report) = task_bridge.recv::<PaneObservation>().await {
                             match report.kind.as_str() {
-                                "measure" if report.width.is_finite() && report.height.is_finite() => dimensions.set((report.width.max(0.0), report.height.max(0.0), report.mobile)),
                                 "outside" => request.call(false),
                                 "focus" => focus.observe(report.epoch,report.focus),
                                 _ => {}
@@ -585,15 +689,14 @@ fn pane_expanded_size(size: &str, parent: f64) -> f64 {
 // enumerate descendant controls, report the active control or test CSS/inert
 // visibility (dioxus-html alpha.2 events/mounted.rs and events/focus.rs). These
 // bounded facts contain existing Rust IDs only; every focus uses a live mounted
-// snapshot in Rust. Resize/outside delivery remains legacy native plumbing.
+// snapshot in Rust. Document-wide outside clicks remain a native notification
+// because pinned Dioxus does not expose a global event subscription.
 // Dioxus lifecycle/focus events refresh the cache; interior Tab stays native.
 const PANE_DOM_BRIDGE: &str = r#"
 const pane=document.getElementById(await dioxus.recv());
 if(!pane)return;
-const parent=pane.closest('.ix-pane-layout')??pane.parentElement;
 let disposed=false;
 const presented=node=>node instanceof HTMLElement&&!node.matches(':disabled,[disabled],[hidden],[aria-disabled="true"]')&&!node.closest('[aria-hidden="true"],[hidden],[inert]')&&node.getClientRects().length>0&&getComputedStyle(node).visibility!=='hidden'&&getComputedStyle(node).visibility!=='collapse';
-const measure=()=>{if(disposed)return;const rect=parent?.getBoundingClientRect();dioxus.send({kind:'measure',width:rect?.width??0,height:rect?.height??0,mobile:matchMedia('(max-width:48em)').matches});};
 const facts=command=>{
     const active=document.activeElement;
     const items=[...pane.querySelectorAll('button,a[href],input,select,textarea,[tabindex],[contenteditable]')].filter(node=>node.tabIndex>=0&&presented(node));
@@ -605,14 +708,11 @@ const facts=command=>{
 const outsideEvents=new WeakSet();
 const captureOutside=event=>{if(pane.dataset.expanded==='true'&&pane.dataset.closeOnOutside==='true'&&!event.composedPath().includes(pane))outsideEvents.add(event);};
 const outside=event=>{if(!outsideEvents.has(event))return;outsideEvents.delete(event);if(!disposed&&pane.dataset.expanded==='true')dioxus.send({kind:'outside'});};
-const resize=new ResizeObserver(measure);if(parent)resize.observe(parent);
-window.addEventListener('resize',measure);
 window.addEventListener('click',captureOutside,true);window.addEventListener('click',outside);
 try{
-    measure();
     for(;;){const command=await dioxus.recv();if(command==='finish')break;facts(command);}
 }finally{
-    disposed=true;resize.disconnect();window.removeEventListener('resize',measure);
+    disposed=true;
     window.removeEventListener('click',captureOutside,true);window.removeEventListener('click',outside);
 }
 "#;
@@ -913,5 +1013,152 @@ mod pane_focus_tests {
         drop(h);
         assert!(!retained.model.borrow().alive);
         assert!(log.borrow().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pane_layout_measure_tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct LayoutMount(Rc<Cell<(f64, f64)>>);
+    impl dioxus::html::RenderedElementBacking for LayoutMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_client_rect(
+            &self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = dioxus::html::MountedResult<dioxus::html::geometry::PixelsRect>,
+                    >,
+            >,
+        > {
+            let (width, height) = self.0.get();
+            Box::pin(async move {
+                Ok(dioxus::html::geometry::PixelsRect::new(
+                    dioxus::html::geometry::euclid::Point2D::new(0.0, 0.0),
+                    dioxus::html::geometry::euclid::Size2D::new(width, height),
+                ))
+            })
+        }
+    }
+    fn mounted(size: Rc<Cell<(f64, f64)>>) -> Rc<MountedData> {
+        Rc::new(MountedData::new(LayoutMount(size)))
+    }
+    fn settle(dom: &mut VirtualDom) {
+        for _ in 0..5 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+        }
+    }
+    fn layout_fixture() -> Element {
+        rsx! {PaneLayout {
+            left:rsx!{Pane {heading:"Left",size:"33%",expanded:true,"Left content"}},
+            right:rsx!{Pane {heading:"Right",size:"480px",expanded:true,"Right content"}},
+            top:rsx!{Pane {heading:"Top",size:"50%",expanded:true,"Top content"}},
+            bottom:rsx!{Pane {heading:"Override",size:"600px",available_size:Some((200.0,150.0)),expanded:true,"Override content"}},
+            "Main content"
+        }}
+    }
+    fn assert_size(html: &str, heading: &str, size: f64) {
+        let label = format!("aria-label=\"{heading}\"");
+        let pane = html
+            .split("<aside")
+            .skip(1)
+            .find(|pane| pane.split('>').next().unwrap().contains(&label))
+            .unwrap();
+        assert!(
+            pane.split('>')
+                .next()
+                .unwrap()
+                .contains(&format!("--ix-pane-size:{size}px")),
+            "{heading}: {html}"
+        );
+    }
+    #[test]
+    fn mounted_layout_resizes_percent_pixel_axes_and_explicit_override() {
+        let capture = PaneLayoutMeasureCapture::default();
+        let mut dom = VirtualDom::new(layout_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let measurement = capture.0.borrow().clone().unwrap();
+        let size = Rc::new(Cell::new((900.0, 600.0)));
+        dom.in_scope(ScopeId::ROOT, || measurement.mount(mounted(size.clone())));
+        settle(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert_size(&html, "Left", 300.0);
+        assert_size(&html, "Right", 450.0);
+        assert_size(&html, "Top", 300.0);
+        assert_size(&html, "Override", 75.0);
+        size.set((600.0, 360.0));
+        dom.in_scope(ScopeId::ROOT, || measurement.measure());
+        settle(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert_size(&html, "Left", 200.0);
+        assert_size(&html, "Right", 300.0);
+        assert_size(&html, "Top", 180.0);
+        assert_size(&html, "Override", 75.0);
+    }
+    #[test]
+    fn layout_measurement_rejects_older_mount_reads_and_disposed_owners() {
+        let capture = PaneLayoutMeasureCapture::default();
+        let mut dom = VirtualDom::new(layout_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let measurement = capture.0.borrow().clone().unwrap();
+        let old = mounted(Rc::new(Cell::new((900.0, 600.0))));
+        let current = mounted(Rc::new(Cell::new((420.0, 240.0))));
+        dom.in_scope(ScopeId::ROOT, || {
+            measurement.mount(old);
+            measurement.mount(current.clone());
+        });
+        settle(&mut dom);
+        assert_eq!(*measurement.dimensions.peek(), Some((420.0, 240.0)));
+        assert!(Rc::ptr_eq(
+            measurement.model.borrow().root.as_ref().unwrap(),
+            &current
+        ));
+        let html = dioxus_ssr::render(&dom);
+        assert_size(&html, "Left", 140.0);
+        assert_size(&html, "Top", 120.0);
+        dom.in_scope(ScopeId::ROOT, || {
+            measurement.mount(mounted(Rc::new(Cell::new((800.0, 700.0)))))
+        });
+        drop(dom);
+        assert!(!measurement.model.borrow().alive);
+        assert!(measurement.model.borrow().root.is_none());
+        measurement.measure();
+        measurement.mount(mounted(Rc::new(Cell::new((99.0, 99.0)))));
+        assert!(measurement.model.borrow().root.is_none());
+    }
+    #[test]
+    fn pane_dimensions_prefer_explicit_layout_then_viewport_without_dom_discovery() {
+        assert_eq!(
+            pane_available_dimensions(
+                Some((200.0, 90.0)),
+                Some((600.0, 400.0)),
+                Some((1200.0, 800.0))
+            ),
+            (200.0, 90.0)
+        );
+        assert_eq!(
+            pane_available_dimensions(None, Some((600.0, 400.0)), Some((1200.0, 800.0))),
+            (600.0, 400.0)
+        );
+        assert_eq!(
+            pane_available_dimensions(None, None, Some((1200.0, 800.0))),
+            (1200.0, 800.0)
+        );
+        assert_eq!(pane_available_dimensions(None, None, None), (0.0, 0.0));
+        assert_eq!(
+            pane_available_dimensions(Some((f64::NAN, 50.0)), Some((600.0, 400.0)), None),
+            (600.0, 400.0)
+        );
+        assert_eq!(pane_expanded_size("33%", 800.0), 267.0);
+        assert_eq!(pane_expanded_size("50%", 501.0), 251.0);
+        assert_eq!(pane_expanded_size("600px", 501.0), 251.0);
+        assert_eq!(pane_expanded_size("not-allowed", 1000.0), 320.0);
     }
 }
