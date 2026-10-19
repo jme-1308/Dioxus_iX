@@ -199,7 +199,7 @@ const VERIFY: &str = r#"
 try{
  await dioxus.recv();
  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),get=id=>document.getElementById('hnp-'+id),checks=[],defaults=[],itemHits=[],focusResults=[],bubbleKeys=new WeakSet();document.addEventListener('keydown',event=>bubbleKeys.add(event),{passive:true});
- const header=()=>get('stage')?.querySelector('header.ix-application-header'),headerRoot=()=>header()?.querySelector('[data-header-layout-native="true"]'),more=()=>header()?.querySelector('[data-header-more-button]');
+ const header=()=>get('stage')?.querySelector('header.ix-application-header'),headerRoot=()=>header()?.querySelector('.ix-header-layout'),more=()=>header()?.querySelector('[data-header-more-button]');
  const child=()=>get('default-scope')?.querySelector('[role="button"][data-ix-overlay-trigger]'),submenuTrigger=()=>[...get('default-scope')?.querySelectorAll('[data-ix-dropdown-item]')??[]].find(node=>node.textContent.trim()==='Nested probe submenu');
  const linkedRoot=()=>get('owner')?.querySelector('.ix-dropdown[aria-label="Detached probe surface"]')??get('owner')?.querySelector('.ix-dropdown[id^="ix-dropdown-surface-owner-"]');
  const childRoot=()=>child(),subRoot=()=>linkedRoot(),shown=node=>!!node&&node.getAttribute('data-ix-overlay-open')==='true';

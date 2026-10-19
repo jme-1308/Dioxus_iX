@@ -224,7 +224,7 @@ const STYLES: &str = "body{margin:0}.generic-focus-review{min-height:100vh;box-s
 const NATIVE_FOCUS_CHECK: &str = r#"
 await dioxus.recv();
 const byId=id=>document.getElementById(id),active=()=>document.activeElement;
-const wait=async(label,predicate)=>{for(let n=0;n<200;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id);};
+const wait=async(label,predicate)=>{for(let n=0;n<200;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' geometry='+JSON.stringify({viewport:{width:document.documentElement.clientWidth,height:document.documentElement.clientHeight,visual:window.visualViewport?{width:visualViewport.width,height:visualViewport.height}:null},header:document.querySelector('.ix-header-layout')?.dataset,more:document.querySelector('.ix-header-more-button')?.getBoundingClientRect().toJSON(),popup:document.querySelector('[data-header-popup-host][data-active="true"]')?.getBoundingClientRect().toJSON(),style:document.querySelector('[data-header-popup-host][data-active="true"]')?.getAttribute('style')}));};
 const key=(node,value,shiftKey=false)=>{const event=new KeyboardEvent('keydown',{key:value,code:value,shiftKey,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const trigger=()=>byId('r0211-popover-trigger').querySelector('button');
 const panel=()=>byId(trigger().getAttribute('aria-controls'));

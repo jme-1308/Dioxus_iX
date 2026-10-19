@@ -2,7 +2,8 @@
 //!
 //! Copyright (c) 2025-2026 Siemens AG. SPDX-License-Identifier: MIT.
 //! Dioxus owns registered anchors, events, mounted measurements and placement.
-//! Small native adapters cover only document notifications and popover methods.
+//! A root-owned native fact stream supplies viewport notifications; the panel
+//! binding only covers native popover methods.
 
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -487,58 +488,51 @@ fn use_tooltip_owner(id: String, native: bool) -> TooltipController {
         })),
         revision,
     });
-    let transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let drop_controller = controller.clone();
-    let drop_transport = transport.clone();
     use_drop(move || {
         let mut model = drop_controller.model.borrow_mut();
         model.alive = false;
         model.hide();
         model.anchors.clear();
         model.panel = None;
-        if let Some(stream) = drop_transport.borrow_mut().take() {
-            let _ = stream.send("finish");
-        }
     });
+    let _ = (controller.revision)();
+    let shown = {
+        let model = controller.model.borrow();
+        native && model.alive && model.panel.is_some() && model.lifecycle.visible.is_some()
+    };
+    let viewport = crate::document_viewport::use_document_viewport(shown);
+    let escape_baseline = use_hook(|| Rc::new(std::cell::Cell::new(None::<u64>)));
+    // Establish a fresh baseline at the opening render, before subscribing the
+    // shown effect. A document Escape from an earlier opening cannot dismiss a
+    // later tooltip, even if other viewport consumers kept the stream alive.
+    if shown {
+        if escape_baseline.get().is_none() {
+            escape_baseline.set(Some(viewport.escape_revision()));
+        }
+    } else {
+        escape_baseline.set(None);
+    }
     let native_controller = controller.clone();
-    use_effect(move || {
-        let _ = (native_controller.revision)();
-        let shown = {
-            let model = native_controller.model.borrow();
-            native && model.alive && model.panel.is_some() && model.lifecycle.visible.is_some()
-        };
+    use_effect(use_reactive((&shown,), move |(shown,)| {
         if !shown {
-            if let Some(stream) = transport.borrow_mut().take() {
-                let _ = stream.send("finish");
-            }
+            return;
         }
-        #[cfg(any(
-            all(feature = "web", target_arch = "wasm32"),
-            all(feature = "desktop", not(target_arch = "wasm32"))
-        ))]
-        if shown && transport.borrow().is_none() {
-            let controller = native_controller.clone();
-            let mut stream = dioxus::document::eval(VIEWPORT_NOTIFICATIONS);
-            *transport.borrow_mut() = Some(stream);
-            spawn(async move {
-                while let Ok(facts) = stream.recv::<ViewportFacts>().await {
-                    let current = {
-                        let model = controller.model.borrow();
-                        model.alive && model.panel.is_some() && model.lifecycle.visible.is_some()
-                    };
-                    if !current {
-                        break;
-                    }
-                    if facts.escape {
-                        controller.dismiss();
-                    } else {
-                        controller.model.borrow_mut().viewport = (facts.width, facts.height);
-                        controller.measure();
-                    }
-                }
-            });
+        let escape = viewport.escape_revision();
+        if escape_baseline
+            .get()
+            .is_some_and(|previous| previous != escape)
+        {
+            escape_baseline.set(Some(escape));
+            native_controller.dismiss();
+            return;
         }
-    });
+        let _ = viewport.layout_revision();
+        if let Some(facts) = viewport.facts() {
+            native_controller.model.borrow_mut().viewport = (facts.width, facts.height);
+            native_controller.measure();
+        }
+    }));
     controller
 }
 
@@ -653,32 +647,6 @@ pub fn use_tooltip_anchor(
         token,
     }
 }
-
-#[cfg(any(
-    all(feature = "web", target_arch = "wasm32"),
-    all(feature = "desktop", not(target_arch = "wasm32"))
-))]
-#[derive(Deserialize)]
-struct ViewportFacts {
-    width: f64,
-    height: f64,
-    #[serde(default)]
-    escape: bool,
-}
-// Pinned MountedData has no document viewport or global scroll/resize/key API.
-// This primary adapter sends only document facts, never element queries, geometry,
-// listeners on anchors, ARIA/style writes, observers, or focus operations.
-#[cfg(any(
-    all(feature = "web", target_arch = "wasm32"),
-    all(feature = "desktop", not(target_arch = "wasm32"))
-))]
-const VIEWPORT_NOTIFICATIONS: &str = r#"
-const send=()=>dioxus.send({width:document.documentElement.clientWidth,height:document.documentElement.clientHeight,escape:false});
-const escape=event=>{if(event.key==='Escape'&&!event.defaultPrevented)dioxus.send({width:0,height:0,escape:true});};
-window.addEventListener('resize',send);document.addEventListener('scroll',send,true);document.addEventListener('keydown',escape);
-const viewport=window.visualViewport;if(viewport){viewport.addEventListener('resize',send);viewport.addEventListener('scroll',send);}
-send();try{await dioxus.recv();}finally{window.removeEventListener('resize',send);document.removeEventListener('scroll',send,true);document.removeEventListener('keydown',escape);if(viewport){viewport.removeEventListener('resize',send);viewport.removeEventListener('scroll',send);}}
-"#;
 
 /// Tooltip panel for explicitly registered Dioxus anchors. Pass the controller
 /// returned by [`use_tooltip`] and wire [`use_tooltip_anchor`] on each anchor.
@@ -1004,7 +972,12 @@ mod tests {
             )>,
         >,
     >;
+    type ViewportCapture = Rc<RefCell<Option<crate::document_viewport::DocumentViewport>>>;
     fn registered_owner_fixture() -> Element {
+        let viewport = crate::document_viewport::use_document_viewport(false);
+        if let Some(capture) = try_consume_context::<ViewportCapture>() {
+            *capture.borrow_mut() = Some(viewport);
+        }
         let capture = use_context::<OwnerCapture>();
         let show = use_signal(|| true);
         let controller = use_tooltip("registered-tooltip");
@@ -1156,6 +1129,92 @@ mod tests {
         controller.dismiss();
         settle(&mut dom);
         assert!(controller.model.borrow().lifecycle.visible.is_none());
+    }
+
+    #[test]
+    fn shared_viewport_remeasures_shown_tooltip_and_escape_does_not_replay_on_reopening() {
+        let capture: OwnerCapture = Rc::new(RefCell::new(None));
+        let viewport_capture: ViewportCapture = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new(registered_owner_fixture)
+            .with_root_context(capture.clone())
+            .with_root_context(viewport_capture.clone());
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let (controller, first, _, _) = capture.borrow().clone().unwrap();
+        let viewport = viewport_capture.borrow().clone().unwrap();
+        {
+            let mut model = controller.model.borrow_mut();
+            model.anchors.get_mut(&first.token).unwrap().mount = Some(mounted(scene().anchor));
+            model.panel.as_mut().unwrap().mount = Some(mounted(Rect {
+                width: 120.0,
+                height: 50.0,
+                ..Rect::default()
+            }));
+        }
+        dom.in_scope(ScopeId::ROOT, || {
+            viewport.test_layout(400.0, 300.0);
+            viewport.test_escape();
+        });
+        settle(&mut dom);
+        assert_eq!(
+            controller.model.borrow().viewport,
+            (0.0, 0.0),
+            "a hidden owner does not consume layout facts"
+        );
+        dom.in_scope(ScopeId::ROOT, || controller.enter(first.token));
+        settle(&mut dom);
+        assert_eq!(
+            controller.model.borrow().current_anchor(),
+            Some(first.token)
+        );
+        assert_eq!(
+            controller.model.borrow().coordinates,
+            position(&scene(), TooltipPlacement::Top),
+            "the Escape before opening is only a baseline"
+        );
+
+        controller
+            .model
+            .borrow_mut()
+            .anchors
+            .get_mut(&first.token)
+            .unwrap()
+            .mount = Some(mounted(Rect {
+            x: 200.0,
+            ..scene().anchor
+        }));
+        dom.in_scope(ScopeId::ROOT, || viewport.test_layout(400.0, 300.0));
+        settle(&mut dom);
+        assert_eq!(
+            controller.model.borrow().coordinates.unwrap().x,
+            180.0,
+            "scroll invalidation remeasures even with unchanged viewport dimensions"
+        );
+        dom.in_scope(ScopeId::ROOT, || viewport.test_escape());
+        settle(&mut dom);
+        assert!(controller.model.borrow().lifecycle.visible.is_none());
+
+        dom.in_scope(ScopeId::ROOT, || {
+            viewport.test_layout(260.0, 200.0);
+            viewport.test_escape();
+        });
+        settle(&mut dom);
+        assert_eq!(controller.model.borrow().viewport, (400.0, 300.0));
+        dom.in_scope(ScopeId::ROOT, || controller.enter(first.token));
+        settle(&mut dom);
+        assert_eq!(
+            controller.model.borrow().current_anchor(),
+            Some(first.token),
+            "a later opening never replays earlier Escape revisions"
+        );
+        assert_eq!(controller.model.borrow().viewport, (260.0, 200.0));
+        assert_eq!(controller.model.borrow().coordinates.unwrap().x, 130.0);
+        dom.in_scope(ScopeId::ROOT, || viewport.test_escape());
+        settle(&mut dom);
+        assert!(
+            controller.model.borrow().lifecycle.visible.is_none(),
+            "a new Escape still dismisses the reopened tooltip"
+        );
     }
 
     #[test]

@@ -48,6 +48,7 @@ pub mod composition;
 pub mod data_grid;
 pub mod datetime;
 pub mod dialogs;
+mod document_viewport;
 mod dom_query;
 mod dropdown;
 mod dropdown_inventory;

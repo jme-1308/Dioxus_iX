@@ -1884,40 +1884,27 @@ try { panel.showPopover({source:input}); return {error:null}; }
 catch (error) { return {error:String(error)}; }
 "#;
 
-// Pinned Dioxus =0.8.0-alpha.2 `MountedData` provides element client rects via
-// `get_client_rect()`, but has no viewport box (`visualViewport` / `clientWidth` /
-// `innerHeight`) or computed CSS `direction` query on `MountedData` or `document`.
+// Pinned Dioxus =0.8.0-alpha.2 has mounted element geometry but no computed CSS
+// `direction` query. Viewport geometry comes from the shared root subscription;
+// this native read is limited to the inherited direction of the known anchor.
 #[cfg(any(feature = "web", feature = "desktop"))]
-const SELECT_VIEWPORT_QUERY: &str = r#"
+const SELECT_DIRECTION_QUERY: &str = r#"
 const anchorId = await dioxus.recv();
 const anchor = document.getElementById(anchorId);
-const viewport = window.visualViewport;
-return {
-  left: viewport?.offsetLeft ?? 0,
-  top: viewport?.offsetTop ?? 0,
-  width: viewport?.width ?? document.documentElement.clientWidth,
-  height: viewport?.height ?? window.innerHeight,
-  rtl: !!anchor && getComputedStyle(anchor).direction === 'rtl',
-};
+return !!anchor && getComputedStyle(anchor).direction === 'rtl';
 "#;
 
-// Pinned Dioxus HTML events attach to rendered elements; MountedData has no
-// document/visualViewport scroll or inherited-style-change subscription. These
-// native invalidations are needed for fixed positioning when an ancestor moves
-// without resizing. Dioxus owns the stream lifetime and all resulting layout.
+// Pinned Dioxus HTML events and MountedData provide no inherited-style-change
+// subscription. Observe only known anchor ancestry for direction changes; the
+// shared DocumentViewport stream owns global scroll/resize notifications.
 #[cfg(any(feature = "web", feature = "desktop"))]
-const SELECT_LAYOUT_INVALIDATION: &str = r#"
+const SELECT_DIRECTION_INVALIDATION: &str = r#"
 const id = await dioxus.recv(), anchor = document.getElementById(id);
-const events = new AbortController(), changed = () => dioxus.send(null);
-const opts = {signal:events.signal,passive:true};
-window.addEventListener('resize',changed,opts);
-document.addEventListener('scroll',changed,{...opts,capture:true});
-window.visualViewport?.addEventListener('resize',changed,opts);
-window.visualViewport?.addEventListener('scroll',changed,opts);
+const changed = () => dioxus.send(null);
 const inherited = new MutationObserver(changed);
 for(let node=anchor;node;node=node.parentElement)
   inherited.observe(node,{attributes:true,attributeFilter:['dir','style','class']});
-try { await dioxus.recv(); } finally { events.abort(); inherited.disconnect(); }
+try { await dioxus.recv(); } finally { inherited.disconnect(); }
 "#;
 
 #[component]
@@ -1934,6 +1921,7 @@ fn SelectOptionsSurface(
     children: Element,
 ) -> Element {
     let surface_id = field_id(None);
+    let viewport = crate::document_viewport::use_document_viewport(true);
     let mut native = use_signal(|| enable_top_layer);
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let mut metrics = use_signal(|| None::<SelectPopupMetrics>);
@@ -1949,11 +1937,15 @@ fn SelectOptionsSurface(
     let measure_anchor_id = anchor_id.clone();
     let measure_alive = alive.clone();
     let measure_generation = generation.clone();
+    let measure_viewport = viewport.clone();
     let measure = use_callback(move |()| {
         let Some(surface) = mounted.peek().clone() else {
             return;
         };
         let Some(anchor_node) = measure_anchor.borrow().clone() else {
+            return;
+        };
+        let Some(viewport) = measure_viewport.facts() else {
             return;
         };
         measure_generation.set(measure_generation.get().wrapping_add(1));
@@ -1972,33 +1964,20 @@ fn SelectOptionsSurface(
                 return;
             };
             #[cfg(any(feature = "web", feature = "desktop"))]
-            let viewport =
-                {
-                    #[derive(serde::Deserialize)]
-                    struct ViewportReply {
-                        left: f64,
-                        top: f64,
-                        width: f64,
-                        height: f64,
-                        rtl: bool,
-                    }
-                    let query = crate::dom_query::eval(SELECT_VIEWPORT_QUERY);
-                    if query.send(anchor_id).is_ok() {
-                        query.join::<ViewportReply>().await.ok().map(|reply| {
-                            (reply.left, reply.top, reply.width, reply.height, reply.rtl)
-                        })
-                    } else {
-                        None
-                    }
-                };
+            let rtl = {
+                let query = crate::dom_query::eval(SELECT_DIRECTION_QUERY);
+                if query.send(anchor_id).is_ok() {
+                    query.join::<bool>().await.ok()
+                } else {
+                    None
+                }
+            };
             #[cfg(not(any(feature = "web", feature = "desktop")))]
-            let viewport: Option<(f64, f64, f64, f64, bool)> = {
+            let rtl: Option<bool> = {
                 let _ = anchor_id;
                 None
             };
-            let Some((viewport_left, viewport_top, viewport_width, viewport_height, rtl)) =
-                viewport
-            else {
+            let Some(rtl) = rtl else {
                 return;
             };
             if !alive.get() || generation.get() != revision {
@@ -2012,10 +1991,10 @@ fn SelectOptionsSurface(
                 popup_width: popup_rect.size.width,
                 popup_height: popup_rect.size.height,
                 content_height: content.height,
-                viewport_left,
-                viewport_top,
-                viewport_width,
-                viewport_height,
+                viewport_left: viewport.visual_left,
+                viewport_top: viewport.visual_top,
+                viewport_width: viewport.visual_width,
+                viewport_height: viewport.visual_height,
                 rtl,
             };
             if !metrics
@@ -2043,7 +2022,7 @@ fn SelectOptionsSurface(
             }
         });
         use_effect(move || {
-            let mut task = dioxus::document::eval(SELECT_LAYOUT_INVALIDATION);
+            let mut task = dioxus::document::eval(SELECT_DIRECTION_INVALIDATION);
             if task.send(&anchor_id).is_err() {
                 return;
             }
@@ -2056,6 +2035,7 @@ fn SelectOptionsSurface(
         });
     }
     use_effect(move || {
+        let _ = viewport.layout_revision();
         let _ = external_revision();
         measure.call(());
     });
@@ -4633,6 +4613,41 @@ mod tests {
         assert_eq!(flipped.placement, "top-start");
         assert_eq!(flipped.direction, "ltr");
         assert!(flipped.style.contains("left:360px;top:320px"));
+    }
+    #[test]
+    fn select_popup_stays_within_offset_visual_viewports_after_resize() {
+        let metrics = SelectPopupMetrics {
+            anchor_x: 480.0,
+            anchor_y: 450.0,
+            anchor_width: 180.0,
+            anchor_height: 32.0,
+            popup_width: 250.0,
+            popup_height: 160.0,
+            content_height: 200.0,
+            viewport_left: 100.0,
+            viewport_top: 200.0,
+            viewport_width: 500.0,
+            viewport_height: 400.0,
+            rtl: true,
+        };
+        let initial = place_select_popup(Some(metrics), Some("250px"), None);
+        assert_eq!(initial.placement, "top-start");
+        assert_eq!(initial.direction, "rtl");
+        assert!(initial.style.contains("left:350px;top:290px"));
+        let resized = place_select_popup(
+            Some(SelectPopupMetrics {
+                viewport_left: 250.0,
+                viewport_top: 300.0,
+                viewport_width: 280.0,
+                viewport_height: 240.0,
+                ..metrics
+            }),
+            Some("250px"),
+            None,
+        );
+        assert_eq!(resized.placement, "top-start");
+        assert!(resized.style.contains("left:280px;top:300px"));
+        assert!(resized.style.contains("max-height:min(150px"));
     }
     fn inline_select_contract_fixture() -> Element {
         rsx! {

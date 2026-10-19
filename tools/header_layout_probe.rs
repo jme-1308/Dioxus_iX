@@ -198,7 +198,7 @@ try {
  await dioxus.recv();
  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),get=id=>document.getElementById('hlp-'+id),header=()=>get('stage')?.querySelector('header.ix-application-header');
  const groups=['default','secondary','overflow','avatar'],control=group=>get(group+'-control'),input=group=>get(group+'-input'),count=group=>get(group+'-count');
- const root=()=>header()?.querySelector('[data-header-layout-native="true"]'),more=()=>header()?.querySelector('button[data-header-more-button]');
+ const root=()=>header()?.querySelector('.ix-header-layout'),more=()=>header()?.querySelector('button[data-header-more-button]');
  const visible=node=>!!node&&node.getClientRects().length>0&&getComputedStyle(node).display!=='none'&&getComputedStyle(node).visibility!=='hidden';
  const opened=()=>root()?.dataset.open==='true'&&visible(input('overflow'));
  const popovers=()=>[...document.querySelectorAll(':popover-open')].filter(node=>header()?.contains(node));

@@ -7,14 +7,11 @@ use crate::overlay_runtime::{
     SurfaceObservation,
 };
 use dioxus::prelude::*;
-use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[path = "header_layout_dom.rs"]
-mod native;
 static NEXT_OWNER: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,16 +28,6 @@ struct PresentedControl {
     active: bool,
     group: Option<u8>,
     in_popup: bool,
-}
-
-#[derive(Deserialize)]
-struct Report {
-    owner: String,
-    generation: u64,
-    sequence: u64,
-    kind: String,
-    #[serde(default)]
-    viewport_width: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,7 +60,6 @@ struct Model {
     alive: bool,
     mounted: bool,
     generation: u64,
-    sequence: u64,
     small: bool,
     top_layer: bool,
     open: bool,
@@ -102,7 +88,6 @@ impl Model {
             alive: true,
             mounted: false,
             generation: 1,
-            sequence: 0,
             small,
             top_layer,
             open: false,
@@ -224,7 +209,6 @@ impl Model {
         }
         self.generation = self.generation.wrapping_add(1);
         self.invalidate_layout();
-        self.sequence = 0;
         self.controls.clear();
         self.focus_generation = 0;
         let capture = (!layer_changed && self.alive && self.mounted)
@@ -237,13 +221,6 @@ impl Model {
             self.focus("none".into());
         }
         closed
-    }
-    fn accepts(&self, report: &Report) -> bool {
-        self.alive
-            && self.mounted
-            && report.owner == self.owner
-            && report.generation == self.generation
-            && report.sequence > self.sequence
     }
     fn invalidate(&mut self) {
         self.alive = false;
@@ -777,24 +754,14 @@ impl Controller {
         self.dispatch_focus();
         self.notify();
     }
-    fn observation(&self, event: FormEvent) {
-        event.stop_propagation();
-        let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
-            return;
-        };
-        if report.kind != "layout" {
-            return;
-        }
+    fn viewport_changed(&self, width: f64) {
         {
             let mut model = self.model.borrow_mut();
-            if !model.accepts(&report) {
+            if !model.alive || !model.mounted || !width.is_finite() || width <= 0.0 {
                 return;
             }
-            model.sequence = report.sequence;
+            model.viewport_width = width;
             model.layout_epoch = model.layout_epoch.wrapping_add(1);
-            if report.viewport_width.is_finite() && report.viewport_width > 0.0 {
-                model.viewport_width = report.viewport_width;
-            }
         }
         self.dispatch_focus();
         self.notify();
@@ -911,7 +878,7 @@ pub(crate) fn HeaderLayout(
     let default_scope = small.then(|| node.clone());
     let overflow_scope = Some(node.clone());
 
-    let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
+    let viewport = crate::document_viewport::use_document_viewport(true);
     // Slot projection preserves presence and current logical relationships. A
     // top-layer change still closes through bounded configuration reconciliation,
     // rather than a vetoable user request. Both invalidate private focus tasks.
@@ -950,7 +917,6 @@ pub(crate) fn HeaderLayout(
         });
     }
     let cleanup_model = model.clone();
-    let cleanup_bridge = bridge.clone();
     let cleanup_node = node.clone();
     let cleanup_slot = node_slot.clone();
     use_drop(move || {
@@ -958,9 +924,6 @@ pub(crate) fn HeaderLayout(
         cleanup_node.close_children(Reason::Drop);
         cleanup_node.unregister();
         cleanup_slot.borrow_mut().take();
-        if let Some(bridge) = cleanup_bridge.borrow_mut().take() {
-            let _ = bridge.send("finish");
-        }
     });
     let controller = Controller {
         model: model.clone(),
@@ -988,6 +951,14 @@ pub(crate) fn HeaderLayout(
             SurfaceObservation::Pointer => observer_controller.pointer_input(),
             SurfaceObservation::RequestedFocus { .. } => {}
         }));
+    let viewport_controller = controller.clone();
+    let viewport_facts = viewport.clone();
+    use_effect(move || {
+        let _ = viewport_facts.layout_revision();
+        if let Some(facts) = viewport_facts.facts() {
+            viewport_controller.viewport_changed(facts.width);
+        }
+    });
     let focus_controller = controller.clone();
     let focus_controls = controls.clone();
     use_effect(move || {
@@ -997,6 +968,7 @@ pub(crate) fn HeaderLayout(
         focus_controller.measure_layout();
     });
     let mount_model = model.clone();
+    let mount_viewport = controller.clone();
     let _ = revision();
     let state = model.borrow();
     let owner = state.owner.clone();
@@ -1007,7 +979,6 @@ pub(crate) fn HeaderLayout(
     let small_style = state.popup_style(true);
     let large_style = state.popup_style(false);
     let active = if small { "small" } else { "large" };
-    let transport_id = format!("{owner}-transport");
     let more_id = format!("{owner}-more");
     let small_id = format!("{owner}-small");
     let large_id = format!("{owner}-large");
@@ -1067,14 +1038,12 @@ pub(crate) fn HeaderLayout(
                 let mut model = mount_model.borrow_mut();
                 if !model.alive || model.mounted { return; }
                 model.mounted = true;
-                let owner = serde_json::to_string(&model.owner).expect("Header owner serialization");
                 drop(model);
-                *bridge.borrow_mut() = Some(dioxus::document::eval(&native::BRIDGE.replace("__OWNER__",&owner)));
+                if let Some(facts) = viewport.facts() {
+                    mount_viewport.viewport_changed(facts.width);
+                }
             },
             overlay_runtime::OverlayTransport {runtime}
-            input {id:transport_id,r#type:"hidden","data-header-layout-observer":owner.clone(),
-                oninput:move |event| controller.observation(event)
-            }
             dialog {id:small_id.clone(),class:"ix-header-popup-host ix-header-popup-small",
                 "data-ix-overlay-host":small.then_some(owner.clone()),
                 "data-header-popup-host":"small","data-active":small.to_string(),"data-open":(small&&open).to_string(),
@@ -1673,15 +1642,6 @@ mod tests {
         );
     }
 
-    fn report(model: &Model, kind: &str) -> Report {
-        Report {
-            owner: model.owner.clone(),
-            generation: model.generation,
-            sequence: model.sequence + 1,
-            kind: kind.into(),
-            viewport_width: 1000.0,
-        }
-    }
     fn key_input(_: &Model) -> KeyInput {
         KeyInput {
             focus_count: 6,
@@ -1881,19 +1841,17 @@ mod tests {
         model.mounted = true;
         model.open = true;
         model.presence = [true; 4];
-        model.sequence = 42;
         model.focus("last".into());
-        let previous = report(&model, "layout");
+        let previous = (model.layout_epoch, model.generation, model.small);
         assert!(
             !model.sync_mode(true, true),
             "slot movement must not request close"
         );
         assert!(model.open && model.small && model.more_visible());
         assert!(
-            !model.accepts(&previous),
+            !model.accepts_layout(previous.0, previous.1, previous.2),
             "old physical host generation is stale"
         );
-        assert_eq!(model.sequence, 0);
         assert_eq!(model.focus, "none");
         assert!(!model.sync_mode(true, true), "same props are inert");
         assert!(model.open);
@@ -1982,28 +1940,24 @@ mod tests {
     }
 
     #[test]
-    fn rust_presence_and_owner_reconciliation_reject_stale_native_work() {
+    fn rust_presence_and_layout_reconciliation_reject_stale_mounted_work() {
         let mut model = Model::new(false, false);
         model.mounted = true;
         model.presence = [true, true, false, true];
         assert!(!model.more_visible());
         model.small = true;
         assert!(model.more_visible());
-        let mut fact = report(&model, "layout");
-        assert!(model.accepts(&fact));
-        fact.owner.push('x');
-        assert!(!model.accepts(&fact));
-        fact = report(&model, "layout");
-        model.sequence = fact.sequence;
-        assert!(!model.accepts(&fact));
-        fact = report(&model, "layout");
         model.open = true;
+        let captured = (model.layout_epoch, model.generation, model.small);
+        assert!(model.accepts_layout(captured.0, captured.1, captured.2));
         assert!(model.sync_mode(false, true));
         assert!(!model.open);
-        assert!(!model.accepts(&fact));
-        let fact = report(&model, "layout");
+        assert!(!model.accepts_layout(captured.0, captured.1, captured.2));
+        model.open = true;
+        let current = (model.layout_epoch, model.generation, model.small);
+        assert!(model.accepts_layout(current.0, current.1, current.2));
         model.invalidate();
-        assert!(!model.accepts(&fact));
+        assert!(!model.accepts_layout(current.0, current.1, current.2));
     }
 
     struct TypedKey(Key, Modifiers);

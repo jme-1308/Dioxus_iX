@@ -2337,6 +2337,7 @@ struct AppSwitchFixture {
     overflow_deliveries: Vec<(usize, bool)>,
     overflow_reentrant: Option<Rc<dyn Fn(bool)>>,
     overlay_runtime: Option<crate::overlay_runtime::RuntimeHandle>,
+    viewport: Option<crate::document_viewport::DocumentViewport>,
     overflow_peers: Option<HeaderPeerCapture>,
     show_menu: bool,
     show_legacy_apps: bool,
@@ -2390,12 +2391,14 @@ fn app_switch_fixture(settings: Rc<RefCell<AppSwitchFixture>>) -> Element {
     let menu_expanded = use_signal(|| false);
     let show_authority = use_signal(|| settings.borrow().show_menu);
     let overlay_runtime = crate::overlay_runtime::use_overlay_runtime();
+    let viewport = crate::document_viewport::use_document_viewport(false);
     {
         let mut state = settings.borrow_mut();
         state.authority = Some(authority);
         state.menu_expanded = Some(menu_expanded);
         state.show_authority = Some(show_authority);
         state.overlay_runtime = Some(overlay_runtime);
+        state.viewport = Some(viewport);
         state.update = Some(dioxus::core::schedule_update());
     }
     let requested = settings.clone();
@@ -2470,7 +2473,6 @@ struct AppSwitchHarness {
     menu_trigger: Option<dioxus::core::ElementId>,
     menu_control: Option<dioxus::core::ElementId>,
     sidebar_child_input: Option<dioxus::core::ElementId>,
-    header_input: Option<dioxus::core::ElementId>,
     overlay_input: Option<dioxus::core::ElementId>,
     slot_buttons: BTreeMap<String, dioxus::core::ElementId>,
     mounts: Vec<dioxus::core::ElementId>,
@@ -2525,6 +2527,7 @@ impl AppSwitchHarness {
             overflow_deliveries: vec![],
             overflow_reentrant: None,
             overlay_runtime: None,
+            viewport: None,
             overflow_peers: None,
             show_menu: false,
             show_legacy_apps: false,
@@ -2557,7 +2560,6 @@ impl AppSwitchHarness {
             menu_trigger: None,
             menu_control: None,
             sidebar_child_input: None,
-            header_input: None,
             overlay_input: None,
             slot_buttons: BTreeMap::new(),
             mounts: vec![],
@@ -2610,10 +2612,6 @@ impl AppSwitchHarness {
                                     .is_some_and(|id| id == "sidebar-child-input")
                             }) {
                                 self.sidebar_child_input = Some(current);
-                            } else if self.attrs.get(&current.raw()).is_some_and(|attrs| {
-                                attrs.contains_key("data-header-layout-observer")
-                            }) {
-                                self.header_input = Some(current);
                             } else if self.attrs.get(&current.raw()).is_some_and(|attrs| {
                                 attrs.contains_key("data-ix-overlay-transport")
                             }) {
@@ -2786,12 +2784,17 @@ impl AppSwitchHarness {
         )
     }
     fn header_root_attrs(&self) -> &BTreeMap<String, String> {
-        let input = self.header_input.unwrap();
-        let owner = &self.attrs[&input.raw()]["data-header-layout-observer"];
+        let html = self.html();
         self.attrs
             .values()
-            .find(|attrs| attrs.get("id") == Some(owner) && attrs.contains_key("data-generation"))
-            .unwrap()
+            .find(|attrs| {
+                attrs.contains_key("data-generation")
+                    && attrs.get("id").is_some_and(|id| {
+                        id.starts_with("ix-header-layout-")
+                            && html.contains(&format!(" id=\"{id}\""))
+                    })
+            })
+            .expect("rendered current Header root")
     }
     fn header_rendered_root_attribute(&self, name: &str) -> String {
         // Static template attributes do not produce SetAttribute edits.
@@ -2812,31 +2815,9 @@ impl AppSwitchHarness {
             .0
             .to_string()
     }
-    fn header_message(
-        &self,
-        sequence: u64,
-        kind: &str,
-        extra: serde_json::Value,
-    ) -> serde_json::Value {
-        let input = self.header_input.unwrap();
-        let owner = &self.attrs[&input.raw()]["data-header-layout-observer"];
-        let generation = self.header_root_attrs()["data-generation"]
-            .parse::<u64>()
-            .unwrap();
-        let mut report = serde_json::json!({"owner":owner,"generation":generation,"sequence":sequence,"kind":kind,"viewport_width":1200.0});
-        report
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        report
-    }
-    fn header_raw(&self, report: serde_json::Value) -> (bool, bool) {
-        menu_dispatch(
-            &self.dom,
-            "input",
-            self.header_input.unwrap(),
-            report.to_string(),
-        )
+    fn header_layout(&self, width: f64) {
+        let viewport = self.settings.borrow().viewport.clone().unwrap();
+        self.dom.in_runtime(|| viewport.test_layout(width, 800.0));
     }
     fn header_peer_nodes(&self) -> Vec<serde_json::Value> {
         (0..4).map(|index| {
@@ -3080,10 +3061,7 @@ fn header_layout_standalone_emits_new_state_and_keeps_leading_children() {
 fn header_layout_dioxus_overflow_keys_preserve_veto_defaults_and_once_only_actions() {
     let _event_converter_guard = crate::test_event_converter_guard();
     let mut harness = AppSwitchHarness::new(None, false);
-    assert_eq!(
-        harness.header_raw(harness.header_message(1, "layout", serde_json::json!({}))),
-        (false, false)
-    );
+    harness.header_layout(1200.0);
     harness.settle();
     harness.settings.borrow_mut().overflow_veto = true;
     assert_eq!(
@@ -3122,11 +3100,9 @@ fn header_layout_dioxus_overflow_keys_preserve_veto_defaults_and_once_only_actio
         harness.settings.borrow().overflow_changes,
         vec![true, false]
     );
-    let stale = harness.header_message(3, "key", serde_json::json!({"more":true,"key":"Enter"}));
-    assert_eq!(
-        harness.header_raw(stale),
-        (false, false),
-        "retired native key reports do not dispatch keyboard actions"
+    assert!(
+        !harness.html().contains("data-header-layout-observer"),
+        "legacy native key transport is absent"
     );
     harness.settle();
     assert_eq!(
@@ -3192,13 +3168,11 @@ fn header_layout_dioxus_overflow_keys_preserve_veto_defaults_and_once_only_actio
         changes_before_keys + 1
     );
     let requests = harness.settings.borrow().overflow_requests.len();
-    let stale = harness.header_message(4, "key", serde_json::json!({"inside":true,"key":"Escape"}));
     harness.settings.borrow_mut().slot_top_layer = true;
     harness.update();
-    assert_eq!(
-        harness.header_raw(stale),
-        (false, false),
-        "retired generation key report cannot mutate new presentation"
+    assert!(
+        !harness.html().contains("data-header-layout-observer"),
+        "new presentation has no legacy native key transport"
     );
     harness.settle();
     assert_eq!(harness.settings.borrow().overflow_requests.len(), requests);
@@ -3209,7 +3183,7 @@ fn header_layout_dioxus_overflow_keys_preserve_veto_defaults_and_once_only_actio
 fn header_completion_keeps_each_payload_and_resolves_current_committed_listener() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+    h.header_layout(1200.0);
     for _ in 0..3 {
         h.header_more_click(false);
     }
@@ -3241,7 +3215,7 @@ fn header_completion_keeps_each_payload_and_resolves_current_committed_listener(
 fn header_completion_allows_reentrant_observer_state_changes() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+    h.header_layout(1200.0);
     let owner_runtime = h.dom.in_scope(ScopeId::ROOT, || {
         dioxus::core::Runtime::try_current().unwrap()
     });
@@ -3277,7 +3251,7 @@ fn header_completion_allows_reentrant_observer_state_changes() {
 fn header_completion_survives_mode_changes_and_reports_configuration_close() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+    h.header_layout(1200.0);
     h.header_more_click(false);
     let registration = h.header_rendered_root_attribute("data-ix-overlay-generation");
     let private = h.header_root_attrs()["data-generation"].clone();
@@ -3315,7 +3289,7 @@ fn header_completion_survives_mode_changes_and_reports_configuration_close() {
 fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+    h.header_layout(1200.0);
     h.header_more_click(false);
     let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
     let old_root = h.header_root_attrs()["id"].clone();
@@ -3333,16 +3307,9 @@ fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
     h.settings.borrow().update.clone().unwrap()();
     h.render_now();
     let rendered = h.html();
-    let rendered_owner = rendered
-        .split_once("data-header-layout-observer=\"")
-        .map(|(_, value)| value.split('"').next().unwrap());
-    assert_ne!(
-        h.header_root_attrs()["id"],
-        old_root,
-        "rendered observer owner: {rendered_owner:?}"
-    );
-    assert_eq!(rendered_owner, Some(h.header_root_attrs()["id"].as_str()));
-    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+    assert_ne!(h.header_root_attrs()["id"], old_root);
+    assert!(!rendered.contains("data-header-layout-observer"));
+    h.header_layout(1200.0);
     h.header_more_click(false);
     assert!(h.settings.borrow().overflow_changes.is_empty());
     assert_eq!(h.completion_effects(), 1);
@@ -3358,7 +3325,7 @@ fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoe
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+        h.header_layout(1200.0);
         h.header_peer_observe(1, false);
         if previous {
             h.header_more_click(false);
@@ -3413,7 +3380,7 @@ fn header_closed_more_activation_keys_run_post_phase_with_or_without_alt_and_vet
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+        h.header_layout(1200.0);
         h.header_peer_observe(1, false);
         let peers = h.seed_header_peers();
         h.settings.borrow_mut().overflow_veto = veto;
@@ -3464,7 +3431,7 @@ fn header_more_dismissal_skips_open_navigation_and_consumer_prevented_input() {
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+        h.header_layout(1200.0);
         h.header_peer_observe(1, false);
         let previous = case == "open-enter";
         if previous {
@@ -3512,7 +3479,7 @@ fn actual_nested_dropdown_clicks_do_not_toggle_the_header_surface() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::configured(None, false, |state| state.slot_nested = true);
     h.settle();
-    h.header_raw(h.header_message(1, "layout", serde_json::json!({})));
+    h.header_layout(1200.0);
     let (id, _) = h
         .attrs
         .iter()
@@ -3550,11 +3517,7 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
         state.overflow_present = false;
     });
     harness.settle();
-    let layout = serde_json::json!({});
-    assert_eq!(
-        harness.header_raw(harness.header_message(1, "layout", layout.clone())),
-        (false, false)
-    );
+    harness.header_layout(1200.0);
     harness.settle();
     assert!(!harness.slot_buttons.contains_key("overflow"));
     assert!(
@@ -3594,10 +3557,7 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
         registration_generation.to_string(),
         "slot projection keeps the registered controller lifetime"
     );
-    assert_eq!(
-        harness.header_raw(harness.header_message(1, "layout", layout)),
-        (false, false)
-    );
+    harness.header_layout(1200.0);
     harness.settle();
     assert_eq!(harness.header_root_attrs()["data-open"], "true");
     assert_eq!(harness.settings.borrow().overflow_requests, [(false, true)]);
@@ -3682,10 +3642,7 @@ fn header_layout_arbitrary_slot_components_mount_once_through_mode_changes() {
             settings.slot_top_layer = top_layer;
         }
         harness.update();
-        assert_eq!(
-            harness.header_raw(harness.header_message(1, "layout", serde_json::json!({}))),
-            (false, false)
-        );
+        harness.header_layout(1200.0);
         harness.settle();
         assert_eq!(harness.header_more_click(false), (false, false));
         harness.settle();
@@ -4269,12 +4226,8 @@ fn header_slot_presence_uses_rust_options_and_explicit_empty_wrapper_declaration
     assert!(header_group_populated(&h, "secondary"));
     assert!(header_group_populated(&h, "default"));
     assert!(!header_group_populated(&h, "overflow"));
-    // Historical native presence data cannot override the authored Rust slots.
-    h.header_raw(h.header_message(
-        1,
-        "layout",
-        serde_json::json!({"presence":[false,false,true,false]}),
-    ));
+    // Shared viewport updates cannot override the authored Rust slots.
+    h.header_layout(1200.0);
     h.settle();
     assert!(header_group_populated(&h, "default"));
     assert!(!header_group_populated(&h, "overflow"));
