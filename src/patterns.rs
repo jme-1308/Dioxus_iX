@@ -757,18 +757,6 @@ fn place_filter_popup(metrics: Option<FilterPopupMetrics>, native: bool) -> Filt
     }
 }
 
-// Pinned MountedData has no showPopover/hidePopover method; DesktopElement's
-// query handle is private. This primary adapter only promotes the exact unique
-// Dioxus-mounted panel, inert during promotion to preserve the input's focus.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const FILTER_TOP_LAYER_OPEN: &str = r#"
-const id=await dioxus.recv(),panel=document.getElementById(id);
-if(!panel?.isConnected)return {error:'Surface is not mounted'};
-if(typeof panel.showPopover!=='function')return {error:'Popover API is unavailable'};
-try {const inert=panel.inert;panel.inert=true;try{panel.showPopover();}finally{panel.inert=inert;}return {error:null};}
-catch(error){return {error:String(error)};}
-"#;
-
 // Pinned Dioxus has no document click subscription. Only native outside-click
 // containment is reported; Rust owns closing and the stream's component lifetime.
 #[cfg(any(feature = "web", feature = "desktop"))]
@@ -909,16 +897,8 @@ fn FilterOptionsSurface(
                 if !enable_top_layer{return;}
                 let alive=mounted_alive.clone();let id=mounted_id.clone();
                 spawn(async move {
-                    #[cfg(any(feature="web",feature="desktop"))]
-                    let failure={
-                        #[derive(serde::Deserialize)]struct Reply{error:Option<String>}
-                        let bridge=crate::dom_query::eval(FILTER_TOP_LAYER_OPEN);
-                        if let Err(error)=bridge.send(id){Some(crate::NativeSurfaceError::Rejected(error.to_string()))}
-                        else{match bridge.join::<Reply>().await{Ok(reply)=>reply.error.map(crate::NativeSurfaceError::Rejected),Err(error)=>Some(crate::NativeSurfaceError::Rejected(error.to_string()))}}
-                    };
-                    #[cfg(not(any(feature="web",feature="desktop")))]
-                    let failure={let _=id;Some(crate::NativeSurfaceError::UnsupportedRenderer)};
-                    if alive.get(){if let Some(error)=failure{native.set(false);onnativeerror.call(error);}else{promoted.set(true);}measure.call(());}
+                    let result=crate::native_popover::present(&id,true,None,None).await;
+                    if alive.get(){if let Err(error)=result{native.set(false);onnativeerror.call(error);}else{promoted.set(true);}measure.call(());}
                 });
             },
             onresize:move |_|measure.call(()),

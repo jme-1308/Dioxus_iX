@@ -14,6 +14,55 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_SURFACE: AtomicU64 = AtomicU64::new(1);
 
+/// Perform only the native top-layer operation missing from MountedData. The
+/// caller owns visibility and lifetime; a rendered marker rejects stale intents.
+/// An explicit source is the native invoker. Other surfaces promote inertly so
+/// the browser cannot override focus owned by their Dioxus mounted handles.
+pub(crate) async fn present(
+    id: &str,
+    shown: bool,
+    guard: Option<(&str, &str)>,
+    source: Option<&str>,
+) -> Result<(), crate::NativeSurfaceError> {
+    #[cfg(any(feature = "web", feature = "desktop"))]
+    {
+        let task = crate::dom_query::eval(PRESENT);
+        task.send((id, shown, guard, source))
+            .map_err(|error| crate::NativeSurfaceError::Rejected(error.to_string()))?;
+        match task.join::<Option<String>>().await {
+            Ok(None) => Ok(()),
+            Ok(Some(error)) => Err(crate::NativeSurfaceError::Rejected(error)),
+            Err(error) => Err(crate::NativeSurfaceError::Rejected(error.to_string())),
+        }
+    }
+    #[cfg(not(any(feature = "web", feature = "desktop")))]
+    {
+        let _ = (id, shown, guard, source);
+        Err(crate::NativeSurfaceError::UnsupportedRenderer)
+    }
+}
+
+#[cfg(any(feature = "web", feature = "desktop"))]
+const PRESENT: &str = r#"
+const [id,shown,guard,source]=await dioxus.recv(),panel=document.getElementById(id);
+if(guard&&(!panel?.isConnected||panel.getAttribute(guard[0])!==guard[1]))return null;
+if(!panel?.isConnected)return 'Surface is not mounted';
+const invoker=source?document.getElementById(source):null;
+if(source&&!invoker)return 'Invoker is not mounted';
+try {
+    const open=panel.matches(':popover-open');
+    if(shown&&!open){
+        if(typeof panel.showPopover!=='function')return 'Popover API is unavailable';
+        if(invoker)panel.showPopover({source:invoker});
+        else{
+            const inert=panel.inert;panel.inert=true;
+            try{panel.showPopover();}finally{panel.inert=inert;}
+        }
+    }else if(!shown&&open)panel.hidePopover();
+    return null;
+}catch(error){return String(error);}
+"#;
+
 pub(crate) struct PopoverBinding {
     /// Render this marker on the exact element with the supplied ID. A late
     /// operation cannot affect a newer component or a different visibility intent.
@@ -36,20 +85,10 @@ pub(crate) fn use_native_popover(id: String, shown: bool) -> PopoverBinding {
                 all(feature = "desktop", not(target_arch = "wasm32"))
             ))]
             {
-                let id = serde_json::to_string(&id).expect("surface ID serialization");
-                let marker = serde_json::to_string(&marker).expect("surface marker serialization");
-                let script = format!(
-                    r#"const panel=document.getElementById({id});
-                    if(!panel?.isConnected||panel.getAttribute('data-ix-native-popover')!=={marker})return;
-                    try{{
-                        const open=panel.matches(':popover-open');
-                        if({shown}&&!open&&panel.hasAttribute('popover')){{
-                            const inert=panel.inert;panel.inert=true;
-                            try{{panel.showPopover();}}finally{{panel.inert=inert;}}
-                        }}else if(!{shown}&&open)panel.hidePopover();
-                    }}catch{{}}"#
-                );
-                let _ = dioxus::document::eval(&script);
+                spawn(async move {
+                    let _ =
+                        present(&id, shown, Some(("data-ix-native-popover", &marker)), None).await;
+                });
             }
             #[cfg(not(any(
                 all(feature = "web", target_arch = "wasm32"),

@@ -805,30 +805,23 @@ fn render_tooltip(props: TooltipForProps, initial: Lifecycle) -> Element {
             {
                 let controller = presentation.clone();
                 spawn(async move {
-                    // MountedData lacks showPopover/hidePopover; guard the exact Dioxus
-                    // panel incarnation and intent. No observation or positioning here.
-                    let id = serde_json::to_string(&id).unwrap();
-                    let marker = serde_json::to_string(&marker).unwrap();
-                    let script = format!(
-                        r#"const panel=document.getElementById({id});if(!panel?.isConnected||panel.dataset.ixTooltipNative!=={marker})return null;try{{const open=panel.matches(':popover-open');if({visible}&&!open){{if(typeof panel.showPopover!=='function')throw new Error('Native popovers are unavailable');const inert=panel.inert;panel.inert=true;try{{panel.showPopover();}}finally{{panel.inert=inert;}}}}else if(!{visible}&&open)panel.hidePopover();return null;}}catch(error){{return String(error);}}"#
-                    );
-                    // Desktop alpha.2 may collect a finished eval before Rust
-                    // polls it. Reuse the acknowledged one-shot channel.
-                    let error = match crate::dom_query::eval(&script)
-                        .join::<Option<String>>()
-                        .await
+                    // The shared binding covers MountedData's missing native
+                    // popover methods and guards this exact panel and intent.
+                    if let Err(error) = crate::native_popover::present(
+                        &id,
+                        visible,
+                        Some(("data-ix-tooltip-native", &marker)),
+                        None,
+                    )
+                    .await
                     {
-                        Ok(error) => error,
-                        Err(error) => Some(format!("Tooltip native presentation failed: {error}")),
-                    };
-                    if let Some(error) = error {
                         let model = controller.model.borrow();
                         if model.panel.as_ref().map(|p| p.token) == Some(token)
                             && model.lifecycle.generation == intent
                         {
                             drop(model);
                             controller.dismiss();
-                            onnativeerror.call(error);
+                            onnativeerror.call(error.to_string());
                         }
                     } else {
                         controller.measure();

@@ -1874,21 +1874,6 @@ fn place_select_popup(
     }
 }
 
-// Pinned Dioxus =0.8.0-alpha.2 `MountedData` / `RenderedElementBacking` exposes
-// `get_client_rect`, `get_scroll_offset`, `get_scroll_size`, `scroll_to`, `scroll`
-// and `set_focus`, but has no Popover API method (`showPopover({ source })`) to
-// promote a `[popover="auto"]` surface into the browser top layer while keeping
-// the combobox input as the invoker.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const SELECT_TOP_LAYER_OPEN: &str = r#"
-const [id, inputId] = await dioxus.recv();
-const panel = document.getElementById(id), input = document.getElementById(inputId);
-if (!panel || !input) return {error:'Select surface is not mounted'};
-if (typeof panel.showPopover !== 'function') return {error:'Popover API is unavailable'};
-try { panel.showPopover({source:input}); return {error:null}; }
-catch (error) { return {error:String(error)}; }
-"#;
-
 // Pinned Dioxus =0.8.0-alpha.2 has mounted element geometry but no computed CSS
 // `direction` query. Viewport geometry comes from the shared root subscription;
 // this native read is limited to the inherited direction of the known anchor.
@@ -2068,29 +2053,10 @@ fn SelectOptionsSurface(
                 let id = mounted_id.clone();
                 let input = input_id.clone();
                 spawn(async move {
-                    #[cfg(any(feature = "web", feature = "desktop"))]
-                    let failure = {
-                        #[derive(serde::Deserialize)]
-                        struct Reply {
-                            error: Option<String>,
-                        }
-                        let bridge = crate::dom_query::eval(SELECT_TOP_LAYER_OPEN);
-                        if let Err(error) = bridge.send((id, input)) {
-                            Some(crate::NativeSurfaceError::Rejected(error.to_string()))
-                        } else {
-                            match bridge.join::<Reply>().await {
-                                Ok(reply) => reply.error.map(crate::NativeSurfaceError::Rejected),
-                                Err(error) => Some(crate::NativeSurfaceError::Rejected(error.to_string())),
-                            }
-                        }
-                    };
-                    #[cfg(not(any(feature = "web", feature = "desktop")))]
-                    let failure = {
-                        let _ = (id, input);
-                        Some(crate::NativeSurfaceError::UnsupportedRenderer)
-                    };
+                    let presentation =
+                        crate::native_popover::present(&id, true, None, Some(&input)).await;
                     if alive.get() {
-                        if let Some(error) = failure {
+                        if let Err(error) = presentation {
                             native.set(false);
                             onnativeerror.call(error);
                         }
