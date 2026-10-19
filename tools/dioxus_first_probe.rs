@@ -5,6 +5,8 @@ use dioxus_ix::*;
 mod application_focus_review;
 #[path = "dioxus_first_probe/application_shell_review.rs"]
 mod application_shell_review;
+#[path = "dioxus_first_probe/application_viewport_review.rs"]
+mod application_viewport_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
@@ -116,6 +118,9 @@ fn Preview() -> Element {
                 .unwrap_or_default()
         }
     });
+    if scope == "?viewport" {
+        return rsx! { application_viewport_review::ApplicationViewportReview {} };
+    }
     if scope == "?visibility" {
         return rsx! { visibility_review::VisibilityPreview {} };
     }

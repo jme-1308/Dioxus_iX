@@ -11,67 +11,33 @@
 use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
-#[cfg(any(feature = "web", feature = "desktop", test))]
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ApplicationBreakpoint;
+use crate::document_viewport::{DocumentMediaFacts, DocumentViewportFacts, use_document_viewport};
 
 const DEFAULT_SUPPORTED: [ApplicationBreakpoint; 3] = [
     ApplicationBreakpoint::Small,
     ApplicationBreakpoint::Medium,
     ApplicationBreakpoint::Large,
 ];
-#[cfg(any(feature = "web", feature = "desktop", test))]
-static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    any(feature = "web", feature = "desktop", test),
-    derive(serde::Deserialize)
-)]
-struct MediaFacts {
-    sm: bool,
-    md: bool,
-    lg: bool,
-    available: bool,
-}
-impl MediaFacts {
-    fn matches(self, breakpoint: ApplicationBreakpoint) -> bool {
-        match breakpoint {
-            ApplicationBreakpoint::Small => self.sm,
-            ApplicationBreakpoint::Medium => self.md,
-            ApplicationBreakpoint::Large => self.lg,
-        }
-    }
-}
-
-#[cfg(any(feature = "web", feature = "desktop", test))]
-#[derive(serde::Deserialize)]
-struct Observation {
-    owner: u64,
-    generation: u64,
-    sequence: u64,
-    #[serde(default)]
-    width: f64,
-    #[serde(default)]
-    height: f64,
-    #[serde(flatten)]
-    facts: MediaFacts,
-}
 
 fn resolve(
     force: Option<ApplicationBreakpoint>,
     supported: Option<&[ApplicationBreakpoint]>,
-    facts: Option<MediaFacts>,
+    facts: Option<DocumentMediaFacts>,
 ) -> ApplicationBreakpoint {
     if let Some(force) = force {
         return force;
     }
-    let Some(facts) = facts.filter(|facts| facts.available) else {
+    let Some(facts) = facts else {
         return ApplicationBreakpoint::Large;
     };
     let supported = supported.unwrap_or(&DEFAULT_SUPPORTED);
-    if let Some(found) = supported.iter().rev().find(|&&item| facts.matches(item)) {
+    if let Some(found) = supported.iter().rev().find(|&&item| match item {
+        ApplicationBreakpoint::Small => facts.sm,
+        ApplicationBreakpoint::Medium => facts.md,
+        ApplicationBreakpoint::Large => facts.lg,
+    }) {
         return *found;
     }
     if supported.contains(&ApplicationBreakpoint::Large) {
@@ -83,20 +49,12 @@ fn resolve(
 }
 
 struct ViewportModel {
-    #[cfg(any(feature = "web", feature = "desktop", test))]
-    owner: u64,
-    generation: u64,
-    #[cfg(any(feature = "web", feature = "desktop", test))]
-    sequence: u64,
     alive: bool,
+    observed: bool,
     force: Option<ApplicationBreakpoint>,
     supported: Option<Vec<ApplicationBreakpoint>>,
-    facts: Option<MediaFacts>,
+    facts: Option<DocumentMediaFacts>,
     viewport_size: Option<(f64, f64)>,
-    #[cfg(any(feature = "web", feature = "desktop"))]
-    eval: Option<dioxus::document::Eval>,
-    #[cfg(any(feature = "web", feature = "desktop"))]
-    task: Option<dioxus::core::Task>,
 }
 impl ViewportModel {
     fn new(
@@ -104,20 +62,12 @@ impl ViewportModel {
         supported: Option<Vec<ApplicationBreakpoint>>,
     ) -> Self {
         Self {
-            #[cfg(any(feature = "web", feature = "desktop", test))]
-            owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
-            generation: 1,
-            #[cfg(any(feature = "web", feature = "desktop", test))]
-            sequence: 0,
             alive: true,
+            observed: false,
             force,
             supported,
             facts: None,
             viewport_size: None,
-            #[cfg(any(feature = "web", feature = "desktop"))]
-            eval: None,
-            #[cfg(any(feature = "web", feature = "desktop"))]
-            task: None,
         }
     }
 
@@ -140,24 +90,21 @@ impl ViewportModel {
         true
     }
 
-    #[cfg(any(feature = "web", feature = "desktop", test))]
-    fn observe(&mut self, observation: Observation) -> bool {
-        if !self.alive
-            || observation.owner != self.owner
-            || observation.generation != self.generation
-            || observation.sequence <= self.sequence
-        {
+    fn observe(&mut self, facts: DocumentViewportFacts) -> bool {
+        if !self.alive {
             return false;
         }
-        self.sequence = observation.sequence;
-        let viewport_size = (observation.facts.available
-            && observation.width.is_finite()
-            && observation.width > 0.0
-            && observation.height.is_finite()
-            && observation.height > 0.0)
-            .then_some((observation.width, observation.height));
-        let changed = self.facts != Some(observation.facts) || self.viewport_size != viewport_size;
-        self.facts = Some(observation.facts);
+        // Geometry remains useful even when the native matchMedia capability
+        // is unavailable. Raw media matches never replace logical owner inputs.
+        let viewport_size = (facts.width.is_finite()
+            && facts.width > 0.0
+            && facts.height.is_finite()
+            && facts.height > 0.0)
+            .then_some((facts.width, facts.height));
+        let changed =
+            !self.observed || self.facts != facts.media || self.viewport_size != viewport_size;
+        self.observed = true;
+        self.facts = facts.media;
         self.viewport_size = viewport_size;
         changed
     }
@@ -165,34 +112,7 @@ impl ViewportModel {
     fn invalidate(&mut self) {
         self.alive = false;
         self.viewport_size = None;
-        self.generation = self.generation.wrapping_add(1);
     }
-}
-
-#[cfg(any(feature = "web", feature = "desktop"))]
-fn observer_script(owner: u64, generation: u64) -> String {
-    const SMALL_QUERY: &str = "(max-width: 48em)";
-    const MEDIUM_QUERY: &str = "(min-width: 48.0625em) and (max-width: 80em)";
-    const LARGE_QUERY: &str = "(min-width: 80.0625em)";
-    format!(
-        r#"
-const owner={owner},generation={generation};let sequence=0;
-if(typeof window==='undefined'||typeof window.matchMedia!=='function'){{
-  dioxus.send({{owner,generation,sequence:++sequence,sm:false,md:false,lg:false,available:false}});return;
-}}
-const sm=window.matchMedia({SMALL_QUERY:?}),md=window.matchMedia({MEDIUM_QUERY:?}),lg=window.matchMedia({LARGE_QUERY:?});
-// Pinned MountedData measures elements, but exposes no document viewport size.
-// Reuse these existing resize/media subscriptions for the missing raw facts.
-const report=()=>dioxus.send({{owner,generation,sequence:++sequence,sm:sm.matches,md:md.matches,lg:lg.matches,available:true,width:document.documentElement.clientWidth,height:document.documentElement.clientHeight}});
-const unbind=[sm,md,lg].map(query=>{{
-  if(typeof query.addEventListener==='function'){{query.addEventListener('change',report);return()=>query.removeEventListener('change',report);}}
-  if(typeof query.addListener==='function'){{query.addListener(report);return()=>query.removeListener(report);}}
-  return()=>{{}};
-}});
-window.addEventListener('resize',report,{{passive:true}});report();
-try{{await dioxus.recv();}}finally{{for(const remove of unbind)remove();window.removeEventListener('resize',report);}}
-"#
-    )
 }
 
 #[derive(Clone)]
@@ -204,7 +124,7 @@ impl ApplicationViewport {
     pub(crate) fn is_ready(&self) -> bool {
         let _ = (self.revision)();
         let model = self.model.borrow();
-        model.force.is_some() || model.facts.is_some()
+        model.force.is_some() || model.observed
     }
 
     pub(crate) fn breakpoint(&self) -> ApplicationBreakpoint {
@@ -221,7 +141,8 @@ impl ApplicationViewport {
 }
 
 /// Some(supported) establishes an Application owner even below another owner.
-/// (None, None) reuses an ancestor; without one it owns a standalone observer.
+/// (None, None) reuses an ancestor; without one it owns a standalone policy.
+/// Logical owners share the root document observation rather than native streams.
 /// This ownership role stays fixed for the lifetime of this hook invocation.
 pub(crate) fn use_application_viewport(
     force: Option<ApplicationBreakpoint>,
@@ -229,6 +150,7 @@ pub(crate) fn use_application_viewport(
 ) -> ApplicationViewport {
     let inherited = use_hook(try_consume_context::<ApplicationViewport>);
     let owns = use_hook(|| inherited.is_none() || force.is_some() || supported.is_some());
+    let document = use_document_viewport(owns);
     let revision = use_signal(|| 0_u64);
     let model = use_hook(|| {
         if owns {
@@ -264,60 +186,27 @@ pub(crate) fn use_application_viewport(
         });
     }
 
-    #[cfg(any(feature = "web", feature = "desktop"))]
     use_effect({
-        let model = model.clone();
-        move || {
-            if !owns || model.borrow().eval.is_some() {
-                return;
-            }
-            let (owner, generation) = {
-                let state = model.borrow();
-                if !state.alive {
-                    return;
-                }
-                (state.owner, state.generation)
-            };
-            let eval = dioxus::document::eval(&observer_script(owner, generation));
-            let mut receiver = eval;
-            let observed = model.clone();
-            let mut revision = revision;
-            let task = spawn(async move {
-                while let Ok(observation) = receiver.recv::<Observation>().await {
-                    let changed = observed.borrow_mut().observe(observation);
-                    if changed {
-                        let next = revision.peek().wrapping_add(1);
-                        revision.set(next);
-                    }
-                }
-            });
-            let mut state = model.borrow_mut();
-            state.eval = Some(eval);
-            state.task = Some(task);
-        }
-    });
-    use_drop({
         let model = model.clone();
         move || {
             if !owns {
                 return;
             }
-            #[cfg(any(feature = "web", feature = "desktop"))]
-            let (eval, task) = {
-                let mut state = model.borrow_mut();
-                state.invalidate();
-                (state.eval.take(), state.task.take())
-            };
-            #[cfg(not(any(feature = "web", feature = "desktop")))]
-            model.borrow_mut().invalidate();
-            #[cfg(any(feature = "web", feature = "desktop"))]
-            {
-                if let Some(eval) = eval {
-                    let _ = eval.send("finish");
+            if let Some(facts) = document.facts() {
+                let changed = model.borrow_mut().observe(facts);
+                if changed {
+                    let mut revision = revision;
+                    let next = revision.peek().wrapping_add(1);
+                    revision.set(next);
                 }
-                if let Some(task) = task {
-                    task.cancel();
-                }
+            }
+        }
+    });
+    use_drop({
+        let model = model.clone();
+        move || {
+            if owns {
+                model.borrow_mut().invalidate();
             }
         }
     });
@@ -329,12 +218,23 @@ mod tests {
     use super::*;
     use ApplicationBreakpoint::{Large, Medium, Small};
 
-    fn facts(sm: bool, md: bool, lg: bool) -> MediaFacts {
-        MediaFacts {
-            sm,
-            md,
-            lg,
-            available: true,
+    fn facts(sm: bool, md: bool, lg: bool) -> DocumentMediaFacts {
+        DocumentMediaFacts { sm, md, lg }
+    }
+
+    fn document_facts(
+        width: f64,
+        height: f64,
+        media: Option<DocumentMediaFacts>,
+    ) -> DocumentViewportFacts {
+        DocumentViewportFacts {
+            width,
+            height,
+            visual_left: 0.0,
+            visual_top: 0.0,
+            visual_width: width,
+            visual_height: height,
+            media,
         }
     }
 
@@ -370,144 +270,129 @@ mod tests {
             resolve(None, Some(&[]), Some(facts(true, false, false))),
             Large
         );
-        assert_eq!(
-            resolve(
-                None,
-                None,
-                Some(MediaFacts {
-                    available: false,
-                    ..facts(true, false, false)
-                })
-            ),
-            Large
-        );
-    }
-
-    fn observation(model: &ViewportModel, sequence: u64, facts: MediaFacts) -> Observation {
-        Observation {
-            owner: model.owner,
-            generation: model.generation,
-            sequence,
-            width: 0.0,
-            height: 0.0,
-            facts,
-        }
-    }
-
-    fn sized_observation(
-        model: &ViewportModel,
-        sequence: u64,
-        width: f64,
-        height: f64,
-    ) -> Observation {
-        let mut report = observation(model, sequence, facts(false, true, false));
-        report.width = width;
-        report.height = height;
-        report
     }
 
     #[test]
     fn viewport_resize_notifies_when_only_dimensions_change() {
         let mut model = ViewportModel::new(None, None);
         assert_eq!(model.viewport_size, None, "SSR has no document dimensions");
-        assert!(model.observe(sized_observation(&model, 1, 1000.0, 700.0)));
+        assert!(!model.observed);
+        assert!(model.observe(document_facts(
+            1000.0,
+            700.0,
+            Some(facts(false, true, false))
+        )));
+        assert!(model.observed);
         assert_eq!(model.breakpoint(), Medium);
         assert!(
-            model.observe(sized_observation(&model, 2, 1100.0, 760.0)),
-            "geometry changes must notify existing subscribers"
+            model.observe(document_facts(
+                1100.0,
+                760.0,
+                Some(facts(false, true, false))
+            )),
+            "geometry changes notify existing subscribers independently of media matches"
         );
         assert_eq!(model.breakpoint(), Medium);
         assert_eq!(model.viewport_size, Some((1100.0, 760.0)));
-        assert!(!model.observe(sized_observation(&model, 3, 1100.0, 760.0)));
-        assert_eq!(model.sequence, 3);
+        assert!(!model.observe(document_facts(
+            1100.0,
+            760.0,
+            Some(facts(false, true, false))
+        )));
     }
 
     #[test]
-    fn viewport_dimensions_reject_invalid_or_unavailable_native_facts() {
+    fn viewport_dimensions_validate_geometry_independently_of_media_availability() {
         let mut model = ViewportModel::new(Some(Small), None);
-        assert!(model.observe(sized_observation(&model, 1, 1000.0, 700.0)));
-        for (index, (width, height)) in [
+        assert!(model.observe(document_facts(1000.0, 700.0, None)));
+        assert_eq!(model.viewport_size, Some((1000.0, 700.0)));
+        assert!(
+            model.observed,
+            "unavailable media is a completed native observation"
+        );
+        assert_eq!(model.breakpoint(), Small);
+        for (width, height) in [
             (0.0, 700.0),
             (-1.0, 700.0),
             (1000.0, 0.0),
             (f64::NAN, 700.0),
             (1000.0, f64::INFINITY),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            model.observe(sized_observation(&model, index as u64 + 2, width, height));
+        ] {
+            model.observe(document_facts(
+                width,
+                height,
+                Some(facts(false, true, false)),
+            ));
             assert_eq!(model.viewport_size, None);
             assert_eq!(
                 model.breakpoint(),
                 Small,
-                "geometry cannot override forced breakpoint"
+                "geometry cannot override a forced breakpoint"
             );
         }
-        let mut unavailable = sized_observation(&model, 7, 1000.0, 700.0);
-        unavailable.facts.available = false;
-        model.observe(unavailable);
-        assert_eq!(model.viewport_size, None);
-        let missing: Observation = serde_json::from_value(serde_json::json!({
-            "owner":model.owner,"generation":model.generation,"sequence":8,
-            "sm":false,"md":true,"lg":false,"available":true
-        }))
-        .unwrap();
-        model.observe(missing);
+        model.sync_inputs(None, None);
+        model.observe(document_facts(1000.0, 700.0, None));
         assert_eq!(
-            model.viewport_size, None,
-            "missing dimensions are unavailable"
+            model.breakpoint(),
+            Large,
+            "unavailable media retains the explicit default"
         );
+        assert_eq!(model.viewport_size, Some((1000.0, 700.0)));
     }
 
     #[test]
-    fn viewport_dimensions_ignore_stale_owner_generation_and_sequence() {
+    fn viewport_disposal_rejects_future_shared_facts_and_input_changes() {
         let mut model = ViewportModel::new(None, None);
-        assert!(model.observe(sized_observation(&model, 2, 1000.0, 700.0)));
-        let mut wrong_owner = sized_observation(&model, 3, 1200.0, 900.0);
-        wrong_owner.owner += 1;
-        assert!(!model.observe(wrong_owner));
-        let mut wrong_generation = sized_observation(&model, 3, 1200.0, 900.0);
-        wrong_generation.generation += 1;
-        assert!(!model.observe(wrong_generation));
-        assert!(!model.observe(sized_observation(&model, 1, 1200.0, 900.0)));
-        assert_eq!(model.viewport_size, Some((1000.0, 700.0)));
-        let late = sized_observation(&model, 3, 1200.0, 900.0);
+        model.observe(document_facts(
+            1000.0,
+            700.0,
+            Some(facts(false, true, false)),
+        ));
         model.invalidate();
-        assert!(!model.observe(late));
+        assert!(!model.observe(document_facts(
+            1400.0,
+            900.0,
+            Some(facts(false, false, true))
+        )));
+        assert!(!model.sync_inputs(Some(Small), Some(vec![Small])));
         assert_eq!(
             model.viewport_size, None,
             "owner teardown clears dimensions"
         );
+        assert_eq!(
+            model.breakpoint(),
+            Medium,
+            "late facts do not modify retired policy state"
+        );
     }
 
     #[test]
-    fn viewport_observer_rejects_stale_reports_and_resolves_latest_owner_inputs() {
+    fn viewport_shared_facts_resolve_latest_owner_inputs_without_replacing_them() {
         let mut model = ViewportModel::new(Some(Large), None);
-        let mut wrong = observation(&model, 1, facts(true, false, false));
-        wrong.owner += 1;
-        assert!(!model.observe(wrong));
-        let mut wrong = observation(&model, 1, facts(true, false, false));
-        wrong.generation += 1;
-        assert!(!model.observe(wrong));
-        assert_eq!(model.sequence, 0);
-        assert!(model.observe(observation(&model, 2, facts(true, false, false))));
+        let small = document_facts(700.0, 700.0, Some(facts(true, false, false)));
+        assert!(model.observe(small));
         assert_eq!(model.breakpoint(), Large);
-        assert!(!model.observe(observation(&model, 1, facts(false, true, false))));
         assert!(model.sync_inputs(None, Some(vec![Small, Medium, Large])));
         assert_eq!(model.breakpoint(), Small);
-        assert!(model.observe(observation(&model, 3, facts(false, true, false))));
+        // CSS media facts remain authoritative even if document width stays
+        // unchanged (for example, a browser font preference changes em queries).
+        assert!(model.observe(document_facts(
+            700.0,
+            700.0,
+            Some(facts(false, true, false))
+        )));
         assert_eq!(model.breakpoint(), Medium);
-        assert!(!model.observe(observation(&model, 4, facts(false, true, false))));
-        assert_eq!(model.sequence, 4, "identical facts still consume sequence");
-        model.invalidate();
-        assert!(!model.observe(observation(&model, 5, facts(false, false, true))));
-        assert!(!model.sync_inputs(Some(Large), None));
-        assert_eq!(model.breakpoint(), Medium);
+        assert_eq!(model.force, None);
+        assert_eq!(model.supported, Some(vec![Small, Medium, Large]));
+        assert!(!model.observe(document_facts(
+            700.0,
+            700.0,
+            Some(facts(false, true, false))
+        )));
     }
 
     #[derive(Clone)]
-    struct Capture(Rc<RefCell<Vec<(u64, ApplicationBreakpoint)>>>);
+    struct Capture(Rc<RefCell<Vec<(usize, ApplicationBreakpoint)>>>);
     impl PartialEq for Capture {
         fn eq(&self, other: &Self) -> bool {
             Rc::ptr_eq(&self.0, &other.0)
@@ -519,7 +404,7 @@ mod tests {
         capture
             .0
             .borrow_mut()
-            .push((viewport.model.borrow().owner, viewport.breakpoint()));
+            .push((Rc::as_ptr(&viewport.model) as usize, viewport.breakpoint()));
         rsx! { div {} }
     }
     #[component]
@@ -528,7 +413,7 @@ mod tests {
         capture
             .0
             .borrow_mut()
-            .push((viewport.model.borrow().owner, viewport.breakpoint()));
+            .push((Rc::as_ptr(&viewport.model) as usize, viewport.breakpoint()));
         rsx! { Consumer {capture} }
     }
     #[component]
@@ -537,7 +422,7 @@ mod tests {
         capture
             .0
             .borrow_mut()
-            .push((viewport.model.borrow().owner, viewport.breakpoint()));
+            .push((Rc::as_ptr(&viewport.model) as usize, viewport.breakpoint()));
         rsx! { Consumer {capture:capture.clone()} NestedOwner {capture} }
     }
 
@@ -566,8 +451,15 @@ mod tests {
     #[derive(Clone)]
     struct UpdatingCapture {
         force: Rc<RefCell<Option<Signal<Option<ApplicationBreakpoint>>>>>,
-        values: Rc<RefCell<Vec<ApplicationBreakpoint>>>,
+        values: Rc<RefCell<Vec<ViewportProjection>>>,
         owner: Rc<RefCell<Option<Rc<RefCell<ViewportModel>>>>>,
+        document: Rc<RefCell<Option<crate::document_viewport::DocumentViewport>>>,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct ViewportProjection {
+        breakpoint: ApplicationBreakpoint,
+        ready: bool,
+        size: Option<(f64, f64)>,
     }
     impl PartialEq for UpdatingCapture {
         fn eq(&self, other: &Self) -> bool {
@@ -578,9 +470,14 @@ mod tests {
     fn UpdatingOwner(capture: UpdatingCapture) -> Element {
         let force = use_signal(|| Some(Small));
         *capture.force.borrow_mut() = Some(force);
+        *capture.document.borrow_mut() = Some(use_document_viewport(false));
         let viewport = use_application_viewport(force(), Some(DEFAULT_SUPPORTED.to_vec()));
         *capture.owner.borrow_mut() = Some(viewport.model.clone());
-        let current = use_memo(move || viewport.breakpoint());
+        let current = use_memo(move || ViewportProjection {
+            breakpoint: viewport.breakpoint(),
+            ready: viewport.is_ready(),
+            size: viewport.viewport_size(),
+        });
         capture.values.borrow_mut().push(current());
         rsx! { div {} }
     }
@@ -591,6 +488,7 @@ mod tests {
             force: Rc::new(RefCell::new(None)),
             values: Rc::new(RefCell::new(vec![])),
             owner: Rc::new(RefCell::new(None)),
+            document: Rc::new(RefCell::new(None)),
         };
         let mut dom = VirtualDom::new_with_props(
             UpdatingOwner,
@@ -601,19 +499,96 @@ mod tests {
         dom.rebuild_in_place();
         let owner = capture.owner.borrow().as_ref().unwrap().clone();
         let mut force = capture.force.borrow().unwrap();
-        assert_eq!(capture.values.borrow().last(), Some(&Small));
+        assert_eq!(capture.values.borrow().last().unwrap().breakpoint, Small);
         for (requested, expected) in [(Some(Medium), Medium), (None, Large), (Some(Small), Small)] {
             dom.in_scope(ScopeId::ROOT, || force.set(requested));
             for _ in 0..4 {
                 let _ = dom.render_immediate_to_vec();
             }
-            assert_eq!(capture.values.borrow().last(), Some(&expected));
+            assert_eq!(capture.values.borrow().last().unwrap().breakpoint, expected);
+            assert_eq!(
+                capture.values.borrow().last().unwrap().ready,
+                requested.is_some()
+            );
+            assert_eq!(capture.values.borrow().last().unwrap().size, None);
             assert!(Rc::ptr_eq(capture.owner.borrow().as_ref().unwrap(), &owner));
         }
         drop(dom);
         let mut owner = owner.borrow_mut();
         assert!(!owner.alive);
-        let late = observation(&owner, 1, facts(false, true, false));
+        let late = document_facts(1000.0, 700.0, Some(facts(false, true, false)));
         assert!(!owner.observe(late));
+    }
+
+    #[test]
+    fn viewport_shared_facts_refresh_existing_memo_geometry_and_unavailable_media() {
+        let capture = UpdatingCapture {
+            force: Rc::new(RefCell::new(None)),
+            values: Rc::new(RefCell::new(vec![])),
+            owner: Rc::new(RefCell::new(None)),
+            document: Rc::new(RefCell::new(None)),
+        };
+        let mut dom = VirtualDom::new_with_props(
+            UpdatingOwner,
+            UpdatingOwnerProps {
+                capture: capture.clone(),
+            },
+        );
+        dom.rebuild_in_place();
+        let document = capture.document.borrow().clone().unwrap();
+        let mut force = capture.force.borrow().unwrap();
+        for (requested, media, size, expected) in [
+            (
+                Some(Small),
+                Some(facts(false, true, false)),
+                (1000.0, 700.0),
+                Small,
+            ),
+            (
+                None,
+                Some(facts(false, true, false)),
+                (1000.0, 700.0),
+                Medium,
+            ),
+            (
+                None,
+                Some(facts(false, true, false)),
+                (1100.0, 760.0),
+                Medium,
+            ),
+            (None, None, (1150.0, 780.0), Large),
+            (
+                Some(Small),
+                Some(facts(false, false, true)),
+                (1360.0, 900.0),
+                Small,
+            ),
+        ] {
+            dom.in_scope(ScopeId::ROOT, || {
+                force.set(requested);
+                document.test_facts(document_facts(size.0, size.1, media));
+            });
+            for _ in 0..5 {
+                let _ = dom.render_immediate_to_vec();
+            }
+            assert_eq!(
+                capture.values.borrow().last(),
+                Some(&ViewportProjection {
+                    breakpoint: expected,
+                    ready: true,
+                    size: Some(size),
+                })
+            );
+        }
+        let owner = capture.owner.borrow().clone().unwrap();
+        drop(dom);
+        document.test_facts(document_facts(
+            700.0,
+            600.0,
+            Some(facts(true, false, false)),
+        ));
+        assert!(!owner.borrow().alive);
+        assert_eq!(owner.borrow().viewport_size, None);
+        assert_eq!(owner.borrow().force, Some(Small));
     }
 }

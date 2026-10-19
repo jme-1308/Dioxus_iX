@@ -3,7 +3,7 @@
 
 //! Shared native viewport facts, one stream per Document in a Dioxus root. Pinned alpha.2
 //! MountedData measures elements but exposes neither the viewport/visual viewport
-//! box nor document/window scroll, resize or Escape subscriptions. This adapter
+//! box, CSS media matches or document/window scroll, resize or Escape subscriptions. This adapter
 //! supplies only those missing facts; Rust owns subscribers and their lifetime.
 
 use dioxus::prelude::*;
@@ -11,6 +11,14 @@ use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
 };
+
+/// Raw CSS em query matches; width in pixels never substitutes for these facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct DocumentMediaFacts {
+    pub(crate) sm: bool,
+    pub(crate) md: bool,
+    pub(crate) lg: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
 pub(crate) struct DocumentViewportFacts {
@@ -20,6 +28,8 @@ pub(crate) struct DocumentViewportFacts {
     pub(crate) visual_top: f64,
     pub(crate) visual_width: f64,
     pub(crate) visual_height: f64,
+    #[serde(default)]
+    pub(crate) media: Option<DocumentMediaFacts>,
 }
 impl DocumentViewportFacts {
     #[cfg(any(feature = "web", feature = "desktop", test))]
@@ -300,16 +310,20 @@ impl DocumentViewport {
 
     #[cfg(test)]
     pub(crate) fn test_layout(&self, width: f64, height: f64) {
-        self.test_event(NativeEvent::Layout {
-            facts: DocumentViewportFacts {
-                width,
-                height,
-                visual_left: 0.0,
-                visual_top: 0.0,
-                visual_width: width,
-                visual_height: height,
-            },
+        let media = self.facts().and_then(|facts| facts.media);
+        self.test_facts(DocumentViewportFacts {
+            width,
+            height,
+            visual_left: 0.0,
+            visual_top: 0.0,
+            visual_width: width,
+            visual_height: height,
+            media,
         });
+    }
+    #[cfg(test)]
+    pub(crate) fn test_facts(&self, facts: DocumentViewportFacts) {
+        self.test_event(NativeEvent::Layout { facts });
     }
     #[cfg(test)]
     pub(crate) fn test_escape(&self) {
@@ -351,10 +365,19 @@ fn observer_script(epoch: u64) -> String {
         r#"
 const epoch={epoch},listeners=new AbortController(),signal=listeners.signal;
 let sequence=0;
+// Pinned Dioxus has no MediaQueryList API. Preserve the upstream CSS em
+// semantics once per shared stream instead of deriving matches from px width.
+const queries=typeof window.matchMedia==='function'?{{
+  sm:window.matchMedia('(max-width: 48em)'),
+  md:window.matchMedia('(min-width: 48.0625em) and (max-width: 80em)'),
+  lg:window.matchMedia('(min-width: 80.0625em)')
+}}:null;
 const layout=()=>{{const v=window.visualViewport;dioxus.send({{epoch,sequence:++sequence,kind:'layout',
   width:document.documentElement.clientWidth,height:document.documentElement.clientHeight,
   visual_left:v?.offsetLeft??0,visual_top:v?.offsetTop??0,
-  visual_width:v?.width??document.documentElement.clientWidth,visual_height:v?.height??document.documentElement.clientHeight}});}};
+  visual_width:v?.width??document.documentElement.clientWidth,visual_height:v?.height??document.documentElement.clientHeight,
+  media:queries?{{sm:queries.sm.matches,md:queries.md.matches,lg:queries.lg.matches}}:null}});}};
+for(const query of Object.values(queries??{{}}))query.addEventListener('change',layout,{{signal}});
 window.addEventListener('resize',layout,{{passive:true,signal}});
 document.addEventListener('scroll',layout,{{capture:true,passive:true,signal}});
 window.visualViewport?.addEventListener('resize',layout,{{passive:true,signal}});
@@ -493,6 +516,65 @@ mod tests {
         assert_eq!(viewport.0.borrow().active, 0);
         assert_eq!(viewport.facts(), None);
         assert_eq!(viewport.layout_revision(), 0);
+    }
+
+    #[test]
+    fn media_only_changes_invalidate_layout_without_replacing_geometry_or_inventing_matches() {
+        let capture = capture();
+        let mut dom = VirtualDom::new_with_props(fixture, capture.clone());
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let viewport = handle(&capture);
+        dom.in_scope(ScopeId::ROOT, || {
+            let mut facts: DocumentViewportFacts = serde_json::from_value(serde_json::json!({
+                "width":1000.0,"height":700.0,"visual_left":0.0,"visual_top":0.0,
+                "visual_width":1000.0,"visual_height":700.0
+            }))
+            .unwrap();
+            assert_eq!(
+                facts.media, None,
+                "missing media does not invent query matches"
+            );
+            viewport.test_facts(facts);
+            assert_eq!(
+                viewport.facts(),
+                Some(facts),
+                "unavailable media must not block geometry"
+            );
+            facts.media = Some(DocumentMediaFacts {
+                sm: true,
+                md: false,
+                lg: false,
+            });
+            viewport.test_facts(facts);
+            let before = viewport.layout_revision();
+            facts.media = Some(DocumentMediaFacts {
+                sm: false,
+                md: false,
+                lg: true,
+            });
+            viewport.test_facts(facts);
+            assert_eq!(
+                viewport.layout_revision(),
+                before + 1,
+                "media-only changes must notify existing consumers"
+            );
+            assert_eq!(viewport.facts().unwrap().width, 1000.0);
+            assert_eq!(viewport.facts().unwrap().media, facts.media);
+            viewport.test_layout(360.0, 700.0);
+            assert_eq!(
+                viewport.facts().unwrap().media,
+                facts.media,
+                "layout helper preserves raw media; it does not infer CSS em matches from width"
+            );
+            facts.media = None;
+            viewport.test_facts(facts);
+            assert_eq!(
+                viewport.facts(),
+                Some(facts),
+                "media becoming unavailable keeps valid layout facts"
+            );
+        });
     }
 
     #[test]
