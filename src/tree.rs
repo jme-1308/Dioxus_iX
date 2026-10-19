@@ -1136,6 +1136,8 @@ pub fn Tree(
     #[props(default)] onexpand: EventHandler<TreeToggle>,
     #[props(default)] onload: EventHandler<String>,
     /// Replace the label area while retaining row hierarchy and interaction.
+    /// Embedded controls keep their own keyboard and focus handling. Cancel a
+    /// control's click default to leave row selection and expansion unchanged.
     #[props(default)]
     render_item: Option<Callback<TreeItemData, Element>>,
     #[props(default)] checkboxes: bool,
@@ -1274,7 +1276,6 @@ pub fn Tree(
                 }
             },
             onpointerdown:move |_|pointer_dom.cancel(),onwheel:move |_|wheel_dom.cancel(),
-            onfocusin: move |_| has_focus.set(true),
             onfocusout: move |_| if blur_dom.blur() {has_focus.set(false);},
             onkeydown: move |event: KeyboardEvent| {
                 if matches!(event.key(),Key::Tab|Key::Escape) {keyboard_dom.cancel();return;}
@@ -1332,7 +1333,9 @@ pub fn Tree(
                     has_children: row.has_children, expanded: row.expanded, selected: selected_ids.as_ref().map_or(snapshot.selected.as_deref() == Some(&row.id), |ids| ids.contains(&row.id)),
                     disabled: row.disabled, focusable: tab_stop.as_deref() == Some(&row.id),
                     checked: if checkboxes { Some(row.check_state) } else { None }, loading: row.loading,
-                    onfocus: { let id = row.id.clone(); move |_| focused.set(Some(id.clone())) },
+                    // Only a row's own focus authorizes row-focus repair.
+                    // Focus inside a custom control belongs to that control.
+                    onfocus: { let id = row.id.clone(); move |_| { focused.set(Some(id.clone())); has_focus.set(true); } },
                     onselect: { let id = row.id.clone(); let snapshot = snapshot.clone(); let nodes = callback_nodes.clone(); let dom=dom.clone(); let rows=rows.clone(); move |_| {
                         if let Some(index)=rows.iter().position(|row|row.id==id) {dom.request(index,id.clone(),total);}
                         let mut next = snapshot.clone(); next.select(&nodes, &id);
@@ -1367,7 +1370,10 @@ fn parent_id(nodes: &[TreeNode], id: &str, parent: Option<&str>) -> Option<Strin
 pub fn TreeItem(
     node_id: String,
     label: String,
-    #[props(default)] children: Option<Element>,
+    /// Custom controls retain their keyboard/focus behavior. Cancel their click
+    /// default when activating them should not select the containing row.
+    #[props(default)]
+    children: Option<Element>,
     #[props(default)] icon: Option<String>,
     #[props(default = 1)] level: usize,
     #[props(default = 1)] position: usize,
@@ -1415,7 +1421,7 @@ pub fn TreeItem(
                 onmounted.call(event);
             },
             onfocus: move |_| {if let Some(tree)=&tree {tree.row_focus(&focus_id);}onfocus.call(());},
-            onclick: move |_| if !disabled { onselect.call(()); },
+            onclick: move |event| if !disabled && event.default_action_enabled() { onselect.call(()); },
             span { class: "ix-tree-chevron", "data-expanded": expanded, "aria-hidden": "true",
                 onclick: move |event| { if has_children { event.stop_propagation(); if !disabled { ontoggle.call(()); } } },
                 if has_children { Icon { name: "chevron-right-small", size: 24 } }
@@ -1428,7 +1434,11 @@ pub fn TreeItem(
                 }
             }
             if let Some(icon) = icon { Icon { name: icon, size: 24 } }
-            span { class: "ix-tree-label", title: label.clone(), if let Some(children) = children { {children} } else { "{label}" } }
+            span { class: "ix-tree-label", title: label.clone(),
+                onkeydown: move |event| event.stop_propagation(),
+                onfocusin: move |event| event.stop_propagation(),
+                if let Some(children) = children { {children} } else { "{label}" }
+            }
             if loading { span { class: "ix-tree-loading", role: "status", "Loading" } }
         }
     }
@@ -2122,5 +2132,345 @@ mod tests {
         assert!(html.contains("aria-selected=true"));
         assert!(html.contains("Sample Child 1"));
         assert!(!html.contains("Grandchild"));
+    }
+
+    struct TreeTestMouse;
+    impl dioxus::html::InteractionLocation for TreeTestMouse {
+        fn client_coordinates(&self) -> dioxus::html::geometry::ClientPoint {
+            Default::default()
+        }
+        fn page_coordinates(&self) -> dioxus::html::geometry::PagePoint {
+            Default::default()
+        }
+        fn screen_coordinates(&self) -> dioxus::html::geometry::ScreenPoint {
+            Default::default()
+        }
+    }
+    impl dioxus::html::InteractionElementOffset for TreeTestMouse {
+        fn element_coordinates(&self) -> dioxus::html::geometry::ElementPoint {
+            Default::default()
+        }
+    }
+    impl dioxus::html::ModifiersInteraction for TreeTestMouse {
+        fn modifiers(&self) -> Modifiers {
+            Modifiers::empty()
+        }
+    }
+    impl dioxus::html::PointerInteraction for TreeTestMouse {
+        fn trigger_button(&self) -> Option<dioxus::html::input_data::MouseButton> {
+            None
+        }
+        fn held_buttons(&self) -> dioxus::html::input_data::MouseButtonSet {
+            Default::default()
+        }
+    }
+    impl dioxus::html::HasMouseData for TreeTestMouse {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    struct TreeTestKeyboard(Key);
+    impl dioxus::html::ModifiersInteraction for TreeTestKeyboard {
+        fn modifiers(&self) -> Modifiers {
+            Modifiers::empty()
+        }
+    }
+    impl dioxus::html::HasKeyboardData for TreeTestKeyboard {
+        fn key(&self) -> Key {
+            self.0.clone()
+        }
+        fn code(&self) -> dioxus::html::Code {
+            dioxus::html::Code::Unidentified
+        }
+        fn location(&self) -> dioxus::html::Location {
+            dioxus::html::Location::Standard
+        }
+        fn is_auto_repeating(&self) -> bool {
+            false
+        }
+        fn is_composing(&self) -> bool {
+            false
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    struct TreeTestFocus;
+    impl dioxus::html::HasFocusData for TreeTestFocus {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    struct TreeTestConverter;
+    macro_rules! tree_test_converter {
+        (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
+            impl dioxus::html::HtmlEventConverter for TreeTestConverter {
+                $(fn $convert(&self, event: &dioxus::html::PlatformEventData) -> dioxus::html::$data {
+                    let _ = event;
+                    tree_test_converter!(@data $group, event)
+                })*
+            }
+        };
+        (@data Mouse, $event:ident) => { dioxus::html::MouseData::new(TreeTestMouse) };
+        (@data Keyboard, $event:ident) => {
+            dioxus::html::KeyboardData::new(TreeTestKeyboard(
+                $event.downcast::<Key>().unwrap().clone(),
+            ))
+        };
+        (@data Focus, $event:ident) => { dioxus::html::FocusData::new(TreeTestFocus) };
+        (@data Mounted, $event:ident) => {
+            if let Some(mount) = $event.downcast::<TreeMount>() {
+                MountedData::new(mount.clone())
+            } else {
+                MountedData::new(())
+            }
+        };
+        (@data $other:ident, $event:ident) => { panic!("Unexpected tree test event") };
+    }
+    dioxus::html::with_html_event_groups!(tree_test_converter);
+
+    #[derive(Clone, Default)]
+    struct EmbeddedTreeControlState {
+        actions: Rc<RefCell<Vec<String>>>,
+        selected: Rc<RefCell<Vec<String>>>,
+        toggled: Rc<RefCell<Vec<(String, bool)>>>,
+    }
+    impl PartialEq for EmbeddedTreeControlState {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.actions, &other.actions)
+        }
+    }
+    fn embedded_tree_controls_fixture(state: EmbeddedTreeControlState) -> Element {
+        let nodes = sample();
+        let mut initial = TreeState::default();
+        initial.set_expanded(&nodes, "sample", true);
+        let selected = state.selected.clone();
+        let toggled = state.toggled.clone();
+        let actions = state.actions.clone();
+        rsx! {
+            Tree {
+                nodes,
+                default_state: initial,
+                toggle_on_item_click: true,
+                onselect: move |id| selected.borrow_mut().push(id),
+                onexpand: move |toggle: TreeToggle| toggled.borrow_mut().push((toggle.id, toggle.expanded)),
+                render_item: move |item: TreeItemData| {
+                    let click_id = item.id.clone();
+                    let key_id = item.id.clone();
+                    let focus_id = item.id.clone();
+                    let click_actions = actions.clone();
+                    let key_actions = actions.clone();
+                    let focus_actions = actions.clone();
+                    rsx! {
+                        // Address a real listener-bearing element, as the
+                        // interpreter does when forwarding a label click.
+                        span { "data-row-label": item.id.clone(), onclick: move |_| {}, "{item.label}" }
+                        button {
+                            r#type: "button",
+                            "data-row-action": item.id,
+                            onclick: move |event: MouseEvent| {
+                                event.prevent_default();
+                                click_actions.borrow_mut().push(format!("click:{click_id}"));
+                            },
+                            onkeydown: move |_| {
+                                key_actions.borrow_mut().push(format!("key:{key_id}"));
+                            },
+                            onfocusin: move |_| {
+                                focus_actions.borrow_mut().push(format!("focusin:{focus_id}"));
+                            },
+                            "Action"
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_row_controls_cancel_click_and_contain_keys_and_focusin_while_preserving_row_interactions()
+     {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(TreeTestConverter));
+        let state = EmbeddedTreeControlState::default();
+        let mut dom = VirtualDom::new_with_props(embedded_tree_controls_fixture, state.clone());
+        let mut attrs: BTreeMap<usize, BTreeMap<String, String>> = BTreeMap::new();
+        let collect =
+            |mutations: dioxus::core::Mutations,
+             attrs: &mut BTreeMap<usize, BTreeMap<String, String>>| {
+                let mut current = dioxus::core::ElementId::ROOT;
+                for edit in mutations.edits {
+                    match edit {
+                        dioxus::core::Mutation::SetId { id }
+                        | dioxus::core::Mutation::PushId { id } => current = id,
+                        dioxus::core::Mutation::SetAttribute {
+                            name,
+                            value: dioxus::core::AttributeValue::Text(text),
+                            ..
+                        } => {
+                            attrs.entry(current.raw()).or_default().insert(name, text);
+                        }
+                        dioxus::core::Mutation::Remove => {
+                            attrs.remove(&current.raw());
+                        }
+                        _ => {}
+                    }
+                }
+            };
+        collect(dom.rebuild_to_vec(), &mut attrs);
+        let settle = |dom: &mut VirtualDom,
+                      attrs: &mut BTreeMap<usize, BTreeMap<String, String>>| {
+            for _ in 0..4 {
+                collect(dom.render_immediate_to_vec(), attrs);
+                dom.process_events();
+            }
+        };
+        settle(&mut dom, &mut attrs);
+        let find_attr = |attrs: &BTreeMap<usize, BTreeMap<String, String>>,
+                         attr: &str,
+                         expected: &str|
+         -> dioxus::core::ElementId {
+            let raw = attrs
+                .iter()
+                .find_map(|(raw, map)| {
+                    (map.get(attr).map(String::as_str) == Some(expected)).then_some(*raw)
+                })
+                .unwrap_or_else(|| panic!("missing {attr}={expected}"));
+            dioxus::core::ElementId::from_raw(raw)
+        };
+        let root_id = attrs
+            .iter()
+            .find_map(|(raw, map)| {
+                map.get("id")
+                    .filter(|id| id.starts_with("ix-tree-"))
+                    .map(|_| dioxus::core::ElementId::from_raw(*raw))
+            })
+            .expect("tree root element");
+        let focused_rows = Rc::new(RefCell::new(Vec::<String>::new()));
+        let scrolled = Rc::new(RefCell::new(Vec::<f64>::new()));
+        let dispatch = |dom: &VirtualDom,
+                        name: &str,
+                        id: dioxus::core::ElementId,
+                        payload: Box<dyn std::any::Any>|
+         -> (bool, bool) {
+            let data: Rc<dyn std::any::Any> =
+                Rc::new(dioxus::html::PlatformEventData::new(payload));
+            let event = Event::new(data, !matches!(name, "mounted" | "focus"));
+            dom.runtime().handle_event(name, event.clone(), id);
+            (!event.default_action_enabled(), event.propagates())
+        };
+        let mount_node = |dom: &VirtualDom, id: dioxus::core::ElementId, name: &str| {
+            dispatch(
+                dom,
+                "mounted",
+                id,
+                Box::new(TreeMount {
+                    name: name.into(),
+                    focused: focused_rows.clone(),
+                    scrolled: scrolled.clone(),
+                }),
+            );
+        };
+        mount_node(&dom, root_id, "root");
+        for row_id in ["sample", "child-1", "child-2"] {
+            mount_node(&dom, find_attr(&attrs, "data-tree-node-id", row_id), row_id);
+        }
+        settle(&mut dom, &mut attrs);
+
+        let sample_row = find_attr(&attrs, "data-tree-node-id", "sample");
+        dispatch(&dom, "focusin", sample_row, Box::new(()));
+        settle(&mut dom, &mut attrs);
+        assert!(
+            focused_rows.borrow().is_empty(),
+            "bubbling focusin alone must not authorize row-focus repair"
+        );
+
+        let sample_action = find_attr(&attrs, "data-row-action", "sample");
+        let (_, focusin_propagates) = dispatch(&dom, "focusin", sample_action, Box::new(()));
+        settle(&mut dom, &mut attrs);
+        assert!(
+            !focusin_propagates,
+            "nested control focusin stops at ix-tree-label before reaching tree root"
+        );
+        assert_eq!(state.actions.borrow().as_slice(), ["focusin:sample"]);
+        assert!(
+            focused_rows.borrow().is_empty(),
+            "nested control focusin must not trigger mounted row focus repair"
+        );
+
+        for key in [
+            Key::Character(" ".into()),
+            Key::Enter,
+            Key::ArrowDown,
+            Key::ArrowLeft,
+        ] {
+            let (key_prevented, key_propagates) =
+                dispatch(&dom, "keydown", sample_action, Box::new(key));
+            assert!(
+                !key_prevented,
+                "embedded controls keep their native key defaults"
+            );
+            assert!(
+                !key_propagates,
+                "nested control keydown stops at ix-tree-label before tree navigation"
+            );
+        }
+        settle(&mut dom, &mut attrs);
+        assert_eq!(
+            state.actions.borrow().as_slice(),
+            [
+                "focusin:sample",
+                "key:sample",
+                "key:sample",
+                "key:sample",
+                "key:sample"
+            ]
+        );
+        assert!(state.selected.borrow().is_empty());
+        assert!(state.toggled.borrow().is_empty());
+        assert!(focused_rows.borrow().is_empty());
+
+        let (click_prevented, click_propagates) =
+            dispatch(&dom, "click", sample_action, Box::new(()));
+        settle(&mut dom, &mut attrs);
+        assert!(click_prevented && click_propagates);
+        assert_eq!(
+            state.actions.borrow().last().map(String::as_str),
+            Some("click:sample")
+        );
+        assert!(
+            state.selected.borrow().is_empty()
+                && state.toggled.borrow().is_empty()
+                && focused_rows.borrow().is_empty(),
+            "prevent_default on a descendant control cancels row selection, toggle and focus"
+        );
+
+        let child2_label = find_attr(&attrs, "data-row-label", "child-2");
+        let (label_prevented, label_propagates) =
+            dispatch(&dom, "click", child2_label, Box::new(()));
+        settle(&mut dom, &mut attrs);
+        assert!(!label_prevented && label_propagates);
+        assert_eq!(state.selected.borrow().as_slice(), ["child-2"]);
+        assert_eq!(
+            state.toggled.borrow().as_slice(),
+            [("child-2".to_string(), true)]
+        );
+        assert_eq!(focused_rows.borrow().as_slice(), ["child-2"]);
+        assert!(dioxus_ssr::render(&dom).contains("Grandchild"));
+
+        let sample_row = find_attr(&attrs, "data-tree-node-id", "sample");
+        dispatch(&dom, "focus", sample_row, Box::new(()));
+        let (_, row_focusin_propagates) = dispatch(&dom, "focusin", sample_row, Box::new(()));
+        assert!(row_focusin_propagates);
+        dispatch(
+            &dom,
+            "keydown",
+            sample_row,
+            Box::new(Key::Character(" ".into())),
+        );
+        settle(&mut dom, &mut attrs);
+        assert_eq!(state.selected.borrow().as_slice(), ["child-2", "sample"]);
+        dispatch(&dom, "keydown", sample_row, Box::new(Key::ArrowDown));
+        settle(&mut dom, &mut attrs);
+        assert_eq!(focused_rows.borrow().as_slice(), ["child-2", "child-1"]);
     }
 }

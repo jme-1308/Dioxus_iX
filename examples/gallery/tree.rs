@@ -194,6 +194,83 @@ fn MutableTreeExample() -> Element {
     }
 }
 
+fn row_actions_model() -> TreeModel<String> {
+    TreeModel::new(
+        "actions-root",
+        [
+            TreeModelItem::branch("actions-root", String::new(), vec!["actions-plant".into()]),
+            TreeModelItem::branch(
+                "actions-plant",
+                "Plant".into(),
+                vec![
+                    "actions-drive-1".into(),
+                    "actions-drive-2".into(),
+                    "actions-unavailable".into(),
+                ],
+            ),
+            TreeModelItem::new("actions-drive-1", "Drive001".into()),
+            TreeModelItem::new("actions-drive-2", "Drive002".into()),
+            TreeModelItem {
+                disabled: true,
+                ..TreeModelItem::new("actions-unavailable", "Unavailable drive".into())
+            },
+        ],
+    )
+    .expect("valid row-action inventory")
+}
+
+/// Equipment inspection actions compose with tree selection and keyboard navigation.
+#[component]
+pub fn TreeRowActionsExample() -> Element {
+    let controller = use_tree_model(row_actions_model);
+    use_hook(move || {
+        let mut context = controller.context();
+        context.get_mut("actions-plant").unwrap().is_expanded = true;
+        context.get_mut("actions-drive-1").unwrap().is_selected = true;
+        controller.set_context(context);
+    });
+    let mut inspections = use_signal(|| 0usize);
+    let mut last = use_signal(|| "none".to_string());
+    let selected = controller
+        .context()
+        .into_iter()
+        .find(|(_, context)| context.is_selected)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| "none".into());
+    rsx! {
+        section { class: "gallery-section", id: "tree-row-actions",
+            h2 { "Tree with row actions" }
+            p { class: "gallery-description", "Select equipment by clicking its name, or use the tree Arrow keys and Enter. The Inspect action reports on a device while keeping the current selection. Tab to an Inspect button and use Space or Enter to activate it." }
+            div { class: "tree-example-surface",
+                ModelTree { controller, item_label: |data: String| data, label: "Row actions tree", max_height: 256,
+                    render_item: move |row: TreeRenderContext<String>| {
+                        let id = row.item.id;
+                        let label = row.item.data;
+                        rsx! {
+                            span { class: "tree-model-item tree-row-action-item",
+                                Icon { name: if row.item.has_children { "folder" } else { "generic-device" }, size: 16 }
+                                span { "{label}" }
+                                IconButton {
+                                    id: format!("tree-row-inspect-{id}"), icon: "info", label: format!("Inspect {label}"), disabled: row.visual.disabled,
+                                    onclick: move |event: MouseEvent| {
+                                        event.prevent_default();
+                                        inspections += 1;
+                                        last.set(id.clone());
+                                    },
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+            p { id: "tree-row-action-status", class: "tree-model-status", role: "status",
+                "data-selected": selected.clone(), "data-inspections": inspections(), "data-last": last(),
+                "Selected: {selected}. Inspections: {inspections}. Last inspected: {last}."
+            }
+        }
+    }
+}
+
 #[component]
 pub fn TreeExamples() -> Element {
     let mut inventory_state = use_signal(|| {
@@ -251,6 +328,7 @@ pub fn TreeExamples() -> Element {
             p { role: "status", "Selected node: {custom_selected}" }
         }
         MutableTreeExample {}
+        TreeRowActionsExample {}
         section { class: "gallery-section", id: "tree-checkboxes",
             h2 { "Tree with hierarchical checkboxes" }
             p { class: "gallery-description", "Checking a branch cascades to its enabled descendants. Mixed branches show an indeterminate checkbox. Space toggles the focused checkbox; disabled devices retain their state." }
@@ -293,4 +371,5 @@ pub fn TreeExamples() -> Element {
 pub const STYLES: &str = r#"
 .tree-example-surface{border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);min-height:160px;max-width:640px;padding:8px 0;background:var(--ix-color-surface)}.tree-example-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}.tree-example-surface+.tree-example-actions{margin-top:16px}
 .tree-model-editor{max-width:640px}.tree-model-editor .tree-example-actions{margin-top:12px}.tree-model-item{display:flex;align-items:center;gap:8px;min-width:0}.tree-model-item>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-model-status{max-width:72ch;font-variant-numeric:tabular-nums}
+.tree-row-action-item>span{flex:1}
 "#;

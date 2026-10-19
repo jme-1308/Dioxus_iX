@@ -52,6 +52,8 @@ mod text_control_method_review;
 mod tooltip_mounted_review;
 #[path = "dioxus_first_probe/transport_lifetime_review.rs"]
 mod transport_lifetime_review;
+#[path = "dioxus_first_probe/tree_actions_review.rs"]
+mod tree_actions_review;
 #[path = "dioxus_first_probe/trigger_placement_review.rs"]
 mod trigger_placement_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
@@ -175,6 +177,9 @@ fn Preview() -> Element {
     }
     if scope == "?virtualnav" {
         return rsx! { virtual_navigation_review::VirtualNavigationPreview {} };
+    }
+    if scope == "?treeactions" {
+        return rsx! { tree_actions_review::TreeActionsPreview {} };
     }
     if scope == "?applicationfocus" {
         return rsx! { application_focus_review::ApplicationFocusPreview {} };
