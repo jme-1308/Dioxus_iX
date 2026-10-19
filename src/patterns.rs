@@ -694,7 +694,7 @@ fn remove_filter_occurrence(occurrence: usize, interaction: &FilterInteraction) 
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct FilterViewport {
     left: f64,
     top: f64,
@@ -769,20 +769,6 @@ try {const inert=panel.inert;panel.inert=true;try{panel.showPopover();}finally{p
 catch(error){return {error:String(error)};}
 "#;
 
-// Alpha.2 exposes element measurements and typed resize, but neither viewport
-// bounds nor document/visualViewport/global ancestor-scroll subscriptions.
-// This stream reports only native viewport facts/invalidations; Rust lays out.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const FILTER_LAYOUT_EVENTS: &str = r#"
-const events=new AbortController(),opts={signal:events.signal,passive:true};
-const changed=()=>{const v=window.visualViewport;dioxus.send({left:v?.offsetLeft??0,top:v?.offsetTop??0,width:v?.width??document.documentElement.clientWidth,height:v?.height??window.innerHeight});};
-window.addEventListener('resize',changed,opts);
-document.addEventListener('scroll',changed,{...opts,capture:true});
-window.visualViewport?.addEventListener('resize',changed,opts);
-window.visualViewport?.addEventListener('scroll',changed,opts);
-try{changed();await dioxus.recv();}finally{events.abort();}
-"#;
-
 // Pinned Dioxus has no document click subscription. Only native outside-click
 // containment is reported; Rust owns closing and the stream's component lifetime.
 #[cfg(any(feature = "web", feature = "desktop"))]
@@ -811,12 +797,19 @@ fn FilterOptionsSurface(
     let mut promoted = use_signal(|| !enable_top_layer);
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let mut metrics = use_signal(|| None::<FilterPopupMetrics>);
-    let viewport = use_signal(|| None::<FilterViewport>);
+    // The root document stream supplies viewport facts and ancestor-scroll
+    // invalidations; each surface only measures its own Dioxus-mounted nodes.
+    let viewport = crate::document_viewport::use_document_viewport(native());
     let alive = use_hook(|| Rc::new(Cell::new(true)));
     let generation = use_hook(|| Rc::new(Cell::new(0_u64)));
     let measure_alive = alive.clone();
     let measure_generation = generation.clone();
+    let measure_viewport = viewport.clone();
     let measure = use_callback(move |()| {
+        // A mode change also invalidates measurements already awaiting native
+        // element results, including a failed top-layer promotion.
+        measure_generation.set(measure_generation.get().wrapping_add(1));
+        let revision = measure_generation.get();
         if !*native.peek() {
             return;
         }
@@ -824,12 +817,10 @@ fn FilterOptionsSurface(
         let (Some(panel), Some(anchor), Some(viewport)) = (
             mounted.peek().clone(),
             anchor_signal.peek().clone(),
-            *viewport.peek(),
+            measure_viewport.facts(),
         ) else {
             return;
         };
-        measure_generation.set(measure_generation.get().wrapping_add(1));
-        let revision = measure_generation.get();
         let alive = measure_alive.clone();
         let generation = measure_generation.clone();
         spawn(async move {
@@ -858,7 +849,12 @@ fn FilterOptionsSurface(
                 anchor_width: rect.size.width,
                 anchor_height: rect.size.height,
                 content_height: content.height,
-                viewport,
+                viewport: FilterViewport {
+                    left: viewport.visual_left,
+                    top: viewport.visual_top,
+                    width: viewport.visual_width,
+                    height: viewport.visual_height,
+                },
             };
             if *metrics.peek() != Some(next) {
                 metrics.set(Some(next));
@@ -875,56 +871,26 @@ fn FilterOptionsSurface(
         let _ = (anchor_revision, content_revision, anchor.read().clone());
         measure.call(());
     }));
+    use_effect(move || {
+        if native() {
+            // Scroll can move the anchor without changing the viewport box.
+            let _ = viewport.layout_revision();
+        }
+        measure.call(());
+    });
     let _ = &anchor_id;
     let outside_transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let layout_transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let drop_outside = outside_transport.clone();
-    let drop_layout = layout_transport.clone();
     let lifetime = alive.clone();
     use_drop(move || {
         lifetime.set(false);
         if let Ok(mut ready) = ready.try_write() {
             *ready = false;
         }
-        for stream in [drop_outside, drop_layout] {
-            if let Some(stream) = stream.borrow_mut().take() {
-                let _ = stream.send(());
-            }
+        if let Some(stream) = drop_outside.borrow_mut().take() {
+            let _ = stream.send(());
         }
     });
-    #[cfg(any(feature = "web", feature = "desktop"))]
-    {
-        let transport = layout_transport.clone();
-        let layout_alive = alive.clone();
-        let mut viewport = viewport;
-        use_effect(move || {
-            if !native() {
-                if let Some(stream) = transport.borrow_mut().take() {
-                    let _ = stream.send(());
-                }
-                return;
-            }
-            let mut stream = dioxus::document::eval(FILTER_LAYOUT_EVENTS);
-            *transport.borrow_mut() = Some(stream);
-            let alive = layout_alive.clone();
-            spawn(async move {
-                while let Ok(next) = stream.recv::<FilterViewport>().await {
-                    if !alive.get() {
-                        break;
-                    }
-                    if next.width > 0.0
-                        && next.height > 0.0
-                        && [next.left, next.top, next.width, next.height]
-                            .iter()
-                            .all(|v| v.is_finite())
-                    {
-                        viewport.set(Some(next));
-                        measure.call(());
-                    }
-                }
-            });
-        });
-    }
     let mounted_id = surface_id.clone();
     let mounted_alive = alive.clone();
     let toggle_alive = alive;

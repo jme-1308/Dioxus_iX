@@ -78,6 +78,10 @@ pub fn FilterLayoutReview() -> Element {
     let clear_controller = controller.clone();
     let mut mounted = use_signal(|| true);
     let mut epoch = use_signal(|| 0_u64);
+    let mut plain_mounted = use_signal(|| true);
+    let mut plain_epoch = use_signal(|| 0_u64);
+    #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+    let mut window_wide = use_signal(|| false);
     let mut narrow = use_signal(|| false);
     let mut near_bottom = use_signal(|| false);
     let mut scrolled = use_signal(|| false);
@@ -147,6 +151,25 @@ pub fn FilterLayoutReview() -> Element {
                     Key::F4 => {
                         event.prevent_default();
                         near_bottom.toggle();
+                    }
+                    Key::F5 => {
+                        event.prevent_default();
+                        plain_mounted.toggle();
+                    }
+                    Key::F6 => {
+                        event.prevent_default();
+                        plain_epoch += 1;
+                        plain_mounted.set(true);
+                    }
+                    Key::F9 => {
+                        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+                        {
+                            event.prevent_default();
+                            window_wide.toggle();
+                            dioxus::desktop::window().set_inner_size(dioxus::desktop::LogicalSize::new(
+                                if window_wide() { 1120.0 } else { 1000.0 }, 850.0,
+                            ));
+                        }
                     }
                     Key::F7 => {
                         event.prevent_default();
@@ -242,6 +265,18 @@ pub fn FilterLayoutReview() -> Element {
                         "Remount filter"
                     }
                     Button {
+                        id: "r0252-plain-visible",
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| plain_mounted.toggle(),
+                        if plain_mounted() { "Hide plain filter (F5)" } else { "Restore plain filter (F5)" }
+                    }
+                    Button {
+                        id: "r0252-plain-remount",
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| { plain_epoch += 1; plain_mounted.set(true); },
+                        "Remount plain filter (F6)"
+                    }
+                    Button {
                         id: "r0235-outside",
                         variant: ButtonVariant::Secondary,
                         "Outside focus target"
@@ -313,10 +348,11 @@ pub fn FilterLayoutReview() -> Element {
                 }
                 section { id: "r0235-plain-section", class: "r0235-stage",
                     h2 { "Plain suggestion filter" }
-                    if mounted() {
+                    p { "Open both filters with ArrowDown to keep both popups available. F5 hides or restores this filter; F6 remounts it while the categorized filter remains open. On desktop, F9 resizes the window." }
+                    if mounted() && plain_mounted() {
                         div {
                             id: "r0235-plain-host",
-                            key: "plain-{epoch()}",
+                            key: "plain-{epoch()}-{plain_epoch()}",
                             CategoryFilter {
                                 suggestions: sample_suggestions(),
                                 state: Some(plain_state()),
@@ -340,6 +376,8 @@ pub fn FilterLayoutReview() -> Element {
                     "aria-live": "polite",
                     "data-mounted": mounted().to_string(),
                     "data-epoch": epoch().to_string(),
+                    "data-plain-mounted": plain_mounted().to_string(),
+                    "data-plain-epoch": plain_epoch().to_string(),
                     "data-narrow": narrow().to_string(),
                     "data-near-bottom": near_bottom().to_string(),
                     "data-scrolled": scrolled().to_string(),
@@ -547,6 +585,45 @@ await wait('plain suggestion committed', () => status()?.dataset.plainCount === 
 byId('r0235-outside').click();
 await wait('outside click closes popups', () => !catPanel() && !plainPanel());
 
+// Shared viewport lifetime: two live consumers, then one closes/retires while the other measures.
+const popupReady = panel => panel?.matches(':popover-open') && getComputedStyle(panel).visibility === 'visible';
+const categoryAligned = () => {
+    if (!popupReady(catPanel())) return false;
+    const p = catPanel().getBoundingClientRect(), a = catAnchor().getBoundingClientRect();
+    return Math.abs(p.width - a.width) <= 2 && Math.abs(p.left - a.left) <= 2 && Math.abs(p.top - a.bottom - 2) <= 6;
+};
+key(catInput(), 'ArrowDown');
+await wait('categorized popup opens for shared viewport', categoryAligned);
+key(plainInput(), 'ArrowDown');
+await wait('two native geometry consumers remain live', () => categoryAligned() && popupReady(plainPanel()));
+key(plainInput(), 'Escape');
+await wait('closing one consumer leaves the other open', () => !plainPanel() && categoryAligned());
+key(plainInput(), 'ArrowDown');
+await wait('peer popup reopens', () => popupReady(plainPanel()) && categoryAligned());
+catInput().focus({preventScroll:true});
+key(catInput(), 'F5');
+await wait('independent peer removal preserves categorized popup', () => status()?.dataset.plainMounted === 'false' && !plainHost() && categoryAligned());
+const sharedAnchorTop = catAnchor().getBoundingClientRect().top;
+key(catInput(), 'F3');
+await wait('remaining consumer follows real ancestor scroll', () => categoryAligned() && catAnchor().getBoundingClientRect().top < sharedAnchorTop - 16);
+key(catInput(), 'F3');
+await wait('remaining consumer restores ancestor alignment', () => status()?.dataset.scrolled === 'false' && categoryAligned());
+key(catInput(), 'F9');
+await wait('remaining consumer follows Dioxus window resize', () => Math.abs(innerWidth - 1120) <= 2 && categoryAligned());
+key(catInput(), 'F5');
+await wait('peer restored alongside live consumer', () => status()?.dataset.plainMounted === 'true' && plainInput() && categoryAligned());
+key(plainInput(), 'ArrowDown');
+await wait('restored peer receives current shared viewport', () => popupReady(plainPanel()) && categoryAligned());
+const retiredPeer = plainHost(), retiredPanel = plainPanel();
+key(catInput(), 'F6');
+await wait('keyed peer retirement keeps other consumer live', () => status()?.dataset.plainEpoch === '1' && plainHost() !== retiredPeer && !retiredPeer.isConnected && !retiredPanel.isConnected && categoryAligned());
+key(plainInput(), 'ArrowDown');
+await wait('remounted peer opens with current shared facts', () => popupReady(plainPanel()) && categoryAligned());
+key(catInput(), 'F9');
+await wait('shared consumers follow restored window width', () => Math.abs(innerWidth - 1000) <= 2 && categoryAligned() && popupReady(plainPanel()));
+byId('r0235-outside').click();
+await wait('shared workflow outside close', () => !catPanel() && !plainPanel());
+
 // 6. Deferred acknowledgement and source-like controller command scrolling token list to end.
 byId('r0235-toggle-defer').click();
 await wait('defer mode enabled', () => status()?.dataset.deferAck === 'true');
@@ -604,6 +681,9 @@ return {
     wideWidth: Math.round(wideWidth),
     viewportClampAndFlipTop: true,
     categoryAndPlainSelection: true,
+    simultaneousSharedViewportConsumers: true,
+    closedRemovedRemountedPeerIndependent: true,
+    remainingConsumerAncestorScrollAndWindowResize: true,
     deferredAckAndControllerScrollTop: Math.round(scrolledTop),
     removeAndClearUsable: true,
     teardownAndRemountClean: true,
