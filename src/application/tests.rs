@@ -2276,6 +2276,7 @@ struct AppSwitchFixture {
     overlay_runtime: Option<crate::overlay_runtime::RuntimeHandle>,
     overflow_peers: Option<HeaderPeerCapture>,
     show_menu: bool,
+    show_legacy_apps: bool,
     sidebar: bool,
     sidebar_visible: bool,
     sidebar_empty: bool,
@@ -2344,7 +2345,7 @@ fn app_switch_fixture(settings: Rc<RefCell<AppSwitchFixture>>) -> Element {
     let state = settings.borrow();
     let overflow_listener_revision = state.overflow_listener_revision;
     let header = rsx! {ApplicationHeader {
-        show_menu:show_authority,enable_top_layer:state.slot_top_layer,
+        show_menu:show_authority,show_app_switch:state.show_legacy_apps,enable_top_layer:state.slot_top_layer,
         onbeforeoverflowchange:move |event:HeaderOverflowEvent| {
             let veto={let mut state=overflow_requested.borrow_mut();state.overflow_requests.push((event.previous,event.open));state.overflow_veto};
             if veto {event.prevent_default();}
@@ -2458,6 +2459,7 @@ impl AppSwitchHarness {
             overlay_runtime: None,
             overflow_peers: None,
             show_menu: false,
+            show_legacy_apps: false,
             sidebar: false,
             sidebar_visible: true,
             sidebar_empty: false,
@@ -4082,4 +4084,99 @@ fn app_switch_renders_exact_target_anchors_without_native_descriptors() {
     );
     assert!(html.contains("data-selected=\"true\""));
     assert!(html.contains("aria-current=\"page\""));
+}
+
+fn header_registered_control_id(harness: &AppSwitchHarness, prefix: &str) -> Option<String> {
+    let html = harness.html();
+    let suffix = html.split_once(&format!(" id=\"{prefix}"))?.1;
+    Some(format!("{prefix}{}", suffix.split('"').next()?))
+}
+
+#[test]
+fn header_optional_menu_focus_registration_expires_with_its_control_scope() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = AppSwitchHarness::configured(None, false, |state| {
+        state.contained = false;
+        state.show_menu = true;
+    });
+    h.settle();
+    let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
+    let first_id = header_registered_control_id(&h, "ix-header-menu-toggle-").unwrap();
+    let first = runtime.capture_registered_focus(&first_id).unwrap();
+    // Keep the backing handle alive deliberately: scope cleanup must invalidate
+    // registration even when some other consumer retained the mounted element.
+    let retained = first.live_node().unwrap();
+    h.settings.borrow_mut().name = "Updated application".into();
+    h.update();
+    assert_eq!(
+        header_registered_control_id(&h, "ix-header-menu-toggle-").as_ref(),
+        Some(&first_id)
+    );
+    assert!(first.live_node().is_some());
+    h.write_show_menu(false);
+    assert!(header_registered_control_id(&h, "ix-header-menu-toggle-").is_none());
+    assert!(runtime.capture_registered_focus(&first_id).is_none());
+    assert!(first.live_node().is_none());
+    h.write_show_menu(true);
+    let replacement_id = header_registered_control_id(&h, "ix-header-menu-toggle-").unwrap();
+    assert_ne!(replacement_id, first_id);
+    assert!(runtime.capture_registered_focus(&replacement_id).is_some());
+    assert!(first.live_node().is_none());
+    assert!(first.matches_node(&retained));
+    h.settings.borrow_mut().visible = false;
+    h.update();
+    assert!(runtime.capture_registered_focus(&replacement_id).is_none());
+}
+
+#[test]
+fn header_legacy_apps_registration_tracks_responsive_hiding_and_configured_replacement() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = AppSwitchHarness::configured(None, false, |state| state.show_legacy_apps = true);
+    h.settle();
+    let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
+    let first_id = header_registered_control_id(&h, "ix-header-apps-").unwrap();
+    let first = runtime.capture_registered_focus(&first_id).unwrap();
+    let retained = first.live_node().unwrap();
+    let target = h
+        .attrs
+        .iter()
+        .find(|(_, attrs)| attrs.get("id") == Some(&first_id))
+        .unwrap()
+        .0;
+    assert_eq!(
+        menu_dispatch(
+            &h.dom,
+            "click",
+            dioxus::core::ElementId::from_raw(*target),
+            ()
+        ),
+        (false, true)
+    );
+    assert_eq!(h.settings.borrow().requests, 1);
+    h.settings.borrow_mut().breakpoint = ApplicationBreakpoint::Small;
+    h.update();
+    assert!(header_registered_control_id(&h, "ix-header-apps-").is_none());
+    assert!(runtime.capture_registered_focus(&first_id).is_none());
+    assert!(first.live_node().is_none());
+    h.settings.borrow_mut().breakpoint = ApplicationBreakpoint::Large;
+    h.update();
+    let restored_id = header_registered_control_id(&h, "ix-header-apps-").unwrap();
+    let restored = runtime.capture_registered_focus(&restored_id).unwrap();
+    assert_ne!(restored_id, first_id);
+    h.set(Some(app_switch_config_fixture()));
+    let configured_id = header_registered_control_id(&h, "ix-app-switch-opener-").unwrap();
+    let configured = runtime.capture_registered_focus(&configured_id).unwrap();
+    assert!(header_registered_control_id(&h, "ix-header-apps-").is_none());
+    assert!(runtime.capture_registered_focus(&restored_id).is_none());
+    assert!(restored.live_node().is_none());
+    h.set(None);
+    assert!(configured.live_node().is_none());
+    let replacement_id = header_registered_control_id(&h, "ix-header-apps-").unwrap();
+    assert!(runtime.capture_registered_focus(&replacement_id).is_some());
+    assert_ne!(replacement_id, restored_id);
+    h.settings.borrow_mut().show_legacy_apps = false;
+    h.update();
+    assert!(runtime.capture_registered_focus(&replacement_id).is_none());
+    assert!(first.live_node().is_none());
+    assert!(first.matches_node(&retained));
 }

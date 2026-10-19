@@ -2390,37 +2390,17 @@ impl RuntimeHandle {
             .map(|entry| entry.kind)
             .or_else(|| self.domain()?.node_kind(id, node.generation))
     }
-    /// Header's internal controls are native light-DOM buttons in this port,
-    /// but live inside the source Header shadow root. Ordinary source queries
-    /// do not enter that shadow root. Keep the renderer projection in Rust;
-    /// the captured trigger remains separately available for reverse exits.
-    fn source_tab_candidates(
-        &self,
-        report: &Report,
-        candidates: &[crate::popover_focus::TabCandidate],
-    ) -> Vec<crate::popover_focus::TabCandidate> {
-        let controls = report
-            .nodes
+    fn document_tab_order(&self, report: &Report) -> Vec<String> {
+        let candidates = report
+            .document_candidates
             .iter()
-            .filter(|node| self.reported_kind(report, &node.id) == Some(OverlayKind::Header))
-            .flat_map(|node| node.header_controls.iter())
-            .collect::<Vec<_>>();
-        candidates
-            .iter()
-            .filter(|candidate| !controls.contains(&&candidate.target))
-            .cloned()
-            .collect()
-    }
-    fn source_document_order(&self, report: &Report) -> Vec<String> {
-        let candidates = self
-            .source_tab_candidates(report, &report.document_candidates)
-            .into_iter()
             .filter(|candidate| {
                 !candidate.hosts.iter().any(|host| {
                     self.reported_kind(report, host)
                         .is_some_and(OverlayKind::is_dropdown)
                 })
             })
+            .cloned()
             .collect::<Vec<_>>();
         crate::popover_focus::tab_order_targets(&candidates)
     }
@@ -2545,17 +2525,15 @@ impl RuntimeHandle {
                         } else {
                             excluded
                         };
-                        let candidates =
-                            self.source_tab_candidates(report, &parent_node.tab_candidates);
                         crate::popover_focus::tab_adjacent_target(
-                            &candidates,
+                            &parent_node.tab_candidates,
                             &excluded,
                             &node.trigger_id,
                             facts.shift,
                         )
                     })
                     .or_else(|| {
-                        let order = self.source_document_order(report);
+                        let order = self.document_tab_order(report);
                         order
                             .iter()
                             .position(|id| id == &node.trigger_id)
@@ -2742,9 +2720,8 @@ impl NodeHandle {
                 ) else {
                     return KeyDecision::default();
                 };
-                let candidates = runtime.source_tab_candidates(&report, &node.tab_candidates);
                 let Some(target) = crate::popover_focus::tab_boundary_target(
-                    &candidates,
+                    &node.tab_candidates,
                     &excluded,
                     event.modifiers().contains(Modifiers::SHIFT),
                 ) else {
@@ -3571,8 +3548,6 @@ struct NodeFacts {
     trigger_id: String,
     #[serde(default)]
     anchor_in_dropdown_item: Option<bool>,
-    #[serde(default)]
-    header_controls: Vec<String>,
     #[serde(default)]
     items_host: String,
     #[serde(default)]

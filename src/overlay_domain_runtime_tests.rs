@@ -1395,7 +1395,7 @@ fn header_exit_nodes(
         serde_json::json!({
             "id":fixture.header.id(),"generation":1,
             "trigger_id":"header-more",
-            "header_controls":["header-more","header-menu"],"items_host":format!("{}-host",fixture.header.id())
+            "items_host":format!("{}-host",fixture.header.id())
         }),
         trap_node(
             parent_id,
@@ -1636,12 +1636,14 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
     let mut nodes = header_exit_nodes(&fixture, &parent, true);
     nodes.last_mut().unwrap()["focus_candidates"] = serde_json::json!([
         fixture_focus_candidate("header-menu", &[parent_id], false),
+        fixture_focus_candidate("header-apps", &[parent_id], false),
         fixture_focus_candidate("parent-before", &[parent_id], false),
         fixture_focus_candidate("parent-after", &[parent_id], false),
         fixture_focus_candidate("header-overflow", &[fixture.header.id(), parent_id], true),
         fixture_focus_candidate("header-more", &[parent_id], false)
     ]);
-    let mounted = register_exit_mount(&dom_parent, &parent, "parent-before");
+    let first = register_exit_mount(&dom_parent, &parent, "header-menu");
+    let last = register_exit_mount(&dom_parent, &parent, "header-more");
     let mut report = trap_report(&parent, "header focus owner document", 2, nodes);
     report["shift"] = false.into();
     report["active_hosts"] = serde_json::json!([fixture.header.id(), parent_id]);
@@ -1652,20 +1654,106 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
     assert_eq!(parent.runtime().pending_item_focus_count(), 0);
     report["sequence"] = 3.into();
     report["active_hosts"] = serde_json::json!([parent_id]);
-    report["focus_candidates"][2]["exact_active"] = true.into();
-    report["focus_candidates"][2]["contains_active"] = true.into();
+    report["focus_candidates"][3]["exact_active"] = true.into();
+    report["focus_candidates"][3]["contains_active"] = true.into();
+    report["focus_candidates"][4]["exact_active"] = false.into();
+    report["focus_candidates"][4]["contains_active"] = false.into();
+    assert!(
+        deliver_trap(&dom_parent, &parent, report.clone()).default_action_enabled(),
+        "parent-after is interior because the rendered More button follows it"
+    );
+    assert_eq!(parent.runtime().pending_item_focus_count(), 0);
+    report["sequence"] = 4.into();
     report["focus_candidates"][3]["exact_active"] = false.into();
     report["focus_candidates"][3]["contains_active"] = false.into();
+    report["focus_candidates"][5]["exact_active"] = true.into();
+    report["focus_candidates"][5]["contains_active"] = true.into();
     assert!(
-        !deliver_trap(&dom_parent, &parent, report).default_action_enabled(),
-        "parent last wraps with open Header host excluded"
+        !deliver_trap(&dom_parent, &parent, report.clone()).default_action_enabled(),
+        "More wraps forward to Menu while the open overflow host is excluded"
     );
     settle_exit(&mut dom_parent);
     assert_eq!(
-        *mounted.calls.borrow(),
-        [("parent-before".into(), parent.scope())]
+        *first.calls.borrow(),
+        [("header-menu".into(), parent.scope())]
+    );
+    report["sequence"] = 5.into();
+    report["shift"] = true.into();
+    report["focus_candidates"][5]["exact_active"] = false.into();
+    report["focus_candidates"][5]["contains_active"] = false.into();
+    report["focus_candidates"][0]["exact_active"] = true.into();
+    report["focus_candidates"][0]["contains_active"] = true.into();
+    assert!(
+        !deliver_trap(&dom_parent, &parent, report).default_action_enabled(),
+        "Menu wraps backward to the rendered More button"
+    );
+    settle_exit(&mut dom_parent);
+    assert_eq!(
+        *last.calls.borrow(),
+        [("header-more".into(), parent.scope())]
     );
     assert!(fixture.header_open.get() && parent.open());
+}
+
+#[test]
+fn header_nested_dropdown_tab_reaches_rendered_controls_and_preserves_root_veto() {
+    for (shift, veto, token) in [
+        (false, false, 780),
+        (true, false, 782),
+        (false, true, 784),
+        (true, true, 786),
+    ] {
+        let parent = Fixture::new("header-tab-exit-parent", token);
+        let child = Fixture::new("header-tab-exit-child", token + 1);
+        let dom_parent = build_popover_fixture(&parent);
+        let (mut dom_child, fixture) = build_header_exit_fixture(&child);
+        let document = format!("Header native Tab exit {token}");
+        let sequence =
+            prepare_header_exit(&dom_parent, &parent, &dom_child, &fixture, &document, false);
+        let parent_id = parent.node().id().to_string();
+        let mut nodes = header_exit_nodes(&fixture, &parent, true);
+        nodes.last_mut().unwrap()["focus_candidates"] = serde_json::json!([
+            fixture_focus_candidate("header-menu", &[&parent_id], false),
+            fixture_focus_candidate("header-more", &[&parent_id], false),
+            fixture_focus_candidate("header-apps", &[&parent_id], false),
+            fixture_focus_candidate("parent-custom", &[&parent_id], false),
+            fixture_focus_candidate("header-overflow", &[fixture.header.id(), &parent_id], true)
+        ]);
+        let target = if shift { "header-more" } else { "header-apps" };
+        let mounted = register_exit_mount(&dom_parent, &parent, target);
+        fixture.header_veto.set(veto);
+        let report = serde_json::json!({
+            "owner":child.runtime().owner_id(),"document":document,"sequence":sequence,
+            "kind":"key","key":"Tab","shift":shift,
+            "hosts":[child.node().id(),fixture.header.id(),parent_id],"nodes":nodes
+        });
+        assert!(
+            !deliver_trap(&dom_child, &child, report).default_action_enabled(),
+            "the current nested Tab captures its registered Header destination"
+        );
+        assert_eq!(fixture.header_open.get(), veto);
+        assert_eq!(child.open(), veto);
+        assert!(parent.open());
+        settle_exit(&mut dom_child);
+        assert_eq!(
+            *mounted.calls.borrow(),
+            [(target.into(), child.scope())],
+            "mounted focus executes in the originating owner, even when close is vetoed"
+        );
+        assert_eq!(
+            *fixture.order.borrow(),
+            if veto {
+                vec!["header:before:false"]
+            } else {
+                vec![
+                    "header:before:false",
+                    "child:before:false",
+                    "child:apply:false",
+                    "header:apply:false",
+                ]
+            }
+        );
+    }
 }
 
 #[test]

@@ -22,6 +22,8 @@ mod filter_keyboard_review;
 mod filter_layout_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
+#[path = "dioxus_first_probe/header_tab_review.rs"]
+mod header_tab_review;
 #[path = "dioxus_first_probe/item_order_review.rs"]
 mod item_order_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
@@ -128,6 +130,9 @@ fn Preview() -> Element {
     }
     if scope == "?itemorder" {
         return rsx! { item_order_review::ItemOrderReview {} };
+    }
+    if scope == "?headertab" {
+        return rsx! { header_tab_review::HeaderTabReview {} };
     }
     if scope == "?menuorder" {
         return rsx! { menu_order_review::MenuOrderReview {} };

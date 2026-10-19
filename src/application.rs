@@ -2021,6 +2021,57 @@ fn ApplicationSwitchOpener(
     }
 }
 
+// These controls own their registration scope because responsive/optional
+// controls can disappear while ApplicationHeader itself remains mounted.
+#[component]
+fn HeaderMenuToggle(expanded: Signal<bool>, onmenutoggle: EventHandler<bool>) -> Element {
+    let mut expanded = expanded;
+    let context = try_consume_context::<ApplicationContext>();
+    let id = use_hook(|| {
+        format!(
+            "ix-header-menu-toggle-{}",
+            NAV_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let mounted = crate::use_focus_mount(id.clone());
+    let alive = use_hook(|| Rc::new(Cell::new(true)));
+    let cleanup_alive = alive.clone();
+    use_drop(move || cleanup_alive.set(false));
+    rsx! {
+        button { id, onmounted:mounted, class: "ix-app-icon-button ix-header-menu-toggle", r#type: "button", "data-header-menu-toggle":expanded().to_string(), "aria-label": if expanded() { "Collapse" } else { "Expand" },
+            "aria-expanded": expanded().to_string(), onclick: move |_| {
+                let previous = *expanded.peek();
+                if let Some(context) = context {
+                    let alive = alive.clone();
+                    spawn(async move {
+                        if !alive.get() { return; }
+                        let request = context.menu_request.try_peek().ok()
+                            .and_then(|registry|registry.borrow().as_ref().copied());
+                        if let Some(request) = request { request.request.call(None); }
+                    });
+                    onmenutoggle.call(previous);
+                } else {
+                    expanded.set(!previous);
+                    onmenutoggle.call(!previous);
+                }
+            },
+            crate::Icon { name: "app-menu".to_string(), size: 24 }
+        }
+    }
+}
+
+#[component]
+fn HeaderLegacyApps(label: String, onopen: EventHandler<MouseEvent>) -> Element {
+    let id = use_hook(|| format!("ix-header-apps-{}", NAV_ID.fetch_add(1, Ordering::Relaxed)));
+    let mounted = crate::use_focus_mount(id.clone());
+    rsx! {
+        button { id, onmounted:mounted, class: "ix-app-icon-button", r#type: "button", "aria-label":label,
+            onclick: move |event| onopen.call(event),
+            crate::Icon { name: "apps".to_string(), size: 24 }
+        }
+    }
+}
+
 /// Application title bar with neutral application pictogram, menu toggle and action slots.
 /// The port deliberately has no company logo default or bundled trademark artwork.
 /// `app_icon` remains a named-icon compatibility adapter; `app_icon_src` is
@@ -2089,7 +2140,7 @@ pub fn ApplicationHeader(
         .and_then(|context| (context.breakpoint)())
         .unwrap_or_else(|| viewport.breakpoint());
     let header_breakpoint = resolved_breakpoint.class();
-    let mut standalone = use_signal(|| false);
+    let standalone = use_signal(|| false);
     let expanded = context.map(|c| c.expanded).unwrap_or(standalone);
     let initial_show_menu = use_hook(|| *show_menu.peek());
     let initial_revision = use_hook(|| context.map(|context| *context.header_revision.peek()));
@@ -2107,9 +2158,6 @@ pub fn ApplicationHeader(
             effective_show_menu.set(requested);
         }
     });
-    let alive = use_hook(|| Rc::new(Cell::new(true)));
-    let cleanup_alive = alive.clone();
-    use_drop(move || cleanup_alive.set(false));
     let small = resolved_breakpoint == ApplicationBreakpoint::Small;
     rsx! {
         header { role:"banner",class: "ix-application-header {header_breakpoint}", "data-borderless": hide_bottom_border.to_string(),
@@ -2120,34 +2168,14 @@ pub fn ApplicationHeader(
                     } else if let Some(icon)=app_icon {span {class:"ix-application-app-icon",crate::Icon{name:icon,size:32}}}
                 }
                 if effective_show_menu() || (small && context.is_some()) {
-                    button { class: "ix-app-icon-button ix-header-menu-toggle", r#type: "button", "data-header-menu-toggle":expanded().to_string(), "aria-label": if expanded() { "Collapse" } else { "Expand" },
-                        "aria-expanded": expanded().to_string(), onclick: move |_| {
-                            let previous = *expanded.peek();
-                            if let Some(context) = context {
-                                let alive = alive.clone();
-                                spawn(async move {
-                                    if !alive.get() { return; }
-                                    let request = context.menu_request.try_peek().ok()
-                                        .and_then(|registry|registry.borrow().as_ref().copied());
-                                    if let Some(request) = request { request.request.call(None); }
-                                });
-                                onmenutoggle.call(previous);
-                            } else {
-                                standalone.set(!previous);
-                                onmenutoggle.call(!previous);
-                            }
-                        },
-                        crate::Icon { name: "app-menu".to_string(), size: 24 }
-                    }
+                    HeaderMenuToggle {expanded,onmenutoggle}
                 }
                 if let Some(context) = context.filter(|context| !small && (context.has_app_switch)()) {
                     ApplicationSwitchOpener {modal:context.app_switch,authority:context.app_switch_config,
                         label:aria_label_app_switch_icon_button.clone().unwrap_or_else(||"Apps".into()),onrequest:onopenappswitch}
 
                 } else if show_app_switch && !small {
-                    button { class: "ix-app-icon-button", r#type: "button", "aria-label":aria_label_app_switch_icon_button.clone().unwrap_or_else(||"Apps".into()), onclick: move |event| onopenappswitch.call(event),
-                        crate::Icon { name: "apps".to_string(), size: 24 }
-                    }
+                    HeaderLegacyApps {label:aria_label_app_switch_icon_button.clone().unwrap_or_else(||"Apps".into()),onopen:onopenappswitch}
                 }
                 if !small {if let Some(src)=company_logo.filter(|src|!src.is_empty()){span {class:"ix-application-company-logo",img {src,alt:company_logo_alt}}}}
                 if logo.is_some(){div {class:"ix-application-logo",{logo}}}

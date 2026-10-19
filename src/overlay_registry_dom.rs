@@ -113,11 +113,6 @@ function focusCandidates(active){
       exact_active:element===active,contains_active:!!active&&composedContains(element,active)
     })):[];
 }
-function headerControls(root){
-  const header=root.closest('header.ix-application-header');if(!header)return [];
-  return Array.from(header.querySelectorAll('[data-header-more-button],[data-header-menu-toggle],[data-app-switch-opener],.ix-application-header-leading > .ix-app-icon-button'))
-    .filter(el=>el instanceof HTMLElement&&el.closest('header.ix-application-header')===header).map(nativeId);
-}
 // The pinned interpreter uses insertBefore for keyed moves. MountedData has
 // no move notification or activeElement query, so observe the existing native
 // records. Only key/ID strings survive this callback; Rust performs any repair.
@@ -155,7 +150,6 @@ function collectFacts(){
     nodes.push({
       id,generation,trigger_id:nativeId(trigger),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
-      header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       items_host:nativeId(itemsHost),
       popover_host:root.getAttribute('data-ix-overlay-native-surface')==='popover'?nativeId(host):''
     });
