@@ -104,8 +104,8 @@ pub fn DescendantPreview() -> Element {
                 button { id:"r0225-hide", r#type:"button", class:"ix-button ix-button-secondary", onclick:move |_|hide_middle.set(!hide_middle()), "Toggle middle action" }
                 button { id:"r0229-restore", r#type:"button", class:"ix-button ix-button-secondary", onclick:move |_|{removed_rows.write().clear();hidden_rows.write().clear();}, "Restore removed and hidden actions" }
                 Dropdown { label:"Dynamic equipment actions", class:"r0225-dynamic", navigation_mode:DropdownNavigationMode::RovingTabindex,
-                    for name in ordered {
-                        DropdownItem { key:"{name}", id:format!("r0225-{name}"), label:format!("{name} action"), hidden:(name=="middle"&&hide_middle())||hidden_rows.read().contains(name), tabindex:0,
+                    for (order,name) in ordered.into_iter().enumerate() {
+                        DropdownItem { key:"{name}", order:Some(order), id:format!("r0225-{name}"), label:format!("{name} action"), hidden:(name=="middle"&&hide_middle())||hidden_rows.read().contains(name), tabindex:0,
                             onfocus:move |_|focused_row.set(Some(name.to_string()))
                         }
                     }

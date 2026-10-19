@@ -22,7 +22,7 @@ let alive=true,sequence=0,lastSignature='',documentEvents=null,lastFocus=null,mo
 // have no programmatic focus fallback and need no native identity registry.
 function nativeId(el){return el instanceof HTMLElement?el.id:'';}
 // Dioxus owns overlay lifetimes and relationships. These document lookups
-// supply only remaining native order/geometry/presentation facts for its marked
+// supply only remaining native focus/geometry/presentation facts for its marked
 // light-DOM surfaces. Foreign shadow-tree discovery is unsupported.
 function transport(){
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input instanceof HTMLInputElement&&input.isConnected&&input.getAttribute('data-ix-overlay-transport')===owner)return input;
@@ -95,13 +95,6 @@ function nearestPopover(element){
   for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.getAttribute('data-ix-overlay-native-surface')==='popover')return n;
   return null;
 }
-// Pinned MountedData exposes mounted focus/measurement, but no child or
-// document-position enumeration. This primary adapter reports only Rust-rendered
-// registration keys in current DOM order. Rust owns membership, current owner
-// generation and eligibility; an arbitrary DOM element cannot join an inventory.
-function registeredItemOrder(host){
-  return host instanceof HTMLElement?Array.from(host.querySelectorAll('[data-ix-item-key]')).map(element=>element.getAttribute('data-ix-item-key')).filter(Boolean):[];
-}
 function pathIds(path,attr,pred){
   const out=[];
   for(const item of path)if(item instanceof HTMLElement&&(!pred||pred(item))){
@@ -163,7 +156,6 @@ function collectFacts(){
       id,generation,trigger_id:nativeId(trigger),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
-      item_order:registeredItemOrder(itemsHost),
       items_host:nativeId(itemsHost),
       popover_host:root.getAttribute('data-ix-overlay-native-surface')==='popover'?nativeId(host):''
     });
@@ -260,7 +252,7 @@ document.addEventListener('focusin',()=>reportObserve([],true),{signal});
 // Remaining generic Tab facts observe current focus. Typed item cues are
 // owned by Dioxus focus/blur handlers.
 document.addEventListener('focusout',()=>{const observedMoves=movedSequence;queueMicrotask(()=>{if(alive)reportObserve([],false,observedMoves);});},{passive:true,signal});
-// Remaining native facts track order, focus candidates and presentation;
+// Remaining native facts track focus candidates and presentation;
 // this observer never enrolls roots or changes ownership/lifecycle in Rust.
 const observer=new MutationObserver(records=>reportObserve(records));
 observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[

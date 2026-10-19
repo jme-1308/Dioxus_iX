@@ -22,6 +22,8 @@ mod filter_keyboard_review;
 mod filter_layout_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
+#[path = "dioxus_first_probe/item_order_review.rs"]
+mod item_order_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
 mod menu_focus_review;
 #[path = "dioxus_first_probe/menu_order_review.rs"]
@@ -123,6 +125,9 @@ fn Preview() -> Element {
     }
     if scope == "?tooltip" {
         return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
+    }
+    if scope == "?itemorder" {
+        return rsx! { item_order_review::ItemOrderReview {} };
     }
     if scope == "?menuorder" {
         return rsx! { menu_order_review::MenuOrderReview {} };
@@ -321,9 +326,9 @@ fn Preview() -> Element {
                 Dropdown { label:"Equipment actions", navigation_mode:DropdownNavigationMode::RovingTabindex,
                     onbeforechange:move |event:DropdownChangeEvent|if event.open && veto(){event.prevent_default();},
                     onchange:move |value|dropdown_changes.write().push(value),
-                    for label in if reversed(){vec!["Move this item", "Inspect", "Unavailable"]}else{vec!["Inspect", "Move this item", "Unavailable"]} {
-                        DropdownItem { key:"{label}", label, disabled:label=="Unavailable", keep_open:label=="Move this item",
-                            onclick:move |_|{action.set(label.into());if label=="Move this item"{reversed.set(!reversed());}}
+                    for (index, label) in if reversed(){vec!["Move this item", "Inspect", "Unavailable"]}else{vec!["Inspect", "Move this item", "Unavailable"]}.into_iter().enumerate() {
+                        DropdownItem { key:"{label}", order:Some(index), label, disabled:label=="Unavailable", keep_open:label=="Move this item",
+                            onitemclick:move |_|{action.set(label.into());if label=="Move this item"{reversed.set(!reversed());}}
                         }
                     }
                 }

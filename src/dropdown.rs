@@ -20,15 +20,34 @@ static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 static NEXT_SOURCE_ITEM: AtomicUsize = AtomicUsize::new(1);
 
-/// Explicit Dioxus composition owns item membership; native observations only
-/// provide order for these registered keys.
+/// Explicit Dioxus composition owns item membership and declared sibling order.
+/// Registered parent scopes describe nesting without inspecting rendered DOM.
 #[derive(Clone)]
 pub(crate) struct ItemInventoryOwner(pub(crate) NodeHandle);
+
+#[derive(Clone)]
+struct ItemOrderParent {
+    key: String,
+    owner: Option<(String, u64)>,
+}
+/// Rust parent-item scope; this component adds no rendered element. A nested
+/// Dropdown establishes a different owner, so its items cannot inherit this key.
+#[component]
+pub(crate) fn ItemOrderContent(children: Element, parent_key: String) -> Element {
+    let owner = try_use_context::<ItemInventoryOwner>()
+        .map(|owner| (owner.0.id().to_string(), owner.0.generation()));
+    use_context_provider(|| ItemOrderParent {
+        key: parent_key,
+        owner,
+    });
+    rsx! {{children}}
+}
 
 pub(crate) struct ItemDescription {
     pub(crate) disabled: bool,
     pub(crate) hidden: bool,
     pub(crate) checked: bool,
+    pub(crate) order: Option<usize>,
     pub(crate) source_focusable: bool,
     pub(crate) linked_trigger: Option<String>,
     pub(crate) parts: Vec<HostPartFacts>,
@@ -39,6 +58,7 @@ impl Default for ItemDescription {
             disabled: false,
             hidden: false,
             checked: false,
+            order: None,
             source_focusable: true,
             linked_trigger: None,
             parts: Vec::new(),
@@ -53,6 +73,7 @@ pub(crate) struct ItemHostBinding {
     pub(crate) runtime: overlay_runtime::RuntimeHandle,
     context: Option<DropdownContext>,
     inventory_owner: Option<NodeHandle>,
+    parent_key: Option<String>,
     identity: usize,
     kind: ItemKind,
 }
@@ -104,8 +125,15 @@ impl ItemHostBinding {
             linked_trigger: options.linked_trigger,
             parts: options.parts,
         };
-        self.runtime
-            .register_owned_item_description(&self.key, owner, host);
+        self.runtime.register_owned_item_description(
+            &self.key,
+            owner,
+            host,
+            overlay_runtime::ItemOrder {
+                position: options.order,
+                parent: self.parent_key.clone(),
+            },
+        );
     }
     pub(crate) fn focus(
         &self,
@@ -231,6 +259,13 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
     let dropped = key.clone();
     use_drop(move || cleanup.unregister_item_cue(&dropped));
     let inventory_owner = try_use_context::<ItemInventoryOwner>().map(|owner| owner.0);
+    let declared_parent = use_hook(try_consume_context::<ItemOrderParent>);
+    let current_owner = inventory_owner
+        .as_ref()
+        .map(|owner| (owner.id().to_string(), owner.generation()));
+    let parent_key = declared_parent
+        .filter(|parent| parent.owner == current_owner)
+        .map(|parent| parent.key);
     let context = try_use_context::<DropdownContext>().filter(|context| {
         inventory_owner
             .as_ref()
@@ -250,6 +285,7 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         runtime,
         context,
         inventory_owner,
+        parent_key,
         identity,
         kind: kind_value,
     }
@@ -281,8 +317,8 @@ pub struct DropdownItemBinding {
     identity: usize,
 }
 impl DropdownItemBinding {
-    /// Spread on the registered element. The stable key lets the minimal
-    /// read-only order adapter report keyed reorder without discovering items.
+    /// Spread on the registered element. Stable Rust identity connects native
+    /// focus observations to this explicitly registered control.
     pub fn attributes(self) -> Vec<Attribute> {
         vec![
             Attribute::new(
@@ -303,6 +339,9 @@ pub struct DropdownItemOptions {
     pub disabled: bool,
     pub hidden: bool,
     pub checked: bool,
+    /// Current sibling position for a dynamic list. Omit for stable registration
+    /// order. Explicit positions sort first; ties retain registration order.
+    pub order: Option<usize>,
     pub tabindex: Option<i32>,
 }
 
@@ -341,7 +380,8 @@ pub fn use_dropdown_item(id: impl Into<String>) -> DropdownItemBinding {
 }
 
 /// Bind a custom control with explicit disabled, hidden, checked and authored
-/// tab-index state. Use the same options when rendering that control.
+/// tab-index state and current sibling order. Use the same options when rendering
+/// that control; dynamic wrappers forward `order` and `hidden` explicitly.
 pub fn use_dropdown_item_with_options(
     id: impl Into<String>,
     options: DropdownItemOptions,
@@ -361,6 +401,7 @@ pub fn use_dropdown_item_with_options(
             disabled: options.disabled,
             hidden: options.hidden,
             checked: options.checked,
+            order: options.order,
             ..Default::default()
         },
     );
@@ -1096,7 +1137,22 @@ impl DropdownContext {
             self.state.borrow().settings.mode
         };
         let inventory = Inventory::new(mode.inventory_mode(), raw.clone());
-        let current = inventory.active();
+        // Roving keys follow their registered physical origin. AD keys follow
+        // the logical selection, since an unfocusable row can keep its cue while
+        // native focus stays on the preceding control. A Category parent has no
+        // outer AD cue, so its explicit key origin supplies that missing position.
+        let origin = facts.focused_target.as_ref().and_then(|target| {
+            inventory
+                .query_hosts()
+                .into_iter()
+                .find(|host| &host.target == target)
+                .map(|host| host.item)
+        });
+        let current = if mode == DropdownNavigationMode::ActiveDescendant {
+            inventory.active().or(origin)
+        } else {
+            origin.or_else(|| inventory.active())
+        };
         let mut result = KeyDecision::default();
         if matches!(facts.key.as_str(), "Home" | "End" | "ArrowDown" | "ArrowUp") {
             result.prevent = true;
@@ -2500,6 +2556,9 @@ pub fn DropdownSubmenu(
     label: String,
     icon: Option<String>,
     #[props(default)] disabled: bool,
+    /// Current sibling position of the submenu trigger in a dynamic list.
+    #[props(default)]
+    order: Option<usize>,
     #[props(default)] navigation_mode: DropdownNavigationMode,
     #[props(default)] close_behavior: DropdownCloseBehavior,
     #[props(default)] enable_top_layer: bool,
@@ -2509,7 +2568,7 @@ pub fn DropdownSubmenu(
 ) -> Element {
     let dropdown = use_dropdown();
     rsx! {div {class:"ix-dropdown-submenu",
-        DropdownItem {label:label.clone(),icon,disabled,dropdown}
+        DropdownItem {label:label.clone(),icon,disabled,order,dropdown}
         Dropdown {label,controller:dropdown,disabled,navigation_mode,close_behavior,enable_top_layer,onbeforechange,onchange,placement:DropdownPlacement::RightStart,class:"ix-dropdown-submenu-surface",{children}}
     }}
 }
@@ -2541,6 +2600,9 @@ pub fn DropdownItem(
     #[props(default)] compact: bool,
     #[props(default)] icon: Option<String>,
     #[props(default)] disabled: bool,
+    /// Current sibling position for dynamic lists; static items may omit it.
+    #[props(default)]
+    order: Option<usize>,
     #[props(default)] checked: bool,
     #[props(default)] checkable: bool,
     #[props(default)] keep_open: bool,
@@ -2607,6 +2669,7 @@ pub fn DropdownItem(
         ItemDescription {
             disabled: blocked,
             checked,
+            order,
             source_focusable: !blocked,
             linked_trigger: trigger_marker.clone(),
             ..Default::default()
@@ -2692,7 +2755,7 @@ pub fn DropdownItem(
         id:host_id,class,
         role:if checked||checkable{"menuitemcheckbox"}else{"menuitem"},"data-ix-dropdown-item":id.to_string(),
         "data-ix-dropdown-owner":owner,"data-ix-dropdown-label":label.clone(),
-        "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key,"data-ix-item-runtime":host_binding.runtime.owner_id(),
+        "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key.clone(),"data-ix-item-runtime":host_binding.runtime.owner_id(),
         "data-ix-item-focusable":(!blocked).to_string(),"checked":checked,
         style:host_style,"data-ix-overlay-trigger":trigger_marker,
         "data-active":active.to_string(),"aria-disabled":blocked.to_string(),"disabled":blocked,
@@ -2739,7 +2802,7 @@ pub fn DropdownItem(
         ..attributes,
         if let Some(name)=icon{Icon {name,size:20}}
         if !compact{span {"{label}"}}
-        {children}
+        ItemOrderContent {parent_key:host_binding.key.clone(),{children}}
         if checked{Icon {name:"single-check",size:16}}
         if dropdown.is_some(){Icon {name:"chevron-right-small",size:16}}
         overlay_runtime::OverlayTransport {runtime:host_binding.runtime.clone()}

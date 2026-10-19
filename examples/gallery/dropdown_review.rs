@@ -21,18 +21,18 @@ pub fn DropdownOrderReview() -> Element {
         h2 { "Dropdown item order" }
         p { "Select C to move it before A without replacing the focused item. Home, End and arrow keys follow the visible order and skip Unavailable. Tools repeats the same interaction in an independent submenu." }
         Dropdown { label: "Reorderable actions", navigation_mode: DropdownNavigationMode::RovingTabindex,
-            for label in labels {
-                DropdownItem { key: "{label}", label, disabled: label == "Unavailable", keep_open: true,
-                    onclick: move |_| {
+            for (index, label) in labels.into_iter().enumerate() {
+                DropdownItem { key: "{label}", order: Some(index), label, disabled: label == "Unavailable", keep_open: true,
+                    onitemclick: move |_| {
                         if label == "C" { reordered.set(true); }
                         selected.set(format!("Selected {label}. Root order: {}.", if reordered() { "C, A, B" } else { "A, B, C" }));
                     },
                 }
             }
             DropdownSubmenu { label: "Tools", navigation_mode: DropdownNavigationMode::RovingTabindex,
-                for label in nested_labels {
-                    DropdownItem { key: "{label}", label, disabled: label == "Unavailable", keep_open: true,
-                        onclick: move |_| {
+                for (index, label) in nested_labels.into_iter().enumerate() {
+                    DropdownItem { key: "{label}", order: Some(index), label, disabled: label == "Unavailable", keep_open: true,
+                        onitemclick: move |_| {
                             if label == "C" { nested_reordered.set(true); }
                             selected.set(format!("Selected Tools / {label}. Submenu order: {}.", if nested_reordered() { "C, A, B" } else { "A, B, C" }));
                         },

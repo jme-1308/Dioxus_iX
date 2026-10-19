@@ -19,6 +19,10 @@ pub fn SelectItem(
     #[props(default)] label: Option<String>,
     #[props(default)] selected: bool,
     #[props(default)] disabled: bool,
+    /// Current sibling position in a dynamic Dropdown list. Omit for static
+    /// registration order; plain wrapper components forward it explicitly.
+    #[props(default)]
+    order: Option<usize>,
     #[props(default)] onclick: EventHandler<MouseEvent>,
     #[props(default)] onfocus: EventHandler<FocusEvent>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
@@ -49,6 +53,7 @@ pub fn SelectItem(
         &attributes,
         ItemDescription {
             disabled,
+            order,
             parts: vec![crate::dropdown_inventory::HostPartFacts {
                 kind: crate::dropdown_inventory::HostPartKind::SelectOption,
                 capture: format!("{}-option", binding.key),

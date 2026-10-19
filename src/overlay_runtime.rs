@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::{Rc, Weak},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -157,7 +157,16 @@ struct Runtime {
 struct OwnedItemDescription {
     owner: Option<(String, u64)>,
     host: HostFacts,
-    order: u64,
+    registration_sequence: u64,
+    order: ItemOrder,
+}
+
+/// Authored sibling position and optional containing item, scoped to one owner.
+/// Omitted positions preserve component registration order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ItemOrder {
+    pub(crate) position: Option<usize>,
+    pub(crate) parent: Option<String>,
 }
 
 #[derive(Clone)]
@@ -237,7 +246,7 @@ type CategoryCallback = Rc<dyn Fn(usize, &[usize])>;
 
 impl Runtime {
     /// Only explicitly described Dioxus members belong to an item inventory.
-    /// Native observations may reorder these keys, never add or change a member.
+    /// Rust descriptions own sibling order and containing-item relationships.
     fn owned_inventory(&self, root: &str, generation: u64) -> Option<InventoryFacts> {
         if !self
             .nodes
@@ -252,29 +261,53 @@ impl Runtime {
             .values()
             .filter(|item| item.owner.as_ref() == Some(&owner))
             .collect::<Vec<_>>();
-        members.sort_by_key(|item| item.order);
-        let observed = self.observation.as_ref().and_then(|report| {
-            report
-                .nodes
-                .iter()
-                .find(|node| node.id == root && node.generation == generation)
+        members.sort_by_key(|item| {
+            (
+                item.order.position.is_none(),
+                item.order.position.unwrap_or_default(),
+                item.registration_sequence,
+            )
         });
+        let member_keys = members
+            .iter()
+            .map(|item| item.host.registration_key.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut children = BTreeMap::<Option<String>, Vec<String>>::new();
+        for item in &members {
+            // A foreign or removed parent cannot place a member in another
+            // owner's tree. Such a member remains an ordinary top-level item.
+            let parent = item
+                .order
+                .parent
+                .as_ref()
+                .filter(|key| member_keys.contains(key.as_str()))
+                .cloned();
+            children
+                .entry(parent)
+                .or_default()
+                .push(item.host.registration_key.clone());
+        }
         let mut keys = Vec::with_capacity(members.len());
-        if let Some(observed) = observed {
-            for key in &observed.item_order {
-                if !keys.contains(key)
-                    && members
-                        .iter()
-                        .any(|item| item.host.registration_key == *key)
-                {
-                    keys.push(key.clone());
+        let mut visited = BTreeSet::new();
+        let append = |seed: String, visited: &mut BTreeSet<String>, keys: &mut Vec<String>| {
+            let mut pending = vec![seed];
+            while let Some(key) = pending.pop() {
+                if !visited.insert(key.clone()) {
+                    continue;
+                }
+                keys.push(key.clone());
+                if let Some(descendants) = children.get(&Some(key)) {
+                    pending.extend(descendants.iter().rev().cloned());
                 }
             }
+        };
+        for key in children.get(&None).into_iter().flatten() {
+            append(key.clone(), &mut visited, &mut keys);
         }
+        // Invalid cyclic relationships have no root. Visit every remaining
+        // registered member once, without recursive traversal or losing items.
         for item in &members {
-            if !keys.contains(&item.host.registration_key) {
-                keys.push(item.host.registration_key.clone());
-            }
+            append(item.host.registration_key.clone(), &mut visited, &mut keys);
         }
         let hosts = keys
             .iter()
@@ -449,7 +482,7 @@ impl RuntimeHandle {
         let _ = self.item_visual_key();
         self.0.borrow().item_visual_known
     }
-    /// Explicit Rust composition supplies membership before native inventory.
+    /// Explicit Rust composition supplies membership and ownership.
     /// A sibling or replacement owner cannot claim the selected control.
     pub(crate) fn item_visual_owned_by(&self, root: &str, generation: u64) -> bool {
         let _ = self.item_visual_key();
@@ -485,6 +518,7 @@ impl RuntimeHandle {
         key: &str,
         owner: Option<(String, u64)>,
         mut host: HostFacts,
+        order: ItemOrder,
     ) {
         if key.is_empty() {
             return;
@@ -518,10 +552,10 @@ impl RuntimeHandle {
             }
         }
         let mut state = self.0.borrow_mut();
-        let order = state
+        let registration_sequence = state
             .item_descriptions
             .get(key)
-            .map(|old| old.order)
+            .map(|old| old.registration_sequence)
             .unwrap_or_else(|| {
                 state.item_description_sequence =
                     state.item_description_sequence.wrapping_add(1).max(1);
@@ -543,9 +577,15 @@ impl RuntimeHandle {
                 *visual = host.clone();
             }
         }
-        state
-            .item_descriptions
-            .insert(key.into(), OwnedItemDescription { owner, host, order });
+        state.item_descriptions.insert(
+            key.into(),
+            OwnedItemDescription {
+                owner,
+                host,
+                registration_sequence,
+                order,
+            },
+        );
     }
     #[cfg(test)]
     pub(crate) fn register_item_mount(&self, key: &str, target: &str, node: Rc<MountedData>) {
@@ -1475,7 +1515,7 @@ impl RuntimeHandle {
         }
     }
     /// Dioxus lifetimes and authored relationships are the only graph input.
-    /// Native observations are limited to read-only geometry/order/Tab facts.
+    /// Native observations are limited to read-only geometry/focus/Tab facts.
     fn publish_ownership(&self) {
         let entries = self
             .0
@@ -3534,8 +3574,6 @@ struct NodeFacts {
     #[serde(default)]
     header_controls: Vec<String>,
     #[serde(default)]
-    item_order: Vec<String>,
-    #[serde(default)]
     items_host: String,
     #[serde(default)]
     popover_host: String,
@@ -4625,11 +4663,132 @@ mod tests {
                 &host.registration_key,
                 Some((root.into(), generation)),
                 host.clone(),
+                ItemOrder::default(),
             );
         }
     }
+    fn describe_ordered_item(
+        runtime: &RuntimeHandle,
+        root: &str,
+        key: &str,
+        position: Option<usize>,
+        parent: Option<&str>,
+    ) {
+        let mut host = mixed_inventory_facts().hosts.remove(0);
+        host.target = format!("control-{key}");
+        runtime.register_owned_item_description(
+            key,
+            Some((root.into(), 1)),
+            host,
+            ItemOrder {
+                position,
+                parent: parent.map(str::to_string),
+            },
+        );
+    }
+    fn inventory_keys(node: &NodeHandle) -> Vec<String> {
+        node.inventory()
+            .unwrap()
+            .query_order
+            .into_iter()
+            .map(|key| key.0)
+            .collect()
+    }
+
     #[test]
-    fn owned_inventory_uses_registered_members_props_and_native_order_only() {
+    fn owned_item_order_groups_children_and_tracks_current_insertions_and_removals() {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "ordered",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        // A child may render/register before its containing item. Parentage,
+        // rather than component mounting order, keeps their final group intact.
+        describe_ordered_item(&runtime, "ordered", "child", Some(1), Some("parent"));
+        describe_ordered_item(&runtime, "ordered", "tail", Some(1), None);
+        describe_ordered_item(&runtime, "ordered", "parent", Some(2), None);
+        describe_ordered_item(&runtime, "ordered", "static-child", None, Some("parent"));
+        assert_eq!(
+            inventory_keys(&root.node),
+            ["tail", "parent", "child", "static-child"]
+        );
+        describe_ordered_item(&runtime, "ordered", "first", Some(0), None);
+        assert_eq!(
+            inventory_keys(&root.node),
+            ["first", "tail", "parent", "child", "static-child"]
+        );
+        // Updates preserve registration sequence for tied/omitted siblings.
+        describe_ordered_item(&runtime, "ordered", "tail", Some(0), None);
+        assert_eq!(
+            inventory_keys(&root.node),
+            ["tail", "first", "parent", "child", "static-child"]
+        );
+        runtime.unregister_item_cue("parent");
+        assert_eq!(
+            inventory_keys(&root.node),
+            ["tail", "first", "child", "static-child"],
+            "removed parents leave their current children at this owner's root"
+        );
+        describe_ordered_item(&runtime, "ordered", "parent", Some(1), None);
+        assert_eq!(
+            inventory_keys(&root.node),
+            ["tail", "first", "parent", "child", "static-child"]
+        );
+    }
+
+    #[test]
+    fn owned_item_order_is_local_and_malformed_parent_cycles_keep_each_member_once() {
+        let runtime = RuntimeHandle::new();
+        let root = model(
+            &runtime,
+            "local",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        let foreign = model(
+            &runtime,
+            "foreign",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        describe_ordered_item(&runtime, "foreign", "foreign-parent", Some(0), None);
+        describe_ordered_item(
+            &runtime,
+            "local",
+            "local-child",
+            Some(0),
+            Some("foreign-parent"),
+        );
+        describe_ordered_item(&runtime, "local", "missing-child", Some(1), Some("missing"));
+        assert_eq!(inventory_keys(&root.node), ["local-child", "missing-child"]);
+        assert_eq!(inventory_keys(&foreign.node), ["foreign-parent"]);
+        describe_ordered_item(&runtime, "local", "cycle-a", Some(0), Some("cycle-b"));
+        describe_ordered_item(&runtime, "local", "cycle-b", Some(0), Some("cycle-a"));
+        describe_ordered_item(&runtime, "local", "self-parent", None, Some("self-parent"));
+        let keys = inventory_keys(&root.node);
+        assert_eq!(
+            keys,
+            inventory_keys(&root.node),
+            "malformed relationships still have deterministic order"
+        );
+        assert_eq!(keys.len(), 5);
+        assert_eq!(
+            keys.iter().collect::<BTreeSet<_>>().len(),
+            5,
+            "no cycle duplicates members"
+        );
+        assert!(
+            keys.iter().any(|key| key == "cycle-a")
+                && keys.iter().any(|key| key == "cycle-b")
+                && keys.iter().any(|key| key == "self-parent")
+        );
+        assert_eq!(&keys[..2], ["local-child", "missing-child"]);
+    }
+
+    #[test]
+    fn owned_inventory_uses_registered_members_props_and_rust_order_only() {
         let runtime = RuntimeHandle::new();
         let root = model(
             &runtime,
@@ -4641,7 +4800,12 @@ mod tests {
         describe_inventory(&runtime, "owned-items", 1, &raw);
         let mut other = raw.hosts[0].clone();
         other.registration_key = "other-owner".into();
-        runtime.register_owned_item_description("other-owner", Some(("foreign".into(), 1)), other);
+        runtime.register_owned_item_description(
+            "other-owner",
+            Some(("foreign".into(), 1)),
+            other,
+            ItemOrder::default(),
+        );
         runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
             "nodes":[{"id":"owned-items","generation":1,
                 "item_order":["unknown-native-control","key-b","key-b","other-owner"],
@@ -4650,15 +4814,34 @@ mod tests {
         let inventory = root.node.inventory().unwrap();
         assert_eq!(
             inventory.query_order,
-            [ItemRef("key-b".into()), ItemRef("key-a".into())]
+            [ItemRef("key-a".into()), ItemRef("key-b".into())]
         );
         assert_eq!(inventory.hosts.len(), 2);
         assert!(inventory.slots.is_none());
+        runtime.register_owned_item_description(
+            "key-b",
+            Some(("owned-items".into(), 1)),
+            raw.hosts[1].clone(),
+            ItemOrder {
+                position: Some(0),
+                parent: None,
+            },
+        );
+        assert_eq!(
+            root.node.inventory().unwrap().query_order,
+            [ItemRef("key-b".into()), ItemRef("key-a".into())],
+            "only an authored position changes current order"
+        );
         let mut changed = raw.hosts[0].clone();
         changed.disabled_attribute = true;
         changed.checked_attribute = true;
         changed.target = "updated-rust-target".into();
-        runtime.register_owned_item_description("key-a", Some(("owned-items".into(), 1)), changed);
+        runtime.register_owned_item_description(
+            "key-a",
+            Some(("owned-items".into(), 1)),
+            changed,
+            ItemOrder::default(),
+        );
         let inventory = root.node.inventory().unwrap();
         let updated = inventory
             .hosts
@@ -4703,6 +4886,7 @@ mod tests {
             "key-a",
             Some(("description-cue".into(), 1)),
             host.clone(),
+            ItemOrder::default(),
         );
         install_item_mock(&runtime, &host, ItemMountMock::default());
         runtime.0.borrow_mut().keyboard = true;
@@ -4714,6 +4898,7 @@ mod tests {
             "key-a",
             Some(("description-cue".into(), 1)),
             host.clone(),
+            ItemOrder::default(),
         );
         assert!(runtime.item_visual_matches(&host));
         assert!(
@@ -4730,13 +4915,19 @@ mod tests {
             "key-a",
             Some(("description-cue".into(), 1)),
             host.clone(),
+            ItemOrder::default(),
         );
         assert!(
             runtime.item_visual_matches(&host),
             "inline panel closure preserves a completed cue"
         );
         host.target = "replacement-control".into();
-        runtime.register_owned_item_description("key-a", Some(("description-cue".into(), 1)), host);
+        runtime.register_owned_item_description(
+            "key-a",
+            Some(("description-cue".into(), 1)),
+            host,
+            ItemOrder::default(),
+        );
         assert_eq!(runtime.item_visual_key(), None);
     }
 
@@ -4764,10 +4955,10 @@ mod tests {
         describe_inventory(&second, "document-peer", 1, &raw);
         first.input(event(serde_json::json!({"owner":first.owner_id(),"sequence":1,"document":document,"kind":"observe",
             "nodes":[{"id":"document-root","generation":1,
-                "item_order":["key-a","key-b"]},
+                },
                 {"id":"document-child","generation":1}]})));
         second.input(event(serde_json::json!({"owner":second.owner_id(),"sequence":1,"document":document,"kind":"observe",
-            "nodes":[{"id":"document-peer","generation":1,"item_order":["key-a","key-b"]}]})));
+            "nodes":[{"id":"document-peer","generation":1}]})));
         let snapshots = {
             let state = first.0.borrow();
             state.item_descriptions.clone()
@@ -5114,10 +5305,6 @@ mod tests {
                 })] } else { Vec::new() }})
         }).collect::<Vec<_>>();
         publication_cues(&html, None, false);
-        let order = hosts
-            .iter()
-            .map(|host| host["item"].clone())
-            .collect::<Vec<_>>();
         for host in &hosts {
             let facts: HostFacts = serde_json::from_value(host.clone()).unwrap();
             install_item_mock(&runtime, &facts, ItemMountMock::default());
@@ -5125,13 +5312,13 @@ mod tests {
                 &facts.registration_key,
                 Some((root.clone(), generation)),
                 facts.clone(),
+                ItemOrder::default(),
             );
         }
         let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
             "kind":"observe",
             "nodes":[{"id":root,"generation":generation,
-                "mode":"active-descendant","inside":true,"on_trigger":true,
-                "item_order":order}]});
+                "mode":"active-descendant","inside":true,"on_trigger":true}]});
         assert!(!publication_dispatch(&dom, transport, "input", report));
         let node = NodeHandle {
             runtime: Rc::downgrade(&runtime.0),
@@ -5232,7 +5419,7 @@ mod tests {
             let input = event(
                 serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe",
                 "hosts":["mixed-root"],"nodes":[{"id":"mixed-root","generation":1,
-                    "mode":"roving-tabindex","inside":true,"item_order":["key-a","key-b"]}]}),
+                    "mode":"roving-tabindex","inside":true}]}),
             );
             runtime.input(input);
             let key = typed_keyboard(key, Modifiers::empty());
@@ -5423,7 +5610,7 @@ mod tests {
         dom.in_scope(fixture.0.owner.get().unwrap(), || {
             runtime.input(event(
                 serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id,"generation":1,"item_order":raw.hosts.iter().map(|host| host.registration_key.clone()).collect::<Vec<_>>()}]}),
+            "nodes":[{"id":node.id,"generation":1}]}),
             ))
         });
         let ids = [
@@ -5481,7 +5668,7 @@ mod tests {
         dom.in_scope(fixture.0.owner.get().unwrap(), || {
             runtime.input(event(
                 serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id,"generation":1,"item_order":raw.hosts.iter().map(|host| host.registration_key.clone()).collect::<Vec<_>>()}]}),
+            "nodes":[{"id":node.id,"generation":1}]}),
             ))
         });
         let captured = Rc::new(());
@@ -5654,6 +5841,7 @@ mod tests {
             &host.registration_key,
             Some((node.id.clone(), 1)),
             host.clone(),
+            ItemOrder::default(),
         );
         let mock = ItemMountMock::default();
         dom.in_scope(ScopeId::ROOT, || {
@@ -5706,7 +5894,7 @@ mod tests {
                 "hidden" | "disabled" => {
                     host.hidden_attribute = scenario == "hidden";
                     host.disabled_attribute = scenario == "disabled";
-                    runtime.register_owned_item_description(&host.registration_key, Some((node.id.clone(),1)), host.clone());
+                    runtime.register_owned_item_description(&host.registration_key, Some((node.id.clone(),1)), host.clone(), ItemOrder::default());
                 },
                 "outside" => runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":3,"kind":"observe","active_id":"outside","focus_changed":true}))),
                 "keydown" => runtime.input(event(document_value(&runtime,3,&runtime.owner_id(),serde_json::json!({"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"})))),
@@ -6436,8 +6624,8 @@ mod tests {
         }
         runtime.input(event(
             serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
-            {"id":"parent-roving","generation":1,"item_order":["key-a","key-b"]},
-            {"id":"child-roving","generation":1,"item_order":["key-a","key-b"]}]}),
+            {"id":"parent-roving","generation":1},
+            {"id":"child-roving","generation":1}]}),
         ));
         assert!(parent.node.request(true, Reason::Trigger, false));
         assert!(child.node.request(true, Reason::Trigger, false));

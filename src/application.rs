@@ -2481,6 +2481,7 @@ pub fn MenuItem(
         &attributes,
         crate::dropdown::ItemDescription {
             disabled,
+            order,
             hidden: source_hidden,
             source_focusable: !disabled,
             ..Default::default()
@@ -2886,6 +2887,7 @@ pub fn MenuCategory(
         &attributes,
         crate::dropdown::ItemDescription {
             hidden,
+            order,
             parts: vec![crate::dropdown_inventory::HostPartFacts {
                 kind: crate::dropdown_inventory::HostPartKind::CategoryParent,
                 capture: format!("{}-parent", item_host.key),
@@ -2963,7 +2965,7 @@ pub fn MenuCategory(
             onfocusin:move |_|focus_enter.focus_enter(),
             onfocusout:move |_|focus_leave.focus_leave(),
             "data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
-            "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
+            "data-ix-item-kind":"category","data-ix-item-key":item_host.key.clone(),"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
             "data-ix-overlay-root":overlay_id.clone(),"data-ix-overlay-owner":overlay_runtime.owner_id(),
             "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-items-host-id":host_id,"data-ix-overlay-native-surface":"category",
             "data-menu-category-root":id.to_string(),"data-menu-category":id.to_string(),"data-menu-category-mode":if expanded{"expanded"}else{"collapsed"},
@@ -3010,7 +3012,7 @@ pub fn MenuCategory(
                 onkeydown:move |event|{child_key.key(event,false);},
                 div {class:"ix-menu-category-heading",hidden:panel_open,"{label}"}
                 div {"data-menu-category-body":id.to_string(),
-                    MenuCategoryContent {parent:id,category:category.clone(),{children}}
+                    MenuCategoryContent {parent:id,parent_key:item_host.key.clone(),category:category.clone(),{children}}
                 }
             }
             div {id:popup_id,"data-ix-native-popover":empty_popover.marker,onmounted:empty_popover.onmounted,role:"menu","aria-labelledby":parent_id,class:"ix-menu-category-flyout",hidden:!(panel_open&&popup_open),
@@ -3024,7 +3026,12 @@ pub fn MenuCategory(
     }
 }
 #[component]
-fn MenuCategoryContent(children: Element, parent: usize, category: CategoryNavigation) -> Element {
+fn MenuCategoryContent(
+    children: Element,
+    parent: usize,
+    parent_key: String,
+    category: CategoryNavigation,
+) -> Element {
     let fallback = navigation();
     let mut context = try_consume_context::<NavigationContext>().unwrap_or(fallback);
     context.prefix.push(parent);
@@ -3038,7 +3045,7 @@ fn MenuCategoryContent(children: Element, parent: usize, category: CategoryNavig
     crate::overlay_runtime::use_overlay_scope(Some(inventory_owner.clone()));
     use_context_provider(|| crate::dropdown::ItemInventoryOwner(inventory_owner));
     use_context_provider(|| context);
-    rsx! {{children}}
+    rsx! {crate::dropdown::ItemOrderContent{parent_key,{children}}}
 }
 
 #[derive(Clone, Copy)]

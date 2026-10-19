@@ -43,16 +43,16 @@ pub fn CuePreview() -> Element {
                     div { class:"cue-controls", id:"r0213-trigger", DropdownTrigger { dropdown:mixed, "Review equipment actions" } }
                     Dropdown { controller:mixed, label:"Mixed equipment actions", class:"r0213-mixed", close_behavior:DropdownCloseBehavior::None,
                         navigation_mode:if roving(){DropdownNavigationMode::RovingTabindex}else{DropdownNavigationMode::ActiveDescendant},
-                        DropdownItem { id:"r0213-first", label:format!("Inspect equipment {}",revision()), tabindex:0, keep_open:true,
+                        DropdownItem { id:"r0213-first", order:Some(0), label:format!("Inspect equipment {}",revision()), tabindex:0, keep_open:true,
                             onclick:move |_|actions.set(actions()+1) }
-                        DropdownItem { id:"r0213-disabled", label:"Unavailable action", disabled:true, tabindex:0 }
-                        if select_visible() { SelectItem { id:"r0213-select", value:"equipment", label:format!("Choose equipment {}",revision()), tabindex:0 } }
-                        MenuItem { id:"r0213-menu", label:format!("Equipment navigation {}",revision()), close_on_select:false }
-                        MenuCategory { id:"r0213-category", label:format!("Grouped equipment {}",revision()),
+                        DropdownItem { id:"r0213-disabled", order:Some(1), label:"Unavailable action", disabled:true, tabindex:0 }
+                        if select_visible() { SelectItem { id:"r0213-select", order:Some(2), value:"equipment", label:format!("Choose equipment {}",revision()), tabindex:0 } }
+                        MenuItem { id:"r0213-menu", order:Some(3), label:format!("Equipment navigation {}",revision()), close_on_select:false }
+                        MenuCategory { id:"r0213-category", order:Some(4), label:format!("Grouped equipment {}",revision()),
                             MenuItem { label:"Grouped detail" }
                         }
-                        DropdownItem { id:"r0213-linked", label:"Open linked equipment actions", dropdown:child, tabindex:0 }
-                        DropdownItem { id:"r0213-hidden", label:"Hidden action", hidden:true, tabindex:0 }
+                        DropdownItem { id:"r0213-linked", order:Some(5), label:"Open linked equipment actions", dropdown:child, tabindex:0 }
+                        DropdownItem { id:"r0213-hidden", order:Some(6), label:"Hidden action", hidden:true, tabindex:0 }
                     }
                     Dropdown { controller:child, label:"Linked equipment actions", class:"r0213-child",
                         navigation_mode:if roving(){DropdownNavigationMode::RovingTabindex}else{DropdownNavigationMode::ActiveDescendant},

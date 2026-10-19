@@ -119,6 +119,7 @@ fn observe(runtime: &RuntimeHandle, sequence: u64, generation: u64, hosts: &[Hos
             &host.registration_key,
             Some(("cue-root".into(), generation)),
             host.clone(),
+            crate::overlay_runtime::ItemOrder::default(),
         );
     }
     let mut observation = report(runtime, sequence, generation, "observe", hosts);

@@ -132,6 +132,7 @@ fn submenu_routing_marker_tracks_current_inventory_and_registered_owner() {
         &host.registration_key,
         Some(("configured".into(), 1)),
         host.clone(),
+        crate::overlay_runtime::ItemOrder::default(),
     );
     assert_eq!(runtime.first_submenu_marker("configured", 1), None);
     node.mark_submenu_trigger(&host);
@@ -233,6 +234,7 @@ fn return_fixture_kind(disabled: bool, registered: bool, kind: ItemKind) -> Retu
         &host.registration_key,
         Some(("configured".into(), 1)),
         host.clone(),
+        crate::overlay_runtime::ItemOrder::default(),
     );
     let mount = ReturnMount::default();
     if registered {

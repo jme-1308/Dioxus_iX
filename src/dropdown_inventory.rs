@@ -1,9 +1,8 @@
 //! Source-host inventory, navigation and activation.
 //!
-//! Dioxus registers current metadata and overlay ownership. A minimal native
-//! adapter reports ordered registered keys because MountedData has no child
-//! order API; it cannot discover or add item membership. Rust owns eligibility,
-//! navigation and activation. Historical slot algorithms remain pure helpers.
+//! Dioxus registers current metadata, overlay ownership and explicit sibling/
+//! containing-item order. Rust owns membership, eligibility, navigation and
+//! activation. Historical slot algorithms remain pure helpers.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -256,7 +255,8 @@ impl Inventory {
         self.active_order.first().cloned()
     }
 
-    /// Use the captured active host, not an inferred focused shadow descendant.
+    /// Current is a registered Rust key supplied by a typed event handler or
+    /// `active()`. A physical origin can be eligible without a painted cue.
     /// Repeated references in the supplied navigation order remain repeated.
     pub(crate) fn navigate(&self, key: &str, current: Option<&ItemRef>) -> Option<ItemRef> {
         let order = &self.navigation_order;
@@ -267,7 +267,7 @@ impl Inventory {
             .filter(|item| {
                 self.hosts
                     .get(*item)
-                    .is_some_and(|host| host.active(self.mode))
+                    .is_some_and(|host| host.eligible(self.mode))
             })
             .and_then(|item| order.iter().position(|candidate| candidate == item));
         let index = match key {
@@ -301,6 +301,8 @@ impl Inventory {
         }
     }
 
+    /// Typed handlers may name a current registered origin independently of
+    /// the active-marker discovery used when no physical origin is supplied.
     pub(crate) fn activation(
         &self,
         key: &str,
@@ -309,7 +311,7 @@ impl Inventory {
     ) -> Activation {
         let active = current
             .and_then(|item| self.hosts.get(item))
-            .filter(|host| host.active(self.mode));
+            .filter(|host| host.eligible(self.mode));
         if matches!(key, "ArrowRight" | "Enter" | " ")
             && let Some(host) = active
             && let Some(trigger) = &host.linked_trigger
@@ -477,7 +479,7 @@ mod tests {
         assert_eq!(roving.active(), Some(second.item.clone()));
         assert_eq!(
             roving.navigate("ArrowDown", Some(&first.item)),
-            Some(first.item.clone())
+            Some(second.item.clone())
         );
         first.visible_focus = false;
         let ad = inventory(
@@ -491,6 +493,72 @@ mod tests {
         assert_eq!(ad.navigate("unhandled", None), None);
         let empty = inventory(InventoryMode::ActiveDescendant, vec![], &[], &[]);
         assert_eq!(empty.navigate("Home", None), None);
+    }
+
+    #[test]
+    fn explicit_registered_origin_navigates_and_opens_submenu_without_an_active_marker() {
+        for mode in [
+            InventoryMode::ActiveDescendant,
+            InventoryMode::RovingTabindex,
+        ] {
+            let mut before = item("before", ItemKind::Menu, Some("0"));
+            before.visible_focus = true;
+            let mut origin = item(
+                "origin",
+                if mode == InventoryMode::ActiveDescendant {
+                    ItemKind::Category
+                } else {
+                    ItemKind::Dropdown
+                },
+                if mode == InventoryMode::RovingTabindex {
+                    Some("-1")
+                } else {
+                    None
+                },
+            );
+            origin.linked_trigger = Some("child-root".into());
+            let after = item("after", ItemKind::Menu, Some("0"));
+            let make = |origin: HostFacts| {
+                inventory(
+                    mode,
+                    vec![before.clone(), origin, after.clone()],
+                    &["before", "origin", "after"],
+                    &["before", "origin", "after"],
+                )
+            };
+            let current = make(origin.clone());
+            assert_eq!(
+                current.active(),
+                Some(before.item.clone()),
+                "active-marker discovery stays unchanged"
+            );
+            assert_eq!(
+                current.navigate("ArrowDown", Some(&origin.item)),
+                Some(after.item.clone())
+            );
+            assert_eq!(
+                current.activation("ArrowRight", &[], Some(&origin.item)),
+                Activation::Submenu {
+                    item: origin.item.clone(),
+                    trigger: "child-root".into()
+                }
+            );
+            for hidden in [false, true] {
+                let mut blocked = origin.clone();
+                blocked.hidden_attribute = hidden;
+                blocked.disabled_attribute = !hidden;
+                let blocked = make(blocked);
+                assert_eq!(
+                    blocked.activation("ArrowRight", &[], Some(&origin.item)),
+                    Activation::None,
+                    "ineligible origins cannot activate a submenu"
+                );
+                assert_eq!(
+                    blocked.navigate("ArrowDown", Some(&origin.item)),
+                    Some(before.item.clone())
+                );
+            }
+        }
     }
 
     #[test]

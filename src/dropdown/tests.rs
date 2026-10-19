@@ -500,7 +500,7 @@ fn unrelated_trigger_target(h: &Harness) -> (Rc<Cell<bool>>, Rc<RefCell<Vec<Chan
 }
 
 #[test]
-fn dioxus_keys_keep_navigation_after_read_only_order_observation() {
+fn dioxus_keys_ignore_native_attempts_to_reorder_registered_items() {
     let _guard = crate::test_event_converter_guard();
     for mode in [
         DropdownNavigationMode::ActiveDescendant,
@@ -520,12 +520,13 @@ fn dioxus_keys_keep_navigation_after_read_only_order_observation() {
             .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
             .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
             .unwrap();
-        let order = context
+        let mut order = context
             .entries
             .borrow()
             .values()
             .map(|entry| h.attrs[&h.target(&entry.label).raw()]["data-ix-item-key"].clone())
             .collect::<Vec<_>>();
+        order.reverse();
         dispatch(
             &h.dom,
             "input",
@@ -1173,7 +1174,7 @@ fn register_inventory(context: &DropdownContext, facts: &InventoryFacts) {
     let node = context.node.borrow().clone().unwrap();
     let runtime = node.runtime().unwrap();
     // Synthetic fixture members replace this owner's rendered set explicitly;
-    // the native observation supplies ordering only.
+    // declared Rust order supplies the current sibling position.
     if let Some(current) = node.inventory() {
         for host in current.hosts {
             if !facts
@@ -1181,15 +1182,24 @@ fn register_inventory(context: &DropdownContext, facts: &InventoryFacts) {
                 .iter()
                 .any(|candidate| candidate.registration_key == host.registration_key)
             {
-                runtime.register_owned_item_description(&host.registration_key.clone(), None, host);
+                runtime.register_owned_item_description(
+                    &host.registration_key.clone(),
+                    None,
+                    host,
+                    overlay_runtime::ItemOrder::default(),
+                );
             }
         }
     }
-    for host in &facts.hosts {
+    for (position, host) in facts.hosts.iter().enumerate() {
         runtime.register_owned_item_description(
             &host.registration_key,
             Some((node.id().to_string(), node.generation())),
             host.clone(),
+            overlay_runtime::ItemOrder {
+                position: Some(position),
+                parent: None,
+            },
         );
     }
 }
@@ -1256,11 +1266,6 @@ fn registered_inventory_key_from(
     let runtime = node.runtime().unwrap();
     let mode = context.state.borrow().settings.mode;
     register_inventory(&context, facts);
-    let order = facts
-        .hosts
-        .iter()
-        .map(|host| host.registration_key.clone())
-        .collect::<Vec<_>>();
     let transport = h
         .attrs
         .iter()
@@ -1272,7 +1277,7 @@ fn registered_inventory_key_from(
         "input",
         transport,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),"open":true,"item_order":order}]})
+        "nodes":[{"id":node.id(),"generation":node.generation(),"open":true}]})
         .to_string(),
     );
     h.dom.in_runtime(|| {
@@ -1562,8 +1567,7 @@ fn linked_open_cue_and_typed_trigger_aria_follow_current_rust_submenu_state() {
         transport,
         serde_json::json!({
             "owner":runtime.owner_id(),"document":document,"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation(),
-                "item_order":[host.registration_key]}]
+            "nodes":[{"id":node.id(),"generation":node.generation()}]
         })
         .to_string(),
     );
@@ -1864,11 +1868,6 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
             .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
             .unwrap();
         register_inventory(&context, &facts);
-        let order = facts
-            .hosts
-            .iter()
-            .map(|host| host.registration_key.clone())
-            .collect::<Vec<_>>();
         let before = h.config.borrow().requests.clone();
         let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
             "focus_candidates":focusable_ids.iter().enumerate().map(|(candidate, target)| serde_json::json!({
@@ -1876,7 +1875,7 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
                 "popover":"","exact_active":inside && candidate == index,"contains_active":inside && candidate == index
             })).collect::<Vec<_>>(),
             "nodes":[{
-                "id":node.id(),"generation":node.generation(),"items_host":"mixed-items-host","item_order":order
+                "id":node.id(),"generation":node.generation(),"items_host":"mixed-items-host"
             }]
         });
         dispatch(&h.dom, "input", transport, report.to_string());
@@ -2356,8 +2355,7 @@ fn shared_modality_cleanup_and_open_active_descendant_mode_change_focus_the_moun
         transport,
         serde_json::json!({"owner":runtime.owner_id(),"document":document,"sequence":1,
         "kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),
-            "item_order":[]}]})
+        "nodes":[{"id":node.id(),"generation":node.generation()}]})
         .to_string(),
     );
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
@@ -3142,12 +3140,18 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
         .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
-    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
-        {"id":parent_node.id(),"generation":parent_node.generation(),
-            "mode":"active-descendant","item_order":parent_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()},
-        {"id":child_node.id(),"generation":child_node.generation(),
-            "mode":"active-descendant","item_order":child_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()}
-    ]}).to_string());
+    dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
+            {"id":parent_node.id(),"generation":parent_node.generation(),
+                "mode":"active-descendant"},
+            {"id":child_node.id(),"generation":child_node.generation(),
+                "mode":"active-descendant"}
+        ]})
+        .to_string(),
+    );
     let trigger = parent_facts
         .hosts
         .iter()
@@ -3199,6 +3203,7 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
         runtime: runtime.clone(),
         context: Some(child.clone()),
         inventory_owner: Some(child_node.clone()),
+        parent_key: None,
         identity: 0,
         kind: host.kind,
     };
@@ -3234,10 +3239,15 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     let mut native_facts = child_facts.clone();
     native_facts.hosts[0].kind = ItemKind::NativeOptIn;
     register_inventory(&child, &native_facts);
-    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"kind":"observe","nodes":[
-        {"id":child_node.id(),"generation":child_node.generation(),
-            "item_order":native_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()}
-    ]}).to_string());
+    dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"kind":"observe","nodes":[
+            {"id":child_node.id(),"generation":child_node.generation()}
+        ]})
+        .to_string(),
+    );
     h.dom.in_runtime(|| {
         assert!(
             !binding.navigation_key(event()),
@@ -3261,6 +3271,7 @@ fn OwnedMetadataCustom(changed: bool) -> Element {
             disabled: changed,
             hidden: changed,
             checked: changed,
+            order: None,
             tabindex: Some(authored),
         },
     );
@@ -3456,4 +3467,342 @@ fn top_layer_opening_waits_for_current_surface_visibility_before_focusing_a_cust
         );
         assert_eq!(runtime.pending_item_focus_count(), 0);
     }
+}
+
+#[derive(Clone)]
+struct DeclaredOrderFixture {
+    keys: Rc<RefCell<Vec<String>>>,
+    context: Rc<RefCell<Option<DropdownContext>>>,
+    category: Rc<RefCell<Option<NodeHandle>>>,
+    independent: Rc<RefCell<Option<NodeHandle>>>,
+    mode: DropdownNavigationMode,
+}
+impl PartialEq for DeclaredOrderFixture {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.keys, &other.keys)
+    }
+}
+#[component]
+fn DeclaredOwnerCapture(owner: Rc<RefCell<Option<NodeHandle>>>) -> Element {
+    let current = use_context::<ItemInventoryOwner>();
+    *owner.borrow_mut() = Some(current.0);
+    rsx! {}
+}
+#[component]
+fn DeclaredCustomItem(id: String, order: Option<usize>) -> Element {
+    let binding = use_dropdown_item_with_options(
+        id.clone(),
+        DropdownItemOptions {
+            order,
+            ..Default::default()
+        },
+    );
+    rsx! {button{id,tabindex:binding.tabindex,onmounted:binding.onmounted,onkeydown:binding.onkeydown,..binding.attributes(),"Custom action"}}
+}
+fn declared_order_fixture(fixture: DeclaredOrderFixture) -> Element {
+    let keys = fixture.keys.borrow().clone();
+    rsx! {Dropdown {label:"Declared order",navigation_mode:fixture.mode,
+        OwnedMetadataCapture {context:fixture.context}
+        for (order,kind) in keys.into_iter().enumerate() {
+            Fragment {key:"{kind}",
+                if kind=="typed" {DropdownItem {id:"declared-typed",label:"Typed",order:Some(order)}}
+                else if kind=="select" {crate::SelectItem {id:"declared-select",value:"select",order:Some(order)}}
+                else if kind=="menu" {crate::MenuItem {id:"declared-menu",label:"Menu",order:Some(order)}}
+                else if kind=="custom" {DeclaredCustomItem {id:"declared-custom",order:Some(order)}}
+                else if kind=="category" {crate::MenuCategory {id:"declared-category",label:"Category",order:Some(order),
+                    DeclaredOwnerCapture {owner:fixture.category.clone()}
+                    crate::MenuItem {id:"category-later",label:"Later child",order:Some(2)}
+                    crate::MenuItem {id:"category-first",label:"First child",order:Some(0)}
+                }}
+                else if kind=="submenu" {DropdownSubmenu {label:"Ordered submenu",order:Some(order),DropdownItem {id:"ordered-submenu-child",label:"Submenu child"}}}
+                else if kind=="parent" {DropdownItem {id:"declared-parent",label:"Parent",order:Some(order),
+                    DeclaredCustomItem {id:"parent-later",order:Some(1)}
+                    crate::SelectItem {id:"parent-first",value:"First nested",order:Some(0)}
+                    Dropdown {label:"Independent nested owner",
+                        DeclaredOwnerCapture {owner:fixture.independent.clone()}
+                        DropdownItem {id:"independent-later",label:"Independent later",order:Some(1)}
+                        DropdownItem {id:"independent-first",label:"Independent first",order:Some(0)}
+                    }
+                }}
+                else {DropdownItem {id:format!("declared-{kind}"),label:kind,order:Some(order)}}
+            }
+        }
+        DropdownItem {id:"declared-static",label:"Static fallback"}
+    }}
+}
+fn new_declared_order_fixture(mode: DropdownNavigationMode) -> DeclaredOrderFixture {
+    DeclaredOrderFixture {
+        keys: Rc::new(RefCell::new(
+            ["menu", "select", "typed", "custom", "category", "parent"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )),
+        context: Default::default(),
+        category: Default::default(),
+        independent: Default::default(),
+        mode,
+    }
+}
+fn declared_targets(node: &NodeHandle) -> Vec<String> {
+    node.inventory()
+        .unwrap()
+        .hosts
+        .into_iter()
+        .map(|host| host.target)
+        .collect()
+}
+fn settle_declared_order(dom: &mut VirtualDom) {
+    for _ in 0..8 {
+        dom.render_immediate_to_vec();
+        dom.process_events();
+    }
+}
+#[test]
+fn mixed_component_order_props_follow_keyed_reverse_insert_and_remove() {
+    for mode in [
+        DropdownNavigationMode::ActiveDescendant,
+        DropdownNavigationMode::RovingTabindex,
+    ] {
+        let fixture = new_declared_order_fixture(mode);
+        let mut dom = VirtualDom::new_with_props(declared_order_fixture, fixture.clone());
+        dom.rebuild_in_place();
+        settle_declared_order(&mut dom);
+        let context = fixture.context.borrow().clone().unwrap();
+        let node = context.node.borrow().clone().unwrap();
+        assert_eq!(
+            declared_targets(&node),
+            [
+                "declared-menu",
+                "declared-select",
+                "declared-typed",
+                "declared-custom",
+                "declared-category",
+                "declared-parent",
+                "parent-first",
+                "parent-later",
+                "declared-static"
+            ]
+        );
+        let typed_key = node
+            .inventory()
+            .unwrap()
+            .hosts
+            .into_iter()
+            .find(|host| host.target == "declared-typed")
+            .unwrap()
+            .registration_key;
+        fixture.keys.borrow_mut().reverse();
+        dom.mark_dirty(ScopeId::APP);
+        settle_declared_order(&mut dom);
+        assert_eq!(
+            declared_targets(&node),
+            [
+                "declared-parent",
+                "parent-first",
+                "parent-later",
+                "declared-category",
+                "declared-custom",
+                "declared-typed",
+                "declared-select",
+                "declared-menu",
+                "declared-static"
+            ]
+        );
+        fixture.keys.borrow_mut().insert(1, "inserted".into());
+        dom.mark_dirty(ScopeId::APP);
+        settle_declared_order(&mut dom);
+        assert_eq!(
+            declared_targets(&node)[..5],
+            [
+                "declared-parent",
+                "parent-first",
+                "parent-later",
+                "declared-inserted",
+                "declared-category"
+            ]
+        );
+        fixture.keys.borrow_mut().retain(|kind| kind != "select");
+        dom.mark_dirty(ScopeId::APP);
+        settle_declared_order(&mut dom);
+        let inventory = node.inventory().unwrap();
+        assert!(
+            !inventory
+                .hosts
+                .iter()
+                .any(|host| host.target == "declared-select")
+        );
+        assert_eq!(
+            inventory
+                .hosts
+                .iter()
+                .find(|host| host.target == "declared-typed")
+                .unwrap()
+                .registration_key,
+            typed_key,
+            "keyed moves preserve the registered item"
+        );
+        drop(dom);
+        assert!(
+            node.inventory().is_none(),
+            "dropped owner cannot retain its item list"
+        );
+    }
+}
+#[test]
+fn item_parent_scopes_preserve_local_children_and_separate_category_and_dropdown_owners() {
+    let fixture = new_declared_order_fixture(DropdownNavigationMode::ActiveDescendant);
+    let mut dom = VirtualDom::new_with_props(declared_order_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    settle_declared_order(&mut dom);
+    let context = fixture.context.borrow().clone().unwrap();
+    let outer = context.node.borrow().clone().unwrap();
+    let category = fixture.category.borrow().clone().unwrap();
+    let independent = fixture.independent.borrow().clone().unwrap();
+    assert_eq!(
+        declared_targets(&category),
+        ["category-first", "category-later"]
+    );
+    assert_eq!(
+        declared_targets(&independent),
+        ["independent-first", "independent-later"]
+    );
+    assert_ne!(outer.id(), category.id());
+    assert_ne!(outer.id(), independent.id());
+    assert!(
+        !declared_targets(&outer)
+            .iter()
+            .any(|target| target.starts_with("category-") || target.starts_with("independent-"))
+    );
+    let parent = declared_targets(&outer)
+        .iter()
+        .position(|target| target == "declared-parent")
+        .unwrap();
+    assert_eq!(
+        &declared_targets(&outer)[parent..parent + 3],
+        ["declared-parent", "parent-first", "parent-later"]
+    );
+    fixture.keys.borrow_mut().retain(|kind| kind != "parent");
+    dom.mark_dirty(ScopeId::APP);
+    settle_declared_order(&mut dom);
+    assert!(
+        !declared_targets(&outer)
+            .iter()
+            .any(|target| target.starts_with("parent-") || target == "declared-parent")
+    );
+    assert!(independent.inventory().is_none());
+    assert_eq!(
+        declared_targets(&category),
+        ["category-first", "category-later"]
+    );
+}
+#[test]
+fn submenu_convenience_forwards_its_current_trigger_order() {
+    let fixture = new_declared_order_fixture(DropdownNavigationMode::ActiveDescendant);
+    *fixture.keys.borrow_mut() = vec!["typed".into(), "submenu".into()];
+    let mut dom = VirtualDom::new_with_props(declared_order_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    settle_declared_order(&mut dom);
+    let node = fixture
+        .context
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .node
+        .borrow()
+        .clone()
+        .unwrap();
+    let before = node.inventory().unwrap();
+    assert_eq!(before.hosts[0].target, "declared-typed");
+    assert!(before.hosts[1].linked_trigger.is_some());
+    fixture.keys.borrow_mut().reverse();
+    dom.mark_dirty(ScopeId::APP);
+    settle_declared_order(&mut dom);
+    let after = node.inventory().unwrap();
+    assert!(after.hosts[0].linked_trigger.is_some());
+    assert_eq!(after.hosts[1].target, "declared-typed");
+    assert!(
+        !after
+            .hosts
+            .iter()
+            .any(|host| host.target == "ordered-submenu-child")
+    );
+}
+
+#[test]
+fn typed_category_key_origin_advances_without_an_outer_active_descendant_cue() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = Harness::with_settings(Fixture {
+        empty_items: true,
+        ..Default::default()
+    });
+    h.click("Menu");
+    let context = h.context();
+    let facts = mixed_inventory_facts();
+    let focuses = mount_inventory(&h, &facts);
+    assert!(registered_inventory_key(&h, 1, "Home", &facts));
+    h.settle();
+    assert_eq!(
+        focuses.borrow().last().map(String::as_str),
+        Some("mixed-category")
+    );
+    assert_eq!(
+        context.active_dom_id(),
+        None,
+        "Category keeps its parent cue without outer ARIA"
+    );
+    assert!(registered_inventory_key_from(
+        &h,
+        2,
+        "ArrowDown",
+        &facts,
+        Some("mixed-category".into())
+    ));
+    h.settle();
+    assert_eq!(
+        focuses.borrow().last().map(String::as_str),
+        Some("mixed-menu")
+    );
+    let mut disabled = facts.clone();
+    disabled.hosts[0].disabled_attribute = true;
+    assert!(registered_inventory_key_from(
+        &h,
+        3,
+        "Home",
+        &disabled,
+        Some("mixed-category".into())
+    ));
+    h.settle();
+    assert_eq!(
+        focuses.borrow().last().map(String::as_str),
+        Some("mixed-menu"),
+        "disabled origin cannot reenter eligible navigation"
+    );
+}
+
+#[test]
+fn typed_linked_row_arrow_right_uses_its_origin_after_a_different_roving_selection() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = Harness::with_settings(Fixture {
+        mode: DropdownNavigationMode::RovingTabindex,
+        ..Default::default()
+    });
+    // The shared fixture also supplies an external trigger for this controller.
+    // Select the linked row as its current trigger, as the existing linked-row
+    // workflow does, before testing an independently focused keyboard origin.
+    mount_trigger_mock(&mut h, "Linked");
+    h.key("Menu", Key::Home);
+    let parent = h.context();
+    let child = h.config.borrow().linked.get().unwrap().context();
+    assert_eq!(selected_label(&parent).as_deref(), Some("Alpha"));
+    assert!(
+        !*child.open.peek(),
+        "Home selects Alpha without opening its linked peer"
+    );
+    // The row's actual Dioxus key handler carries its target independently of
+    // the previous logical tabindex/visual cue. No focus observer is injected.
+    h.key("Linked", Key::ArrowRight);
+    assert!(*child.open.peek(), "the focused linked row owns ArrowRight");
+    assert!(*parent.open.peek());
+    assert!(parent.state.borrow().forward == h.config.borrow().linked.get());
 }
