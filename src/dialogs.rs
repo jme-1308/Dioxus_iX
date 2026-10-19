@@ -1475,6 +1475,7 @@ pub fn Popover(
     crate::overlay_runtime::use_overlay_scope_with_ancestors(Some(node.clone()), ancestors);
     node.set_close_behavior(close_behavior);
     let mounted_node = node.clone();
+    let keyboard_node = node.clone();
     let sync = node.clone();
     use_effect(move || sync.sync_open((popover.surface.open)()));
     let cleanup = node.clone();
@@ -1519,13 +1520,17 @@ pub fn Popover(
         crate::overlay_runtime::OverlayTransport {runtime:runtime.clone()}
             div { id: id.clone(), class: "ix-popover", role: "dialog", "aria-label": label.clone(), tabindex: "-1",
                 "data-surface-generation": "{generation}",
-                "data-ix-popover-focus-trap": popover.focusable_at_open.read().to_string(),
                 "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime.owner_id(),
                 "data-ix-overlay-generation":registration.to_string(),"data-ix-overlay-open":popover.is_open().to_string(),
                 "data-ix-overlay-host":id.clone(),"data-ix-overlay-native-surface":"popover",
                 "popover": "manual",
                 "data-placement": placement.as_str(), "data-spike": has_spike.to_string(),
                 style: "position-anchor:--{id};position-area:{placement.as_str()}",
+                onkeydown: move |event: KeyboardEvent| {
+                    let decision = keyboard_node.dioxus_popover_tab(&event, *popover.focusable_at_open.peek());
+                    if decision.prevent { event.prevent_default(); }
+                    if decision.stop { event.stop_propagation(); }
+                },
                 onmounted: move |event| {
                     mounted_node.set_mounted();
                     popover.surface.mounted(*popover.surface.generation.peek(), event.data());

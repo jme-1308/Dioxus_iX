@@ -25,27 +25,11 @@ struct Report {
     sequence: u64,
     connected: bool,
     kind: String,
-    #[serde(default)]
-    key: String,
-    #[serde(default)]
-    shift: bool,
-    #[serde(default)]
-    alt: bool,
-    #[serde(default)]
-    default_prevented: bool,
     presence: [bool; 4],
     #[serde(default)]
     focus_count: usize,
     #[serde(default)]
     focused_index: Option<usize>,
-    #[serde(default)]
-    more: bool,
-    #[serde(default)]
-    inside: bool,
-    #[serde(default)]
-    hosts: Vec<String>,
-    #[serde(default)]
-    triggers: Vec<String>,
     #[serde(default)]
     focused_control: Option<FocusedControl>,
     #[serde(default)]
@@ -73,7 +57,8 @@ struct Model {
     focusable_ids: Vec<String>,
     presented_ids: Vec<String>,
     active_default: bool,
-    stop: bool,
+    focus_count: usize,
+    focused_index: Option<usize>,
     changed: Option<EventHandler<bool>>,
 }
 impl Model {
@@ -98,7 +83,8 @@ impl Model {
             focusable_ids: Vec::new(),
             presented_ids: Vec::new(),
             active_default: false,
-            stop: false,
+            focus_count: 0,
+            focused_index: None,
             changed: None,
         }
     }
@@ -152,7 +138,8 @@ impl Model {
         }
         self.generation = self.generation.wrapping_add(1);
         self.sequence = 0;
-        self.stop = false;
+        self.focus_count = 0;
+        self.focused_index = None;
         self.focusable_ids.clear();
         self.presented_ids.clear();
         let capture = (!layer_changed && self.alive && self.mounted)
@@ -204,6 +191,20 @@ fn queue_changed(model: &Rc<RefCell<Model>>, node: &NodeHandle, open: bool) {
     }));
 }
 
+// Event fields come directly from Dioxus; only focus order/index are cached
+// read-only browser facts, never an event replay or native policy transport.
+#[derive(Default)]
+struct KeyInput {
+    key: String,
+    shift: bool,
+    alt: bool,
+    default_prevented: bool,
+    focus_count: usize,
+    focused_index: Option<usize>,
+    more: bool,
+    inside: bool,
+}
+
 #[derive(Default)]
 struct Decision {
     prevent: bool,
@@ -211,62 +212,60 @@ struct Decision {
     request: Option<bool>,
     focus: Option<String>,
 }
-fn decide(model: &mut Model, report: &Report, popover_ancestor: bool) -> Decision {
+fn decide(model: &mut Model, report: &KeyInput, popover_ancestor: bool) -> Decision {
     let mut decision = Decision::default();
-    match report.kind.as_str() {
-        "key" if !report.default_prevented => {
-            // Inside a Popover, the source Header Dropdown's local query has
-            // no eligible controls. More Tab instead belongs to the shared
-            // trigger callback below, including its no-target/default case.
-            if report.key == "Tab" && popover_ancestor {
-                return decision;
-            }
-            if report.more
-                && matches!(
-                    report.key.as_str(),
-                    "Home" | "End" | "ArrowDown" | "ArrowUp" | "Enter" | " "
-                )
-            {
-                if !model.open && model.more_visible() {
-                    decision.prevent = !report.alt;
-                    decision.request = Some(true);
-                    if !report.alt {
-                        decision.focus = Some(
-                            if matches!(report.key.as_str(), "End" | "ArrowUp") {
-                                "last"
-                            } else {
-                                "first"
-                            }
-                            .into(),
-                        );
-                    }
-                }
-            } else if model.open && (report.inside || report.more) && report.key == "Escape" {
-                decision.stop = true;
-                decision.request = Some(false);
-                decision.focus = Some("more".into());
-            } else if model.open && report.inside && report.key == "Tab" && report.focus_count > 0 {
-                let boundary = report.focused_index.is_none()
-                    || if report.shift {
-                        report.focused_index == Some(0)
-                    } else {
-                        report.focused_index == Some(report.focus_count - 1)
-                    };
-                if boundary {
-                    decision.prevent = true;
-                    decision.stop = true;
-                    decision.focus = Some(format!(
-                        "index:{}",
-                        if report.shift {
-                            report.focus_count - 1
+    if !report.default_prevented {
+        // Inside a Popover, the source Header Dropdown's local query has
+        // no eligible controls. More Tab instead belongs to the shared
+        // trigger callback below, including its no-target/default case.
+        if report.key == "Tab" && popover_ancestor {
+            return decision;
+        }
+        if report.more
+            && matches!(
+                report.key.as_str(),
+                "Home" | "End" | "ArrowDown" | "ArrowUp" | "Enter" | " "
+            )
+        {
+            if !model.open && model.more_visible() {
+                decision.prevent = !report.alt;
+                decision.request = Some(true);
+                if !report.alt {
+                    decision.focus = Some(
+                        if matches!(report.key.as_str(), "End" | "ArrowUp") {
+                            "last"
                         } else {
-                            0
+                            "first"
                         }
-                    ));
+                        .into(),
+                    );
                 }
+            }
+        } else if model.open && (report.inside || report.more) && report.key == "Escape" {
+            decision.prevent = true;
+            decision.stop = true;
+            decision.request = Some(false);
+            decision.focus = Some("more".into());
+        } else if model.open && report.inside && report.key == "Tab" && report.focus_count > 0 {
+            let boundary = report.focused_index.is_none()
+                || if report.shift {
+                    report.focused_index == Some(0)
+                } else {
+                    report.focused_index == Some(report.focus_count - 1)
+                };
+            if boundary {
+                decision.prevent = true;
+                decision.stop = true;
+                decision.focus = Some(format!(
+                    "index:{}",
+                    if report.shift {
+                        report.focus_count - 1
+                    } else {
+                        0
+                    }
+                ));
             }
         }
-        _ => {}
     }
     decision
 }
@@ -412,9 +411,8 @@ impl Controller {
                 .find_map(|id| self.node.capture_registered_focus(id)),
         }
     }
-    fn filter_tab_focus(&self, report: &Report, decision: &mut Decision) {
-        if report.kind == "key"
-            && report.key == "Tab"
+    fn filter_tab_focus(&self, report: &KeyInput, decision: &mut Decision) {
+        if report.key == "Tab"
             && decision
                 .focus
                 .as_deref()
@@ -468,68 +466,67 @@ impl Controller {
             }
         }
     }
-    fn observation(&self, event: FormEvent) {
-        event.stop_propagation();
-        let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
-            return;
-        };
-        // Domain presence reads can enter this owner; do not hold Model's
-        // mutable borrow while computing source-aware ancestry.
-        let popover_ancestor =
-            report.kind == "key" && report.key == "Tab" && self.node.has_popover_ancestor();
-        let (mut decision, generation, previous) = {
-            let mut model = self.model.borrow_mut();
-            if !model.accepts(&report) {
+    fn key(&self, event: KeyboardEvent, more: bool, host_small: Option<bool>) {
+        let (input, generation, previous) = {
+            let model = self.model.borrow();
+            if !model.alive
+                || !model.mounted
+                || !self.node.is_registered()
+                || host_small.is_some_and(|small| small != model.small)
+                || !event.default_action_enabled()
+            {
                 return;
             }
-            model.sequence = report.sequence;
-            model.presence = report.presence;
-            model.focused_control = report.focused_control.clone();
-            model.focusable_ids = report.focusable_ids.clone();
-            model.presented_ids = report.presented_ids.clone();
-            model.active_default = report.active_default;
-            let child_owned = report.kind == "key"
-                && self.node.runtime().is_some_and(|runtime| {
-                    runtime.key_child_path(
-                        &model.owner,
-                        &report.hosts,
-                        &report.triggers,
-                        &report.key,
-                    )
-                });
-            let decision = if child_owned {
-                Decision::default()
-            } else {
-                decide(&mut model, &report, popover_ancestor)
-            };
-            model.stop = decision.stop;
-            (decision, model.generation, model.open)
+            (
+                KeyInput {
+                    key: event.key().to_string(),
+                    shift: event.modifiers().contains(Modifiers::SHIFT),
+                    alt: event.modifiers().contains(Modifiers::ALT),
+                    default_prevented: !event.default_action_enabled(),
+                    focus_count: model.focus_count,
+                    focused_index: model.focused_index,
+                    more,
+                    inside: host_small.is_some(),
+                },
+                model.generation,
+                model.open,
+            )
         };
-        self.filter_tab_focus(&report, &mut decision);
-        self.model.borrow_mut().stop = decision.stop;
-        if report.kind == "pointer" {
-            self.node.cancel_registered_focus();
-            self.model.borrow_mut().focus("none".into());
+        let Some(facts) = self.node.dioxus_key_facts(&event, more, None, input.inside) else {
+            return;
+        };
+        // More Tab releases through a containing Popover using shared Rust
+        // focus policy. Other keys remain local Dioxus events.
+        if more && input.key == "Tab" && facts.popover_ancestor {
+            let decision = self.node.dioxus_key(facts);
+            if decision.prevent {
+                event.prevent_default();
+            }
+            if decision.stop || decision.release_focus {
+                event.stop_propagation();
+            }
+            self.dispatch_focus();
+            self.notify();
+            return;
         }
+        // A newer nested/peer overlay owns Escape until it closes. The local
+        // Header policy retains its registered More restoration after acceptance.
+        if input.key == "Escape" && !self.node.owns_keyboard_topmost() {
+            return;
+        }
+        let mut decision = decide(&mut self.model.borrow_mut(), &input, facts.popover_ancestor);
+        self.filter_tab_focus(&input, &mut decision);
         if decision.prevent {
             event.prevent_default();
         }
-        let trigger_others =
-            report.kind == "key" && report.more && !previous && decision.request == Some(true);
+        if decision.stop || decision.request.is_some() {
+            event.stop_propagation();
+        }
+        let trigger_others = more && !previous && decision.request == Some(true);
         let accepted = decision
             .request
             .filter(|next| *next != previous)
-            .is_none_or(|next| {
-                self.node.request(
-                    next,
-                    if report.kind == "key" {
-                        Reason::Keyboard
-                    } else {
-                        Reason::Trigger
-                    },
-                    false,
-                )
-            });
+            .is_none_or(|next| self.node.request(next, Reason::Keyboard, false));
         {
             let mut model = self.model.borrow_mut();
             if !model.alive || model.generation != generation {
@@ -544,29 +541,41 @@ impl Controller {
             }
         }
         if trigger_others && let Some(runtime) = self.node.runtime() {
-            // Source More is an ordinary Dropdown trigger: its independent
-            // others pass follows both accepted and vetoed toggle attempts.
             runtime.dismiss_dropdown_others(self.node.id(), self.node.generation());
         }
         self.dispatch_focus();
         self.notify();
     }
-    fn stop_query(&self, event: FormEvent) {
+    fn observation(&self, event: FormEvent) {
         event.stop_propagation();
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
-        let model = self.model.borrow();
-        if model.alive
-            && model.mounted
-            && report.connected
-            && report.owner == model.owner
-            && report.generation == model.generation
-            && report.sequence == model.sequence
-            && model.stop
-        {
-            event.prevent_default();
+        if !matches!(report.kind.as_str(), "presence" | "pointer") {
+            return;
         }
+        {
+            let mut model = self.model.borrow_mut();
+            if !model.accepts(&report) {
+                return;
+            }
+            model.sequence = report.sequence;
+            model.presence = report.presence;
+            model.focused_control = report.focused_control;
+            model.focusable_ids = report.focusable_ids;
+            model.presented_ids = report.presented_ids;
+            model.active_default = report.active_default;
+            model.focus_count = report.focus_count;
+            model.focused_index = report.focused_index;
+            if report.kind == "pointer" {
+                model.focus("none".into());
+            }
+        }
+        if report.kind == "pointer" {
+            self.node.cancel_registered_focus();
+        }
+        self.dispatch_focus();
+        self.notify();
     }
 }
 
@@ -721,7 +730,6 @@ pub(crate) fn HeaderLayout(
         revision,
         node,
     };
-    let stop_controller = controller.clone();
     let focus_controller = controller.clone();
     use_effect(move || {
         let _ = revision();
@@ -742,8 +750,11 @@ pub(crate) fn HeaderLayout(
     drop(state);
     let more_mount = crate::dropdown::use_focus_mount(more_id.clone());
     let visible_model = model.clone();
-    let visible_node = stop_controller.node.clone();
+    let visible_node = controller.node.clone();
     let runtime_owner = runtime.owner_id();
+    let more_key = controller.clone();
+    let small_key = controller.clone();
+    let large_key = controller.clone();
     let more_click = controller.clone();
     let secondary_click = controller.clone();
     let default_click = controller.clone();
@@ -769,8 +780,7 @@ pub(crate) fn HeaderLayout(
             },
             overlay_runtime::OverlayTransport {runtime}
             input {r#type:"hidden","data-header-layout-observer":owner.clone(),
-                oninput:move |event| controller.observation(event),
-                onchange:move |event| stop_controller.stop_query(event)
+                oninput:move |event| controller.observation(event)
             }
             dialog {id:small_id.clone(),class:"ix-header-popup-host ix-header-popup-small",
                 "data-ix-overlay-host":small.then_some(owner.clone()),
@@ -778,6 +788,7 @@ pub(crate) fn HeaderLayout(
                 role:if small {Some("presentation")} else {None},
                 popover:if small&&enable_top_layer {Some("manual")} else {None},
                 onclick:move |event|small_background.background_click(true,event),
+                onkeydown:move |event|small_key.key(event,false,Some(true)),
                 div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onclick:move |event|secondary_click.group_click(0,event),HeaderOwnershipScope {node:secondary_scope,{secondary}}}
                 div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onclick:move |event|default_click.group_click(1,event),HeaderOwnershipScope {node:default_scope,{default_content}}}
                 dialog {id:large_id.clone(),class:"ix-header-popup-host ix-header-popup-large",
@@ -786,12 +797,14 @@ pub(crate) fn HeaderLayout(
                     role:if !small {Some("presentation")} else {None},
                     popover:if !small&&enable_top_layer {Some("manual")} else {None},
                     onclick:move |event|large_background.background_click(false,event),
+                    onkeydown:move |event|large_key.key(event,false,Some(false)),
                     div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onclick:move |event|overflow_click.group_click(2,event),HeaderOwnershipScope {node:overflow_scope,{overflow}}}
                 }
             }
             button {id:more_id,r#type:"button",class:"ix-app-icon-button ix-header-more-button",
                 onmounted:more_mount,
                 onclick:move |event|more_click.more_click(event),
+                onkeydown:move |event|more_key.key(event,true,None),
                 onvisible:move |event:VisibleEvent| {
                     let alive = visible_model.borrow().alive;
                     if alive
@@ -878,7 +891,11 @@ mod tests {
                     requests.borrow_mut().push(change.open);
                     !veto.get()
                 }),
-                apply: Rc::new(move |change| apply.borrow_mut().open = change.open),
+                apply: Rc::new(move |change| {
+                    let mut model = apply.borrow_mut();
+                    model.open = change.open;
+                    model.apply_focus(change.restore_focus);
+                }),
                 key: None,
             },
         );
@@ -1047,7 +1064,7 @@ mod tests {
             model.open = true;
             model.focusable_ids = vec!["unregistered".into(), "registered-action".into()];
         }
-        let mut fact = report(&controller.model.borrow(), "key");
+        let mut fact = key_input(&controller.model.borrow());
         fact.key = "Tab".into();
         fact.focus_count = 2;
         fact.focused_index = Some(1);
@@ -1153,21 +1170,21 @@ mod tests {
             sequence: model.sequence + 1,
             connected: true,
             kind: kind.into(),
-            key: String::new(),
-            shift: false,
-            alt: false,
-            default_prevented: false,
             presence: [true; 4],
             focus_count: 6,
             focused_index: Some(0),
-            more: false,
-            inside: true,
-            hosts: vec![],
-            triggers: vec![],
             focused_control: None,
             focusable_ids: (0..6).map(|index| format!("control-{index}")).collect(),
             presented_ids: Vec::new(),
             active_default: false,
+        }
+    }
+    fn key_input(_: &Model) -> KeyInput {
+        KeyInput {
+            focus_count: 6,
+            focused_index: Some(0),
+            inside: true,
+            ..KeyInput::default()
         }
     }
     #[test]
@@ -1176,7 +1193,7 @@ mod tests {
         model.mounted = true;
         model.presence = [true; 4];
         for key in ["Home", "End", "ArrowUp", "ArrowDown", "Enter", " "] {
-            let mut fact = report(&model, "key");
+            let mut fact = key_input(&model);
             fact.more = true;
             fact.key = key.into();
             let decision = decide(&mut model, &fact, false);
@@ -1185,7 +1202,7 @@ mod tests {
             assert!(!decision.stop);
         }
         model.open = true;
-        let mut trigger = report(&model, "key");
+        let mut trigger = key_input(&model);
         trigger.more = true;
         trigger.key = "Enter".into();
         let decision = decide(&mut model, &trigger, false);
@@ -1201,10 +1218,10 @@ mod tests {
         assert_eq!(decision.request, Some(true));
         assert_eq!(decision.focus, None);
         model.open = true;
-        let mut fact = report(&model, "key");
+        let mut fact = key_input(&model);
         fact.key = "Escape".into();
         let decision = decide(&mut model, &fact, false);
-        assert!(!decision.prevent && decision.stop);
+        assert!(decision.prevent && decision.stop);
         assert_eq!(decision.request, Some(false));
         assert_eq!(decision.focus.as_deref(), Some("more"));
         fact.key = "Tab".into();
@@ -1230,7 +1247,7 @@ mod tests {
         for more in [false, true] {
             for shift in [false, true] {
                 for index in [None, Some(0), Some(5)] {
-                    let mut fact = report(&model, "key");
+                    let mut fact = key_input(&model);
                     fact.key = "Tab".into();
                     fact.more = more;
                     fact.shift = shift;
@@ -1243,7 +1260,7 @@ mod tests {
                 }
             }
         }
-        let mut ordinary = report(&model, "key");
+        let mut ordinary = key_input(&model);
         ordinary.key = "Tab".into();
         ordinary.focused_index = Some(5);
         assert_eq!(
@@ -1295,7 +1312,6 @@ mod tests {
         model.open = true;
         model.presence = [true; 4];
         model.sequence = 42;
-        model.stop = true;
         model.focus("last".into());
         let previous = report(&model, "presence");
         assert!(
@@ -1308,7 +1324,6 @@ mod tests {
             "old physical host generation is stale"
         );
         assert_eq!(model.sequence, 0);
-        assert!(!model.stop);
         assert_eq!(model.focus, "none");
         assert!(!model.sync_mode(true, true), "same props are inert");
         assert!(model.open);
@@ -1419,6 +1434,105 @@ mod tests {
         let fact = report(&model, "presence");
         model.invalidate();
         assert!(!model.accepts(&fact));
+    }
+
+    struct TypedKey(Key, Modifiers);
+    impl dioxus::html::ModifiersInteraction for TypedKey {
+        fn modifiers(&self) -> Modifiers {
+            self.1
+        }
+    }
+    impl dioxus::html::HasKeyboardData for TypedKey {
+        fn key(&self) -> Key {
+            self.0.clone()
+        }
+        fn code(&self) -> dioxus::html::Code {
+            dioxus::html::Code::Unidentified
+        }
+        fn location(&self) -> dioxus::html::Location {
+            dioxus::html::Location::Standard
+        }
+        fn is_auto_repeating(&self) -> bool {
+            false
+        }
+        fn is_composing(&self) -> bool {
+            false
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    fn key_event(key: Key, shift: bool) -> KeyboardEvent {
+        Event::new(
+            Rc::new(dioxus::html::KeyboardData::new(TypedKey(
+                key,
+                if shift {
+                    Modifiers::SHIFT
+                } else {
+                    Modifiers::empty()
+                },
+            ))),
+            true,
+        )
+    }
+    #[test]
+    fn direct_more_keys_and_native_field_boundaries_use_registered_focus() {
+        let fixture = FocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(registered_header, fixture.clone());
+        dom.rebuild_in_place();
+        let controller = fixture.0.borrow().clone().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let more = format!("{}-more", controller.model.borrow().owner);
+        for id in ["first-field", "last-action", more.as_str()] {
+            install_focus(&dom, &controller, id, &calls);
+        }
+        {
+            let mut model = controller.model.borrow_mut();
+            model.focusable_ids = vec!["first-field".into(), "last-action".into()];
+            model.focus_count = 2;
+            model.focused_index = Some(0);
+        }
+        let down = key_event(Key::ArrowDown, false);
+        dom.in_runtime(|| controller.key(down.clone(), true, None));
+        settle_focus(&mut dom);
+        assert!(
+            controller.model.borrow().open && !down.default_action_enabled() && !down.propagates()
+        );
+        assert_eq!(calls.borrow().as_slice(), ["first-field"]);
+        let home = key_event(Key::Home, false);
+        dom.in_runtime(|| controller.key(home.clone(), false, Some(true)));
+        assert!(
+            home.default_action_enabled() && home.propagates(),
+            "native editing remains native"
+        );
+        let interior = key_event(Key::Tab, false);
+        dom.in_runtime(|| controller.key(interior.clone(), false, Some(true)));
+        assert!(interior.default_action_enabled() && interior.propagates());
+        controller.model.borrow_mut().focused_index = Some(1);
+        let boundary = key_event(Key::Tab, false);
+        dom.in_runtime(|| controller.key(boundary.clone(), false, Some(true)));
+        settle_focus(&mut dom);
+        assert!(!boundary.default_action_enabled() && !boundary.propagates());
+        assert_eq!(calls.borrow().as_slice(), ["first-field", "first-field"]);
+        let escape = key_event(Key::Escape, false);
+        dom.in_runtime(|| controller.key(escape.clone(), false, Some(true)));
+        settle_focus(&mut dom);
+        assert!(
+            !controller.model.borrow().open
+                && !escape.default_action_enabled()
+                && !escape.propagates()
+        );
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["first-field", "first-field", more.as_str()]
+        );
+        fixture.1.set(true);
+        let end = key_event(Key::End, false);
+        dom.in_runtime(|| controller.key(end.clone(), true, None));
+        settle_focus(&mut dom);
+        assert!(!controller.model.borrow().open && !end.default_action_enabled());
+        assert_eq!(calls.borrow().len(), 3, "veto never moves focus");
+        assert_eq!(*fixture.2.borrow(), [true, false, true]);
     }
 
     struct Click;

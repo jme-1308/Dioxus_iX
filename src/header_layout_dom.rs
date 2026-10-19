@@ -1,6 +1,6 @@
 //! Native DOM observations and execution for the private Rust Header controller.
 //! `__OWNER__` is replaced by a serialized root ID. Rust owns all policy and
-//! attributes; input processes one report, change only queries its saved stop ACK.
+//! attributes and Dioxus key handlers. Input carries read-only observations only.
 
 pub(super) const BRIDGE: &str = r#"
 const owner=__OWNER__,root=document.getElementById(owner);
@@ -38,33 +38,21 @@ function focusGroup(node){
   return index<0?null:index;
 }
 function focusables(host,tabOrder=true){return host?Array.from(host.querySelectorAll(focusableSelector)).filter(tabOrder?visible:presented):[];}
-function facts(kind,event){
+function facts(kind){
   const host=activeHost(),items=focusables(host),active=deepActive(),index=items.indexOf(active);
-  const path=event?.composedPath()||[];
-  const target=path[0]||event?.target;
   return {
-    hosts:path.filter(n=>n instanceof Element&&n.hasAttribute("data-ix-overlay-host")).map(n=>n.getAttribute("data-ix-overlay-host")),
-    triggers:path.filter(n=>n instanceof Element&&n.hasAttribute("data-ix-overlay-trigger")).map(n=>n.getAttribute("data-ix-overlay-trigger")),
     owner,generation:Number(generation()),sequence:++sequence,connected:root.isConnected,kind,
-    key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,default_prevented:!!event?.defaultPrevented,
     presence:groups.map(group=>!!group&&group.children.length>0),focus_count:items.length,
     focusable_ids:items.map(node=>node.id),presented_ids:focusables(root,false).map(node=>node.id),
     focused_control:active?.id&&focusGroup(active)!==null?{id:active.id,group:focusGroup(active)}:null,
     active_default:active===document.body||active===document.documentElement,
-    focused_index:index<0?null:index,more:path.includes(more()),
-    inside:!!host&&(path.includes(host)||contains(host,target))
+    focused_index:index<0?null:index
   };
 }
-function send(report,event){
+function send(report){
   if(!alive||!root.isConnected)return;
-  const value=JSON.stringify(report);
-  transport.value=value;
-  const prevent=!transport.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
-  // This second transport asks only for the saved stop flag; it performs no
-  // action or sequence processing, and carries the identical observation.
-  transport.value=value;
-  const stop=!transport.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-  if(event){if(prevent&&event.cancelable)event.preventDefault();if(stop)event.stopPropagation();}
+  transport.value=JSON.stringify(report);
+  transport.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));
 }
 function reportPresence(){
   const report=facts('presence');
@@ -105,9 +93,8 @@ function syncPopups(){
   }
 }
 function sync(){if(!alive||!root.isConnected)return;syncPopups();reportPresence();}
-root.addEventListener('keydown',event=>send(facts('key',event),event),{capture:true,signal});
 document.addEventListener('pointerdown',event=>{
-  if(open()||event.composedPath().includes(root))send(facts('pointer',event),event);
+  if(open()||event.composedPath().includes(root))send(facts('pointer'));
 },{capture:true,signal});
 document.addEventListener('focusin',reportPresence,{capture:true,passive:true,signal});
 root.addEventListener('focusout',()=>queueMicrotask(()=>{if(alive)reportPresence();}),{passive:true,signal});

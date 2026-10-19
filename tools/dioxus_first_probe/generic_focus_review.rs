@@ -65,7 +65,15 @@ pub fn GenericFocusPreview() -> Element {
                     PopoverContent {
                         label { r#for:"r0211-popover-field", "Equipment name" }
                         input { id:"r0211-popover-field", class:"generic-focus-field", value:note(), onmounted:field_mount,
-                            oninput:move |event|note.set(event.value()) }
+                            oninput:move |event|note.set(event.value()),
+                            onkeydown:move |event:KeyboardEvent| {
+                                // Consumer cancellation must reach the shared
+                                // document Escape handler on both renderers.
+                                if event.key()==Key::Escape && event.modifiers().contains(Modifiers::SHIFT) {
+                                    event.prevent_default();
+                                }
+                            }
+                        }
                         div { class:"generic-focus-controls",
                             Button { id:"r0211-content-action", onclick:move |_|actions.set(actions()+1), "Apply equipment name" }
                             Button { id:"r0211-veto", variant:ButtonVariant::Secondary, onclick:move |_|veto.toggle(),
@@ -157,6 +165,10 @@ await wait('opening completion',()=>byId('r0211-state').dataset.changes==='[true
 const field=byId('r0211-popover-field');field.value='Pump revised';field.dispatchEvent(new Event('input',{bubbles:true}));
 await wait('Popover typing',()=>byId('r0211-state').textContent.includes('Pump revised'));
 if(key(field,'Tab').defaultPrevented)throw new Error('Interior Popover Tab was intercepted');
+const canceledRequests=+byId('r0211-state').dataset.closeRequests;
+if(!key(field,'Escape',true).defaultPrevented)throw new Error('Consumer Escape cancellation lost');
+await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+if(!isOpen(panel())||+byId('r0211-state').dataset.closeRequests!==canceledRequests)throw new Error('Canceled Escape reached global dismissal');
 byId('r0211-popover-close').focus();if(!key(active(),'Tab').defaultPrevented)throw new Error('Popover forward boundary not trapped');
 await wait('Popover forward wrap',()=>active()===byId('r0211-header-action'));
 if(!key(active(),'Tab',true).defaultPrevented)throw new Error('Popover reverse boundary not trapped');
@@ -197,6 +209,7 @@ byId('r0211-header-veto').click();await wait('Header veto enabled',()=>byId('r02
 more().focus();key(more(),'End');await wait('Header End entry',()=>header().dataset.open==='true'&&active()===byId('r0211-overflow-last'));
 const headerRequests=+byId('r0211-header-state').dataset.closeRequests;
 key(active(),'Escape');await wait('Header close veto',()=>+byId('r0211-header-state').dataset.closeRequests>headerRequests&&header().dataset.open==='true');
+if(+byId('r0211-header-state').dataset.closeRequests!==headerRequests+1)throw new Error('Header Escape requested twice');
 byId('r0211-overflow-note').focus();key(active(),'F4');await wait('Header veto released',()=>byId('r0211-header-state').dataset.veto==='false');
 key(active(),'Escape');await wait('Header released close',()=>header().dataset.open==='false'&&active()===more());
 byId('r0211-top-layer').click();await wait('inline Header selected',()=>header().dataset.topLayer==='false');

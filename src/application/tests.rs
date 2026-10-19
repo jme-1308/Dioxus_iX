@@ -2942,6 +2942,36 @@ impl AppSwitchHarness {
             .handle_event("click", event.clone(), self.header_more_target());
         (!event.default_action_enabled(), event.propagates())
     }
+    fn header_key(
+        &self,
+        key: Key,
+        more: bool,
+        modifiers: Modifiers,
+        prevented: bool,
+    ) -> (bool, bool) {
+        let target = if more {
+            self.header_more_target()
+        } else {
+            let root = self.header_root_attrs();
+            let (id, _) = self
+                .attrs
+                .iter()
+                .find(|(_, attrs)| attrs.get("data-ix-overlay-host") == root.get("id"))
+                .expect("current active Header popup");
+            dioxus::core::ElementId::from_raw(*id)
+        };
+        let data: Rc<dyn std::any::Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+            (key, modifiers),
+        )));
+        let event = Event::new(data, true);
+        if prevented {
+            event.prevent_default();
+        }
+        self.dom
+            .runtime()
+            .handle_event("keydown", event.clone(), target);
+        (!event.default_action_enabled(), event.propagates())
+    }
     fn header_background_click(&self) -> (bool, bool) {
         let root = self.header_root_attrs();
         let (id, _) = self
@@ -3006,10 +3036,10 @@ impl AppSwitchHarness {
             .extend(extra.as_object().unwrap().clone());
         report
     }
-    fn header_raw(&self, report: serde_json::Value, query: bool) -> (bool, bool) {
+    fn header_raw(&self, report: serde_json::Value) -> (bool, bool) {
         menu_dispatch(
             &self.dom,
-            if query { "change" } else { "input" },
+            "input",
             self.header_input.unwrap(),
             report.to_string(),
         )
@@ -3236,28 +3266,19 @@ fn header_layout_standalone_emits_new_state_and_keeps_leading_children() {
 }
 
 #[test]
-fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_action() {
+fn header_layout_dioxus_overflow_keys_preserve_veto_defaults_and_once_only_actions() {
     let _event_converter_guard = crate::test_event_converter_guard();
     let mut harness = AppSwitchHarness::new(None, false);
     assert_eq!(
-        harness.header_raw(
-            harness.header_message(1, "presence", serde_json::json!({})),
-            false
-        ),
+        harness.header_raw(harness.header_message(1, "presence", serde_json::json!({}))),
         (false, false)
     );
     harness.settle();
     harness.settings.borrow_mut().overflow_veto = true;
-    let veto = harness.header_message(2, "key", serde_json::json!({"more":true,"key":"Enter"}));
     assert_eq!(
-        harness.header_raw(veto.clone(), false),
+        harness.header_key(Key::Enter, true, Modifiers::empty(), false),
         (true, false),
-        "opening key default is prevented even under veto"
-    );
-    assert_eq!(
-        harness.header_raw(veto, true),
-        (false, false),
-        "opening does not request native propagation stop"
+        "opening key prevents default and stops virtual bubbling under veto"
     );
     harness.settle();
     assert_eq!(harness.header_root_attrs()["data-open"], "false");
@@ -3268,10 +3289,7 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
     assert!(harness.settings.borrow().overflow_changes.is_empty());
     harness.settings.borrow_mut().overflow_veto = false;
     assert_eq!(
-        harness.header_raw(
-            harness.header_message(3, "key", serde_json::json!({"more":true,"key":"ArrowUp"})),
-            false
-        ),
+        harness.header_key(Key::ArrowUp, true, Modifiers::empty(), false),
         (true, false)
     );
     harness.settle();
@@ -3280,19 +3298,12 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
         !harness
             .header_root_attrs()
             .contains_key("data-focus-target"),
-        "Header no longer publishes native focus commands; mounted focus is verified by rendered workflows"
-    );
-    let escape =
-        harness.header_message(4, "key", serde_json::json!({"inside":true,"key":"Escape"}));
-    assert_eq!(
-        harness.header_raw(escape.clone(), false),
-        (false, false),
-        "Escape original default stays enabled"
+        "Header does not publish native focus commands"
     );
     assert_eq!(
-        harness.header_raw(escape.clone(), true),
+        harness.header_key(Key::Escape, false, Modifiers::empty(), false),
         (true, false),
-        "separate current-event stop acknowledgement"
+        "handled local Escape prevents default and stops virtual bubbling"
     );
     harness.settle();
     assert_eq!(harness.header_root_attrs()["data-open"], "false");
@@ -3301,7 +3312,11 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
         vec![true, false]
     );
     let stale = harness.header_message(3, "key", serde_json::json!({"more":true,"key":"Enter"}));
-    assert_eq!(harness.header_raw(stale, false), (false, false));
+    assert_eq!(
+        harness.header_raw(stale),
+        (false, false),
+        "retired native key reports do not dispatch keyboard actions"
+    );
     harness.settle();
     assert_eq!(
         harness.settings.borrow().overflow_changes,
@@ -3329,29 +3344,20 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
         (1, 0)
     );
     assert_eq!(harness.settings.borrow().ancestor_inputs, 0);
-    // The already-open trigger leaves Enter/Space to native button
-    // activation. A real click dispatch models that next event;
-    // the key handler must neither fabricate it nor close early.
     assert_eq!(
-        harness.header_raw(
-            harness.header_message(9, "key", serde_json::json!({"more":true,"key":"Enter"})),
-            false
-        ),
+        harness.header_key(Key::Enter, true, Modifiers::empty(), false),
         (true, false)
     );
     harness.settle();
     assert_eq!(harness.header_root_attrs()["data-open"], "true");
     let requests_before_keys = harness.settings.borrow().overflow_requests.len();
     let changes_before_keys = harness.settings.borrow().overflow_changes.len();
-    for (sequence, key) in [(10, "Enter"), (11, " ")] {
-        let report =
-            harness.header_message(sequence, "key", serde_json::json!({"more":true,"key":key}));
+    for key in [Key::Enter, Key::Character(" ".into())] {
         assert_eq!(
-            harness.header_raw(report.clone(), false),
-            (false, false),
-            "already-open trigger leaves native default enabled"
+            harness.header_key(key, true, Modifiers::empty(), false),
+            (false, true),
+            "already-open More preserves native button activation"
         );
-        assert_eq!(harness.header_raw(report, true), (false, false));
         harness.settle();
         assert_eq!(harness.header_root_attrs()["data-open"], "true");
     }
@@ -3375,12 +3381,13 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
         changes_before_keys + 1
     );
     let requests = harness.settings.borrow().overflow_requests.len();
+    let stale = harness.header_message(4, "key", serde_json::json!({"inside":true,"key":"Escape"}));
     harness.settings.borrow_mut().slot_top_layer = true;
     harness.update();
     assert_eq!(
-        harness.header_raw(escape, false),
+        harness.header_raw(stale),
         (false, false),
-        "old generation cannot mutate new presentation"
+        "retired generation key report cannot mutate new presentation"
     );
     harness.settle();
     assert_eq!(harness.settings.borrow().overflow_requests.len(), requests);
@@ -3391,10 +3398,7 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
 fn header_completion_keeps_each_payload_and_resolves_current_committed_listener() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(
-        h.header_message(1, "presence", serde_json::json!({})),
-        false,
-    );
+    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
     for _ in 0..3 {
         h.header_more_click(false);
     }
@@ -3426,10 +3430,7 @@ fn header_completion_keeps_each_payload_and_resolves_current_committed_listener(
 fn header_completion_allows_reentrant_observer_state_changes() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(
-        h.header_message(1, "presence", serde_json::json!({})),
-        false,
-    );
+    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
     let owner_runtime = h.dom.in_scope(ScopeId::ROOT, || {
         dioxus::core::Runtime::try_current().unwrap()
     });
@@ -3465,10 +3466,7 @@ fn header_completion_allows_reentrant_observer_state_changes() {
 fn header_completion_survives_mode_changes_and_reports_configuration_close() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(
-        h.header_message(1, "presence", serde_json::json!({})),
-        false,
-    );
+    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
     h.header_more_click(false);
     let registration = h.header_rendered_root_attribute("data-ix-overlay-generation");
     let private = h.header_root_attrs()["data-generation"].clone();
@@ -3506,10 +3504,7 @@ fn header_completion_survives_mode_changes_and_reports_configuration_close() {
 fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::new(None, false);
-    h.header_raw(
-        h.header_message(1, "presence", serde_json::json!({})),
-        false,
-    );
+    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
     h.header_more_click(false);
     let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
     let old_root = h.header_root_attrs()["id"].clone();
@@ -3536,10 +3531,7 @@ fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
         "rendered observer owner: {rendered_owner:?}"
     );
     assert_eq!(rendered_owner, Some(h.header_root_attrs()["id"].as_str()));
-    h.header_raw(
-        h.header_message(1, "presence", serde_json::json!({})),
-        false,
-    );
+    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
     h.header_more_click(false);
     assert!(h.settings.borrow().overflow_changes.is_empty());
     assert_eq!(h.completion_effects(), 1);
@@ -3555,10 +3547,7 @@ fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoe
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(
-            h.header_message(1, "presence", serde_json::json!({})),
-            false,
-        );
+        h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
         h.header_peer_observe(1, false);
         if previous {
             h.header_more_click(false);
@@ -3613,26 +3602,29 @@ fn header_closed_more_activation_keys_run_post_phase_with_or_without_alt_and_vet
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(
-            h.header_message(1, "presence", serde_json::json!({})),
-            false,
-        );
+        h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
         h.header_peer_observe(1, false);
         let peers = h.seed_header_peers();
         h.settings.borrow_mut().overflow_veto = veto;
-        let message = h.header_message(
-            2,
-            "key",
-            serde_json::json!({"more":true,"key":"ArrowDown","alt":alt}),
+        assert_eq!(
+            h.header_key(
+                Key::ArrowDown,
+                true,
+                if alt {
+                    Modifiers::ALT
+                } else {
+                    Modifiers::empty()
+                },
+                false
+            ),
+            (!alt, false)
         );
-        assert_eq!(h.header_raw(message.clone(), false), (!alt, false));
         assert_eq!(h.settings.borrow().overflow_requests, [(false, true)]);
         assert_eq!(
             peers.0.borrow().requests,
             [(0, false), (1, false)],
             "closed activation post-phase: Alt={alt}, veto={veto}"
         );
-        assert_eq!(h.header_raw(message, true), (false, false));
         assert_eq!(peers.0.borrow().requests.len(), 2);
         assert_eq!(h.header_peer_effects(), if veto { 2 } else { 3 });
         assert_eq!(h.header_root_attrs()["data-open"], (!veto).to_string());
@@ -3661,10 +3653,7 @@ fn header_more_dismissal_skips_open_navigation_and_consumer_prevented_input() {
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
         h.settle();
-        h.header_raw(
-            h.header_message(1, "presence", serde_json::json!({})),
-            false,
-        );
+        h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
         h.header_peer_observe(1, false);
         let previous = case == "open-enter";
         if previous {
@@ -3677,14 +3666,12 @@ fn header_more_dismissal_skips_open_navigation_and_consumer_prevented_input() {
         if case == "prevented-click" {
             assert_eq!(h.header_more_click(true), (true, true));
         } else {
-            let extra = if case == "open-enter" {
-                serde_json::json!({"key":"Enter","more":true})
-            } else {
-                serde_json::json!({"key":"ArrowDown","more":true,"default_prevented":true})
-            };
-            let message = h.header_message(3, "key", extra);
-            assert_eq!(h.header_raw(message.clone(), false), (false, false));
-            assert_eq!(h.header_raw(message, true), (false, false));
+            let prevented = case == "prevented-key";
+            let key = if previous { Key::Enter } else { Key::ArrowDown };
+            assert_eq!(
+                h.header_key(key, true, Modifiers::empty(), prevented),
+                (prevented, true)
+            );
         }
         h.settle();
         assert_eq!(
@@ -3714,10 +3701,7 @@ fn actual_nested_dropdown_clicks_do_not_toggle_the_header_surface() {
     let _guard = crate::test_event_converter_guard();
     let mut h = AppSwitchHarness::configured(None, false, |state| state.slot_nested = true);
     h.settle();
-    h.header_raw(
-        h.header_message(1, "presence", serde_json::json!({})),
-        false,
-    );
+    h.header_raw(h.header_message(1, "presence", serde_json::json!({})));
     let (id, _) = h
         .attrs
         .iter()
@@ -3757,10 +3741,7 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
     harness.settle();
     let presence = serde_json::json!({"presence":[true,true,false,true]});
     assert_eq!(
-        harness.header_raw(
-            harness.header_message(1, "presence", presence.clone()),
-            false
-        ),
+        harness.header_raw(harness.header_message(1, "presence", presence.clone())),
         (false, false)
     );
     harness.settle();
@@ -3803,7 +3784,7 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
         "slot projection keeps the registered controller lifetime"
     );
     assert_eq!(
-        harness.header_raw(harness.header_message(1, "presence", presence), false),
+        harness.header_raw(harness.header_message(1, "presence", presence)),
         (false, false)
     );
     harness.settle();
@@ -3891,10 +3872,7 @@ fn header_layout_arbitrary_slot_components_mount_once_through_mode_changes() {
         }
         harness.update();
         assert_eq!(
-            harness.header_raw(
-                harness.header_message(1, "presence", serde_json::json!({})),
-                false
-            ),
+            harness.header_raw(harness.header_message(1, "presence", serde_json::json!({}))),
             (false, false)
         );
         harness.settle();

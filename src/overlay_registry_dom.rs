@@ -3,13 +3,14 @@
 
 //! Native DOM observations and execution for the per-root overlay runtime.
 //! Document identity and minimal input delivery sequence are shared across roots.
-//! Ordinary observations retain the root partition; a shared listener hub sends
-//! document events independently, without rebuilding inventories or native policy.
+//! Read-only observations include marked roots across renderer owners so cached
+//! Tab/Header projections preserve cross-owner composition. Rust registrations
+//! alone authorize ownership and actions; the shared hub delivers global input.
 //! `__OWNER__` is replaced by a serialized runtime owner ID. Rust owns all
 //! hierarchy, item membership/metadata, menu/focus policy, and open/close decisions;
-//! Full Tab reports use `input`/`change` for saved prevent/stop ACKs; document
-//! events use noncancelable `input` only. Dropdown keyboard handling and
-//! activation run through typed Dioxus controls.
+//! All deliveries use noncancelable `input`; typed Dioxus controls own keyboard
+//! cancellation, activation and boundary focus. No raw native Tab dispatch or
+//! prevent/stop acknowledgement transport is retained.
 
 pub(super) const BRIDGE: &str = r#"
 const owner=__OWNER__,listeners=new AbortController(),signal=listeners.signal;
@@ -127,12 +128,6 @@ function popoverTabFacts(panel,active){
 function registeredItemOrder(host){
   return host instanceof HTMLElement?Array.from(host.querySelectorAll('[data-ix-item-key]')).map(element=>element.getAttribute('data-ix-item-key')).filter(Boolean):[];
 }
-function findFocusedIndex(active,list){
-  if(!active)return null;
-  const idx=list.indexOf(active);if(idx!==-1)return idx;
-  for(let i=0;i<list.length;i++)if(composedContains(list[i],active))return i;
-  return null;
-}
 function pathIds(path,attr,pred){
   const out=[];
   for(const item of path)if(item instanceof HTMLElement&&(!pred||pred(item))){
@@ -152,62 +147,37 @@ function headerControls(root){
   return Array.from(header.querySelectorAll('[data-header-more-button],[data-header-menu-toggle],[data-app-switch-opener],.ix-application-header-leading > .ix-app-icon-button'))
     .filter(el=>el instanceof HTMLElement&&el.closest('header.ix-application-header')===header).map(nativeId);
 }
-function collectFacts(kind,event,phase=''){
-  const active=deepActive(),path=event?.composedPath?.()||[];
-  const target=path[0] instanceof HTMLElement?path[0]:(event?.target instanceof HTMLElement?event.target:null);
-  const hosts=pathIds(path,'data-ix-overlay-host',isActiveHost),triggers=pathIds(path,'data-ix-overlay-trigger');
-  const nodes=[],anchors=[];
+function collectFacts(){
+  const active=deepActive(),nodes=[];
+  // Candidate metadata spans renderer owners; it never creates graph members.
+  // Rust validates the current registered generation/kind before projection.
   for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
-    const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
-    if(!id||(event?.key!=='Tab'&&ro!==owner))continue;
+    const id=root.getAttribute('data-ix-overlay-root')||'';if(!id)continue;
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
     const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id),anchor=findAnchor(root),focusables=hostFocusables(itemsHost);
-    if(anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node)))anchors.push(id);
-    const focused_index=findFocusedIndex(active,focusables);
-    const on_trigger=!!trigger&&(event?target===trigger:active===trigger);
-    const inside=!!host&&(hosts.includes(id)||(target?composedContains(host,target):false)||(active?composedContains(host,active):false));
-    // Cache current candidates on ordinary observations as well: typed Dioxus
-    // Tab handlers consume these facts without a native key transport.
-    const tab_candidates=root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
     nodes.push({
-      id,owner:ro||'',generation,trigger_id:nativeId(trigger),
+      id,generation,trigger_id:nativeId(trigger),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
-      item_order:registeredItemOrder(itemsHost),trigger_on_path:!!trigger&&path.includes(trigger),
-      // Pinned MountedData can focus a registered handle, but cannot enumerate
-      // current native Tab order. Report IDs only; Dropdown never executes focus here.
+      item_order:registeredItemOrder(itemsHost),
+      // MountedData cannot enumerate document Tab order. Rust owns the direct
+      // key handler and executes focus only through registered mounted handles.
       focusable_ids:focusables.map(nativeId).filter(Boolean),
-      focus_count:focusables.length,focused_index,on_trigger,inside,
-      trap_enabled:root.getAttribute('data-ix-popover-focus-trap')==='true',tab_candidates
+      tab_candidates:root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[]
     });
   }
   const document_tab_candidates=documentTabCandidates();
   return {
-    owner,document:nativeDocument.identity,sequence:++sequence,kind,phase,
-    key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,ctrl:!!event?.ctrlKey,meta:!!event?.metaKey,
-    default_prevented:!!event?.defaultPrevented,
-    target_id:nativeId(target),active_id:nativeId(active),
-    hosts,triggers,anchors,nodes,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),
+    owner,document:nativeDocument.identity,sequence:++sequence,kind:'observe',active_id:nativeId(active),
+    nodes,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
-function send(report,event){
-  const input=transport();
-  if(!alive||!input)return;
-  const value=JSON.stringify(report);
-  input.value=value;
-  const prevent=!input.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
-  const ackInput=transport();if(!ackInput)return;
-  ackInput.value=value;
-  const stop=!ackInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-  let immediate=false;
-  if(report.phase==='trap'){
-    const immediateInput=transport();if(!immediateInput)return;
-    immediateInput.value=JSON.stringify({owner,sequence:report.sequence,immediate_stop:true});
-    immediate=!immediateInput.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-  }
-  if(event){if(prevent&&event.cancelable)event.preventDefault();if(immediate)event.stopImmediatePropagation();else if(stop)event.stopPropagation();}
+function send(report){
+  const input=transport();if(!alive||!input)return;
+  input.value=JSON.stringify(report);
+  input.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));
 }
 
 function syncNativeSurfaces(){
@@ -237,9 +207,9 @@ function reportObserve(){
   if(!transport())return;
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   syncNativeSurfaces();
-  const report=collectFacts('observe',null);
+  const report=collectFacts();
   const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
-  if(sig!==lastSignature){lastSignature=sig;send(report,null);}
+  if(sig!==lastSignature){lastSignature=sig;send(report);}
   if(!documentEvents)documentEvents=subscribeDocumentEvents();
 }
 // Pinned Document has no typed document/window input listener API. This sole
@@ -279,7 +249,10 @@ function subscribeDocumentEvents(){
     };
     for(const kind of ['keydown','mousedown','touchstart'])document.addEventListener(kind,event=>deliver('input',event),{passive:true,signal:sharedSignal});
     window.addEventListener('click',event=>deliver('outside',event),{signal:sharedSignal});
-    window.addEventListener('keydown',event=>{if(event.key==='Escape')deliver('escape',event);},{signal:sharedSignal});
+    // Dioxus web forwards preventDefault but not virtual stopPropagation to
+    // the original event. A handled child/Header Escape must not dismiss a
+    // second overlay when that original event reaches the shared window hub.
+    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented)deliver('escape',event);},{signal:sharedSignal});
   }
   events.receivers.set(owner,sendDocumentEvent);
   return events;
@@ -292,10 +265,6 @@ function unsubscribeDocumentEvents(){
     if(nativeDocument.events===documentEvents)delete nativeDocument.events;
   }
 }
-// Remaining generic Header/Popover key capture and trap facts are Tab-only.
-// Dropdown local clicks and keyboard handling use typed Dioxus handlers.
-document.addEventListener('keydown',e=>{if(e.key==='Tab')send(collectFacts('key',e,'capture'),e);},{capture:true,signal});
-document.addEventListener('keydown',e=>{if(e.key==='Tab')send(collectFacts('key',e,'trap'),e);},{signal});
 document.addEventListener('focusin',reportObserve,{signal});
 // Remaining generic Tab facts observe current focus. Typed item cues are
 // owned by Dioxus focus/blur handlers.

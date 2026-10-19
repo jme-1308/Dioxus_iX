@@ -1,6 +1,6 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination.
-//! Native code reports current DOM facts and applies acknowledged event defaults
-//! or propagation. Dioxus controls own activation and mounted focus.
+//! Native adapters supply read-only DOM observations and minimal global input.
+//! Dioxus handlers own event defaults, propagation, activation and mounted focus.
 use crate::dropdown_inventory::{
     HostFacts, HostPartFacts, HostPartKind, InventoryFacts, ItemKind, ItemRef,
 };
@@ -63,7 +63,6 @@ pub(crate) struct KeyFacts {
 pub(crate) struct KeyDecision {
     pub(crate) prevent: bool,
     pub(crate) stop: bool,
-    pub(crate) immediate_stop: bool,
     pub(crate) release_focus: bool,
     pub(crate) activate: Option<String>,
 }
@@ -125,12 +124,6 @@ struct Entry {
     callbacks: Callbacks,
     scope: Option<(Weak<dioxus::core::Runtime>, ScopeId)>,
 }
-#[derive(Default)]
-struct Ack {
-    sequence: u64,
-    stop: bool,
-    immediate_stop: bool,
-}
 struct Runtime {
     owner: String,
     registry: Registry,
@@ -139,7 +132,6 @@ struct Runtime {
     sequence: u64,
     observation: Option<Report>,
     keyboard: bool,
-    ack: Ack,
     completions: CompletionQueue,
     item_mounts: BTreeMap<String, ItemMount>,
     owned_item_focus: BTreeMap<String, OwnedItemFocus>,
@@ -389,7 +381,6 @@ impl RuntimeHandle {
             sequence: 0,
             observation: None,
             keyboard: false,
-            ack: Ack::default(),
             completions: CompletionQueue::default(),
             item_mounts: BTreeMap::new(),
             owned_item_focus: BTreeMap::new(),
@@ -1882,50 +1873,6 @@ impl RuntimeHandle {
             );
         }
     }
-    pub(crate) fn child_path(&self, id: &str, hosts: &[String], triggers: &[String]) -> bool {
-        if let Some(domain) = self.domain() {
-            return domain.child_path(id, hosts, triggers);
-        }
-        self.0.borrow().registry.child_path(id, hosts, triggers)
-    }
-    /// Click discovery includes closed child triggers, but Escape/Tab belong
-    /// only to a currently open child. Closed-trigger opening keys still route
-    /// to that child rather than the Header's flat keyboard policy.
-    pub(crate) fn key_child_path(
-        &self,
-        parent: &str,
-        hosts: &[String],
-        triggers: &[String],
-        key: &str,
-    ) -> bool {
-        if !matches!(key, "Escape" | "Tab") {
-            return self.child_path(parent, hosts, triggers);
-        }
-        hosts.iter().chain(triggers).any(|id| {
-            let Some(entry) = self
-                .entry(id)
-                .filter(|entry| entry.kind == OverlayKind::Dropdown)
-            else {
-                return false;
-            };
-            if self.read_current(id, &entry) != Some(true)
-                || (key == "Escape" && !self.owns_topmost(id))
-            {
-                return false;
-            }
-            let host = if hosts.contains(id) {
-                vec![id.clone()]
-            } else {
-                Vec::new()
-            };
-            let trigger = if triggers.contains(id) {
-                vec![id.clone()]
-            } else {
-                Vec::new()
-            };
-            self.child_path(parent, &host, &trigger)
-        })
-    }
     fn owns_topmost(&self, id: &str) -> bool {
         if let Some(domain) = self.domain() {
             return domain.owns_topmost(id);
@@ -2183,10 +2130,6 @@ impl RuntimeHandle {
         {
             let mut state = self.0.borrow_mut();
             state.sequence = report.sequence;
-            state.ack = Ack {
-                sequence: report.sequence,
-                ..Ack::default()
-            };
         }
         match &event.action {
             DocumentAction::Input { input_kind, key } => {
@@ -2222,11 +2165,7 @@ impl RuntimeHandle {
             // document, disconnect nodes or replace any retained inventory.
             return self.observe_document(report);
         }
-        if report.kind != "observe"
-            && !(report.kind == "key"
-                && report.key == "Tab"
-                && matches!(report.phase.as_str(), "capture" | "trap"))
-        {
+        if report.kind != "observe" {
             return KeyDecision::default();
         }
         {
@@ -2235,10 +2174,6 @@ impl RuntimeHandle {
                 return KeyDecision::default();
             }
             runtime.sequence = report.sequence;
-            runtime.ack = Ack {
-                sequence: report.sequence,
-                ..Ack::default()
-            };
         }
         self.attach_document(&report.document);
         {
@@ -2287,70 +2222,6 @@ impl RuntimeHandle {
                     }
                 });
             }
-        }
-        let decision = match report.kind.as_str() {
-            "key" if report.phase == "trap" => self.popover_tab(report),
-            "key" => self.key(report),
-            _ => KeyDecision::default(),
-        };
-        let mut runtime = self.0.borrow_mut();
-        if runtime.sequence == report.sequence {
-            runtime.ack = Ack {
-                sequence: report.sequence,
-                stop: decision.stop,
-                immediate_stop: decision.immediate_stop,
-            };
-        }
-        decision
-    }
-    fn popover_tab(&self, report: &Report) -> KeyDecision {
-        if report.key != "Tab" || report.default_prevented {
-            return KeyDecision::default();
-        }
-        let Some(domain) = self.domain() else {
-            return KeyDecision::default();
-        };
-        for node in &report.nodes {
-            let Some(entry) = self.entry(&node.id).filter(|entry| {
-                entry.kind == OverlayKind::Popover
-                    && entry.generation == node.generation
-                    && node.trap_enabled
-            }) else {
-                continue;
-            };
-            if self.read_current(&node.id, &entry) != Some(true) {
-                continue;
-            }
-            let Some(excluded) = domain.focus_trap_exclusions(
-                &node.id,
-                &report.active_hosts,
-                &report.active_popover,
-            ) else {
-                continue;
-            };
-            let candidates = self.source_tab_candidates(report, &node.tab_candidates);
-            let Some(target) =
-                crate::popover_focus::tab_boundary_target(&candidates, &excluded, report.shift)
-            else {
-                continue;
-            };
-            let owner = NodeHandle {
-                runtime: Rc::downgrade(&self.0),
-                id: node.id.clone(),
-                generation: entry.generation,
-            };
-            let Some(target) = owner.capture_registered_focus(&target) else {
-                continue;
-            };
-            if !owner.queue_registered_focus(target, Some(true)) {
-                continue;
-            }
-            return KeyDecision {
-                prevent: true,
-                stop: true,
-                immediate_stop: true,
-                ..KeyDecision::default()
-            };
         }
         KeyDecision::default()
     }
@@ -2410,39 +2281,6 @@ impl RuntimeHandle {
             .collect::<Vec<_>>();
         crate::popover_focus::tab_order_targets(&candidates)
     }
-    // The remaining native key route belongs only to Header's existing Tab
-    // integration. Dropdown policy always enters through a Dioxus handler.
-    fn key(&self, report: &Report) -> KeyDecision {
-        if report.key != "Tab" || report.default_prevented {
-            return KeyDecision::default();
-        }
-        let Some(owner) = report.nodes.iter().find(|node| {
-            node.on_trigger
-                && self.entry(&node.id).is_some_and(|entry| {
-                    entry.generation == node.generation && entry.kind == OverlayKind::Header
-                })
-        }) else {
-            return KeyDecision::default();
-        };
-        let facts = KeyFacts {
-            key: report.key.clone(),
-            shift: report.shift,
-            alt: report.alt,
-            ctrl: report.ctrl,
-            meta: report.meta,
-            focused_target: (!report.active_id.is_empty()).then(|| report.active_id.clone()),
-            focused_index: owner.focused_index,
-            focus_count: owner.focus_count,
-            focusable_ids: owner.focusable_ids.clone(),
-            on_trigger: true,
-            inside: owner.inside,
-            popover_ancestor: self
-                .domain()
-                .is_some_and(|domain| domain.has_popover_ancestor(&owner.id)),
-            ..KeyFacts::default()
-        };
-        self.dispatch_key(&owner.id, owner.generation, facts, report)
-    }
     fn dispatch_key(
         &self,
         id: &str,
@@ -2476,6 +2314,9 @@ impl RuntimeHandle {
                 }
                 self.dismiss_root(id, Reason::Escape, true);
                 return KeyDecision {
+                    // The shared window listener must not dismiss another
+                    // owner when this handled event leaves the Dioxus root.
+                    prevent: true,
                     stop: true,
                     ..KeyDecision::default()
                 };
@@ -2657,32 +2498,10 @@ impl RuntimeHandle {
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
-        let decision = self.observe(&report);
-        if decision.prevent {
-            event.prevent_default();
-        }
-    }
-    fn query(&self, event: FormEvent) {
-        event.stop_propagation();
-        let Ok(query) = serde_json::from_str::<Query>(&event.value()) else {
-            return;
-        };
-        if query.owner != self.owner_id() {
-            return;
-        }
-        let runtime = self.0.borrow();
-        if query.sequence != runtime.ack.sequence {
-            return;
-        }
-        if if query.immediate_stop {
-            runtime.ack.immediate_stop
-        } else {
-            runtime.ack.stop
-        } {
-            event.prevent_default();
-        }
+        self.observe(&report);
     }
 }
+
 impl NodeHandle {
     pub(crate) fn set_ownership(&self, ancestors: Vec<NodeHandle>, ready: bool) {
         let Some(runtime) = self.runtime() else {
@@ -2737,6 +2556,78 @@ impl NodeHandle {
         }
     }
 
+    pub(crate) fn owns_keyboard_topmost(&self) -> bool {
+        self.runtime().is_some_and(|runtime| {
+            runtime
+                .entry(&self.id)
+                .is_some_and(|entry| entry.generation == self.generation)
+                && runtime.owns_dioxus_topmost(&self.id)
+        })
+    }
+
+    /// Plan a boundary wrap for a directly delivered Dioxus Tab event.
+    /// Callers apply the returned default/propagation decision to that event.
+    pub(crate) fn dioxus_popover_tab(&self, event: &KeyboardEvent, enabled: bool) -> KeyDecision {
+        if !enabled || !event.default_action_enabled() || event.key() != Key::Tab {
+            return KeyDecision::default();
+        }
+        let Some(runtime) = self.runtime() else {
+            return KeyDecision::default();
+        };
+        runtime
+            .with_owner(&self.id, self.generation, || {
+                let Some(entry) = runtime.entry(&self.id).filter(|entry| {
+                    entry.generation == self.generation
+                        && entry.kind == OverlayKind::Popover
+                        && entry.mounted
+                }) else {
+                    return KeyDecision::default();
+                };
+                if runtime.read_current(&self.id, &entry) != Some(true) {
+                    return KeyDecision::default();
+                }
+                let Some(report) = runtime.0.borrow().observation.clone() else {
+                    return KeyDecision::default();
+                };
+                let Some(node) = report
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == self.id && node.generation == self.generation)
+                else {
+                    return KeyDecision::default();
+                };
+                let Some(domain) = runtime.domain() else {
+                    return KeyDecision::default();
+                };
+                let Some(excluded) = domain.focus_trap_exclusions(
+                    &self.id,
+                    &report.active_hosts,
+                    &report.active_popover,
+                ) else {
+                    return KeyDecision::default();
+                };
+                let candidates = runtime.source_tab_candidates(&report, &node.tab_candidates);
+                let Some(target) = crate::popover_focus::tab_boundary_target(
+                    &candidates,
+                    &excluded,
+                    event.modifiers().contains(Modifiers::SHIFT),
+                ) else {
+                    return KeyDecision::default();
+                };
+                let Some(target) = self.capture_registered_focus(&target) else {
+                    return KeyDecision::default();
+                };
+                if !self.queue_registered_focus(target, Some(true)) {
+                    return KeyDecision::default();
+                }
+                KeyDecision {
+                    prevent: true,
+                    stop: true,
+                    ..Default::default()
+                }
+            })
+            .unwrap_or_default()
+    }
     /// A current Dioxus content surface owns its virtual click propagation.
     /// Keep browser defaults intact, including native input and form actions.
     pub(crate) fn dioxus_inside_click(&self, event: &MouseEvent) {
@@ -2872,8 +2763,6 @@ impl NodeHandle {
             .domain()
             .is_some_and(|domain| domain.has_popover_ancestor(&self.id));
         let mut report = runtime.0.borrow().observation.clone().unwrap_or_default();
-        report.key = facts.key.clone();
-        report.shift = facts.shift;
         report.hosts = if facts.inside {
             vec![self.id.clone()]
         } else {
@@ -3279,13 +3168,6 @@ impl NodeHandle {
             entry.trigger_visibility_check = enabled;
         }
     }
-    pub(crate) fn has_popover_ancestor(&self) -> bool {
-        self.is_registered()
-            && self
-                .runtime()
-                .and_then(|runtime| runtime.domain())
-                .is_some_and(|domain| domain.has_popover_ancestor(&self.id))
-    }
     pub(crate) fn runtime(&self) -> Option<RuntimeHandle> {
         self.runtime.upgrade().map(RuntimeHandle)
     }
@@ -3428,7 +3310,6 @@ pub(crate) fn OverlayTransport(runtime: RuntimeHandle) -> Element {
     rsx! { input { r#type:"hidden", "data-ix-overlay-transport":owner,
         onmounted:move |_| mounted.start_bridge(),
         oninput:move |event| input.input(event),
-        onchange:move |event| runtime.query(event),
     } }
 }
 
@@ -3457,21 +3338,7 @@ struct Report {
     #[serde(default)]
     document_event: Option<DocumentEvent>,
     #[serde(default)]
-    phase: String,
-    #[serde(default)]
-    key: String,
-    #[serde(default)]
     active_id: String,
-    #[serde(default)]
-    shift: bool,
-    #[serde(default)]
-    alt: bool,
-    #[serde(default)]
-    ctrl: bool,
-    #[serde(default)]
-    meta: bool,
-    #[serde(default)]
-    default_prevented: bool,
     #[serde(default)]
     hosts: Vec<String>,
     #[serde(default)]
@@ -3535,26 +3402,9 @@ struct NodeFacts {
     #[serde(default)]
     item_order: Vec<String>,
     #[serde(default)]
-    focus_count: usize,
-    #[serde(default)]
     focusable_ids: Vec<String>,
     #[serde(default)]
-    focused_index: Option<usize>,
-    #[serde(default)]
-    on_trigger: bool,
-    #[serde(default)]
-    inside: bool,
-    #[serde(default)]
-    trap_enabled: bool,
-    #[serde(default)]
     tab_candidates: Vec<crate::popover_focus::TabCandidate>,
-}
-#[derive(Deserialize)]
-struct Query {
-    owner: String,
-    sequence: u64,
-    #[serde(default)]
-    immediate_stop: bool,
 }
 
 #[cfg(test)]
@@ -4197,24 +4047,28 @@ mod tests {
             nodes(&runtime, &["header"]),
         ));
         assert!(header.node.request(true, Reason::Trigger, false));
-        assert!(runtime.child_path("header", &["header".into()], &["child".into()]));
-        assert!(!runtime.key_child_path("header", &["header".into()], &["child".into()], "Escape"));
-        assert!(!runtime.key_child_path("header", &["header".into()], &["child".into()], "Tab"));
-        assert!(runtime.key_child_path("header", &["header".into()], &["child".into()], "Enter"));
+        assert_eq!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_parent("child")
+                .as_deref(),
+            Some("header")
+        );
+        assert!(header.node.owns_keyboard_topmost());
+        assert!(!child.node.owns_keyboard_topmost());
         assert!(child.node.request(true, Reason::Trigger, false));
-        assert!(runtime.key_child_path("header", &["header".into()], &["child".into()], "Escape"));
+        assert!(child.node.owns_keyboard_topmost());
         child.veto.set(true);
         assert!(header.node.request(false, Reason::Trigger, false));
         child.veto.set(false);
         assert!(header.node.request(true, Reason::Trigger, false));
         assert!(
-            !runtime.key_child_path("header", &["header".into()], &["child".into()], "Escape"),
+            !child.node.owns_keyboard_topmost(),
             "newer topmost Header must retain flat Escape authority"
         );
-        assert!(
-            runtime.key_child_path("header", &["header".into()], &["child".into()], "Tab"),
-            "Tab still defers to an open child"
-        );
+        assert!(header.node.owns_keyboard_topmost());
         runtime
             .0
             .borrow_mut()
@@ -4232,7 +4086,15 @@ mod tests {
         assert!(header.open.get() && child.open.get());
         assert!(child.node.request(false, Reason::Trigger, false));
         assert!(child.node.request(true, Reason::Trigger, false));
-        assert!(runtime.dismiss_root("child", Reason::Escape, true));
+        let decision = child.node.dioxus_key(KeyFacts {
+            key: "Escape".into(),
+            on_trigger: true,
+            ..Default::default()
+        });
+        assert!(
+            decision.prevent && decision.stop,
+            "handled Escape cancels shared native delivery"
+        );
         // Install a callback without changing registration generation or graph.
         runtime
             .0
@@ -4536,8 +4398,8 @@ mod tests {
         assert!(!root.node.dioxus_key(facts).prevent);
         assert_eq!(calls.get(), 1);
 
-        // Read-only native key facts never dispatch Dropdown policy a second time.
-        let mut native = report(
+        // Legacy native key reports cannot dispatch policy a second time.
+        let native = report(
             &runtime,
             1,
             "key",
@@ -4545,7 +4407,6 @@ mod tests {
                 {"id":"typed","generation":1,"on_trigger":true}
             ]),
         );
-        native.key = "Enter".into();
         runtime.observe(&native);
         assert_eq!(calls.get(), 1);
         let replacement = runtime.register(

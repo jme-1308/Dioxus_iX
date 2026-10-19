@@ -382,7 +382,8 @@ fn minimal_document_escape_deduplicates_across_real_roots_and_retains_veto() {
         a.0.borrow().calls.is_empty(),
         "second owner cannot dismiss the next overlay for one document event"
     );
-    // Global Escape is independent of an original event default cancellation.
+    // Canceling this private noncancelable transport is not consumer key
+    // cancellation; the native hub filters canceled original Escape events.
     document_input(
         &dom_b,
         &b,
@@ -536,7 +537,7 @@ fn trap_node(
 ) -> serde_json::Value {
     set_fixture_ownership(id, ancestors);
     serde_json::json!({
-        "id":id,"generation":1,"trap_enabled":true,
+        "id":id,"generation":1,
         "tab_candidates":candidates.iter().map(|(target,hosts,active)| serde_json::json!({
             "target":target,"hosts":hosts,"active":active,"tab_index":0
         })).collect::<Vec<_>>()
@@ -551,7 +552,7 @@ fn trap_report(
 ) -> serde_json::Value {
     serde_json::json!({
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
-        "kind":"key","phase":"trap","key":"Tab","shift":true,
+        "kind":"key","key":"Tab","shift":true,
         "active_hosts":[fixture.0.borrow().id],"active_popover":fixture.0.borrow().id,
         "nodes":nodes
     })
@@ -598,11 +599,7 @@ fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value) 
     let event = trap_form(report.clone());
     let runtime = fixture.runtime();
     let node = fixture.node();
-    if report["kind"] == "key"
-        && runtime
-            .entry(node.id())
-            .is_some_and(|entry| entry.kind == OverlayKind::Dropdown)
-    {
+    if report["kind"] == "key" {
         // Fixture JSON supplies only current order/tab facts. The key itself
         // enters the same Rust API used by Dioxus KeyboardEvent handlers.
         let mut observation = report.clone();
@@ -647,14 +644,21 @@ fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value) 
         }
         let focused = report["active_id"].as_str().map(str::to_owned);
         let decision = dom.in_scope(fixture.scope(), || {
-            node.dioxus_key_facts(&key, on_trigger, focused, inside)
-                .map(|facts| node.dioxus_key(facts))
-                .unwrap_or_default()
+            if runtime
+                .entry(node.id())
+                .is_some_and(|entry| entry.kind == OverlayKind::Popover)
+            {
+                node.dioxus_popover_tab(&key, report["test_trap_enabled"].as_bool().unwrap_or(true))
+            } else {
+                node.dioxus_key_facts(&key, on_trigger, focused, inside)
+                    .map(|facts| node.dioxus_key(facts))
+                    .unwrap_or_default()
+            }
         });
         if decision.prevent {
             event.prevent_default();
         }
-        if decision.stop || decision.immediate_stop {
+        if decision.stop {
             event.stop_propagation();
         }
     } else {
@@ -664,7 +668,7 @@ fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value) 
 }
 
 #[test]
-fn document_trap_handler_preserves_interior_empty_prevented_and_focuses_registered_boundary_once() {
+fn dioxus_popover_tab_preserves_interior_empty_prevented_and_focuses_registered_boundary_once() {
     let fixture = Fixture::new("document-trap-policy", 501);
     let mut dom = build_popover_fixture(&fixture);
     let document = "document trap handler policy";
@@ -690,16 +694,6 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_focuses_register
         "reverse boundary prevents native default"
     );
     assert!(fixture.open(), "trapping does not dismiss the Popover");
-    let immediate = trap_form(
-        serde_json::json!({"owner":fixture.runtime().owner_id(),"sequence":2,"immediate_stop":true}),
-    );
-    dom.in_scope(fixture.scope(), || {
-        fixture.runtime().query(immediate.clone())
-    });
-    assert!(
-        !immediate.default_action_enabled(),
-        "native immediate-stop has its own ACK"
-    );
     assert_eq!(fixture.runtime().pending_item_focus_count(), 1);
     assert!(mounted.calls.borrow().is_empty());
     settle_exit(&mut dom);
@@ -726,14 +720,17 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_focuses_register
     prevented["default_prevented"] = true.into();
     assert!(deliver_trap(&dom, &fixture, prevented).default_action_enabled());
     let mut disabled = trap_report(&fixture, document, 6, vec![node()]);
-    disabled["nodes"][0]["trap_enabled"] = false.into();
+    disabled["test_trap_enabled"] = false.into();
     assert!(deliver_trap(&dom, &fixture, disabled).default_action_enabled());
-    let mut other_phase = trap_report(&fixture, document, 7, vec![node()]);
-    other_phase["phase"] = "fallback".into();
+    let mut legacy = trap_report(&fixture, document, 7, vec![node()]);
+    legacy["phase"] = "trap".into();
+    let legacy = trap_form(legacy);
+    dom.in_scope(fixture.scope(), || fixture.runtime().input(legacy.clone()));
     assert!(
-        deliver_trap(&dom, &fixture, other_phase).default_action_enabled(),
-        "boundary policy belongs to document trap phase"
+        legacy.default_action_enabled(),
+        "retired native key reports cannot handle Tab"
     );
+    assert_eq!(fixture.runtime().pending_item_focus_count(), 0);
     dom.in_scope(fixture.scope(), || {
         fixture.runtime().unregister_item_cue("last")
     });
@@ -753,7 +750,7 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_focuses_register
 }
 
 #[test]
-fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizations() {
+fn dioxus_popover_tab_rejects_closed_reopened_and_replaced_focus_authorizations() {
     let fixture = Fixture::new("document-trap-stale", 502);
     let mut dom = build_popover_fixture(&fixture);
     let document = "document trap stale authorization";
@@ -957,7 +954,7 @@ fn exit_report(fixture: &Fixture, document: &str, sequence: u64) -> serde_json::
     let id = fixture.0.borrow().id;
     serde_json::json!({
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
-        "kind":"key","phase":"capture","key":"Tab","hosts":[id],"triggers":[id],
+        "kind":"key","key":"Tab","hosts":[id],"triggers":[id],
         "tab_order":["before","trigger","after"],
         "nodes":[{"id":id,"generation":fixture.node().generation(),
             "mode":"roving-tabindex","trigger_id":"trigger",
@@ -2012,7 +2009,6 @@ fn release_anchor_tab(
     }));
     let mut report = anchor_focus_report(fixture, document, sequence, "key", nodes);
     report["key"] = "Tab".into();
-    report["phase"] = "capture".into();
     report["triggers"] = serde_json::json!([id]);
     // No document/parent exit candidates: suppression must not depend on a target.
     deliver_trap(dom, fixture, report)
@@ -2370,7 +2366,7 @@ fn linked_roving_trigger_owns_tab_before_enclosing_active_descendant_host() {
             &child,
             serde_json::json!({
                 "owner":runtime.owner_id(),"document":document,"sequence":sequence,
-                "kind":"key","phase":"capture","key":"Tab","shift":true,
+                "kind":"key","key":"Tab","shift":true,
                 "hosts":[root.id()],"triggers":[child.node().id()],"nodes":nodes
             }),
         );
@@ -2527,7 +2523,7 @@ fn standalone_trigger_others_cascade_consumes_veto_retained_latches_then_restore
         &dom,
         &child,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
-        "kind":"key","phase":"bubble","input_kind":"keydown","key":"ArrowDown",
+        "kind":"key","key":"ArrowDown",
         "hosts":[root.id()],"triggers":[child.node().id()],"nodes":nodes}),
     );
     assert!(

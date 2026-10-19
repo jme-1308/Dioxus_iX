@@ -602,10 +602,6 @@ impl Domain {
             .then_some(parent)
     }
 
-    pub(crate) fn child_path(&self, id: &str, hosts: &[String], triggers: &[String]) -> bool {
-        self.0.borrow().registry.child_path(id, hosts, triggers)
-    }
-
     /// The owner callback implements its before/apply lifecycle and child
     /// cascade. A veto is returned without falling through to another overlay.
     pub(crate) fn request(&self, id: &str, change: Change) -> bool {
