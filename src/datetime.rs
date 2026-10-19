@@ -1596,6 +1596,11 @@ fn TemporalField(
         )
     });
     let invalid = error.is_some() || state == crate::FieldState::Invalid;
+    crate::use_custom_field_state(if invalid {
+        crate::FieldState::Invalid
+    } else {
+        state
+    });
     let constraint_invalid = error.is_some();
     let validation_title = error.clone();
     let feedback = error
@@ -2128,6 +2133,119 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct TemporalCustomSettings {
+        date_value: String,
+        date_state: crate::FieldState,
+        time_state: crate::FieldState,
+        show: bool,
+    }
+    fn temporal_custom_fields(config: Rc<RefCell<TemporalCustomSettings>>) -> Element {
+        let settings = config.borrow().clone();
+        rsx! {
+            section {"data-temporal-case":"date",
+                crate::CustomField {label:"Service date",helper_text:"Outer date helper",invalid_text:"Outer date invalid",warning_text:"Outer date warning",
+                    if settings.show {DateInput {today:date(2026,10,16),value:settings.date_value,state:settings.date_state,onvaluechange:move |_|{}}}
+                }
+            }
+            section {"data-temporal-case":"time",
+                crate::CustomField {label:"Service time",helper_text:"Outer time helper",warning_text:"Outer time warning",invalid_text:"Outer time invalid",
+                    if settings.show {TimeInput {value:"12:00:00",state:settings.time_state,onvaluechange:move |_|{}}}
+                }
+            }
+            section {"data-temporal-case":"independent",
+                crate::CustomField {label:"Independent time",helper_text:"Independent helper",invalid_text:"Independent invalid",warning_text:"Independent warning",
+                    TimeInput {value:"12:00:00",onvaluechange:move |_|{}}
+                }
+            }
+        }
+    }
+    fn temporal_custom_settings() -> Rc<RefCell<TemporalCustomSettings>> {
+        Rc::new(RefCell::new(TemporalCustomSettings {
+            date_value: "2026/02/30".into(),
+            date_state: crate::FieldState::Warning,
+            time_state: crate::FieldState::Warning,
+            show: true,
+        }))
+    }
+    fn settle_temporal_custom_fields(dom: &mut VirtualDom) {
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+    }
+    fn temporal_custom_case<'a>(html: &'a str, name: &str) -> &'a str {
+        html.split_once(&format!("data-temporal-case=\"{name}\""))
+            .expect("temporal field section")
+            .1
+            .split_once("</section>")
+            .unwrap()
+            .0
+    }
+    #[test]
+    fn temporal_errors_and_explicit_states_update_scoped_custom_field_feedback() {
+        let config = temporal_custom_settings();
+        let mut dom = VirtualDom::new_with_props(temporal_custom_fields, config.clone());
+        dom.rebuild_in_place();
+        settle_temporal_custom_fields(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            temporal_custom_case(&html, "date").contains("Outer date invalid"),
+            "a date parsing error takes precedence over explicit warning"
+        );
+        assert!(temporal_custom_case(&html, "time").contains("Outer time warning"));
+        let independent = temporal_custom_case(&html, "independent");
+        assert!(independent.contains("Independent helper"));
+        assert!(
+            !independent.contains("Independent invalid")
+                && !independent.contains("Independent warning")
+        );
+        config.borrow_mut().date_value = "2026/10/16".into();
+        dom.mark_dirty(ScopeId::APP);
+        settle_temporal_custom_fields(&mut dom);
+        assert!(
+            temporal_custom_case(&dioxus_ssr::render(&dom), "date").contains("Outer date warning"),
+            "clearing the error reveals the explicit warning"
+        );
+        {
+            let mut settings = config.borrow_mut();
+            settings.date_state = crate::FieldState::Default;
+            settings.time_state = crate::FieldState::Default;
+        }
+        dom.mark_dirty(ScopeId::APP);
+        settle_temporal_custom_fields(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert!(temporal_custom_case(&html, "date").contains("Outer date helper"));
+        assert!(temporal_custom_case(&html, "time").contains("Outer time helper"));
+        assert!(!html.contains("Outer date invalid") && !html.contains("Outer time warning"));
+    }
+    #[test]
+    fn removing_and_remounting_temporal_controls_clears_custom_field_contributions() {
+        let config = temporal_custom_settings();
+        let mut dom = VirtualDom::new_with_props(temporal_custom_fields, config.clone());
+        dom.rebuild_in_place();
+        settle_temporal_custom_fields(&mut dom);
+        assert!(dioxus_ssr::render(&dom).contains("Outer date invalid"));
+        config.borrow_mut().show = false;
+        dom.mark_dirty(ScopeId::APP);
+        settle_temporal_custom_fields(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert!(temporal_custom_case(&html, "date").contains("Outer date helper"));
+        assert!(temporal_custom_case(&html, "time").contains("Outer time helper"));
+        {
+            let mut settings = config.borrow_mut();
+            settings.show = true;
+            settings.date_value = "2026/10/16".into();
+            settings.date_state = crate::FieldState::Default;
+            settings.time_state = crate::FieldState::Default;
+        }
+        dom.mark_dirty(ScopeId::APP);
+        settle_temporal_custom_fields(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert!(temporal_custom_case(&html, "date").contains("Outer date helper"));
+        assert!(temporal_custom_case(&html, "time").contains("Outer time helper"));
+        assert!(!html.contains("Outer date invalid") && !html.contains("Outer time warning"));
+    }
 
     // Exercise the actual preset and trigger listeners with a listener-only
     // parent, so notification timing cannot depend on a controlled prop update.

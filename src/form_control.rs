@@ -446,60 +446,369 @@ pub(crate) fn validation_class_state(class: &str) -> crate::FieldState {
     }
 }
 
-pub(crate) fn use_custom_validation(id: &str) -> (crate::FieldState, Callback<()>) {
-    let mut state = use_signal(|| crate::FieldState::Default);
-    let task = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let dispose = task.clone();
-    use_drop(move || {
-        if let Some(task) = dispose.borrow_mut().take() {
-            let _ = task.send(());
-        }
-    });
-    let id = id.to_string();
-    let mounted = use_callback(move |()| {
-        if task.borrow().is_some() {
+fn validation_rank(state: crate::FieldState) -> u8 {
+    use crate::FieldState;
+    match state {
+        FieldState::Default => 0,
+        FieldState::Valid => 1,
+        FieldState::Info => 2,
+        FieldState::Warning => 3,
+        FieldState::Invalid => 4,
+    }
+}
+pub(crate) fn combined_validation(
+    states: impl IntoIterator<Item = crate::FieldState>,
+) -> crate::FieldState {
+    states
+        .into_iter()
+        .max_by_key(|state| validation_rank(*state))
+        .unwrap_or_default()
+}
+pub(crate) fn control_validation(state: crate::FieldState, class: &str) -> crate::FieldState {
+    combined_validation([state, validation_class_state(class)])
+}
+
+#[derive(Clone)]
+struct CustomFieldOwner {
+    states: Signal<BTreeMap<usize, crate::FieldState>>,
+    alive: Rc<Cell<bool>>,
+}
+impl CustomFieldOwner {
+    fn publish(&self, token: usize, state: crate::FieldState) {
+        if !self.alive.get() {
             return;
         }
-        let mut eval = dioxus::document::eval(
-            r#"
-            const id=await dioxus.recv(), root=document.getElementById(id);
-            if(!root)return;
-            const content=root.querySelector('[data-custom-control]');
-            const report=()=>{
-                const classes=[...root.classList];
-                for(const node of content?.querySelectorAll('[class]')??[])classes.push(...node.classList);
-                dioxus.send(classes.join(' '));
-            };
-            const observer=new MutationObserver(report);
-            observer.observe(root,{attributes:true,attributeFilter:['class']});
-            if(content)observer.observe(content,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
-            let removed;
-            const gone=new Promise(resolve=>removed=resolve);
-            const removal=new MutationObserver(()=>{if(!root.isConnected)removed();});
-            removal.observe(document.documentElement,{subtree:true,childList:true});
-            report();
-            await Promise.race([dioxus.recv(),gone]);observer.disconnect();removal.disconnect();
-        "#,
-        );
-        if eval.send(&id).is_err() {
+        let expected = (state != crate::FieldState::Default).then_some(state);
+        let Ok(states) = self.states.try_peek() else {
+            return;
+        };
+        let previous = states.get(&token).copied();
+        if previous == expected {
             return;
         }
-        *task.borrow_mut() = Some(eval);
-        spawn(async move {
-            while let Ok(classes) = eval.recv::<String>().await {
-                let next = validation_class_state(&classes);
-                if *state.peek() != next {
-                    state.set(next);
-                }
+        drop(states);
+        let mut writable = self.states;
+        if let Ok(mut states) = writable.try_write() {
+            if let Some(state) = expected {
+                states.insert(token, state);
+            } else {
+                states.remove(&token);
             }
-        });
+        };
+    }
+}
+fn use_field_contribution(owner: Option<CustomFieldOwner>, state: crate::FieldState) {
+    let token = use_hook(|| BINDING_ID.fetch_add(1, Ordering::Relaxed));
+    let cleanup = owner.clone();
+    use_drop(move || {
+        if let Some(owner) = cleanup {
+            owner.publish(token, crate::FieldState::Default);
+        }
     });
-    (*state.read(), mounted)
+    if let Some(owner) = owner {
+        owner.publish(token, state);
+    }
+}
+
+/// Contribute this Dioxus control's current validation state to its nearest
+/// [`crate::CustomField`]. Call unconditionally during rendering; `Default` and
+/// component teardown remove the contribution. Outside a CustomField it is a
+/// no-op. Each field aggregates Invalid, Warning, Info, Valid in that order.
+///
+/// Custom native controls use this hook or the caller sets `CustomField.state`.
+/// Arbitrary descendant DOM class mutations are not discovered or observed.
+///
+/// ```rust,ignore
+/// fn MyControl() -> Element {
+///     let mut value = use_signal(String::new);
+///     use_custom_field_state(if value().is_empty() { FieldState::Invalid } else { FieldState::Valid });
+///     rsx! { input { value:value(), oninput:move |event|value.set(event.value()) } }
+/// }
+/// ```
+pub fn use_custom_field_state(state: crate::FieldState) {
+    let owner = use_hook(try_consume_context::<CustomFieldOwner>);
+    use_field_contribution(owner, state);
+}
+
+pub(crate) fn use_custom_field_validation(
+    explicit: crate::FieldState,
+    class: &str,
+) -> crate::FieldState {
+    // Capture the parent before providing our own owner. Re-reading context on
+    // later renders would make a nested field report its aggregate to itself.
+    let parent = use_hook(try_consume_context::<CustomFieldOwner>);
+    let owner = use_context_provider(|| CustomFieldOwner {
+        states: Signal::new(BTreeMap::new()),
+        alive: Rc::new(Cell::new(true)),
+    });
+    let cleanup = owner.clone();
+    use_drop(move || cleanup.alive.set(false));
+    let children = combined_validation(owner.states.read().values().copied());
+    let effective = if explicit != crate::FieldState::Default {
+        explicit
+    } else {
+        combined_validation([validation_class_state(class), children])
+    };
+    use_field_contribution(parent, effective);
+    effective
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Clone, Default)]
+    struct OwnerCapture(Rc<RefCell<Option<CustomFieldOwner>>>);
+    #[derive(Clone)]
+    struct Composition {
+        first: crate::FieldState,
+        second: crate::FieldState,
+        outer: crate::FieldState,
+        nested_state: crate::FieldState,
+        first_visible: bool,
+        visible: bool,
+        nested: bool,
+        key: u64,
+        root_class: String,
+        capture: OwnerCapture,
+    }
+    impl Default for Composition {
+        fn default() -> Self {
+            Self {
+                first: crate::FieldState::Default,
+                second: crate::FieldState::Default,
+                outer: crate::FieldState::Default,
+                nested_state: crate::FieldState::Default,
+                first_visible: true,
+                visible: true,
+                nested: false,
+                key: 0,
+                root_class: String::new(),
+                capture: OwnerCapture::default(),
+            }
+        }
+    }
+    #[component]
+    fn ContributedControl(state: crate::FieldState, #[props(default)] capture: bool) -> Element {
+        use_custom_field_state(state);
+        if capture {
+            let output = consume_context::<OwnerCapture>();
+            *output.0.borrow_mut() = try_consume_context::<CustomFieldOwner>();
+        }
+        rsx! {input {"data-custom-contribution":"true"}}
+    }
+    fn composition_fixture(config: Rc<RefCell<Composition>>) -> Element {
+        let props = config.borrow().clone();
+        let capture = props.capture.clone();
+        use_context_provider(|| capture);
+        rsx! {
+            if props.visible {
+                crate::CustomField {class:format!("composition-outer {}",props.root_class),state:props.outer,
+                    helper_text:"Outer helper",invalid_text:"Outer invalid",warning_text:"Outer warning",info_text:"Outer info",valid_text:"Outer valid",
+                    if props.first_visible {ContributedControl {key:"{props.key}",state:props.first,capture:true}}
+                    if props.nested {
+                        crate::CustomField {class:"composition-inner",state:props.nested_state,
+                            invalid_text:"Inner invalid",warning_text:"Inner warning",helper_text:"Inner helper",
+                            ContributedControl {state:props.second}
+                        }
+                    } else {ContributedControl {state:props.second}}
+                    div {class:"ix-invalid","Unregistered DOM content"}
+                }
+            }
+            crate::CustomField {class:"composition-sibling",valid_text:"Sibling valid",ContributedControl {state:crate::FieldState::Valid}}
+        }
+    }
+    fn wrapper_state(dom: &VirtualDom, name: &str) -> crate::FieldState {
+        let html = dioxus_ssr::render(dom);
+        let after = html
+            .split_once(&format!("class=\"ix-custom-field {name}"))
+            .unwrap()
+            .1;
+        let class = after
+            .split_once("class=\"ix-field")
+            .unwrap()
+            .1
+            .split('"')
+            .next()
+            .unwrap();
+        validation_class_state(class)
+    }
+    fn settle_field(dom: &mut VirtualDom) {
+        for _ in 0..8 {
+            dom.render_immediate_to_vec();
+        }
+    }
+    fn update_field(dom: &mut VirtualDom) {
+        dom.mark_dirty(ScopeId::APP);
+        settle_field(dom);
+    }
+    #[test]
+    fn custom_field_composition_updates_precedence_default_and_dropped_contributions() {
+        use crate::FieldState::*;
+        let config = Rc::new(RefCell::new(Composition {
+            first: Valid,
+            second: Warning,
+            ..Composition::default()
+        }));
+        let mut dom = VirtualDom::new_with_props(composition_fixture, config.clone());
+        dom.rebuild_in_place();
+        settle_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Warning);
+        config.borrow_mut().first = Invalid;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Invalid);
+        config.borrow_mut().first = Default;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Warning);
+        config.borrow_mut().second = Info;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Info);
+        config.borrow_mut().first = Invalid;
+        update_field(&mut dom);
+        config.borrow_mut().first_visible = false;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Info);
+        config.borrow_mut().second = Default;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Default);
+        {
+            let mut config = config.borrow_mut();
+            config.first_visible = true;
+            config.first = Valid;
+            config.key += 1;
+        }
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Valid);
+        {
+            let mut config = config.borrow_mut();
+            config.first = Default;
+            config.key += 1;
+        }
+        update_field(&mut dom);
+        assert_eq!(
+            wrapper_state(&dom, "composition-outer"),
+            Default,
+            "presentation helpers cannot retain their own old state"
+        );
+        assert_eq!(wrapper_state(&dom, "composition-sibling"), Valid);
+    }
+    #[test]
+    fn nested_custom_field_reports_effective_explicit_state_without_self_feedback() {
+        use crate::FieldState::*;
+        let config = Rc::new(RefCell::new(Composition {
+            second: Invalid,
+            nested: true,
+            nested_state: Warning,
+            ..Composition::default()
+        }));
+        let mut dom = VirtualDom::new_with_props(composition_fixture, config.clone());
+        dom.rebuild_in_place();
+        settle_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-inner"), Warning);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Warning);
+        config.borrow_mut().outer = Info;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Info);
+        config.borrow_mut().nested_state = Default;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-inner"), Invalid);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Info);
+        config.borrow_mut().outer = Default;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Invalid);
+        config.borrow_mut().second = Default;
+        update_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-inner"), Default);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Default);
+        assert_eq!(wrapper_state(&dom, "composition-sibling"), Valid);
+    }
+    #[test]
+    fn custom_field_remount_rejects_old_owner_and_unregistered_dom_has_no_fallback() {
+        use crate::FieldState::*;
+        let config = Rc::new(RefCell::new(Composition {
+            root_class: "ix-warning".into(),
+            ..Composition::default()
+        }));
+        let mut dom = VirtualDom::new_with_props(composition_fixture, config.clone());
+        dom.rebuild_in_place();
+        settle_field(&mut dom);
+        assert_eq!(
+            wrapper_state(&dom, "composition-outer"),
+            Warning,
+            "own Rust class is observed directly"
+        );
+        config.borrow_mut().root_class.clear();
+        update_field(&mut dom);
+        assert_eq!(
+            wrapper_state(&dom, "composition-outer"),
+            Default,
+            "unregistered descendant class is not a contribution"
+        );
+        let old = config.borrow().capture.0.borrow().clone().unwrap();
+        config.borrow_mut().visible = false;
+        update_field(&mut dom);
+        assert!(!old.alive.get());
+        {
+            let mut config = config.borrow_mut();
+            config.visible = true;
+            config.first = Valid;
+        }
+        update_field(&mut dom);
+        old.publish(usize::MAX, Invalid);
+        settle_field(&mut dom);
+        assert_eq!(wrapper_state(&dom, "composition-outer"), Valid);
+        assert_eq!(wrapper_state(&dom, "composition-sibling"), Valid);
+    }
+    #[derive(Clone)]
+    struct BuiltinState {
+        kind: u8,
+        state: crate::FieldState,
+    }
+    fn builtin_state_fixture(config: Rc<RefCell<BuiltinState>>) -> Element {
+        let props = config.borrow().clone();
+        let state = props.state;
+        let content = match props.kind {
+            0 => rsx! {crate::Input {state}},
+            1 => rsx! {crate::Textarea {state}},
+            2 => rsx! {crate::NumberInput {state}},
+            3 => rsx! {crate::Checkbox {state,required:true,aria_label:"Checkbox"}},
+            4 => rsx! {crate::Toggle {state,required:true}},
+            5 => rsx! {crate::Radio {state,value:"radio",aria_label:"Radio"}},
+            6 => {
+                rsx! {crate::CheckboxGroup {state,aria_label:"Group",aria_labelledby:None::<String>,"Choices"}}
+            }
+            7 => {
+                rsx! {crate::RadioGroup {state,options:Vec::new(),aria_label:"Radios",aria_labelledby:None::<String>}}
+            }
+            8 => rsx! {crate::Select {state,options:Vec::new()}},
+            _ => rsx! {crate::Slider {state}},
+        };
+        rsx! {crate::CustomField {class:"builtin",helper_text:"Default",warning_text:"Warning",{content}}}
+    }
+    #[test]
+    fn builtin_controls_publish_current_effective_state_and_clear_without_observers() {
+        for kind in 0..10 {
+            let config = Rc::new(RefCell::new(BuiltinState {
+                kind,
+                state: crate::FieldState::Warning,
+            }));
+            let mut dom = VirtualDom::new_with_props(builtin_state_fixture, config.clone());
+            dom.rebuild_in_place();
+            settle_field(&mut dom);
+            assert_eq!(
+                wrapper_state(&dom, "builtin"),
+                crate::FieldState::Warning,
+                "builtin {kind}"
+            );
+            config.borrow_mut().state = crate::FieldState::Default;
+            update_field(&mut dom);
+            assert_eq!(
+                wrapper_state(&dom, "builtin"),
+                crate::FieldState::Default,
+                "builtin {kind} must not self-retain feedback"
+            );
+        }
+    }
+
     #[derive(Clone)]
     struct FocusReply {
         attempts: Rc<Cell<usize>>,

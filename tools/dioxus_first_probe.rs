@@ -7,6 +7,8 @@ mod application_focus_review;
 mod chart_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
 mod cue_review;
+#[path = "dioxus_first_probe/custom_validation_review.rs"]
+mod custom_validation_review;
 #[path = "dioxus_first_probe/descendant_review.rs"]
 mod descendant_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
@@ -100,6 +102,9 @@ fn Preview() -> Element {
     }
     if scope == "?textmethods" {
         return rsx! { text_control_method_review::TextControlMethodReview {} };
+    }
+    if scope == "?customvalidation" {
+        return rsx! { custom_validation_review::CustomValidationReview {} };
     }
     if scope == "?filterlayout" {
         return rsx! { filter_layout_review::FilterLayoutReview {} };

@@ -308,7 +308,9 @@ pub fn FieldWrapper(
     }
 }
 
-/// Field wrapper for application-defined native controls.
+/// Field wrapper for application-defined native controls. Custom Dioxus controls
+/// call [`crate::use_custom_field_state`] to report validation, or callers pass
+/// `state` explicitly. Unregistered DOM class changes are not observed.
 #[component]
 pub fn CustomField(
     children: Element,
@@ -324,13 +326,8 @@ pub fn CustomField(
     #[props(default)] class: String,
 ) -> Element {
     let id = field_id(None);
-    let (observed, mounted) = crate::form_control::use_custom_validation(&id);
-    let state = if state == FieldState::Default {
-        observed
-    } else {
-        state
-    };
-    rsx! { div { id, class: "ix-custom-field {class}", onmounted: move |_| mounted.call(()),
+    let state = crate::form_control::use_custom_field_validation(state, &class);
+    rsx! { div { id, class: "ix-custom-field {class}",
         FieldWrapper { label, html_for, required, helper_text, invalid_text, valid_text, info_text, warning_text, state,
             div { "data-custom-control": "true", {children} }
         }
@@ -410,6 +407,9 @@ pub fn Input(
     } else {
         supplied
     };
+    crate::form_control::use_custom_field_state(crate::form_control::control_validation(
+        state, &class,
+    ));
     let invalid_text = invalid_text.or_else(|| {
         (lifecycle.invalid && !lifecycle.message.is_empty()).then_some(lifecycle.message)
     });
@@ -573,6 +573,9 @@ pub fn Textarea(
     } else {
         supplied
     };
+    crate::form_control::use_custom_field_state(crate::form_control::control_validation(
+        state, &class,
+    ));
     let invalid_text = invalid_text.or_else(|| {
         (lifecycle.invalid && !lifecycle.message.is_empty()).then_some(lifecycle.message)
     });
@@ -667,6 +670,11 @@ pub fn Checkbox(
     let mut button = use_signal(|| None::<Rc<MountedData>>);
     let mut attempted = use_signal(|| false);
     let invalid = invalid || state == FieldState::Invalid || (attempted() && required && !checked);
+    crate::form_control::use_custom_field_state(if invalid {
+        FieldState::Invalid
+    } else {
+        crate::form_control::control_validation(state, &class)
+    });
     rsx! {
         span { class: "ix-checkbox-field ix-checkbox-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(),
@@ -785,6 +793,9 @@ pub fn CheckboxGroup(
     aria_label: Option<String>,
     aria_labelledby: Option<String>,
 ) -> Element {
+    crate::form_control::use_custom_field_state(crate::form_control::control_validation(
+        state, &class,
+    ));
     let accessible_label = aria_labelledby
         .is_none()
         .then(|| aria_label.unwrap_or_else(|| label.clone()))
@@ -827,6 +838,9 @@ pub fn Radio(
     #[props(default)] oncheckedchange: EventHandler<bool>,
     #[props(default)] onvaluechange: EventHandler<String>,
 ) -> Element {
+    crate::form_control::use_custom_field_state(crate::form_control::control_validation(
+        state, &class,
+    ));
     let selected = value.clone();
     let accessible_label = aria_label.unwrap_or_else(|| label.clone());
     rsx! {
@@ -903,6 +917,9 @@ pub fn RadioGroup(
     aria_labelledby: Option<String>,
     #[props(default)] onvaluechange: EventHandler<String>,
 ) -> Element {
+    crate::form_control::use_custom_field_state(crate::form_control::control_validation(
+        state, &class,
+    ));
     let name = field_id(name);
     let accessible_label = aria_labelledby
         .is_none()
@@ -971,6 +988,11 @@ pub fn Toggle(
         aria_label.or(label).or(Some(text.clone()))
     };
     let invalid = state == FieldState::Invalid || (attempted() && required && !checked);
+    crate::form_control::use_custom_field_state(if invalid {
+        FieldState::Invalid
+    } else {
+        crate::form_control::control_validation(state, &class)
+    });
     rsx! {
         span { class: "ix-toggle-field ix-toggle-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(), "data-invalid": invalid.to_string(),
@@ -1304,6 +1326,9 @@ pub fn Slider(
     } else {
         state
     };
+    crate::form_control::use_custom_field_state(crate::form_control::control_validation(
+        state, &class,
+    ));
     let invalid_alert =
         state == FieldState::Invalid && invalid_text.as_ref().is_some_and(|text| !text.is_empty());
     let feedback = field_feedback(
@@ -2443,6 +2468,9 @@ pub fn Select(
         state
     };
     let state = select_field_state(state, required, invalid_attempted(), !selected.is_empty());
+    crate::form_control::use_custom_field_state(crate::form_control::control_validation(
+        state, &class,
+    ));
     let invalid_text = invalid_text.or_else(|| {
         (invalid_attempted() && required).then(|| "Please select an option".to_string())
     });
