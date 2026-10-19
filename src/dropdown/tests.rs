@@ -3216,6 +3216,7 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
         inventory_owner: Some(child_node.clone()),
         parent_key: None,
         header_control: None,
+        popover_scope: None,
         identity: 0,
         kind: host.kind,
     };

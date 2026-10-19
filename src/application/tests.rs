@@ -4485,3 +4485,241 @@ fn header_choice_controls_register_actual_native_targets_and_expire_on_replaceme
             .all(|(target, node)| target.matches_node(node))
     );
 }
+
+#[derive(Clone, Default)]
+struct PopoverControlCapture(Rc<RefCell<PopoverControlState>>);
+impl PartialEq for PopoverControlCapture {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+#[derive(Default)]
+struct PopoverControlState {
+    revision: usize,
+    visible: bool,
+    update: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    runtime: Option<crate::overlay_runtime::RuntimeHandle>,
+    scopes: BTreeMap<String, crate::overlay_runtime::PopoverFocusScope>,
+}
+#[component]
+fn PopoverControlScopeProbe(
+    capture: PopoverControlCapture,
+    name: String,
+    children: Element,
+) -> Element {
+    let scope = try_consume_context::<crate::overlay_runtime::PopoverFocusScope>()
+        .expect("Popover supplies its Dioxus composition scope");
+    capture.0.borrow_mut().scopes.insert(name, scope);
+    rsx! {{children}}
+}
+#[component]
+fn PopoverStandardControls(prefix: String, revision: usize) -> Element {
+    rsx! {
+        crate::Input {id:format!("{prefix}-input-{revision}"),value:"Inspection"}
+        crate::Textarea {id:format!("{prefix}-textarea-{revision}"),value:"Inspection notes"}
+        crate::Select {id:format!("{prefix}-select-{revision}"),options:vec![crate::SelectOption::new("a","Alpha")]}
+        crate::Checkbox {id:format!("{prefix}-checkbox-{revision}"),label:"Approved",name:format!("{prefix}-checkbox-mirror"),checked:true}
+        crate::Radio {id:format!("{prefix}-radio-{revision}"),label:"Primary",name:format!("{prefix}-radio"),value:"primary",checked:true}
+        crate::Toggle {id:format!("{prefix}-toggle-{revision}"),label:"Remote",name:format!("{prefix}-toggle-mirror"),checked:true}
+    }
+}
+#[component]
+fn PopoverControlComposition(capture: PopoverControlCapture, revision: usize) -> Element {
+    let outer = crate::use_popover();
+    let inner = crate::use_popover();
+    rsx! {
+        crate::Popover {popover:outer,label:"Outer registration",
+            crate::PopoverHeader {hide_close:true,additional_items:rsx! {
+                PopoverControlScopeProbe {capture:capture.clone(),name:"outer-header",
+                    crate::Input {id:format!("outer-header-input-{revision}"),value:"Header action"}
+                    crate::Popover {popover:inner,label:"Nested registration",
+                        crate::PopoverHeader {hide_close:true,
+                            PopoverControlScopeProbe {capture:capture.clone(),name:"inner-header",
+                                crate::Input {id:format!("inner-header-input-{revision}"),value:"Nested header"}
+                            }
+                        }
+                        PopoverControlScopeProbe {capture:capture.clone(),name:"inner-body",
+                            PopoverStandardControls {prefix:"inner-body",revision}
+                        }
+                    }
+                }
+            },"Outer title"}
+            PopoverControlScopeProbe {capture:capture.clone(),name:"outer-body",
+                PopoverStandardControls {prefix:"outer-body",revision}
+            }
+        }
+    }
+}
+fn popover_controls_fixture(capture: PopoverControlCapture) -> Element {
+    let runtime = crate::overlay_runtime::use_overlay_runtime();
+    let (revision, visible) = {
+        let mut state = capture.0.borrow_mut();
+        state.runtime = Some(runtime);
+        state.update = Some(dioxus::core::schedule_update());
+        (state.revision, state.visible)
+    };
+    rsx! {
+        PopoverStandardControls {prefix:"outside",revision:0}
+        if visible { PopoverControlComposition {key:"{revision}",capture,revision} }
+    }
+}
+fn settle_popover_controls(dom: &mut VirtualDom, mut mutations: dioxus::core::Mutations) {
+    // Exercise the actual mounted callbacks, including controller callbacks that
+    // share an event with the focus binding. No native DOM discovery is used.
+    for _ in 0..8 {
+        let mut current = dioxus::core::ElementId::ROOT;
+        for edit in mutations.edits {
+            match edit {
+                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
+                    current = id
+                }
+                dioxus::core::Mutation::NewEventListener { name } if name == "mounted" => {
+                    let mount = MenuTestMount {
+                        id: current.raw(),
+                        ..Default::default()
+                    };
+                    mount.ready.set(true);
+                    menu_dispatch(dom, "mounted", current, mount);
+                }
+                _ => {}
+            }
+        }
+        mutations = dom.render_immediate_to_vec();
+    }
+}
+fn popover_control_observation(
+    prefix: &str,
+    revision: usize,
+    owner: &crate::overlay_runtime::NodeHandle,
+) -> crate::overlay_runtime::FocusObservation {
+    crate::overlay_runtime::FocusObservation {
+        candidates: ["input", "textarea", "select", "checkbox", "radio", "toggle"]
+            .into_iter()
+            .map(|kind| {
+                serde_json::from_value(serde_json::json!({
+                "target":format!("{prefix}-{kind}-{revision}"),"tab_index":0,"popover":owner.id()
+            })).unwrap()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+#[test]
+fn popover_standard_controls_use_nearest_scope_and_expire_with_their_composition() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(MenuTestConverter));
+    let capture = PopoverControlCapture::default();
+    capture.0.borrow_mut().visible = true;
+    let mut dom = VirtualDom::new_with_props(popover_controls_fixture, capture.clone());
+    let mutations = dom.rebuild_to_vec();
+    settle_popover_controls(&mut dom, mutations);
+    let runtime = capture.0.borrow().runtime.clone().unwrap();
+    let scopes = capture.0.borrow().scopes.clone();
+    let outer = scopes["outer-body"].owner.clone().unwrap();
+    let inner = scopes["inner-body"].owner.clone().unwrap();
+    assert!(!scopes["outer-body"].header && !scopes["inner-body"].header);
+    assert!(scopes["outer-header"].header && scopes["inner-header"].header);
+    assert!(scopes["outer-header"].owner.as_ref() == Some(&outer));
+    assert!(scopes["inner-header"].owner.as_ref() == Some(&inner));
+    assert_ne!(outer.id(), inner.id());
+    let body = popover_control_observation("outer-body", 0, &outer);
+    let nested = popover_control_observation("inner-body", 0, &inner);
+    let mut registered: Vec<_> = body
+        .candidates
+        .iter()
+        .chain(&nested.candidates)
+        .map(|candidate| {
+            runtime
+                .capture_registered_focus(&candidate.target)
+                .expect("standard native control enrolls in Popover automatically")
+        })
+        .collect();
+    for prefix in ["outer-header", "inner-header"] {
+        registered.push(
+            runtime
+                .capture_registered_focus(&format!("{prefix}-input-0"))
+                .expect("header control enrolls against its nearest Popover"),
+        );
+    }
+    let retained: Vec<_> = registered
+        .iter()
+        .map(|target| target.live_node().unwrap())
+        .collect();
+    assert_eq!(outer.opening_focus_candidates(&body).len(), 6);
+    assert!(
+        outer
+            .opening_focus_candidates(&body)
+            .iter()
+            .all(|candidate| !candidate.in_header)
+    );
+    assert_eq!(inner.opening_focus_candidates(&nested).len(), 6);
+    assert!(
+        inner
+            .opening_focus_candidates(&nested)
+            .iter()
+            .all(|candidate| !candidate.in_header),
+        "nested Popover body must reset the surrounding outer header role"
+    );
+    assert!(
+        outer.opening_focus_candidates(&nested).is_empty(),
+        "native partitions stay isolated"
+    );
+    for (prefix, owner) in [("outer-header", &outer), ("inner-header", &inner)] {
+        let mut facts = popover_control_observation(prefix, 0, owner);
+        facts.candidates.truncate(1);
+        let candidates = owner.opening_focus_candidates(&facts);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].in_header);
+    }
+    for kind in ["input", "textarea", "select", "checkbox", "radio", "toggle"] {
+        assert!(
+            runtime
+                .capture_registered_focus(&format!("outside-{kind}-0"))
+                .is_none(),
+            "ordinary form controls do not gain global overlay registration"
+        );
+    }
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("name=\"outer-body-checkbox-mirror\""));
+    assert!(html.contains("name=\"outer-body-toggle-mirror\""));
+    capture.0.borrow_mut().revision = 1;
+    capture.0.borrow().update.as_ref().unwrap()();
+    let mutations = dom.render_immediate_to_vec();
+    settle_popover_controls(&mut dom, mutations);
+    assert!(registered.iter().all(|target| target.live_node().is_none()));
+    assert!(outer.opening_focus_candidates(&body).is_empty());
+    assert!(inner.opening_focus_candidates(&nested).is_empty());
+    let replacement = capture.0.borrow().scopes["inner-body"]
+        .owner
+        .clone()
+        .unwrap();
+    let next = popover_control_observation("inner-body", 1, &replacement);
+    let next_registered: Vec<_> = next
+        .candidates
+        .iter()
+        .map(|candidate| runtime.capture_registered_focus(&candidate.target).unwrap())
+        .collect();
+    assert!(
+        replacement
+            .opening_focus_candidates(&next)
+            .iter()
+            .all(|candidate| !candidate.in_header)
+    );
+    capture.0.borrow_mut().visible = false;
+    capture.0.borrow().update.as_ref().unwrap()();
+    let mutations = dom.render_immediate_to_vec();
+    settle_popover_controls(&mut dom, mutations);
+    assert!(
+        next_registered
+            .iter()
+            .all(|target| target.live_node().is_none())
+    );
+    assert!(replacement.opening_focus_candidates(&next).is_empty());
+    assert!(
+        registered
+            .iter()
+            .zip(&retained)
+            .all(|(target, node)| target.matches_node(node)),
+        "retaining old mounted handles does not authorize stale focus"
+    );
+}

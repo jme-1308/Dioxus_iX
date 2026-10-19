@@ -145,6 +145,11 @@ fn focus_fixture(fixture: FocusFixture) -> Element {
         )
     });
     node.set_ownership(Vec::new(), true);
+    node.set_surface_metadata(crate::overlay_runtime::SurfaceMetadata {
+        items_host: popover.id(),
+        popover_host: popover.id(),
+        ..Default::default()
+    });
     node.set_mounted();
     let mounted = node.clone();
     use_hook(move || popover.overlay.set(Some(mounted)));
@@ -277,6 +282,135 @@ fn popover_opening_chooses_registered_content_then_header_and_hover_preserves_fo
         ["body-positive", "header"],
         "hover opening never moves focus"
     );
+}
+
+fn opening_observation(popover: PopoverHandle) -> crate::overlay_runtime::FocusObservation {
+    crate::overlay_runtime::FocusObservation {
+        candidates: serde_json::from_value(serde_json::json!([
+            {"target":"body","tab_index":0,"popover":popover.id()}
+        ]))
+        .unwrap(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn popover_requested_opening_focus_consumes_only_current_intent_and_preserves_hover() {
+    use crate::overlay_runtime::SurfaceObservation;
+    let fixture = FocusFixture::default();
+    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    mount_focus(&fixture, "body", &calls);
+    let node = fixture.0.node.borrow().clone().unwrap();
+    let (mut popover, generation) = present_focus(&dom, &fixture);
+    let focus = opening_observation(popover);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.pending_opening_focus.set(Some(generation));
+        popover.observe_opening_focus(&node, SurfaceObservation::Focus(focus.clone()));
+        popover.observe_opening_focus(
+            &node,
+            SurfaceObservation::RequestedFocus {
+                request: generation.wrapping_sub(1),
+                focus: focus.clone(),
+            },
+        );
+        assert_eq!(*popover.pending_opening_focus.peek(), Some(generation));
+        assert!(!*popover.focusable_at_open.peek());
+        popover.observe_opening_focus(
+            &node,
+            SurfaceObservation::RequestedFocus {
+                request: generation,
+                focus: focus.clone(),
+            },
+        );
+        assert!(popover.pending_opening_focus.peek().is_none());
+        assert!(*popover.focusable_at_open.peek());
+    });
+    settle_focus(&mut dom);
+    assert_eq!(*calls.borrow(), ["body"]);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.observe_opening_focus(
+            &node,
+            SurfaceObservation::RequestedFocus {
+                request: generation,
+                focus: focus.clone(),
+            },
+        );
+    });
+    settle_focus(&mut dom);
+    assert_eq!(*calls.borrow(), ["body"], "an intent is consumed only once");
+
+    let (mut popover, generation) = present_focus(&dom, &fixture);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.hover_mode.set(true);
+        popover.pending_opening_focus.set(Some(generation));
+        popover.observe_opening_focus(
+            &node,
+            SurfaceObservation::RequestedFocus {
+                request: generation,
+                focus,
+            },
+        );
+        assert!(popover.pending_opening_focus.peek().is_none());
+        assert!(
+            *popover.focusable_at_open.peek(),
+            "hover retains return-focus eligibility"
+        );
+    });
+    settle_focus(&mut dom);
+    assert_eq!(*calls.borrow(), ["body"], "hover does not move focus");
+}
+
+#[test]
+fn popover_pointer_close_reopen_and_retired_owner_reject_pending_opening_observations() {
+    use crate::overlay_runtime::SurfaceObservation;
+    let fixture = FocusFixture::default();
+    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    mount_focus(&fixture, "body", &calls);
+    let node = fixture.0.node.borrow().clone().unwrap();
+    let (mut popover, first) = present_focus(&dom, &fixture);
+    let focus = opening_observation(popover);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.pending_opening_focus.set(Some(first));
+        popover.observe_opening_focus(&node, SurfaceObservation::Pointer);
+        assert!(popover.pending_opening_focus.peek().is_none());
+        popover.observe_opening_focus(
+            &node,
+            SurfaceObservation::RequestedFocus {
+                request: first,
+                focus: focus.clone(),
+            },
+        );
+        popover.pending_opening_focus.set(Some(first));
+        popover.commit_hide_with_focus(false);
+        assert!(popover.pending_opening_focus.peek().is_none());
+    });
+    let (mut popover, second) = present_focus(&dom, &fixture);
+    dom.in_scope(ScopeId::ROOT, || {
+        popover.pending_opening_focus.set(Some(second));
+        popover.observe_opening_focus(
+            &node,
+            SurfaceObservation::RequestedFocus {
+                request: first,
+                focus: focus.clone(),
+            },
+        );
+        assert_eq!(*popover.pending_opening_focus.peek(), Some(second));
+        // A detached/replaced registration cannot authorize even the new intent.
+        node.unregister();
+        popover.observe_opening_focus(
+            &node,
+            SurfaceObservation::RequestedFocus {
+                request: second,
+                focus,
+            },
+        );
+    });
+    settle_focus(&mut dom);
+    assert!(calls.borrow().is_empty());
 }
 
 #[test]

@@ -6,11 +6,6 @@
 //! 430–469 and popover.tsx473–518. Candidate eligibility and native focus success
 //! are separate facts: this module neither discovers DOM nor invents a fallback.
 
-#[cfg(any(
-    test,
-    all(feature = "web", target_arch = "wasm32"),
-    all(feature = "desktop", not(target_arch = "wasm32"))
-))]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct FocusCandidate {
     pub(crate) target: String,
@@ -20,11 +15,6 @@ pub(crate) struct FocusCandidate {
 
 /// Click opening prefers content over header, with tab order within each role.
 /// Hover opening never requests this explicit first-focus operation.
-#[cfg(any(
-    test,
-    all(feature = "web", target_arch = "wasm32"),
-    all(feature = "desktop", not(target_arch = "wasm32"))
-))]
 pub(crate) fn opening_target(candidates: &[FocusCandidate], hover_mode: bool) -> Option<String> {
     if hover_mode {
         return None;

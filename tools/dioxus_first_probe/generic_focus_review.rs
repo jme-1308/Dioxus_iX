@@ -39,7 +39,6 @@ pub fn GenericFocusPreview() -> Element {
     let custom = use_popover();
     let centered = use_popover();
     let custom_trigger = use_popover_trigger_binding(custom, "r0228-custom-popover-trigger");
-    let field_mount = use_focus_mount("r0211-popover-field");
     let action_mount = use_focus_mount("r0211-content-action");
     let mut note = use_signal(|| "Pump P-101".to_string());
     let mut priority = use_signal(|| false);
@@ -107,8 +106,8 @@ pub fn GenericFocusPreview() -> Element {
                     }
                     PopoverContent {
                         label { r#for:"r0211-popover-field", "Equipment name" }
-                        input { id:"r0211-popover-field", class:"generic-focus-field", value:note(), onmounted:field_mount,
-                            oninput:move |event|note.set(event.value()),
+                        Input { id:"r0211-popover-field", aria_label:"Equipment name", value:note(),
+                            onvaluechange:move |value|note.set(value),
                             onkeydown:move |event:KeyboardEvent| {
                                 // Consumer cancellation must reach the shared
                                 // document Escape handler on both renderers.

@@ -138,7 +138,7 @@ function send(report){
   input.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));
 }
 
-function reportObserve(records=[],focusChanged=false,focusoutMove=null){
+function reportObserve(records=[],focusChanged=false,focusoutMove=null,focusRequest=null){
   if(!alive||!transport())return;
   const pending=observer.takeRecords();
   records=Array.from(records).concat(pending);
@@ -151,9 +151,10 @@ function reportObserve(records=[],focusChanged=false,focusoutMove=null){
   for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   const report=collectFacts();
   report.focus_changed=focusChanged||explicitBlur;
+  if(focusRequest)report.focus_request=focusRequest;
   if(moved)report.moved_focus=moved;
   const sig=JSON.stringify({active_id:report.active_id,active_default:report.active_default,focus_candidates:report.focus_candidates});
-  if(moved||report.focus_changed||sig!==lastSignature){lastSignature=sig;send(report);}
+  if(focusRequest||moved||report.focus_changed||sig!==lastSignature){lastSignature=sig;send(report);}
   if(!documentEvents)documentEvents=subscribeDocumentEvents();
 }
 // Pinned Document has no typed document/window input listener API. This sole
@@ -229,6 +230,9 @@ document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 try{
   reportObserve();
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
+    // MountedData cannot query eligibility/document order. Reuse the canonical
+    // scan for opening without inventing focus changes or retaining requests.
+    if(command?.focus_request)reportObserve([],false,null,command.focus_request);
   }
 }finally{
   alive=false;listeners.abort();observer.disconnect();

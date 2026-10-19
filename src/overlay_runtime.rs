@@ -81,9 +81,21 @@ pub(crate) struct FocusObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SurfaceObservation {
     Focus(FocusObservation),
+    RequestedFocus {
+        request: u64,
+        focus: FocusObservation,
+    },
     Pointer,
 }
 type SurfaceObserver = Rc<dyn Fn(SurfaceObservation)>;
+
+/// Authored Popover role for an already registered Dioxus mounted control.
+/// Nested Popovers replace this scope; native ancestry never infers a header.
+#[derive(Clone, Default)]
+pub(crate) struct PopoverFocusScope {
+    pub(crate) owner: Option<NodeHandle>,
+    pub(crate) header: bool,
+}
 
 /// Dioxus-authored physical surfaces used to partition canonical native facts.
 /// Empty fields do not enroll arbitrary DOM or supply focus destinations.
@@ -201,6 +213,7 @@ struct ItemMount {
     owner: Option<(String, u64)>,
     node: Rc<MountedData>,
     renderer: Option<Weak<dioxus::core::Runtime>>,
+    popover_scope: Option<PopoverFocusScope>,
 }
 /// A captured Dioxus destination retains no element or renderer ownership.
 /// Replacing/unmounting its registration or changing documents invalidates it.
@@ -668,6 +681,17 @@ impl RuntimeHandle {
         if changed {
             self.cancel_item_key(key);
         }
+        // Repeated mounting of the same handle retains its authored role. A
+        // replacement has no metadata until its binding supplies the new scope.
+        let popover_scope = (!changed)
+            .then(|| {
+                self.0
+                    .borrow()
+                    .item_mounts
+                    .get(key)
+                    .and_then(|old| old.popover_scope.clone())
+            })
+            .flatten();
         self.0.borrow_mut().item_mounts.insert(
             key.into(),
             ItemMount {
@@ -676,8 +700,14 @@ impl RuntimeHandle {
                 owner,
                 node,
                 renderer,
+                popover_scope,
             },
         );
+    }
+    pub(crate) fn set_item_popover_scope(&self, key: &str, scope: Option<PopoverFocusScope>) {
+        if let Some(mount) = self.0.borrow_mut().item_mounts.get_mut(key) {
+            mount.popover_scope = scope;
+        }
     }
     pub(crate) fn unregister_item_cue(&self, key: &str) {
         self.cancel_item_key(key);
@@ -2476,7 +2506,11 @@ impl RuntimeHandle {
             // Dioxus event handlers supply all keyboard policy and origin.
             runtime.observation = Some(report.clone());
         }
-        if report.focus_changed || (!report.active_default && !report.active_id.is_empty()) {
+        if report.focus_changed
+            || (report.focus_request.is_none()
+                && !report.active_default
+                && !report.active_id.is_empty())
+        {
             self.cancel_item_repairs((!report.active_default).then_some(report.active_id.as_str()));
         }
         // Native open attributes may lag the Rust callback during an original
@@ -2507,6 +2541,31 @@ impl RuntimeHandle {
             SurfaceObservation::Focus(FocusObservation::from(report)),
             Some(report),
         );
+        if let Some(request) = &report.focus_request
+            && self.0.borrow().sequence == report.sequence
+        {
+            // Ordinary observers may have removed/replaced the requester.
+            // A request is delivered only to its live registration, never as a
+            // broadcast or a synthetic focus-change notification.
+            self.with_owner(&request.id, request.generation, || {
+                if let Some(observer) = self
+                    .entry(&request.id)
+                    .filter(|entry| {
+                        entry.mounted
+                            && entry.generation == request.generation
+                            && report.nodes.iter().any(|node| {
+                                node.id == request.id && node.generation == request.generation
+                            })
+                    })
+                    .and_then(|entry| entry.surface_observer)
+                {
+                    observer(SurfaceObservation::RequestedFocus {
+                        request: request.request,
+                        focus: FocusObservation::from(report),
+                    });
+                }
+            });
+        }
         KeyDecision::default()
     }
     fn notify_surfaces(&self, observation: SurfaceObservation, report: Option<&Report>) {
@@ -3438,6 +3497,86 @@ impl NodeHandle {
             })
             .unwrap_or(false)
     }
+    /// Request current canonical native facts through the existing bridge.
+    /// The caller owns its operation token; the runtime retains no request.
+    pub(crate) fn request_focus_observation(&self, request: u64) -> bool {
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        if !runtime.entry(&self.id).is_some_and(|entry| {
+            entry.mounted
+                && entry.generation == self.generation
+                && entry.kind == OverlayKind::Popover
+                && entry
+                    .scope
+                    .as_ref()
+                    .is_none_or(|(owner, _)| owner.upgrade().is_some())
+        }) {
+            return false;
+        }
+        runtime.0.borrow().bridge.as_ref().is_some_and(|bridge| {
+            bridge
+                .send(serde_json::json!({"focus_request": {
+                    "id": self.id, "generation": self.generation, "request": request
+                }}))
+                .is_ok()
+        })
+    }
+    /// Use native eligibility/document order once, then intersect it with
+    /// current mounted Dioxus controls and the physical Popover partition.
+    pub(crate) fn opening_focus_candidates(
+        &self,
+        observation: &FocusObservation,
+    ) -> Vec<crate::popover_focus::FocusCandidate> {
+        let Some(runtime) = self.runtime() else {
+            return Vec::new();
+        };
+        let Some(entry) = runtime.entry(&self.id).filter(|entry| {
+            entry.mounted
+                && entry.generation == self.generation
+                && entry.kind == OverlayKind::Popover
+        }) else {
+            return Vec::new();
+        };
+        let host = entry.surface_metadata.popover_host;
+        if host.is_empty() {
+            return Vec::new();
+        }
+        let state = runtime.0.borrow();
+        observation
+            .candidates
+            .iter()
+            .filter_map(|candidate| {
+                if candidate.target.is_empty()
+                    || candidate.target == host
+                    || candidate.popover != host
+                {
+                    return None;
+                }
+                let mount = state.item_mounts.values().find(|mount| {
+                    mount.focus_id == candidate.target
+                        && mount
+                            .renderer
+                            .as_ref()
+                            .is_none_or(|owner| owner.upgrade().is_some())
+                        && mount.owner.as_ref().is_none_or(|(id, generation)| {
+                            state.nodes.get(id).is_some_and(|entry| {
+                                entry.mounted && entry.generation == *generation
+                            })
+                        })
+                })?;
+                let in_header = mount
+                    .popover_scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.header && scope.owner.as_ref() == Some(self));
+                Some(crate::popover_focus::FocusCandidate {
+                    target: candidate.target.clone(),
+                    tab_index: candidate.tab_index,
+                    in_header,
+                })
+            })
+            .collect()
+    }
     /// Reuse canonical focus facts and shared mouse/touch input in this surface's
     /// Dioxus scope. Installation never synchronously delivers during render.
     pub(crate) fn set_surface_observer(&self, observer: SurfaceObserver) {
@@ -3657,6 +3796,13 @@ mod overlay_assignment_tests;
 #[path = "item_visual_transport_tests.rs"]
 mod item_visual_transport_tests;
 
+#[derive(Clone, Deserialize)]
+struct FocusRequest {
+    id: String,
+    generation: u64,
+    request: u64,
+}
+
 #[derive(Clone, Default, Deserialize)]
 struct Report {
     owner: String,
@@ -3672,6 +3818,8 @@ struct Report {
     active_default: bool,
     #[serde(default)]
     focus_changed: bool,
+    #[serde(default)]
+    focus_request: Option<FocusRequest>,
     #[serde(default)]
     moved_focus: Option<MovedFocus>,
     #[serde(default)]
@@ -4029,6 +4177,192 @@ mod tests {
             "removed owners receive neither callback"
         );
         assert!(node.current_focus_observation().is_none());
+    }
+
+    #[test]
+    fn requested_focus_facts_are_scoped_sequenced_and_never_retarget_replacements() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let node = fixture.0.node.borrow().clone().unwrap();
+        let runtime = node.runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        dom.in_scope(owner, || node.set_mounted());
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let delivered = received.clone();
+        node.set_surface_observer(Rc::new(move |observation| {
+            assert_eq!(current_scope_id(), owner);
+            assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
+            if let SurfaceObservation::RequestedFocus { request, focus } = observation {
+                delivered.borrow_mut().push((request, focus.active_id));
+            }
+        }));
+        assert!(
+            !node.request_focus_observation(31),
+            "no bridge is an explicit failure"
+        );
+        let mut observation = Report {
+            owner: runtime.owner_id(),
+            sequence: 1,
+            kind: "observe".into(),
+            document: "requested focus scope".into(),
+            active_id: "body-field".into(),
+            focus_request: Some(FocusRequest {
+                id: node.id().into(),
+                generation: node.generation(),
+                request: 31,
+            }),
+            ..Default::default()
+        };
+        let caller = fixture.0.caller.get().unwrap();
+        dom.in_scope(caller, || {
+            runtime.observe(&observation);
+            assert_eq!(current_scope_id(), caller);
+        });
+        assert_eq!(*received.borrow(), [(31, "body-field".into())]);
+        assert!(
+            !runtime
+                .0
+                .borrow()
+                .observation
+                .as_ref()
+                .unwrap()
+                .focus_changed
+        );
+        runtime.observe(&observation);
+        assert_eq!(received.borrow().len(), 1, "duplicate delivery is rejected");
+        observation.sequence = 2;
+        observation.focus_request.as_mut().unwrap().generation += 1;
+        runtime.observe(&observation);
+        assert_eq!(
+            received.borrow().len(),
+            1,
+            "another registration cannot receive the response"
+        );
+        dom.in_scope(owner, || node.unregister());
+        observation.sequence = 3;
+        observation.focus_request.as_mut().unwrap().generation = node.generation();
+        runtime.observe(&observation);
+        assert_eq!(
+            received.borrow().len(),
+            1,
+            "removed requester is not invoked"
+        );
+        assert!(!node.request_focus_observation(32));
+        let replacement = dom.in_scope(owner, || {
+            runtime.register(
+                node.id().into(),
+                node.generation() + 1,
+                OverlayKind::Popover,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(|| Some(true)),
+                    before: Rc::new(|_| true),
+                    apply: Rc::new(|_| {}),
+                    key: None,
+                },
+            )
+        });
+        replacement.set_mounted();
+        replacement.set_surface_observer(Rc::new(|observation| {
+            assert!(
+                !matches!(observation, SurfaceObservation::RequestedFocus { .. }),
+                "old response must not reach a replacement"
+            );
+        }));
+        observation.sequence = 4;
+        runtime.observe(&observation);
+        assert_eq!(received.borrow().len(), 1);
+    }
+
+    #[test]
+    fn opening_focus_uses_registered_partition_and_authored_header_with_mount_lifetimes() {
+        let runtime = RuntimeHandle::new();
+        let popover = model(&runtime, "opening", OverlayKind::Popover, Rc::default()).node;
+        popover.set_surface_metadata(SurfaceMetadata {
+            popover_host: "opening-panel".into(),
+            ..Default::default()
+        });
+        let nested = model(&runtime, "nested", OverlayKind::Popover, Rc::default()).node;
+        let mounted = Rc::new(MountedData::new(ItemMountMock::default()));
+        for id in ["header", "body", "nested-header", "outside"] {
+            runtime.register_item_mount(id, id, mounted.clone());
+        }
+        runtime.set_item_popover_scope(
+            "header",
+            Some(PopoverFocusScope {
+                owner: Some(popover.clone()),
+                header: true,
+            }),
+        );
+        runtime.set_item_popover_scope(
+            "nested-header",
+            Some(PopoverFocusScope {
+                owner: Some(nested),
+                header: true,
+            }),
+        );
+        let observation = FocusObservation {
+            candidates: serde_json::from_value(serde_json::json!([
+                {"target":"outside","tab_index":1,"popover":"different-panel"},
+                {"target":"unregistered","tab_index":1,"popover":"opening-panel"},
+                {"target":"header","tab_index":1,"popover":"opening-panel"},
+                {"target":"body","tab_index":5,"popover":"opening-panel"},
+                {"target":"nested-header","tab_index":0,"popover":"opening-panel"}
+            ]))
+            .unwrap(),
+            ..Default::default()
+        };
+        let candidates = popover.opening_focus_candidates(&observation);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| (candidate.target.as_str(), candidate.in_header))
+                .collect::<Vec<_>>(),
+            [("header", true), ("body", false), ("nested-header", false)]
+        );
+        assert_eq!(
+            crate::popover_focus::opening_target(&candidates, false).as_deref(),
+            Some("body")
+        );
+        runtime.register_item_mount("header", "header", mounted.clone());
+        assert!(
+            popover.opening_focus_candidates(&observation)[0].in_header,
+            "same mounted handle retains its role"
+        );
+        runtime.register_item_mount(
+            "header",
+            "header",
+            Rc::new(MountedData::new(ItemMountMock::default())),
+        );
+        assert!(
+            !popover.opening_focus_candidates(&observation)[0].in_header,
+            "replacement cannot inherit old role"
+        );
+        runtime.unregister_item_cue("body");
+        assert!(
+            !popover
+                .opening_focus_candidates(&observation)
+                .iter()
+                .any(|candidate| candidate.target == "body")
+        );
+        // A control whose actual overlay owner was replaced is not live merely
+        // because a native candidate with the same ID remains in old facts.
+        runtime.register_owned_item_control_mount(
+            "header",
+            "header",
+            "header",
+            mounted,
+            Some((popover.id().into(), popover.generation() + 1)),
+        );
+        assert!(
+            !popover
+                .opening_focus_candidates(&observation)
+                .iter()
+                .any(|candidate| candidate.target == "header")
+        );
+        popover.unregister();
+        assert!(popover.opening_focus_candidates(&observation).is_empty());
     }
 
     struct Model {
@@ -6342,8 +6676,13 @@ mod tests {
         let (mut dom, runtime, node, host, mock) = moved_item_fixture();
         report_moved_item(&runtime, &node);
         assert_eq!(runtime.pending_item_focus_count(), 1);
-        // The repair's own native focus report must not retire its cue job.
+        // A forced opening refresh is not evidence of focus movement and must
+        // not cancel a pending registered-move repair merely to force delivery.
         runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":3,"kind":"observe",
+            "active_id":"another-control","focus_request":{"id":node.id(),"generation":1,"request":7}})));
+        assert_eq!(runtime.pending_item_focus_count(), 1);
+        // The repair's own native focus report must not retire its cue job.
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":4,"kind":"observe",
             "active_id":"moved-control","focus_changed":true,"nodes":[{"id":node.id,"generation":1}]})));
         assert_eq!(runtime.pending_item_focus_count(), 1);
         settle_item_effects(&mut dom);

@@ -773,6 +773,7 @@ pub struct PopoverHandle {
     onbeforechange: Signal<Option<EventHandler<PopoverChangeEvent>>>,
     dispatching_change: Signal<bool>,
     opening: Signal<bool>,
+    pending_opening_focus: Signal<Option<u64>>,
     focusable_at_open: Signal<bool>,
     focus_trigger: Signal<Option<crate::overlay_runtime::MountedFocusTarget>>,
     trigger_id: Signal<Option<String>>,
@@ -829,6 +830,7 @@ pub fn use_popover() -> PopoverHandle {
         onbeforechange: use_signal(|| None),
         dispatching_change: use_signal(|| false),
         opening: use_signal(|| false),
+        pending_opening_focus: use_signal(|| None),
         focusable_at_open: use_signal(|| false),
         focus_trigger: use_signal(|| None),
         trigger_id: use_signal(|| None),
@@ -888,6 +890,8 @@ impl PopoverHandle {
 
     /// Show the real native top-layer popover. Dismissal restores its configured
     /// trigger when the opening had focusable content. Opening is cancelable.
+    /// Success confirms native presentation; initial focus is applied asynchronously
+    /// from the shared canonical observation through registered mounted handles.
     pub async fn show(self) -> Result<(), NativeSurfaceError> {
         self.show_native().await
     }
@@ -915,6 +919,7 @@ impl PopoverHandle {
         self.suppress_focus_open.set(false);
         self.surface.restore_after_mount.set(None);
         self.opening.set(true);
+        self.pending_opening_focus.set(None);
         self.focusable_at_open.set(false);
         self.focus_trigger.set(None);
         let _opening = PopoverOpeningGuard {
@@ -968,14 +973,15 @@ impl PopoverHandle {
             }
             return Err(error);
         }
-        #[cfg(any(
-            all(feature = "web", target_arch = "wasm32"),
-            all(feature = "desktop", not(target_arch = "wasm32"))
-        ))]
-        {
-            if let Some(facts) = popover_native::snapshot(self.surface, generation).await {
-                self.apply_opening_focus(generation, &facts.candidates);
-            }
+        // Request the existing canonical scan after native promotion. Dioxus
+        // composition supplies header roles; no Popover-specific DOM scan or
+        // second focus executor is needed. A newer pointer/close cancels intent.
+        self.pending_opening_focus.set(Some(generation));
+        let requested = node
+            .as_ref()
+            .is_some_and(|node| node.request_focus_observation(generation));
+        if !requested {
+            self.pending_opening_focus.set(None);
         }
 
         if *self.surface.generation.peek() != generation || !*self.surface.open.peek() {
@@ -1000,14 +1006,56 @@ impl PopoverHandle {
                 }
             }));
         }
-        Ok(())
+        if requested {
+            Ok(())
+        } else {
+            Err(NativeSurfaceError::Rejected(
+                "shared opening focus observation is unavailable".into(),
+            ))
+        }
     }
 
-    #[cfg(any(
-        test,
-        all(feature = "web", target_arch = "wasm32"),
-        all(feature = "desktop", not(target_arch = "wasm32"))
-    ))]
+    fn observe_opening_focus(
+        mut self,
+        node: &crate::overlay_runtime::NodeHandle,
+        observation: crate::overlay_runtime::SurfaceObservation,
+    ) {
+        if !node.is_registered()
+            || !self
+                .overlay
+                .try_peek()
+                .is_ok_and(|current| current.as_ref() == Some(node))
+        {
+            return;
+        }
+        match observation {
+            crate::overlay_runtime::SurfaceObservation::RequestedFocus { request, focus } => {
+                if !self
+                    .pending_opening_focus
+                    .try_peek()
+                    .is_ok_and(|pending| *pending == Some(request))
+                    || !self
+                        .surface
+                        .generation
+                        .try_peek()
+                        .is_ok_and(|generation| *generation == request)
+                    || !self.surface.open.try_peek().is_ok_and(|open| *open)
+                {
+                    return;
+                }
+                self.pending_opening_focus.set(None);
+                self.apply_opening_focus(request, &node.opening_focus_candidates(&focus));
+            }
+            crate::overlay_runtime::SurfaceObservation::Pointer => {
+                if self.pending_opening_focus.peek().is_some() {
+                    self.pending_opening_focus.set(None);
+                    node.cancel_registered_focus();
+                }
+            }
+            crate::overlay_runtime::SurfaceObservation::Focus(_) => {}
+        }
+    }
+
     fn apply_opening_focus(
         mut self,
         generation: u64,
@@ -1134,6 +1182,7 @@ impl PopoverHandle {
     }
 
     fn commit_hide_with_focus(mut self, restore_focus: bool) {
+        self.pending_opening_focus.set(None);
         if !self.is_open() {
             return;
         }
@@ -1583,6 +1632,14 @@ pub fn Popover(
         popover_host: id.clone(),
     });
     crate::overlay_runtime::use_overlay_scope_with_ancestors(Some(node.clone()), ancestors);
+    use_context_provider(|| crate::overlay_runtime::PopoverFocusScope {
+        owner: Some(node.clone()),
+        header: false,
+    });
+    let observed_node = node.clone();
+    node.set_surface_observer(Rc::new(move |observation| {
+        popover.observe_opening_focus(&observed_node, observation);
+    }));
     node.set_close_behavior(close_behavior);
     let mounted_node = node.clone();
     let keyboard_node = node.clone();
@@ -1604,6 +1661,7 @@ pub fn Popover(
             surface.generation.set(generation);
             let mut popover = popover;
             popover.opening.set(false);
+            popover.pending_opening_focus.set(None);
             popover.focusable_at_open.set(false);
             popover.focus_trigger.set(None);
             popover.suppress_focus_open.set(false);
@@ -1675,6 +1733,10 @@ pub fn Popover(
                     // generation or cancel an opening still awaiting native work.
                     if (visible && !*surface.open.peek()) || (!visible && *popover.opening.peek()) { return; }
                     surface.open.set(visible);
+                    if !visible {
+                        let mut pending = popover.pending_opening_focus;
+                        pending.set(None);
+                    }
                     let mut reported = popover.reported_open;
                     if !(visible && *popover.opening.peek()) { reported.set(visible); }
                     if previous != visible && !(visible && *popover.opening.peek()) { if let Some(callback) = onshowchanged { callback.call(visible); } }
@@ -1701,6 +1763,12 @@ pub fn PopoverHeader(
     #[props(default)] oncloseclick: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let popover = try_consume_context::<PopoverHandle>();
+    let scope =
+        try_consume_context::<crate::overlay_runtime::PopoverFocusScope>().unwrap_or_default();
+    use_context_provider(|| crate::overlay_runtime::PopoverFocusScope {
+        owner: scope.owner,
+        header: true,
+    });
     rsx! {
         header { class: "ix-popover-header",
             if let Some(icon) = icon { span { style: icon_color.map(|name| format!("color:var({name})")), crate::Icon { name: icon, size: 24 } } }

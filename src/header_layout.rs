@@ -986,6 +986,7 @@ pub(crate) fn HeaderLayout(
                 observer_controller.observe_focus(focus, &observer_controls.groups());
             }
             SurfaceObservation::Pointer => observer_controller.pointer_input(),
+            SurfaceObservation::RequestedFocus { .. } => {}
         }));
     let focus_controller = controller.clone();
     let focus_controls = controls.clone();

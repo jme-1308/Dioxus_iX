@@ -42,14 +42,17 @@ fn field_id(id: Option<String>) -> String {
     id.unwrap_or(generated)
 }
 
-// Header groups are scope-owned. Capture participation once so conditional
+// Header and Popover groups are scope-owned. Capture participation once so conditional
 // registration never changes hook order during ordinary control rerenders.
 // Other form uses keep their existing controller-owned mounted lifecycle.
-fn use_header_focus_mount(id: String) -> Option<EventHandler<MountedEvent>> {
-    let in_header = use_hook(|| {
+fn use_surface_focus_mount(id: String) -> Option<EventHandler<MountedEvent>> {
+    let in_surface = use_hook(|| {
         try_consume_context::<crate::header_control_scope::HeaderControlGroup>().is_some()
+            || try_consume_context::<crate::overlay_runtime::PopoverFocusScope>()
+                .and_then(|scope| scope.owner)
+                .is_some_and(|owner| owner.is_registered())
     });
-    in_header.then(|| crate::use_focus_mount(id))
+    in_surface.then(|| crate::use_focus_mount(id))
 }
 
 /// Explicit validation presentation. Native HTML constraints remain active independently.
@@ -396,7 +399,7 @@ pub fn Input(
     #[props(default)] class: String,
 ) -> Element {
     let id = field_id(id);
-    let header_focus_mount = use_header_focus_mount(id.clone());
+    let surface_focus_mount = use_surface_focus_mount(id.clone());
     let (focus_commit, commit) = use_text_commit(&value, onchange);
     let has_value = if input_type == "number" {
         number_has_valid_value(&value, required)
@@ -497,7 +500,7 @@ pub fn Input(
                     "aria-describedby": describedby,
                     "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                     "data-ix-touched": lifecycle.touched.to_string(),
-                    onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = header_focus_mount { mount.call(event); } },
+                    onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = surface_focus_mount { mount.call(event); } },
                     oninput: move |event| { onvaluechange.call(event.value()); observe.call(false); },
                     onfocus: move |event| { focus_state.call(true); focus_commit.call(()); onfocus.call(event); },
                     onblur: move |event| { focus_state.call(false); onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
@@ -574,7 +577,7 @@ pub fn Textarea(
     #[props(default)] class: String,
 ) -> Element {
     let id = field_id(id);
-    let header_focus_mount = use_header_focus_mount(id.clone());
+    let surface_focus_mount = use_surface_focus_mount(id.clone());
     let (focus_commit, commit) = use_text_commit(&value, onchange);
     let lifecycle = crate::form_control::use_control(
         &id,
@@ -652,7 +655,7 @@ pub fn Textarea(
                 "aria-describedby": describedby,
                 "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                 "data-ix-touched": lifecycle.touched.to_string(),
-                onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = header_focus_mount { mount.call(event.clone()); } tooltip_anchor.onmounted.call(event); },
+                onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } tooltip_anchor.onmounted.call(event); },
                 onresize: tooltip_anchor.onresize, onvisible: tooltip_anchor.onvisible,
                 onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
                 onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout,
@@ -695,7 +698,7 @@ pub fn Checkbox(
     #[props(default)] onblur: EventHandler<FocusEvent>,
 ) -> Element {
     let id = field_id(id);
-    let header_focus_mount = use_header_focus_mount(id.clone());
+    let surface_focus_mount = use_surface_focus_mount(id.clone());
     let mut button = use_signal(|| None::<Rc<MountedData>>);
     let mut attempted = use_signal(|| false);
     let invalid = invalid || state == FieldState::Invalid || (attempted() && required && !checked);
@@ -721,7 +724,7 @@ pub fn Checkbox(
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
                 "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
                 "aria-disabled": disabled.to_string(), aria_label,
-                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = header_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = surface_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
                 span { class: "ix-checkbox-button", "aria-hidden": "true",
                     span { class: "ix-check-shape",
                         svg { view_box: "0 0 18 18", width: "18", height: "18", fill: "none",
@@ -872,7 +875,7 @@ pub fn Radio(
     #[props(default)] onvaluechange: EventHandler<String>,
 ) -> Element {
     let id = field_id(id);
-    let header_focus_mount = use_header_focus_mount(id.clone());
+    let surface_focus_mount = use_surface_focus_mount(id.clone());
     crate::form_control::use_custom_field_state(crate::form_control::control_validation(
         state, &class,
     ));
@@ -883,7 +886,7 @@ pub fn Radio(
             "data-checked": checked.to_string(), "data-disabled": disabled.to_string(),
             "data-label-less": label.is_empty().to_string(),
             input { id, r#type: "radio", name, value, checked, disabled, required,
-                onmounted: move |event| { if let Some(mount) = header_focus_mount { mount.call(event); } },
+                onmounted: move |event| { if let Some(mount) = surface_focus_mount { mount.call(event); } },
                 "aria-label": accessible_label,
                 "aria-invalid": (state == FieldState::Invalid).to_string(),
                 // Radio change fires only when becoming checked. FormData::checked
@@ -1013,7 +1016,7 @@ pub fn Toggle(
     #[props(default)] oncheckedchange: EventHandler<bool>,
 ) -> Element {
     let id = field_id(id);
-    let header_focus_mount = use_header_focus_mount(id.clone());
+    let surface_focus_mount = use_surface_focus_mount(id.clone());
     let mut button = use_signal(|| None::<Rc<MountedData>>);
     let mut attempted = use_signal(|| false);
     let text = if indeterminate {
@@ -1051,7 +1054,7 @@ pub fn Toggle(
                 "aria-label": accessible_label, "aria-labelledby": aria_labelledby, "aria-disabled": disabled.to_string(),
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
                 "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
-                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = header_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = surface_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
                 span { class: "ix-toggle-wrapper",
                     span { class: if checked { if indeterminate { "ix-toggle-switch checked indeterminate" } else { "ix-toggle-switch checked" } } else if indeterminate { "ix-toggle-switch indeterminate" } else { "ix-toggle-switch" },
                         "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(), "aria-hidden": "true",
@@ -2434,7 +2437,7 @@ pub fn Select(
     #[props(default)] onixblur: EventHandler<()>,
 ) -> Element {
     let id = field_id(id);
-    let header_focus_mount = use_header_focus_mount(id.clone());
+    let surface_focus_mount = use_surface_focus_mount(id.clone());
     let list_id = format!("{id}-list");
     let control_id = format!("{id}-control");
     let help_id = format!("{id}-help");
@@ -2851,7 +2854,7 @@ pub fn Select(
                     "aria-required": required.to_string(), "aria-invalid": (state == FieldState::Invalid).to_string(),
                     "aria-describedby": describedby,
                     "aria-activedescendant": active_descendant,
-                    onmounted: move |event| { let node = event.data(); *method_input.borrow_mut() = Some(node.clone()); trigger_ref.set(Some(node)); if let Some(mount) = header_focus_mount { mount.call(event); } },
+                    onmounted: move |event| { let node = event.data(); *method_input.borrow_mut() = Some(node.clone()); trigger_ref.set(Some(node)); if let Some(mount) = surface_focus_mount { mount.call(event); } },
                     onclick: move |_| if !read_only { overflow_open.set(false); if !open() { active.set(usize::MAX); open.set(true); } },
                     oninput: move |event| if !read_only { let text = event.value(); query.set(text.clone()); query_dirty.set(true); active.set(usize::MAX); overflow_open.set(false); open.set(true); oninputchange.call(text); },
                     onfocus: move |_| focused.set(true),

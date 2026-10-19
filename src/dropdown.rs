@@ -86,6 +86,7 @@ pub(crate) struct ItemHostBinding {
     inventory_owner: Option<NodeHandle>,
     parent_key: Option<String>,
     header_control: Option<crate::header_control_scope::HeaderControlRegistration>,
+    popover_scope: Option<overlay_runtime::PopoverFocusScope>,
     identity: usize,
     kind: ItemKind,
 }
@@ -103,6 +104,8 @@ impl ItemHostBinding {
             .map(|node| (node.id().to_string(), node.generation()));
         self.runtime
             .register_owned_item_control_mount(&self.key, target, focus_id, node, owner);
+        self.runtime
+            .set_item_popover_scope(&self.key, self.popover_scope.clone());
     }
     pub(crate) fn describe(
         &self,
@@ -271,6 +274,9 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         (identity, key)
     });
     let header_control = crate::header_control_scope::use_header_control_registration(key.clone());
+    // This metadata follows the mounted control's Dioxus composition. A nested
+    // Popover replaces the nearest scope rather than inheriting an outer header.
+    let popover_scope = use_hook(try_consume_context::<overlay_runtime::PopoverFocusScope>);
     let cleanup = runtime.clone();
     let dropped = key.clone();
     use_drop(move || cleanup.unregister_item_cue(&dropped));
@@ -303,6 +309,7 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
         inventory_owner,
         parent_key,
         header_control,
+        popover_scope,
         identity,
         kind: kind_value,
     }
