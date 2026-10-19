@@ -38,6 +38,9 @@ pub fn TriggerPreview() -> Element {
                     DropdownItem { id:"r02-custom-first", label:"Inspect equipment", keep_open:true, onitemclick:move |_|count.set(count()+1) }
                     DropdownItem { id:"r02-custom-mode", label:"Switch navigation mode", keep_open:true, onitemclick:move |_|roving.set(!roving()) }
                     DropdownItem { label:"Unavailable action", disabled:true }
+                    label { style:"display:flex;gap:8px;padding:12px;align-items:center",
+                        input { id:"r0223-native-check", r#type:"checkbox" } "Include archived equipment"
+                    }
                 }
                 div { class:"trigger-actions",
                     button { id:"r02-replace-trigger", class:"ix-button ix-button-secondary", r#type:"button", onclick:move |_|revision.set(revision()+1), "Replace custom trigger" }
@@ -105,6 +108,8 @@ byId('r02-custom-mode').click();await wait('live AD trigger focus',()=>surface()
 key('Escape');await wait('AD close',()=>surface().getAttribute('data-ix-overlay-open')==='false');
 byId('r02-custom-trigger').click();await wait('outside setup',()=>surface().getAttribute('data-ix-overlay-open')==='true');
 byId('r02-outside-trigger').focus();byId('r02-outside-trigger').click();await wait('outside focus preserved',()=>surface().getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-outside-trigger'));
+byId('r02-custom-trigger').click();await wait('native checkbox setup',()=>surface().getAttribute('data-ix-overlay-open')==='true');
+byId('r0223-native-check').click();await wait('native checkbox default survives inside dismissal',()=>byId('r0223-native-check').checked&&surface().getAttribute('data-ix-overlay-open')==='false');
 byId('r02-custom-trigger').click();await wait('programmatic return setup',()=>surface().getAttribute('data-ix-overlay-open')==='true');
 byId('r02-close-return').click();await wait('explicit return',()=>surface().getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-custom-trigger'));
 const old=byId('r02-custom-trigger');byId('r02-replace-trigger').click();await wait('replacement mounted',()=>byId('r02-custom-trigger')!==old&&byId('r02-custom-trigger').textContent.includes('2'));
@@ -127,5 +132,5 @@ key('End');await wait('late linked row focus',()=>document.activeElement===byId(
 key('ArrowRight');await wait('late submenu opens',()=>document.querySelector('.r0222-late-child').getAttribute('data-ix-overlay-open')==='true'&&document.activeElement===byId('r0222-late-first'));
 key('ArrowLeft');await wait('late submenu returns to current parent',()=>document.querySelector('.r0222-late-child').getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r0222-late-trigger'));
 key('Escape');await wait('parent return',()=>parent.getAttribute('aria-expanded')==='false'&&document.activeElement===parent);
-return {ok:true,customEscape:true,liveMode:true,outsidePreserved:true,explicitReturn:true,replacement:true,remount:true,libraryEscape:true,linkedArrowLeft:true,distinctLinkedTargets:true,lateChildAfterParentOpen:true};
+return {ok:true,customEscape:true,liveMode:true,outsidePreserved:true,explicitReturn:true,replacement:true,remount:true,libraryEscape:true,linkedArrowLeft:true,distinctLinkedTargets:true,lateChildAfterParentOpen:true,nativeCheckboxDefault:true};
 "#;

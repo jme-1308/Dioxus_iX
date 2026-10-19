@@ -389,24 +389,6 @@ impl Registry {
             .cloned()
     }
 
-    pub(crate) fn outside_candidates(&self, hosts: &[String], triggers: &[String]) -> Vec<String> {
-        let mut presented = Vec::with_capacity(self.presentation_order.len());
-        for id in self.presentation_order.iter().chain(&self.order) {
-            if self.is_open(id) && !presented.contains(id) {
-                presented.push(id.clone());
-            }
-        }
-        presented
-            .into_iter()
-            .rev()
-            .filter(|id| {
-                self.close_behavior(id)
-                    .is_some_and(CloseBehavior::allows_outside)
-                    && !self.path_in_hierarchy(id, hosts, triggers)
-            })
-            .collect()
-    }
-
     fn logical_parents(&self) -> BTreeMap<String, String> {
         let mut parents = BTreeMap::new();
         for (id, node) in &self.nodes {
@@ -755,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn outside_candidates_follow_presentation_order_policy_and_current_paths() {
+    fn topmost_follows_presentation_order_independent_of_click_policy() {
         let mut reg = Registry::new();
         reg.register("header".into(), 1, OverlayKind::Header, CloseBehavior::Both);
         reg.register(
@@ -792,15 +774,6 @@ mod tests {
             Some("inside_only"),
             "topmost ignores click policy and unchanged opens"
         );
-        assert_eq!(
-            reg.outside_candidates(&[], &[]),
-            vec!["sub", "child", "header"]
-        );
-        assert_eq!(
-            reg.outside_candidates(&[], &["header".into()]),
-            vec!["sub", "child"]
-        );
-        assert_eq!(reg.outside_candidates(&["child".into()], &[]), vec!["sub"]);
     }
 
     #[test]

@@ -285,22 +285,6 @@ function collectFacts(kind,event,phase=''){
   const active=deepActive(),path=event?.composedPath?.()||[];
   const target=path[0] instanceof HTMLElement?path[0]:(event?.target instanceof HTMLElement?event.target:null);
   const hosts=pathIds(path,'data-ix-overlay-host',isActiveHost),triggers=pathIds(path,'data-ix-overlay-trigger');
-  const enclosing_triggers=triggers.filter(id=>{
-    const triggerIndex=path.findIndex(node=>node instanceof HTMLElement&&node.getAttribute('data-ix-overlay-trigger')===id);
-    const hostIndex=path.findIndex(node=>node instanceof HTMLElement&&isActiveHost(node)&&node.getAttribute('data-ix-overlay-host')===id);
-    return hostIndex>=0&&triggerIndex>hostIndex;
-  });
-  // Preserve actual receiver order and identity. Rust decides which physical
-  // root/host sites correspond to the source component's click handlers.
-  const click_sites=[];
-  if(kind==='click'&&phase==='bubble')for(const receiver of path){
-    if(!(receiver instanceof HTMLElement))continue;
-    const host=isActiveHost(receiver),id=receiver.getAttribute(host?'data-ix-overlay-host':'data-ix-overlay-root');
-    if(!id)continue;
-    const registration=path.find(root=>root instanceof HTMLElement&&root.getAttribute('data-ix-overlay-root')===id&&root.getAttribute('data-ix-overlay-owner')===owner);
-    if(!registration)continue;
-    click_sites.push({root:id,generation:Number(registration.getAttribute('data-ix-overlay-generation')||'0'),connected:registration.isConnected&&receiver.isConnected,receiver:host?'host':'root',popover:receiver.hasAttribute('popover'),target_is_host:host&&target===receiver});
-  }
   const nodes=[],anchors=[];
   for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
@@ -346,7 +330,7 @@ function collectFacts(kind,event,phase=''){
     key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,ctrl:!!event?.ctrlKey,meta:!!event?.metaKey,
     default_prevented:!!event?.defaultPrevented,
     target_id:nativeId(target),active_id:nativeId(active),
-    hosts,triggers,enclosing_triggers,anchors,nodes,click_sites,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),
+    hosts,triggers,anchors,nodes,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
@@ -410,12 +394,13 @@ function reportObserve(){
   pruneItemCaptures();
 }
 // Generic Header/Popover/global coordination retains current key/Tab facts.
-// Dropdown keys and activation have no native listener or fallback route.
+// Dropdown/Header local clicks and Dropdown keys use Dioxus handlers only.
+// The remaining window outside listener observes document events beyond any
+// component root. Pinned Document has no typed global-event registration; this
+// legacy integration is the sole outside path, never an activation fallback.
 document.addEventListener('keydown',e=>send(collectFacts('key',e,'capture'),e),{capture:true,signal});
 document.addEventListener('keydown',e=>{if(e.key==='Tab')send(collectFacts('key',e,'trap'),e);},{signal});
 for(const kind of ['keydown','mousedown','touchstart'])document.addEventListener(kind,e=>send(collectFacts('modality',e,'document'),null),{passive:true,signal});
-document.addEventListener('click',e=>send(collectFacts('click',e,'capture'),e),{capture:true,signal});
-document.addEventListener('click',e=>send(collectFacts('click',e,'bubble'),e),{signal});
 window.addEventListener('keydown',e=>send(collectFacts('key',e,'window'),e),{signal});
 window.addEventListener('click',e=>send(collectFacts('click',e,'window'),e),{signal});
 document.addEventListener('pointerdown',e=>send(collectFacts('pointer',e),e),{capture:true,signal});

@@ -43,8 +43,6 @@ struct Report {
     #[serde(default)]
     inside: bool,
     #[serde(default)]
-    background: bool,
-    #[serde(default)]
     hosts: Vec<String>,
     #[serde(default)]
     triggers: Vec<String>,
@@ -68,7 +66,6 @@ struct Model {
     top_layer: bool,
     open: bool,
     presence: [bool; 4],
-    keyboard: bool,
     focus: String,
     focused_control: Option<FocusedControl>,
     preserve: Option<FocusedControl>,
@@ -94,7 +91,6 @@ impl Model {
             top_layer,
             open: false,
             presence: [false; 4],
-            keyboard: false,
             focus: "none".into(),
             focused_control: None,
             preserve: None,
@@ -145,9 +141,8 @@ impl Model {
         if self.small == small && self.top_layer == top_layer {
             return false;
         }
-        // Source retains the same overflow Dropdown and its opening-time
-        // child cache when slots move across a breakpoint. Only a top-layer
-        // configuration change keeps this adapter's prior forced-close policy.
+        // Responsive slot movement retains the same overflow Dropdown and
+        // current children. A top-layer configuration change still closes it.
         let layer_changed = self.top_layer != top_layer;
         let closed = self.open && layer_changed;
         self.small = small;
@@ -219,9 +214,7 @@ struct Decision {
 fn decide(model: &mut Model, report: &Report, popover_ancestor: bool) -> Decision {
     let mut decision = Decision::default();
     match report.kind.as_str() {
-        "pointer" => model.keyboard = false,
         "key" if !report.default_prevented => {
-            model.keyboard = true;
             // Inside a Popover, the source Header Dropdown's local query has
             // no eligible controls. More Tab instead belongs to the shared
             // trigger callback below, including its no-target/default case.
@@ -270,20 +263,6 @@ fn decide(model: &mut Model, report: &Report, popover_ancestor: bool) -> Decisio
                             0
                         }
                     ));
-                }
-            }
-        }
-        "click" if !report.default_prevented => {
-            if report.more && model.more_visible() {
-                decision.request = Some(!model.open);
-            } else if model.open && report.inside {
-                if report.background {
-                    decision.prevent = true;
-                } else {
-                    decision.request = Some(false);
-                    if model.keyboard {
-                        decision.focus = Some("more".into());
-                    }
                 }
             }
         }
@@ -345,6 +324,58 @@ struct Controller {
     node: NodeHandle,
 }
 impl Controller {
+    fn more_click(&self, event: MouseEvent) {
+        if !event.default_action_enabled() {
+            return;
+        }
+        let handled = self
+            .node
+            .with_owner(|| {
+                let next = {
+                    let model = self.model.borrow();
+                    if !model.alive || !model.mounted || !model.more_visible() {
+                        return false;
+                    }
+                    !model.open
+                };
+                self.node.request(next, Reason::Trigger, false);
+                if let Some(runtime) = self.node.runtime() {
+                    runtime.dismiss_dropdown_others(self.node.id(), self.node.generation());
+                }
+                true
+            })
+            .unwrap_or(false);
+        if handled {
+            event.stop_propagation();
+        }
+    }
+    fn group_click(&self, group: u8, event: MouseEvent) {
+        let active = {
+            let model = self.model.borrow();
+            model.alive
+                && model.mounted
+                && model.open
+                && match group {
+                    0 | 1 => model.small,
+                    2 => true,
+                    _ => false,
+                }
+        };
+        if active {
+            self.node.dioxus_inside_click(&event);
+        }
+    }
+    fn background_click(&self, small: bool, event: MouseEvent) {
+        let model = self.model.borrow();
+        if model.alive
+            && model.mounted
+            && model.open
+            && model.small == small
+            && self.node.is_registered()
+        {
+            event.stop_propagation();
+        }
+    }
     fn notify(&self) {
         let mut revision = self.revision;
         let next = revision.peek().wrapping_add(1);
@@ -457,24 +488,17 @@ impl Controller {
             model.focusable_ids = report.focusable_ids.clone();
             model.presented_ids = report.presented_ids.clone();
             model.active_default = report.active_default;
-            let child_owned = self.node.runtime().is_some_and(|runtime| {
-                if report.kind == "key" {
+            let child_owned = report.kind == "key"
+                && self.node.runtime().is_some_and(|runtime| {
                     runtime.key_child_path(
                         &model.owner,
                         &report.hosts,
                         &report.triggers,
                         &report.key,
                     )
-                } else {
-                    runtime.child_path(&model.owner, &report.hosts, &report.triggers)
-                }
-            });
-            let decision = if child_owned && matches!(report.kind.as_str(), "key" | "click") {
-                Decision {
-                    prevent: report.kind == "click"
-                        && report.triggers.iter().any(|id| id != &model.owner),
-                    ..Decision::default()
-                }
+                });
+            let decision = if child_owned {
+                Decision::default()
             } else {
                 decide(&mut model, &report, popover_ancestor)
             };
@@ -490,10 +514,8 @@ impl Controller {
         if decision.prevent {
             event.prevent_default();
         }
-        let trigger_others = report.more
-            && decision.request.is_some()
-            && (report.kind == "click"
-                || (report.kind == "key" && !previous && decision.request == Some(true)));
+        let trigger_others =
+            report.kind == "key" && report.more && !previous && decision.request == Some(true);
         let accepted = decision
             .request
             .filter(|next| *next != previous)
@@ -632,11 +654,10 @@ pub(crate) fn HeaderLayout(
             },
         )
     };
-    node.set_host_click_receivers(enable_top_layer, false);
     *node_slot.borrow_mut() = Some(node.clone());
 
     let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    // A slot projection preserves presence and the admitted child cache. A
+    // Slot projection preserves presence and current logical relationships. A
     // top-layer change still closes through bounded configuration reconciliation,
     // rather than a vetoable user request. Both invalidate private focus tasks.
     let mode_changed = {
@@ -718,6 +739,12 @@ pub(crate) fn HeaderLayout(
     let visible_model = model.clone();
     let visible_node = stop_controller.node.clone();
     let runtime_owner = runtime.owner_id();
+    let more_click = controller.clone();
+    let secondary_click = controller.clone();
+    let default_click = controller.clone();
+    let overflow_click = controller.clone();
+    let small_background = controller.clone();
+    let large_background = controller.clone();
     rsx! {
         div { id:owner.clone(), class:"ix-header-layout",
             "data-ix-overlay-owner":runtime_owner,
@@ -744,18 +771,21 @@ pub(crate) fn HeaderLayout(
                 "data-header-popup-host":"small","data-active":small.to_string(),"data-open":(small&&open).to_string(),
                 role:if small {Some("presentation")} else {None},
                 popover:if small&&enable_top_layer {Some("manual")} else {None},
-                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),{secondary}}
-                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),{default_content}}
+                onclick:move |event|small_background.background_click(true,event),
+                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onclick:move |event|secondary_click.group_click(0,event),{secondary}}
+                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onclick:move |event|default_click.group_click(1,event),{default_content}}
                 dialog {id:large_id.clone(),class:"ix-header-popup-host ix-header-popup-large",
                     "data-ix-overlay-host":(!small).then_some(owner.clone()),
                     "data-header-popup-host":"large","data-active":(!small).to_string(),"data-open":(!small&&open).to_string(),
                     role:if !small {Some("presentation")} else {None},
                     popover:if !small&&enable_top_layer {Some("manual")} else {None},
-                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),{overflow}}
+                    onclick:move |event|large_background.background_click(false,event),
+                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onclick:move |event|overflow_click.group_click(2,event),{overflow}}
                 }
             }
             button {id:more_id,r#type:"button",class:"ix-app-icon-button ix-header-more-button",
                 onmounted:more_mount,
+                onclick:move |event|more_click.more_click(event),
                 onvisible:move |event:VisibleEvent| {
                     let alive = visible_model.borrow().alive;
                     if alive
@@ -798,7 +828,11 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Default)]
-    struct FocusFixture(Rc<RefCell<Option<Controller>>>);
+    struct FocusFixture(
+        Rc<RefCell<Option<Controller>>>,
+        Rc<std::cell::Cell<bool>>,
+        Rc<RefCell<Vec<bool>>>,
+    );
     impl PartialEq for FocusFixture {
         fn eq(&self, other: &Self) -> bool {
             Rc::ptr_eq(&self.0, &other.0)
@@ -813,6 +847,9 @@ mod tests {
             Rc::new(RefCell::new(model))
         });
         let read = model.clone();
+        let apply = model.clone();
+        let veto = fixture.1.clone();
+        let requests = fixture.2.clone();
         let node = runtime.register(
             model.borrow().owner.clone(),
             1,
@@ -823,8 +860,11 @@ mod tests {
                     let model = read.borrow();
                     model.alive.then_some(model.open)
                 }),
-                before: Rc::new(|_| true),
-                apply: Rc::new(|_| {}),
+                before: Rc::new(move |change| {
+                    requests.borrow_mut().push(change.open);
+                    !veto.get()
+                }),
+                apply: Rc::new(move |change| apply.borrow_mut().open = change.open),
                 key: None,
             },
         );
@@ -1052,7 +1092,6 @@ mod tests {
             focused_index: Some(0),
             more: false,
             inside: true,
-            background: false,
             hosts: vec![],
             triggers: vec![],
             focused_control: None,
@@ -1311,24 +1350,156 @@ mod tests {
         model.invalidate();
         assert!(!model.accepts(&fact));
     }
+
+    struct Click;
+    impl dioxus::html::InteractionLocation for Click {
+        fn client_coordinates(&self) -> dioxus::html::geometry::ClientPoint {
+            Default::default()
+        }
+        fn page_coordinates(&self) -> dioxus::html::geometry::PagePoint {
+            Default::default()
+        }
+        fn screen_coordinates(&self) -> dioxus::html::geometry::ScreenPoint {
+            Default::default()
+        }
+    }
+    impl dioxus::html::InteractionElementOffset for Click {
+        fn element_coordinates(&self) -> dioxus::html::geometry::ElementPoint {
+            Default::default()
+        }
+    }
+    impl dioxus::html::ModifiersInteraction for Click {
+        fn modifiers(&self) -> Modifiers {
+            Modifiers::empty()
+        }
+    }
+    impl dioxus::html::PointerInteraction for Click {
+        fn trigger_button(&self) -> Option<dioxus::html::input_data::MouseButton> {
+            None
+        }
+        fn held_buttons(&self) -> dioxus::html::input_data::MouseButtonSet {
+            Default::default()
+        }
+    }
+    impl dioxus::html::HasMouseData for Click {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    fn click() -> MouseEvent {
+        Event::new(Rc::new(dioxus::html::MouseData::new(Click)), true)
+    }
+
     #[test]
-    fn click_choices_distinguish_background_defaults_and_input_modality() {
-        let mut model = Model::new(true, false);
-        model.open = true;
-        model.presence = [true; 4];
-        let mut fact = report(&model, "click");
-        fact.background = true;
-        assert!(decide(&mut model, &fact, false).prevent);
-        assert_eq!(decide(&mut model, &fact, false).request, None);
-        fact.background = false;
-        assert_eq!(decide(&mut model, &fact, false).request, Some(false));
-        assert_eq!(decide(&mut model, &fact, false).focus, None);
-        model.keyboard = true;
-        assert_eq!(
-            decide(&mut model, &fact, false).focus.as_deref(),
-            Some("more")
+    fn more_click_toggles_current_owner_and_dismisses_peers_independently_of_veto() {
+        let fixture = FocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(registered_header, fixture.clone());
+        dom.rebuild_in_place();
+        let controller = fixture.0.borrow().clone().unwrap();
+        let peer = Rc::new(std::cell::Cell::new(true));
+        dom.in_scope(ScopeId::ROOT, || {
+            let read = peer.clone();
+            let apply = peer.clone();
+            controller.node.runtime().unwrap().register(
+                "click-peer".into(),
+                1,
+                OverlayKind::Dropdown,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(move || Some(read.get())),
+                    before: Rc::new(|_| true),
+                    apply: Rc::new(move |change| apply.set(change.open)),
+                    key: None,
+                },
+            );
+        });
+        let event = click();
+        dom.in_runtime(|| controller.more_click(event.clone()));
+        assert!(controller.model.borrow().open);
+        assert!(!peer.get());
+        assert!(
+            event.default_action_enabled() && !event.propagates(),
+            "only virtual ancestors are stopped"
         );
-        fact.default_prevented = true;
-        assert_eq!(decide(&mut model, &fact, false).request, None);
+        assert_eq!(*fixture.2.borrow(), [true]);
+        let event = click();
+        dom.in_runtime(|| controller.more_click(event));
+        assert!(!controller.model.borrow().open);
+        fixture.1.set(true);
+        peer.set(true);
+        let vetoed = click();
+        dom.in_runtime(|| controller.more_click(vetoed.clone()));
+        assert!(!controller.model.borrow().open);
+        assert!(
+            !peer.get(),
+            "peer dismissal remains independent of the local veto"
+        );
+        assert!(vetoed.default_action_enabled());
+        assert_eq!(*fixture.2.borrow(), [true, false, true]);
+        fixture.1.set(false);
+        let prevented = click();
+        prevented.prevent_default();
+        dom.in_runtime(|| controller.more_click(prevented));
+        controller.model.borrow_mut().presence = [false; 4];
+        dom.in_runtime(|| controller.more_click(click()));
+        assert_eq!(
+            fixture.2.borrow().len(),
+            3,
+            "prevented and invisible controls cannot toggle"
+        );
+        controller.model.borrow_mut().presence = [true; 4];
+        dom.in_runtime(|| controller.node.unregister());
+        dom.in_runtime(|| controller.more_click(click()));
+        assert_eq!(fixture.2.borrow().len(), 3, "a stale owner cannot act");
+    }
+
+    #[test]
+    fn active_group_clicks_dismiss_without_canceling_form_defaults_and_inline_groups_stay_idle() {
+        let fixture = FocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(registered_header, fixture.clone());
+        dom.rebuild_in_place();
+        let controller = fixture.0.borrow().clone().unwrap();
+        {
+            let mut model = controller.model.borrow_mut();
+            model.open = true;
+            model.small = false;
+        }
+        let inline = click();
+        dom.in_runtime(|| controller.group_click(1, inline.clone()));
+        assert!(
+            controller.model.borrow().open
+                && inline.propagates()
+                && inline.default_action_enabled()
+        );
+        let inactive = click();
+        dom.in_runtime(|| controller.background_click(true, inactive.clone()));
+        assert!(inactive.propagates());
+        let background = click();
+        dom.in_runtime(|| controller.background_click(false, background.clone()));
+        assert!(
+            controller.model.borrow().open
+                && background.default_action_enabled()
+                && !background.propagates()
+        );
+        let content = click();
+        dom.in_runtime(|| controller.group_click(2, content.clone()));
+        assert!(!controller.model.borrow().open);
+        assert!(
+            content.default_action_enabled() && !content.propagates(),
+            "native input/form defaults remain enabled"
+        );
+        {
+            let mut model = controller.model.borrow_mut();
+            model.open = true;
+            model.small = true;
+        }
+        let prevented = click();
+        prevented.prevent_default();
+        dom.in_runtime(|| controller.group_click(0, prevented.clone()));
+        assert!(controller.model.borrow().open && !prevented.propagates());
+        fixture.1.set(true);
+        let vetoed = click();
+        dom.in_runtime(|| controller.group_click(1, vetoed.clone()));
+        assert!(controller.model.borrow().open && vetoed.default_action_enabled());
     }
 }

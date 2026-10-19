@@ -572,6 +572,7 @@ impl Domain {
         self.0.borrow().registry.cached_children(id)
     }
 
+    #[cfg(test)]
     pub(crate) fn live_ancestors(&self, id: &str) -> Vec<String> {
         self.0.borrow().registry.live_ancestors(id)
     }

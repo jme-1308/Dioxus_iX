@@ -189,7 +189,7 @@ fn present(dom: &VirtualDom, fixture: &Fixture) {
 }
 
 #[test]
-fn host_inside_click_enters_each_real_owner_and_preserves_foreign_inside_policy() {
+fn dioxus_inside_click_enters_each_real_owner_and_preserves_foreign_inside_policy() {
     let origin = Fixture::new("host-inside-origin", 811);
     let peer = Fixture::new("host-inside-peer", 812);
     let protected = Fixture::new("host-inside-protected", 813);
@@ -205,11 +205,13 @@ fn host_inside_click_enters_each_real_owner_and_preserves_foreign_inside_policy(
     for (dom, fixture) in &owners {
         present(dom, fixture);
     }
-    let mut report = serde_json::json!({"owner":origin.runtime().owner_id(),"document":document,
-        "sequence":2,"kind":"click","phase":"bubble","hosts":[origin.node().id()],
-        "nodes":[{"id":origin.node().id(),"generation":1,"connected":true,"discovery_ready":true}],
-        "click_sites":[{"root":origin.node().id(),"generation":1,"connected":true,"receiver":"root"}]});
-    deliver_trap(&a, &origin, report.clone());
+    let click = super::tests::typed_mouse();
+    a.in_scope(origin.scope(), || {
+        origin.node().dioxus_inside_click(&click);
+        assert_eq!(dioxus::core::current_scope_id(), origin.scope());
+        assert_eq!(consume_context::<OwnerToken>().0, origin.0.borrow().token);
+    });
+    assert!(click.default_action_enabled() && !click.propagates());
     assert!(!origin.open() && !peer.open() && protected.open());
     assert_eq!(
         origin.0.borrow().calls,
@@ -220,13 +222,18 @@ fn host_inside_click_enters_each_real_owner_and_preserves_foreign_inside_policy(
         [("before".into(), false), ("apply".into(), false)]
     );
     assert!(protected.0.borrow().calls.is_empty());
+    present(&a, &origin);
     present(&b, &peer);
-    report["sequence"] = 3.into();
-    report["click_sites"][0]["generation"] = 2.into();
-    deliver_trap(&a, &origin, report);
+    let stale = NodeHandle {
+        generation: 2,
+        ..origin.node()
+    };
+    let click = super::tests::typed_mouse();
+    a.in_scope(origin.scope(), || stale.dioxus_inside_click(&click));
+    assert!(click.default_action_enabled() && click.propagates());
     assert!(
-        peer.open(),
-        "a stale receiver cannot dismiss a foreign owner's new state"
+        origin.open() && peer.open(),
+        "a stale owner cannot dismiss another root's current state"
     );
 }
 
@@ -2308,112 +2315,45 @@ fn linked_roving_trigger_owns_tab_before_enclosing_active_descendant_host() {
 type OthersJournal = Rc<RefCell<Vec<(String, &'static str, Change)>>>;
 
 #[test]
-fn shared_capture_protects_nearest_trigger_and_rejects_foreign_or_stale_guards() {
-    let child = Fixture::new("native-capture-child", 763);
-    let (dom, fixture) = build_header_exit_fixture(&child);
-    let runtime = child.runtime();
-    let root = dom.in_scope(child.scope(), || {
-        let callbacks = runtime.entry(fixture.header.id()).unwrap().callbacks;
-        runtime.register(
-            fixture.header.id().into(),
-            1,
-            OverlayKind::Dropdown,
-            CloseBehavior::Both,
-            callbacks,
-        )
-    });
-    let document = "shared trigger capture document";
-    attach(&dom, &child, document);
-    let nodes = serde_json::json!([
-        {"id":root.id(),"generation":1,"connected":true,"discovery_ready":true},
-        {"id":child.node().id(),"generation":1,"connected":true,"discovery_ready":true,
-            "trigger_ancestors":[root.id()]}
-    ]);
-    let capture = |sequence, triggers: serde_json::Value| {
-        serde_json::json!({
-            "owner":runtime.owner_id(),"document":document,"sequence":sequence,"kind":"click","phase":"capture",
-            "hosts":[root.id()],"triggers":triggers,"nodes":nodes
-        })
-    };
-    deliver_trap(
-        &dom,
-        &child,
-        capture(1, serde_json::json!([child.node().id(), root.id()])),
-    );
-    assert!(child.node().trigger_click_allowed());
-    assert!(
-        !root.trigger_click_allowed(),
-        "capture guards only the enclosing trigger's Dioxus toggle"
-    );
-    let mut foreign = capture(2, serde_json::json!([child.node().id()]));
-    foreign["owner"] = "wrong-runtime-owner".into();
-    deliver_trap(&dom, &child, foreign);
-    assert!(child.node().trigger_click_allowed());
-    assert!(
-        !root.trigger_click_allowed(),
-        "foreign facts cannot clear current capture guards"
-    );
-    let mut stale = capture(3, serde_json::json!(["foreign", child.node().id()]));
-    stale["nodes"][1]["generation"] = 2.into();
-    deliver_trap(&dom, &child, stale);
-    assert!(
-        child.node().trigger_click_allowed(),
-        "a stale generation cannot add a child guard"
-    );
-    let mut disconnected = capture(4, serde_json::json!(["foreign", child.node().id()]));
-    disconnected["nodes"][1]["connected"] = false.into();
-    deliver_trap(&dom, &child, disconnected);
-    assert!(
-        child.node().trigger_click_allowed(),
-        "a disconnected trigger cannot add a child guard"
-    );
-    deliver_trap(
-        &dom,
-        &child,
-        capture(5, serde_json::json!(["not-registered"])),
-    );
-    assert!(child.node().trigger_click_allowed() && root.trigger_click_allowed());
-    deliver_trap(
-        &dom,
-        &child,
-        capture(6, serde_json::json!([root.id(), child.node().id()])),
-    );
-    let old = child.node();
-    assert!(
-        !old.trigger_click_allowed(),
-        "a current composed ancestor is guarded"
-    );
-    dom.in_scope(child.scope(), || {
+fn direct_inside_click_rejects_replaced_and_dropped_real_owners() {
+    let fixture = Fixture::new("inside-click-lifetime", 763);
+    let dom = build(&fixture);
+    present(&dom, &fixture);
+    let runtime = fixture.runtime();
+    let old = fixture.node();
+    let current = dom.in_scope(fixture.scope(), || {
         let callbacks = runtime.entry(old.id()).unwrap().callbacks;
-        child.0.borrow_mut().node = Some(runtime.register(
+        runtime.register(
             old.id().into(),
             2,
             OverlayKind::Dropdown,
             CloseBehavior::Both,
             callbacks,
-        ));
+        )
     });
+    let stale = super::tests::typed_mouse();
+    old.dioxus_inside_click(&stale);
+    assert!(stale.default_action_enabled() && stale.propagates());
+    assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
+    let prevented = super::tests::typed_mouse();
+    prevented.prevent_default();
+    current.dioxus_inside_click(&prevented);
+    assert!(!prevented.default_action_enabled() && !prevented.propagates());
+    assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
+    fixture.0.borrow().veto.set(true);
+    let vetoed = super::tests::typed_mouse();
+    current.dioxus_inside_click(&vetoed);
+    assert!(vetoed.default_action_enabled() && !vetoed.propagates());
+    assert_eq!(fixture.0.borrow().calls, [("before".into(), false)]);
+    assert!(fixture.open());
+    fixture.0.borrow_mut().calls.clear();
+    drop(dom);
+    let dropped = super::tests::typed_mouse();
+    current.dioxus_inside_click(&dropped);
+    assert!(dropped.default_action_enabled() && dropped.propagates());
     assert!(
-        child.node().trigger_click_allowed(),
-        "an old-generation guard cannot block the replacement"
-    );
-    deliver_trap(
-        &dom,
-        &child,
-        capture(7, serde_json::json!([root.id(), old.id()])),
-    );
-    assert!(
-        child.node().trigger_click_allowed(),
-        "late old-generation capture cannot guard the replacement"
-    );
-    assert!(
-        !old.trigger_click_allowed(),
-        "the retired NodeHandle remains rejected"
-    );
-    assert!(!child.open() && !fixture.header_open.get());
-    assert!(
-        fixture.order.borrow().is_empty() && child.0.borrow().calls.is_empty(),
-        "shared capture supplies guards without running a trigger action or changing visibility"
+        fixture.0.borrow().calls.is_empty(),
+        "retaining a runtime handle cannot retain its renderer owner"
     );
 }
 

@@ -542,10 +542,6 @@ impl DropdownContext {
         node.and_then(|node| node.runtime())
             .is_some_and(|runtime| runtime.keyboard_mode())
     }
-    fn trigger_click_allowed(&self) -> bool {
-        let node = self.node.borrow().clone();
-        node.is_none_or(|node| node.trigger_click_allowed())
-    }
     fn notify(&self) {
         if !self.state.borrow().alive || !self.state.borrow().surface {
             return;
@@ -1801,14 +1797,14 @@ fn use_trigger_binding(
             .borrow()
             .as_ref()
             .is_some_and(|current| Rc::ptr_eq(&current.node, &node) && !current.blocked.get());
-        if !current || context.state.borrow().blocked || !context.trigger_click_allowed() {
+        if !current || context.state.borrow().blocked {
             return;
         }
         let previous = *context.open.peek();
         context.request_from_trigger(!previous, Reason::Trigger, context.keyboard_mode());
-        // Keep the original event available to shared outside coordination,
-        // while preventing a composed ancestor trigger from toggling too.
-        event.prevent_default();
+        // Only this Dioxus trigger handles the click. Preserve native defaults
+        // and document-wide outside observation; do not toggle an ancestor.
+        event.stop_propagation();
     });
     DropdownTriggerBinding {
         onmounted,
@@ -2039,7 +2035,6 @@ fn DropdownSurface(
     });
     node.set_close_behavior(settings.behavior.into());
     node.set_trigger_visibility_check(!settings.suppress_trigger_visibility_check);
-    node.set_host_click_receivers(enable_top_layer, true);
     use_context_provider(|| context.clone());
     let drop_context = context.clone();
     let drop_node = node.clone();
@@ -2148,6 +2143,7 @@ fn DropdownSurface(
     let focused_in = trigger_focused.clone();
     let focused_out = trigger_focused.clone();
     let content_key = context.clone();
+    let content_click = node.clone();
     let panel_focused = use_hook(|| Rc::new(Cell::new(false)));
     let panel_focus = panel_focused.clone();
     let panel_blur = panel_focused.clone();
@@ -2175,7 +2171,7 @@ fn DropdownSurface(
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,
         style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
         onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;trigger_binding.onmounted.call(event.clone());mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.set_navigation_mode(state.settings.mode.as_str());drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}mount_context.apply_trigger_visibility();},
-        onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}},
+        onclick:move |event:MouseEvent| {if !external {event.stop_propagation();if !blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}}},
         onfocus:move |_|focused_in.set(true), onblur:move |_|focused_out.set(false),
         onkeydown:move |event:KeyboardEvent|{if !external&&trigger_focused.get(){direct_key(&key_context,event,true,None,false);}},
         ..trigger_visibility,
@@ -2189,6 +2185,7 @@ fn DropdownSurface(
             popover:enable_top_layer.then_some("manual"),
             style:format!("position-anchor:--ix-dropdown-anchor-{};--ix-dropdown-area:{};{}",context.id,effective_placement.area(),if suppress_automatic_placement {"position-try-fallbacks:none"} else {""}),
             onfocus:move |_|panel_focus.set(true),onblur:move |_|panel_blur.set(false),
+            onclick:move |event:MouseEvent|{event.stop_propagation();content_click.dioxus_inside_click(&event);},
             onkeydown:move |event:KeyboardEvent|{if panel_focused.get()||matches!(event.key(),Key::Escape|Key::Tab){direct_key(&content_key,event.clone(),false,None,true);event.stop_propagation();}},
             onfocusin:move |_|{if let Some(transport)=focus_retention.borrow().as_ref(){let _=transport.send("focus");}},
             onfocusout:move |_|{if let Some(transport)=blur_retention.borrow().as_ref(){let _=transport.send("blur");}},
@@ -2483,12 +2480,12 @@ pub fn DropdownItem(
             onitemclick.call(DropdownItemClickEvent {label:click_label.clone(),prevented:Rc::new(Cell::new(false))});
             if let Some(handler)=onclick {handler.call(event.clone());}
             if let Some(handle)=dropdown {
-                if event.default_action_enabled()&&let Some(context)=handle.try_context().filter(|context|context.trigger_click_allowed()){
+                if event.default_action_enabled()&&let Some(context)=handle.try_context(){
                     let previous=*context.open.peek();context.request_from_trigger(!previous,Reason::Trigger,context.keyboard_mode());
                 }
-                // Foreign-trigger protection is separate from child visibility
-                // veto, and prevents the composed ancestor from also toggling.
-                event.prevent_default();
+                // This explicit child controller owns activation. Keep native
+                // defaults while excluding ancestor Dioxus trigger handlers.
+                event.stop_propagation();
             }else if keep_open{event.prevent_default();}
         },
         onkeydown:move |event:KeyboardEvent|{

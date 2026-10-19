@@ -191,6 +191,9 @@ struct Fixture {
     deliveries: Vec<(usize, bool, bool)>,
     item_requests: usize,
     item_veto: bool,
+    item_keep_open: bool,
+    item_prevent_click: bool,
+    close_behavior: DropdownCloseBehavior,
     standalone_requests: usize,
     standalone_mouse: usize,
     item_focus_events: usize,
@@ -231,6 +234,9 @@ impl Default for Fixture {
             deliveries: vec![],
             item_requests: 0,
             item_veto: false,
+            item_keep_open: false,
+            item_prevent_click: false,
+            close_behavior: DropdownCloseBehavior::Both,
             standalone_requests: 0,
             standalone_mouse: 0,
             item_focus_events: 0,
@@ -295,11 +301,11 @@ fn fixture(config: Rc<RefCell<Fixture>>) -> Element {
     let deep_before = config.clone();
     rsx! {div {
         if settings.visible {
-        Dropdown {label:"Menu",navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,disable_focus_trap:settings.no_trap,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
+        Dropdown {label:"Menu",close_behavior:settings.close_behavior,navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,disable_focus_trap:settings.no_trap,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
             onbeforechange:move |event:DropdownChangeEvent|{let veto={let mut state=before.borrow_mut();state.requests.push((event.open,event.previous));if event.open{state.veto_open}else{state.veto_close}};if veto{event.prevent_default();}},
             onchange:move |open:bool|{let (close,capture)={let mut state=changed.borrow_mut();state.changed.push(open);(state.close_after_open&&open,state.context.clone())};let context=capture.borrow().clone();if let Some(context)=context{changed.borrow_mut().deliveries.push((settings.listener_revision,open,*context.open.peek()));if close{context.request(false,Reason::Trigger,false);}}},
             Stateful {config:config.clone()}
-            DropdownItem {label:"Alpha",id:settings.alpha_id.clone(),onfocus:move |_|focused.borrow_mut().item_focus_events+=1,onblur:move |_|blurred.borrow_mut().item_blur_events+=1,onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|click.borrow_mut().native_clicks+=1}
+            DropdownItem {label:"Alpha",id:settings.alpha_id.clone(),keep_open:settings.item_keep_open,onfocus:move |_|focused.borrow_mut().item_focus_events+=1,onblur:move |_|blurred.borrow_mut().item_blur_events+=1,onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |event:MouseEvent|{let mut state=click.borrow_mut();state.native_clicks+=1;if state.item_prevent_click{event.prevent_default();}}}
             DropdownItem {label:"Disabled",disabled:true}
             DropdownItem {label:"Linked",dropdown:linked,checked:true}
             DropdownSubmenu {label:"Explicit",DropdownItem {label:"Persistent nested"}}
@@ -905,11 +911,15 @@ fn dropdown_persistent_tree_keeps_scope_and_listeners_across_open_mode_and_layer
                 .is_some_and(|a| a.get("data-count-button").is_some())
         })
         .unwrap();
-    dispatch(&h.dom, "click", count, ());
+    assert_eq!(
+        dispatch(&h.dom, "click", count, ()),
+        (false, false),
+        "ordinary button defaults remain available after content dismissal"
+    );
     h.settle();
     assert!(h.html().contains("Local 1"));
-    // Local button click can bubble to composed trigger and close; neither
-    // presentation change is allowed to recreate its component scope.
+    // Content dismissal keeps the button default and its component scope.
+    assert!(!*context.open.peek());
     h.config.borrow_mut().mode = DropdownNavigationMode::RovingTabindex;
     h.update();
     h.config.borrow_mut().layer = true;
@@ -983,14 +993,93 @@ fn dropdown_actual_visibility_requests_veto_retry_and_reentrant_change_are_order
     assert_eq!(h.config.borrow().changed, [true, false, true, false]);
 }
 #[test]
-fn dropdown_linked_item_prevents_ancestor_toggle_but_notification_veto_is_separate() {
+fn content_click_policy_preserves_native_defaults_and_never_toggles_the_trigger() {
+    let _guard = crate::test_event_converter_guard();
+    for behavior in [
+        DropdownCloseBehavior::Both,
+        DropdownCloseBehavior::Inside,
+        DropdownCloseBehavior::Outside,
+        DropdownCloseBehavior::None,
+    ] {
+        let mut h = Harness::with_settings(Fixture {
+            close_behavior: behavior,
+            ..Fixture::default()
+        });
+        assert_eq!(h.click("Menu"), (false, false));
+        assert!(*h.context().open.peek());
+        assert_eq!(
+            h.click("Alpha"),
+            (false, false),
+            "ordinary item defaults remain available: {behavior:?}"
+        );
+        let stays_open = matches!(
+            behavior,
+            DropdownCloseBehavior::Outside | DropdownCloseBehavior::None
+        );
+        assert_eq!(
+            *h.context().open.peek(),
+            stays_open,
+            "inside policy: {behavior:?}"
+        );
+        assert_eq!(h.config.borrow().item_requests, 1);
+        assert_eq!(h.config.borrow().native_clicks, 1);
+        if stays_open {
+            h.click("Menu");
+        }
+        assert!(!*h.context().open.peek());
+        let requests = h.config.borrow().requests.len();
+        assert_eq!(h.click("Alpha"), (false, false));
+        assert!(
+            !*h.context().open.peek(),
+            "closed content is never a trigger"
+        );
+        assert_eq!(h.config.borrow().requests.len(), requests);
+    }
+}
+
+#[test]
+fn keep_open_and_consumer_prevention_retain_the_open_owner() {
+    let _guard = crate::test_event_converter_guard();
+    for keep_open in [false, true] {
+        let mut h = Harness::with_settings(Fixture {
+            item_keep_open: keep_open,
+            item_prevent_click: !keep_open,
+            ..Fixture::default()
+        });
+        h.click("Menu");
+        assert_eq!(h.click("Alpha"), (true, false));
+        assert!(*h.context().open.peek());
+        assert_eq!(h.config.borrow().requests, [(true, false)]);
+        assert_eq!(h.config.borrow().item_requests, 1);
+        assert_eq!(h.config.borrow().native_clicks, 1);
+    }
+    let mut h = Harness::with_settings(Fixture {
+        veto_close: true,
+        ..Fixture::default()
+    });
+    h.click("Menu");
+    assert_eq!(
+        h.click("Alpha"),
+        (false, false),
+        "visibility veto does not cancel the original click default"
+    );
+    assert!(*h.context().open.peek());
+    assert_eq!(h.config.borrow().requests, [(true, false), (false, true)]);
+    h.config.borrow_mut().veto_close = false;
+    assert_eq!(h.click("Alpha"), (false, false));
+    assert!(
+        !*h.context().open.peek(),
+        "the next content click can retry a vetoed close"
+    );
+}
+
+#[test]
+fn dropdown_linked_clicks_toggle_only_their_child_and_selection_closes_current_tree() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::new();
     let root = h.context();
     let child = h.config.borrow().linked.get().unwrap();
-    // This callback-only renderer has no native observer. Supply the
-    // fixture's real linked-trigger ancestry before testing its exclusion
-    // from the new post-trigger dismissal pass.
+    // Supply read-only current ancestry for this renderer without a DOM observer.
     let root_node = root.node.borrow().clone().unwrap();
     let child_node = child.context().node.borrow().clone().unwrap();
     let runtime = root_node.runtime().unwrap();
@@ -1010,18 +1099,25 @@ fn dropdown_linked_item_prevents_ancestor_toggle_but_notification_veto_is_separa
     h.settle();
     h.click("Menu");
     let result = h.click("Linked");
-    assert!(result.0);
-    assert!(*root.open.peek());
-    assert!(child.is_open());
-    h.dom.in_runtime(|| child.toggle());
-    h.settle();
-    assert!(
-        !child.is_open(),
-        "mounted controller toggle releases its read before request"
+    assert_eq!(
+        result,
+        (false, false),
+        "linked clicks stop virtual bubbling while keeping native defaults"
     );
-    h.dom.in_runtime(|| child.toggle());
-    h.settle();
-    assert!(child.is_open());
+    assert!(*root.open.peek() && child.is_open());
+    h.click("Linked");
+    assert!(
+        *root.open.peek() && !child.is_open(),
+        "the second click only closes its own child"
+    );
+    h.click("Linked");
+    assert!(*root.open.peek() && child.is_open());
+    assert_eq!(h.click("Detached leaf"), (false, false));
+    assert!(
+        !*root.open.peek() && !child.is_open(),
+        "child selection dismisses the current linked hierarchy"
+    );
+    h.click("Menu");
     h.config.borrow_mut().item_veto = true;
     let result = h.click("Alpha");
     assert!(
@@ -1032,10 +1128,15 @@ fn dropdown_linked_item_prevents_ancestor_toggle_but_notification_veto_is_separa
     assert_eq!(h.config.borrow().native_clicks, 1);
     assert!(
         !*root.open.peek(),
-        "composed trigger ancestor still handles original leaf click"
+        "content dismissal is independent of notification cancellation"
     );
+    h.click("Menu");
     let result = h.click("Disabled");
     assert!(result.0);
+    assert!(
+        *root.open.peek(),
+        "disabled content cannot dismiss its owner"
+    );
     assert_eq!(h.config.borrow().item_requests, 1);
     let enter = h.key("Standalone", Key::Enter);
     let space = h.key("Standalone", Key::Character(" ".into()));

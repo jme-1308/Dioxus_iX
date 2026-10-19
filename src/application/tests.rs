@@ -2439,7 +2439,11 @@ impl PartialEq for HeaderSlotCapture {
     }
 }
 #[component]
-fn HeaderStatefulSlot(state: HeaderSlotCapture, label: String) -> Element {
+fn HeaderStatefulSlot(
+    state: HeaderSlotCapture,
+    label: String,
+    #[props(default)] nested: bool,
+) -> Element {
     use_hook(|| {
         state.0.borrow_mut().entry(label.clone()).or_default().0 += 1;
     });
@@ -2450,6 +2454,9 @@ fn HeaderStatefulSlot(state: HeaderSlotCapture, label: String) -> Element {
     rsx! {div {"data-header-slot-state":label.clone(),
         input {value:"initial uncontrolled"}
         button {r#type:"button","data-header-slot-button":label.clone(),onclick:move |_|count+=1,"{label} count {count}"}
+        if nested {crate::Dropdown {label:"Header nested",suppress_trigger_visibility_check:true,
+            crate::DropdownItem {label:"Nested choice"}
+        }}
     }}
 }
 #[derive(Clone, Default)]
@@ -2525,6 +2532,7 @@ struct AppSwitchFixture {
     slot_state: HeaderSlotCapture,
     slot_top_layer: bool,
     overflow_present: bool,
+    slot_nested: bool,
     overflow_veto: bool,
     overflow_requests: Vec<(bool, bool)>,
     overflow_changes: Vec<bool>,
@@ -2621,7 +2629,7 @@ fn app_switch_fixture(settings: Rc<RefCell<AppSwitchFixture>>) -> Element {
         aria_label_app_switch_icon_button:state.switch_label.clone(),aria_label_more_menu_icon_button:state.more_label.clone(),
         actions:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"default"}},
         secondary:rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"secondary"}},
-        overflow:state.overflow_present.then(||rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"overflow"}}),
+        overflow:state.overflow_present.then(||rsx!{HeaderStatefulSlot{state:state.slot_state.clone(),label:"overflow",nested:state.slot_nested}}),
         avatar:rsx!{span{"Avatar slot"}},
         children:rsx!{span{"Leading compatibility"}},
         onopenappswitch:move |event:MouseEvent| {
@@ -2703,6 +2711,7 @@ impl AppSwitchHarness {
             slot_state: HeaderSlotCapture::default(),
             slot_top_layer: false,
             overflow_present: true,
+            slot_nested: false,
             overflow_veto: false,
             overflow_requests: vec![],
             overflow_changes: vec![],
@@ -2902,6 +2911,41 @@ impl AppSwitchHarness {
     }
     fn header_menu_click(&self) -> (bool, bool) {
         menu_dispatch(&self.dom, "click", self.menu_trigger.unwrap(), ())
+    }
+    fn header_more_target(&self) -> dioxus::core::ElementId {
+        let owner = &self.header_root_attrs()["id"];
+        let (id, _) = self
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-header-more-button") == Some(owner))
+            .expect("current More control");
+        dioxus::core::ElementId::from_raw(*id)
+    }
+    fn header_more_click(&self, prevented: bool) -> (bool, bool) {
+        let data: Rc<dyn std::any::Any> =
+            Rc::new(dioxus::html::PlatformEventData::new(Box::new(())));
+        let event = Event::new(data, true);
+        if prevented {
+            event.prevent_default();
+        }
+        self.dom
+            .runtime()
+            .handle_event("click", event.clone(), self.header_more_target());
+        (!event.default_action_enabled(), event.propagates())
+    }
+    fn header_background_click(&self) -> (bool, bool) {
+        let root = self.header_root_attrs();
+        let (id, _) = self
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-host") == root.get("id"))
+            .expect("current popup");
+        menu_dispatch(
+            &self.dom,
+            "click",
+            dioxus::core::ElementId::from_raw(*id),
+            (),
+        )
     }
     fn sidebar_report(&self, sequence: u64, present: bool) -> (bool, bool) {
         let input = self.sidebar_input.unwrap();
@@ -3252,39 +3296,16 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
         ),
         (false, false)
     );
-    assert_eq!(
-        harness.header_raw(
-            harness.header_message(6, "click", serde_json::json!({"more":true})),
-            false
-        ),
-        (false, false)
-    );
+    assert_eq!(harness.header_more_click(false), (false, false));
     harness.settle();
-    assert_eq!(
-        harness.header_raw(
-            harness.header_message(
-                7,
-                "click",
-                serde_json::json!({"inside":true,"background":true})
-            ),
-            false
-        ),
-        (true, false)
-    );
+    assert_eq!(harness.header_background_click(), (false, false));
     harness.settle();
     assert_eq!(
         harness.header_root_attrs()["data-open"],
         "true",
-        "background prevention does not dismiss"
+        "popup background keeps native defaults and does not dismiss"
     );
     menu_dispatch(&harness.dom, "click", harness.slot_buttons["overflow"], ());
-    assert_eq!(
-        harness.header_raw(
-            harness.header_message(8, "click", serde_json::json!({"inside":true})),
-            false
-        ),
-        (false, false)
-    );
     harness.settle();
     assert_eq!(harness.header_root_attrs()["data-open"], "false");
     assert_eq!(
@@ -3298,7 +3319,7 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
     );
     assert_eq!(harness.settings.borrow().ancestor_inputs, 0);
     // The already-open trigger leaves Enter/Space to native button
-    // activation. A separate click report models that actual next event;
+    // activation. A real click dispatch models that next event;
     // the key handler must neither fabricate it nor close early.
     assert_eq!(
         harness.header_raw(
@@ -3331,13 +3352,7 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
         harness.settings.borrow().overflow_changes.len(),
         changes_before_keys
     );
-    assert_eq!(
-        harness.header_raw(
-            harness.header_message(12, "click", serde_json::json!({"more":true})),
-            false
-        ),
-        (false, false)
-    );
+    assert_eq!(harness.header_more_click(false), (false, false));
     harness.settle();
     assert_eq!(harness.header_root_attrs()["data-open"], "false");
     assert_eq!(
@@ -3369,11 +3384,8 @@ fn header_completion_keeps_each_payload_and_resolves_current_committed_listener(
         h.header_message(1, "presence", serde_json::json!({})),
         false,
     );
-    for sequence in 2..=4 {
-        h.header_raw(
-            h.header_message(sequence, "click", serde_json::json!({"more":true})),
-            false,
-        );
+    for _ in 0..3 {
+        h.header_more_click(false);
     }
     assert_eq!(
         h.settings.borrow().overflow_requests,
@@ -3407,17 +3419,11 @@ fn header_completion_allows_reentrant_observer_state_changes() {
         h.header_message(1, "presence", serde_json::json!({})),
         false,
     );
-    let actions = [
-        h.header_message(3, "click", serde_json::json!({"more":true}))
-            .to_string(),
-        h.header_message(4, "click", serde_json::json!({"more":true}))
-            .to_string(),
-    ];
     let owner_runtime = h.dom.in_scope(ScopeId::ROOT, || {
         dioxus::core::Runtime::try_current().unwrap()
     });
     let weak_runtime = Rc::downgrade(&owner_runtime);
-    let target = h.header_input.unwrap();
+    let target = h.header_more_target();
     let step = Rc::new(Cell::new(0_usize));
     let observed_step = step.clone();
     h.settings.borrow_mut().overflow_reentrant = Some(Rc::new(move |open| {
@@ -3427,15 +3433,11 @@ fn header_completion_allows_reentrant_observer_state_changes() {
         }
         step.set(index + 1);
         let runtime = weak_runtime.upgrade().unwrap();
-        let data: Rc<dyn std::any::Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
-            actions[index].clone(),
-        )));
-        runtime.handle_event("input", Event::new(data, true), target);
+        let data: Rc<dyn std::any::Any> =
+            Rc::new(dioxus::html::PlatformEventData::new(Box::new(())));
+        runtime.handle_event("click", Event::new(data, true), target);
     }));
-    h.header_raw(
-        h.header_message(2, "click", serde_json::json!({"more":true})),
-        false,
-    );
+    h.header_more_click(false);
     assert!(h.settings.borrow().overflow_changes.is_empty());
     h.settle();
     assert_eq!(h.settings.borrow().overflow_changes, [true, false, true]);
@@ -3456,10 +3458,7 @@ fn header_completion_survives_mode_changes_and_reports_configuration_close() {
         h.header_message(1, "presence", serde_json::json!({})),
         false,
     );
-    h.header_raw(
-        h.header_message(2, "click", serde_json::json!({"more":true})),
-        false,
-    );
+    h.header_more_click(false);
     let registration = h.header_rendered_root_attribute("data-ix-overlay-generation");
     let private = h.header_root_attrs()["data-generation"].clone();
     {
@@ -3500,10 +3499,7 @@ fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
         h.header_message(1, "presence", serde_json::json!({})),
         false,
     );
-    h.header_raw(
-        h.header_message(2, "click", serde_json::json!({"more":true})),
-        false,
-    );
+    h.header_more_click(false);
     let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
     let old_root = h.header_root_attrs()["id"].clone();
     assert_eq!(runtime.pending_completions(), 1);
@@ -3533,10 +3529,7 @@ fn dropped_header_completion_cannot_call_a_remounted_handlers_listener() {
         h.header_message(1, "presence", serde_json::json!({})),
         false,
     );
-    h.header_raw(
-        h.header_message(2, "click", serde_json::json!({"more":true})),
-        false,
-    );
+    h.header_more_click(false);
     assert!(h.settings.borrow().overflow_changes.is_empty());
     assert_eq!(h.completion_effects(), 1);
     assert_eq!(h.settings.borrow().overflow_deliveries, [(9, true)]);
@@ -3557,10 +3550,7 @@ fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoe
         );
         h.header_peer_observe(1, false);
         if previous {
-            h.header_raw(
-                h.header_message(2, "click", serde_json::json!({"more":true})),
-                false,
-            );
+            h.header_more_click(false);
             h.settle();
             assert_eq!(h.header_root_attrs()["data-open"], "true");
         }
@@ -3571,8 +3561,7 @@ fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoe
             state.overflow_requests.clear();
             state.overflow_changes.clear();
         }
-        let message = h.header_message(3, "click", serde_json::json!({"more":true}));
-        assert_eq!(h.header_raw(message.clone(), false), (false, false));
+        assert_eq!(h.header_more_click(false), (false, false));
         assert_eq!(
             h.settings.borrow().overflow_requests,
             [(previous, !previous)]
@@ -3585,16 +3574,6 @@ fn header_more_post_toggle_dismisses_policy_peers_even_when_own_request_is_vetoe
         assert!(
             peers.0.borrow().completions.is_empty(),
             "Dropdown completion is deferred until Dioxus effects run"
-        );
-        assert_eq!(
-            h.header_raw(message, true),
-            (false, false),
-            "stop query only replays its saved flag"
-        );
-        assert_eq!(
-            peers.0.borrow().requests,
-            [(0, false), (1, false)],
-            "query cannot run the post-phase twice"
         );
         assert_eq!(h.header_peer_effects(), if veto { 2 } else { 3 });
         assert_eq!(
@@ -3664,14 +3643,9 @@ fn header_closed_more_activation_keys_run_post_phase_with_or_without_alt_and_vet
 }
 
 #[test]
-fn header_more_post_phase_excludes_open_navigation_prevented_and_child_owned_input() {
+fn header_more_dismissal_skips_open_navigation_and_consumer_prevented_input() {
     let _event_converter_guard = crate::test_event_converter_guard();
-    for case in [
-        "open-enter",
-        "prevented-click",
-        "prevented-key",
-        "child-trigger",
-    ] {
+    for case in ["open-enter", "prevented-click", "prevented-key"] {
         let capture = HeaderPeerCapture::default();
         let mut h =
             AppSwitchHarness::configured(None, false, |state| state.overflow_peers = Some(capture));
@@ -3681,41 +3655,26 @@ fn header_more_post_phase_excludes_open_navigation_prevented_and_child_owned_inp
             false,
         );
         h.header_peer_observe(1, false);
-        let previous = matches!(case, "open-enter" | "child-trigger");
+        let previous = case == "open-enter";
         if previous {
-            h.header_raw(
-                h.header_message(2, "click", serde_json::json!({"more":true})),
-                false,
-            );
+            h.header_more_click(false);
             h.settle();
         }
         let peers = h.seed_header_peers();
         h.settings.borrow_mut().overflow_requests.clear();
         h.settings.borrow_mut().overflow_changes.clear();
-        let (kind, extra) = match case {
-            "open-enter" => ("key", serde_json::json!({"key":"Enter","more":true})),
-            "prevented-click" => (
-                "click",
-                serde_json::json!({"more":true,"default_prevented":true}),
-            ),
-            "prevented-key" => (
-                "key",
-                serde_json::json!({"key":"ArrowDown","more":true,"default_prevented":true}),
-            ),
-            _ => {
-                let child = h.header_peer_observe(2, true);
-                (
-                    "click",
-                    serde_json::json!({"inside":true,"hosts":[h.header_root_attrs()["id"]],"triggers":[child]}),
-                )
-            }
-        };
-        let message = h.header_message(3, kind, extra);
-        assert_eq!(
-            h.header_raw(message.clone(), false),
-            (case == "child-trigger", false)
-        );
-        assert_eq!(h.header_raw(message, true), (false, false));
+        if case == "prevented-click" {
+            assert_eq!(h.header_more_click(true), (true, true));
+        } else {
+            let extra = if case == "open-enter" {
+                serde_json::json!({"key":"Enter","more":true})
+            } else {
+                serde_json::json!({"key":"ArrowDown","more":true,"default_prevented":true})
+            };
+            let message = h.header_message(3, "key", extra);
+            assert_eq!(h.header_raw(message.clone(), false), (false, false));
+            assert_eq!(h.header_raw(message, true), (false, false));
+        }
         h.settle();
         assert_eq!(
             h.header_root_attrs()["data-open"],
@@ -3737,6 +3696,50 @@ fn header_more_post_phase_excludes_open_navigation_prevented_and_child_owned_inp
         );
         assert_eq!(h.header_peer_effects(), 0, "{case}");
     }
+}
+
+#[test]
+fn actual_nested_dropdown_clicks_do_not_toggle_the_header_surface() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = AppSwitchHarness::configured(None, false, |state| state.slot_nested = true);
+    h.settle();
+    h.header_raw(
+        h.header_message(1, "presence", serde_json::json!({})),
+        false,
+    );
+    let (id, _) = h
+        .attrs
+        .iter()
+        .find(|(_, attrs)| {
+            attrs
+                .get("aria-label")
+                .is_some_and(|value| value == "Header nested")
+                && attrs.contains_key("data-ix-overlay-root")
+        })
+        .expect("actual nested Dropdown root");
+    let target = dioxus::core::ElementId::from_raw(*id);
+    let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
+    let header = h.header_root_attrs()["id"].clone();
+    let child = &h.attrs[&target.raw()];
+    // This renderer supplies the current read-only ancestry that DOM observation
+    // reports in the application. The child remains a separate controller.
+    menu_dispatch(&h.dom,"input",h.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
+        {"id":header,"generation":h.header_rendered_root_attribute("data-ix-overlay-generation").parse::<u64>().unwrap(),"connected":true,"discovery_ready":true},
+        {"id":child["data-ix-overlay-root"],"generation":child["data-ix-overlay-generation"].parse::<u64>().unwrap(),"connected":true,"discovery_ready":true,"trigger_ancestors":[header]}
+    ]}).to_string());
+    assert_eq!(h.header_more_click(false), (false, false));
+    h.settle();
+    for open in [true, false] {
+        assert_eq!(menu_dispatch(&h.dom, "click", target, ()), (false, false));
+        h.settle();
+        assert_eq!(h.attrs[&target.raw()]["aria-expanded"], open.to_string());
+        assert_eq!(
+            h.header_root_attrs()["data-open"],
+            "true",
+            "child activation never reaches the Header group handler"
+        );
+    }
+    assert_eq!(h.settings.borrow().overflow_requests, [(false, true)]);
 }
 
 #[test]
@@ -3770,17 +3773,7 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
     let default_button = harness.slot_buttons["default"];
     menu_dispatch(&harness.dom, "click", default_button, ());
     harness.settle();
-    assert_eq!(
-        harness.header_raw(
-            harness.header_message(
-                2,
-                "click",
-                serde_json::json!({"more":true,"presence":[true,true,false,true]})
-            ),
-            false
-        ),
-        (false, false)
-    );
+    assert_eq!(harness.header_more_click(false), (false, false));
     harness.settle();
     assert_eq!(harness.header_root_attrs()["data-open"], "true");
     assert_eq!(harness.settings.borrow().overflow_requests, [(false, true)]);
@@ -3878,12 +3871,15 @@ fn header_layout_arbitrary_slot_components_mount_once_through_mode_changes() {
     }
     harness.settle();
     let initial = harness.slot_buttons.clone();
-    for (breakpoint, top_layer) in [
+    for (iteration, (breakpoint, top_layer)) in [
         (ApplicationBreakpoint::Small, false),
         (ApplicationBreakpoint::Large, true),
         (ApplicationBreakpoint::Small, true),
         (ApplicationBreakpoint::Large, false),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         {
             let mut settings = harness.settings.borrow_mut();
             settings.breakpoint = breakpoint;
@@ -3898,20 +3894,11 @@ fn header_layout_arbitrary_slot_components_mount_once_through_mode_changes() {
             (false, false)
         );
         harness.settle();
-        assert_eq!(
-            harness.header_raw(
-                harness.header_message(2, "click", serde_json::json!({"more":true})),
-                false
-            ),
-            (false, false)
-        );
+        assert_eq!(harness.header_more_click(false), (false, false));
         harness.settle();
         assert_eq!(harness.header_root_attrs()["data-open"], "true");
         assert_eq!(
-            harness.header_raw(
-                harness.header_message(3, "click", serde_json::json!({"inside":true})),
-                false
-            ),
+            menu_dispatch(&harness.dom, "click", harness.slot_buttons["overflow"], ()),
             (false, false)
         );
         harness.settle();
@@ -3929,7 +3916,14 @@ fn header_layout_arbitrary_slot_components_mount_once_through_mode_changes() {
                 "renderer listener ElementId stays stable"
             );
             assert!(
-                html.contains(&format!("{label} count 1")),
+                html.contains(&format!(
+                    "{label} count {}",
+                    if label == "overflow" {
+                        iteration + 2
+                    } else {
+                        1
+                    }
+                )),
                 "child local state retained"
             );
         }
