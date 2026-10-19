@@ -414,18 +414,6 @@ struct FilterScrollRequest {
     expected: FilterState,
 }
 
-// Only native token-list scrolling: no focus or filter/application state in JS.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const FILTER_TOKEN_SCROLL: &str = r#"
-const [id, revision, count] = await dioxus.recv();
-await new Promise(requestAnimationFrame);
-const list = document.getElementById(id);
-if (!list || !list.isConnected || list.dataset.scrollRevision !== revision ||
-    list.querySelectorAll(':scope > .ix-category-filter-chip').length !== count) return false;
-list.scrollTop = list.scrollHeight;
-return true;
-"#;
-
 fn suggestion_duplicate(state: &FilterState, draft: &FilterDraft, value: &str) -> bool {
     if let Some(category) = draft.input.category.as_deref().filter(|id| !id.is_empty()) {
         (category == CUSTOM_FILTER_CATEGORY && state.tokens.iter().any(|token| token == value))
@@ -665,67 +653,97 @@ fn remove_filter_occurrence(occurrence: usize, interaction: &FilterInteraction) 
     }
 }
 
-// A fresh identity per mounted surface prevents an old activation reply from
-// opening a subsequently mounted dropdown. All listener/observer ownership is
-// tied to this DOM node; neither filter values nor open state live in the bridge.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const FILTER_POPOVER_BRIDGE: &str = r#"
-const [id, anchorId] = await dioxus.recv();
-const panel = document.getElementById(id), anchor = document.getElementById(anchorId);
-if (!panel || !anchor || !panel.isConnected) return {error:'Surface is not mounted'};
-if (typeof panel.showPopover !== 'function') return {error:'Popover API is unavailable'};
-let disposed = false, frame = 0;
-const events = new AbortController();
-const place = () => {
-    if (disposed || !panel.isConnected || !anchor.isConnected) { cleanup(); return; }
-    const viewport = window.visualViewport;
-    const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
-    const width = viewport?.width ?? document.documentElement.clientWidth;
-    const height = viewport?.height ?? window.innerHeight;
-    const edge = 8, gap = 2, rect = anchor.getBoundingClientRect();
-    const availableWidth = Math.max(0, width - edge * 2);
-    panel.style.width = Math.min(rect.width, availableWidth) + 'px';
-    panel.style.maxHeight = '320px';
-    const desired = Math.min(320, panel.scrollHeight + 2);
-    const below = Math.max(0, top + height - edge - rect.bottom - gap);
-    const above = Math.max(0, rect.top - top - edge - gap);
-    const flipped = below < desired && above > below;
-    const room = Math.min(320, flipped ? above : below);
-    panel.style.maxHeight = room + 'px';
-    const actual = Math.min(desired, room);
-    panel.style.left = Math.max(left + edge, Math.min(rect.left, left + width - edge - panel.offsetWidth)) + 'px';
-    panel.style.top = (flipped ? rect.top - gap - actual : rect.bottom + gap) + 'px';
-    panel.dataset.placement = flipped ? 'top' : 'bottom';
-};
-const schedule = () => { if (!frame && !disposed) frame = requestAnimationFrame(() => { frame = 0; place(); }); };
-const resize = new ResizeObserver(schedule);
-const removal = new MutationObserver(() => { if (!panel.isConnected || !anchor.isConnected) cleanup(); });
-function cleanup() {
-    if (disposed) return;
-    disposed = true; events.abort(); resize.disconnect(); removal.disconnect();
-    if (frame) cancelAnimationFrame(frame);
-    delete panel.__ixCategoryCleanup;
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+struct FilterViewport {
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
 }
-panel.__ixCategoryCleanup = cleanup;
-try {
-    // Match upstream's manual, inert-during-show popover. Auto popovers
-    // remember the focused input and restore it when Escape hides an option.
-    const inert = panel.inert;
-    panel.inert = true;
-    try { panel.showPopover(); } finally { panel.inert = inert; }
-    place();
-    resize.observe(anchor); resize.observe(panel);
-    window.addEventListener('resize', schedule, {signal:events.signal});
-    document.addEventListener('scroll', schedule, {capture:true,signal:events.signal});
-    window.visualViewport?.addEventListener('resize', schedule, {signal:events.signal});
-    window.visualViewport?.addEventListener('scroll', schedule, {signal:events.signal});
-    panel.addEventListener('toggle', event => { if (event.newState === 'closed') cleanup(); }, {signal:events.signal});
-    removal.observe(document.documentElement, {childList:true,subtree:true});
-    return {error:null};
-} catch (error) { cleanup(); return {error:String(error)}; }
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FilterPopupMetrics {
+    anchor_x: f64,
+    anchor_y: f64,
+    anchor_width: f64,
+    anchor_height: f64,
+    content_height: f64,
+    viewport: FilterViewport,
+}
+struct FilterPopupLayout {
+    style: String,
+    placement: &'static str,
+}
+fn place_filter_popup(metrics: Option<FilterPopupMetrics>, native: bool) -> FilterPopupLayout {
+    if !native {
+        return FilterPopupLayout {
+            // Alpha.2 merges style declarations instead of deleting omitted
+            // fields. Restore the original inline geometry on native failure.
+            style:
+                "visibility:visible;position:absolute;left:0;top:100%;width:auto;max-height:320px"
+                    .into(),
+            placement: "bottom",
+        };
+    }
+    let Some(metrics) = metrics else {
+        return FilterPopupLayout {
+            style: "visibility:hidden".into(),
+            placement: "bottom",
+        };
+    };
+    let viewport = metrics.viewport;
+    let width = metrics.anchor_width.min((viewport.width - 16.0).max(0.0));
+    let desired = (metrics.content_height + 2.0).clamp(0.0, 320.0);
+    let bottom = metrics.anchor_y + metrics.anchor_height;
+    let below = (viewport.top + viewport.height - 8.0 - bottom - 2.0).max(0.0);
+    let above = (metrics.anchor_y - viewport.top - 8.0 - 2.0).max(0.0);
+    let flipped = below < desired && above > below;
+    let room = (if flipped { above } else { below }).min(320.0);
+    let actual = desired.min(room);
+    let left = metrics
+        .anchor_x
+        .min(viewport.left + viewport.width - 8.0 - width)
+        .max(viewport.left + 8.0);
+    let top = if flipped {
+        metrics.anchor_y - 2.0 - actual
+    } else {
+        bottom + 2.0
+    };
+    FilterPopupLayout {
+        style: format!(
+            "visibility:visible;position:fixed;left:{left}px;top:{top}px;width:{width}px;max-height:{room}px"
+        ),
+        placement: if flipped { "top" } else { "bottom" },
+    }
+}
+
+// Pinned MountedData has no showPopover/hidePopover method; DesktopElement's
+// query handle is private. This primary adapter only promotes the exact unique
+// Dioxus-mounted panel, inert during promotion to preserve the input's focus.
+#[cfg(any(feature = "web", feature = "desktop"))]
+const FILTER_TOP_LAYER_OPEN: &str = r#"
+const id=await dioxus.recv(),panel=document.getElementById(id);
+if(!panel?.isConnected)return {error:'Surface is not mounted'};
+if(typeof panel.showPopover!=='function')return {error:'Popover API is unavailable'};
+try {const inert=panel.inert;panel.inert=true;try{panel.showPopover();}finally{panel.inert=inert;}return {error:null};}
+catch(error){return {error:String(error)};}
 "#;
 
-// Reports native outside-click containment only. Rust decides whether to close.
+// Alpha.2 exposes element measurements and typed resize, but neither viewport
+// bounds nor document/visualViewport/global ancestor-scroll subscriptions.
+// This stream reports only native viewport facts/invalidations; Rust lays out.
+#[cfg(any(feature = "web", feature = "desktop"))]
+const FILTER_LAYOUT_EVENTS: &str = r#"
+const events=new AbortController(),opts={signal:events.signal,passive:true};
+const changed=()=>{const v=window.visualViewport;dioxus.send({left:v?.offsetLeft??0,top:v?.offsetTop??0,width:v?.width??document.documentElement.clientWidth,height:v?.height??window.innerHeight});};
+window.addEventListener('resize',changed,opts);
+document.addEventListener('scroll',changed,{...opts,capture:true});
+window.visualViewport?.addEventListener('resize',changed,opts);
+window.visualViewport?.addEventListener('scroll',changed,opts);
+try{changed();await dioxus.recv();}finally{events.abort();}
+"#;
+
+// Pinned Dioxus has no document click subscription. Only native outside-click
+// containment is reported; Rust owns closing and the stream's component lifetime.
 #[cfg(any(feature = "web", feature = "desktop"))]
 const FILTER_OUTSIDE_CLICK: &str = r#"
 const rootId = await dioxus.recv(), root = document.getElementById(rootId);
@@ -738,6 +756,10 @@ try { await dioxus.recv(); } finally { document.removeEventListener('click', out
 #[component]
 fn FilterOptionsSurface(
     anchor_id: String,
+    anchor: Signal<Option<Rc<MountedData>>>,
+    mut ready: Signal<bool>,
+    #[props(default)] anchor_revision: u64,
+    #[props(default)] content_revision: usize,
     enable_top_layer: bool,
     onnativeerror: EventHandler<crate::NativeSurfaceError>,
     onclose: EventHandler<()>,
@@ -745,90 +767,159 @@ fn FilterOptionsSurface(
 ) -> Element {
     let surface_id = use_signal(|| pattern_id("category-surface"))();
     let mut native = use_signal(|| enable_top_layer);
-    let mut mounted = use_signal(|| None::<MountedEvent>);
+    let mut promoted = use_signal(|| !enable_top_layer);
+    let mut mounted = use_signal(|| None::<Rc<MountedData>>);
+    let mut metrics = use_signal(|| None::<FilterPopupMetrics>);
+    let viewport = use_signal(|| None::<FilterViewport>);
     let alive = use_hook(|| Rc::new(Cell::new(true)));
+    let generation = use_hook(|| Rc::new(Cell::new(0_u64)));
+    let measure_alive = alive.clone();
+    let measure_generation = generation.clone();
+    let measure = use_callback(move |()| {
+        if !*native.peek() {
+            return;
+        }
+        let anchor_signal = anchor;
+        let (Some(panel), Some(anchor), Some(viewport)) = (
+            mounted.peek().clone(),
+            anchor_signal.peek().clone(),
+            *viewport.peek(),
+        ) else {
+            return;
+        };
+        measure_generation.set(measure_generation.get().wrapping_add(1));
+        let revision = measure_generation.get();
+        let alive = measure_alive.clone();
+        let generation = measure_generation.clone();
+        spawn(async move {
+            let Ok(rect) = anchor.get_client_rect().await else {
+                return;
+            };
+            if !alive.get() || generation.get() != revision {
+                return;
+            }
+            let Ok(content) = panel.get_scroll_size().await else {
+                return;
+            };
+            if !alive.get()
+                || generation.get() != revision
+                || rect.size.width <= 0.0
+                || !anchor_signal
+                    .peek()
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &anchor))
+            {
+                return;
+            }
+            let next = FilterPopupMetrics {
+                anchor_x: rect.origin.x,
+                anchor_y: rect.origin.y,
+                anchor_width: rect.size.width,
+                anchor_height: rect.size.height,
+                content_height: content.height,
+                viewport,
+            };
+            if *metrics.peek() != Some(next) {
+                metrics.set(Some(next));
+            }
+        });
+    });
+    // Effects run after the positioning style has been rendered. Promotion
+    // alone is insufficient: visibility:hidden layout is not focusable yet.
+    use_effect(move || {
+        let positioned = !native() || (promoted() && metrics().is_some());
+        ready.set(mounted().is_some() && positioned);
+    });
+    use_effect(use_reactive!(|anchor_revision, content_revision| {
+        let _ = (anchor_revision, content_revision, anchor.read().clone());
+        measure.call(());
+    }));
+    let _ = &anchor_id;
     let outside_transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
+    let layout_transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let drop_outside = outside_transport.clone();
+    let drop_layout = layout_transport.clone();
     let lifetime = alive.clone();
-    let cleanup_id = surface_id.clone();
     use_drop(move || {
         lifetime.set(false);
-        if let Some(stream) = drop_outside.borrow_mut().take() {
-            let _ = stream.send(());
+        if let Ok(mut ready) = ready.try_write() {
+            *ready = false;
         }
-        #[cfg(any(feature = "web", feature = "desktop"))]
-        {
-            let encoded = serde_json::to_string(&cleanup_id).expect("string serialization");
-            let _ = dioxus::document::eval(&format!(
-                "document.getElementById({encoded})?.__ixCategoryCleanup?.();"
-            ));
+        for stream in [drop_outside, drop_layout] {
+            if let Some(stream) = stream.borrow_mut().take() {
+                let _ = stream.send(());
+            }
         }
-        #[cfg(not(any(feature = "web", feature = "desktop")))]
-        let _ = cleanup_id;
     });
+    #[cfg(any(feature = "web", feature = "desktop"))]
+    {
+        let transport = layout_transport.clone();
+        let layout_alive = alive.clone();
+        let mut viewport = viewport;
+        use_effect(move || {
+            if !native() {
+                if let Some(stream) = transport.borrow_mut().take() {
+                    let _ = stream.send(());
+                }
+                return;
+            }
+            let mut stream = dioxus::document::eval(FILTER_LAYOUT_EVENTS);
+            *transport.borrow_mut() = Some(stream);
+            let alive = layout_alive.clone();
+            spawn(async move {
+                while let Ok(next) = stream.recv::<FilterViewport>().await {
+                    if !alive.get() {
+                        break;
+                    }
+                    if next.width > 0.0
+                        && next.height > 0.0
+                        && [next.left, next.top, next.width, next.height]
+                            .iter()
+                            .all(|v| v.is_finite())
+                    {
+                        viewport.set(Some(next));
+                        measure.call(());
+                    }
+                }
+            });
+        });
+    }
     let mounted_id = surface_id.clone();
     let mounted_alive = alive.clone();
-    let toggle_alive = alive.clone();
+    let toggle_alive = alive;
+    let layout = place_filter_popup(metrics(), native());
     rsx! {
-        div { id: surface_id, class: "ix-category-filter-options",
-            "popover": native().then_some("manual"), "data-top-layer": native().to_string(),
-            onmounted: move |event| {
-                mounted.set(Some(event));
-                #[cfg(any(feature = "web", feature = "desktop"))]
+        div {id:surface_id,class:"ix-category-filter-options",style:layout.style,"data-placement":layout.placement,
+            "popover":native().then_some("manual"),"data-top-layer":native().to_string(),
+            onmounted:move |event|{
+                ready.set(false);
+                mounted.set(Some(event.data()));
+                #[cfg(any(feature="web",feature="desktop"))]
                 {
-                    let lifetime = mounted_alive.clone();
-                    let root_id = format!("{anchor_id}-root");
-                    let transport = outside_transport.clone();
-                    spawn(async move {
-                        if !lifetime.get() { return; }
-                        let mut stream = dioxus::document::eval(FILTER_OUTSIDE_CLICK);
-                        if stream.send(root_id).is_err() { return; }
-                        *transport.borrow_mut() = Some(stream);
-                        while let Ok(()) = stream.recv::<()>().await {
-                            if !lifetime.get() { break; }
-                            onclose.call(());
-                        }
-                    });
+                    let lifetime=mounted_alive.clone();let root_id=format!("{anchor_id}-root");let transport=outside_transport.clone();
+                    spawn(async move{if !lifetime.get(){return;}let mut stream=dioxus::document::eval(FILTER_OUTSIDE_CLICK);if stream.send(root_id).is_err(){return;}*transport.borrow_mut()=Some(stream);while stream.recv::<()>().await.is_ok(){if !lifetime.get(){break;}onclose.call(());}});
                 }
-                if !enable_top_layer { return; }
-                let alive = mounted_alive.clone();
-                let id = mounted_id.clone();
-                let anchor_id = anchor_id.clone();
+                if !enable_top_layer{return;}
+                let alive=mounted_alive.clone();let id=mounted_id.clone();
                 spawn(async move {
-                    #[cfg(any(feature = "web", feature = "desktop"))]
-                    let failure = {
-                        #[derive(serde::Deserialize)]
-                        struct Reply { error: Option<String> }
-                        let bridge = crate::dom_query::eval(FILTER_POPOVER_BRIDGE);
-                        let result = bridge.send((id, anchor_id));
-                        if let Err(error) = result { Some(crate::NativeSurfaceError::Rejected(error.to_string())) }
-                        else { match bridge.join::<Reply>().await {
-                            Ok(reply) => reply.error.map(crate::NativeSurfaceError::Rejected),
-                            Err(error) => Some(crate::NativeSurfaceError::Rejected(error.to_string())),
-                        } }
+                    #[cfg(any(feature="web",feature="desktop"))]
+                    let failure={
+                        #[derive(serde::Deserialize)]struct Reply{error:Option<String>}
+                        let bridge=crate::dom_query::eval(FILTER_TOP_LAYER_OPEN);
+                        if let Err(error)=bridge.send(id){Some(crate::NativeSurfaceError::Rejected(error.to_string()))}
+                        else{match bridge.join::<Reply>().await{Ok(reply)=>reply.error.map(crate::NativeSurfaceError::Rejected),Err(error)=>Some(crate::NativeSurfaceError::Rejected(error.to_string()))}}
                     };
-                    #[cfg(not(any(feature = "web", feature = "desktop")))]
-                    let failure = { let _ = (id, anchor_id); Some(crate::NativeSurfaceError::UnsupportedRenderer) };
-                    if alive.get() { if let Some(error) = failure { native.set(false); onnativeerror.call(error); } }
+                    #[cfg(not(any(feature="web",feature="desktop")))]
+                    let failure={let _=id;Some(crate::NativeSurfaceError::UnsupportedRenderer)};
+                    if alive.get(){if let Some(error)=failure{native.set(false);onnativeerror.call(error);}else{promoted.set(true);}measure.call(());}
                 });
             },
-            ontoggle: move |_| {
-                // Dioxus alpha.2 does not expose ToggleEvent.newState. Native
-                // closure is observed from the event target's mounted bounds.
-                let node = mounted.peek().clone();
-                let alive = toggle_alive.clone();
-                spawn(async move {
-                    if !alive.get() { return; }
-                    if let Some(node) = node {
-                        if let Ok(bounds) = node.get_client_rect().await {
-                            if alive.get() && *native.peek() && bounds.size.width == 0.0 && bounds.size.height == 0.0 {
-                                onclose.call(());
-                            }
-                        }
-                    }
-                });
+            onresize:move |_|measure.call(()),
+            ontoggle:move |_|{
+                let node=mounted.peek().clone();let alive=toggle_alive.clone();
+                spawn(async move{if let Some(node)=node{if let Ok(bounds)=node.get_client_rect().await{if alive.get()&&*native.peek()&&bounds.size.width==0.0&&bounds.size.height==0.0{onclose.call(());}}}});
             },
-            {children}
+            div {onresize:move |_|measure.call(()),{children}}
         }
     }
 }
@@ -945,11 +1036,15 @@ pub fn CategoryFilter(
     let mut open = use_signal(|| false);
     let mut active = use_signal(|| None::<usize>);
     let mut input = use_signal(|| None::<MountedEvent>);
+    let mut anchor_node = use_signal(|| None::<Rc<MountedData>>);
+    let mut anchor_revision = use_signal(|| 0_u64);
+    let mut token_list = use_signal(|| None::<Rc<MountedData>>);
     let pending_keyboard_focus = use_signal(|| None::<FilterKeyboardFocus>);
     let focus_generation = use_signal(|| 0u64);
+    let surface_ready = use_signal(|| false);
     #[cfg(test)]
     if let Some(capture) = try_use_context::<tests::FilterKeyboardCapture>() {
-        *capture.0.borrow_mut() = Some((pending_keyboard_focus, focus_generation));
+        *capture.0.borrow_mut() = Some((pending_keyboard_focus, focus_generation, surface_ready));
     }
     let mut native_mounted = use_signal(|| false);
     let alive = use_hook(|| Rc::new(Cell::new(true)));
@@ -1088,53 +1183,68 @@ pub fn CategoryFilter(
     let token_list_id = format!("{anchor_id}-tokens");
     let scroll_pending = pending_scroll.clone();
     let scroll_alive = alive.clone();
-    use_effect(use_reactive(
-        (&token_list_id, &snapshot),
-        move |(id, displayed)| {
-            let revision = scroll_revision();
-            let request = scroll_pending.borrow().clone();
-            let Some(request) = request else {
-                return;
-            };
-            if request.revision != revision {
-                scroll_pending.borrow_mut().take();
-                return;
-            }
-            // Controlled parents may acknowledge later, including a different state
-            // with the same chip count. Retain without polling until values match.
-            if request.expected != displayed {
-                return;
-            }
+    let displayed_state = use_hook(|| Rc::new(RefCell::new(snapshot.clone())));
+    *displayed_state.borrow_mut() = snapshot.clone();
+    use_effect(use_reactive((&snapshot,), move |(displayed,)| {
+        let revision = scroll_revision();
+        let Some(request) = scroll_pending.borrow().clone() else {
+            return;
+        };
+        if request.revision != revision {
             scroll_pending.borrow_mut().take();
-            let count = displayed.tokens.len() + displayed.categories.len();
-            #[cfg(any(feature = "web", feature = "desktop"))]
-            {
-                let alive = scroll_alive.clone();
-                let pending = scroll_pending.clone();
-                spawn(async move {
-                    if !alive.get() || *scroll_revision.peek() != revision {
-                        return;
-                    }
-                    let task = crate::dom_query::eval(FILTER_TOKEN_SCROLL);
-                    let scrolled = if task.send((id, revision.to_string(), count)).is_ok() {
-                        task.join::<bool>().await.unwrap_or(false)
-                    } else {
-                        false
-                    };
-                    if !scrolled && alive.get() && *scroll_revision.peek() == revision {
-                        let mut pending = pending.borrow_mut();
-                        if pending.is_none() {
-                            *pending = Some(request);
-                        }
-                    }
-                });
+            return;
+        }
+        // Acknowledgment means equal values, not merely an equal chip count.
+        if request.expected != displayed {
+            return;
+        }
+        let Some(list) = token_list.read().clone() else {
+            return;
+        };
+        scroll_pending.borrow_mut().take();
+        let alive = scroll_alive.clone();
+        let pending = scroll_pending.clone();
+        let current = displayed_state.clone();
+        spawn(async move {
+            let expected = request.expected.clone();
+            let valid = || {
+                alive.get()
+                    && *scroll_revision.peek() == revision
+                    && *current.borrow() == expected
+                    && token_list
+                        .peek()
+                        .as_ref()
+                        .is_some_and(|current| Rc::ptr_eq(current, &list))
+            };
+            let result = async {
+                if !valid() {
+                    return None;
+                }
+                let size = list.get_scroll_size().await.ok()?;
+                if !valid() {
+                    return None;
+                }
+                let offset = list.get_scroll_offset().await.ok()?;
+                if !valid() {
+                    return None;
+                }
+                list.scroll(
+                    dioxus::html::geometry::PixelsVector2D::new(offset.x, size.height),
+                    dioxus::html::ScrollBehavior::Instant,
+                )
+                .await
+                .ok()
             }
-            #[cfg(not(any(feature = "web", feature = "desktop")))]
+            .await;
+            if result.is_none()
+                && alive.get()
+                && *scroll_revision.peek() == revision
+                && pending.borrow().is_none()
             {
-                let _ = (&id, &scroll_alive, count);
+                *pending.borrow_mut() = Some(request);
             }
-        },
-    ));
+        });
+    }));
     let choices = filter_choices(
         categories.as_deref(),
         &suggestions,
@@ -1198,13 +1308,22 @@ pub fn CategoryFilter(
                 return;
             };
             let mut pending = pending_keyboard_focus;
-            pending.set(None);
             if blocked
                 || request.generation != generation
                 || (matches!(request.target, FilterFocusTarget::Element(_)) && !is_open)
             {
+                pending.set(None);
                 return;
             }
+            // Keep the opening option request until the native panel's Rust
+            // positioning style is rendered and promotion has completed.
+            if matches!(request.target, FilterFocusTarget::Element(_))
+                && enable_top_layer
+                && !surface_ready()
+            {
+                return;
+            }
+            pending.set(None);
             let lifetime = keyboard_alive.clone();
             let node = input.peek().clone();
             spawn(async move {
@@ -1240,9 +1359,9 @@ pub fn CategoryFilter(
 
     rsx! {
         div {id:root_id.clone(),class:"ix-category-filter","data-disabled":disabled.to_string(),"data-readonly":readonly.to_string(),"data-open":(open()&&!blocked).to_string(),"data-focus-generation":focus_generation().to_string(),
-            div {id:anchor_id.clone(),class:"ix-category-filter-input",
+            div {id:anchor_id.clone(),class:"ix-category-filter-input",onmounted:move |event|anchor_node.set(Some(event.data())),onresize:move |_|anchor_revision.with_mut(|revision|*revision=revision.wrapping_add(1)),
                 if !hide_icon {Icon {name:icon,size:16}}
-                div {id:token_list_id,class:"ix-category-filter-tokens","data-scroll-revision":scroll_revision().to_string(),
+                div {id:token_list_id,class:"ix-category-filter-tokens",onmounted:move |event|token_list.set(Some(event.data())),"data-scroll-revision":scroll_revision().to_string(),
                     for entry in &entries {
                         span {key:"{entry.occurrence}",class:"ix-category-filter-chip","data-filter-occurrence":entry.occurrence.to_string(),
                             onclick:move |event|event.stop_propagation(),
@@ -1307,7 +1426,7 @@ pub fn CategoryFilter(
                     },Icon {name:"clear",size:24}}}
             }
             if open()&&!blocked {
-                FilterOptionsSurface { anchor_id:anchor_id.clone(), enable_top_layer, onnativeerror, onclose:move |_|{cancel_filter_keyboard_focus(pending_keyboard_focus,focus_generation);open.set(false);active.set(None);},
+                FilterOptionsSurface { anchor_id:anchor_id.clone(),anchor:anchor_node,ready:surface_ready,anchor_revision:anchor_revision(),content_revision:option_epoch,enable_top_layer, onnativeerror, onclose:move |_|{cancel_filter_keyboard_focus(pending_keyboard_focus,focus_generation);open.set(false);active.set(None);},
                     div {class:"ix-category-filter-options-heading",
                         span {if !category_mode {"{label_plain_text}"}else if has_category {"{selected_category.clone().unwrap_or_default()}"}else{"{label_categories}"}}
                         if operator_visible {button {id:operator_id,r#type:"button","aria-label":operator_label,"aria-pressed":(current_operator==LogicalFilterOperator::NotEqual).to_string(),
@@ -1779,6 +1898,69 @@ mod tests {
         }
     }
     #[derive(Clone, Default)]
+    struct FilterTokenMount {
+        scrolls: Rc<RefCell<Vec<f64>>>,
+        blocked: Rc<Cell<bool>>,
+        started: Rc<Cell<bool>>,
+        waker: Rc<RefCell<Option<std::task::Waker>>>,
+    }
+    impl dioxus::html::RenderedElementBacking for FilterTokenMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_scroll_size(
+            &self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = dioxus::html::MountedResult<dioxus::html::geometry::PixelsSize>,
+                    >,
+            >,
+        > {
+            let state = self.clone();
+            Box::pin(async move {
+                std::future::poll_fn(|cx| {
+                    state.started.set(true);
+                    if state.blocked.get() {
+                        *state.waker.borrow_mut() = Some(cx.waker().clone());
+                        std::task::Poll::Pending
+                    } else {
+                        std::task::Poll::Ready(Ok(dioxus::html::geometry::PixelsSize::new(
+                            200.0, 200.0,
+                        )))
+                    }
+                })
+                .await
+            })
+        }
+        fn get_scroll_offset(
+            &self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = dioxus::html::MountedResult<
+                            dioxus::html::geometry::PixelsVector2D,
+                        >,
+                    >,
+            >,
+        > {
+            Box::pin(async { Ok(dioxus::html::geometry::PixelsVector2D::new(0.0, 0.0)) })
+        }
+        fn scroll(
+            &self,
+            point: dioxus::html::geometry::PixelsVector2D,
+            behavior: dioxus::html::ScrollBehavior,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert_eq!(behavior, dioxus::html::ScrollBehavior::Instant);
+            let scrolls = self.scrolls.clone();
+            Box::pin(async move {
+                scrolls.borrow_mut().push(point.y);
+                Ok(())
+            })
+        }
+    }
+    #[derive(Clone, Default)]
     struct FilterDelayedMount {
         focus_count: Rc<Cell<usize>>,
         started: Rc<Cell<bool>>,
@@ -1852,7 +2034,9 @@ mod tests {
         }};
         (@data Focus, $event:ident) => { dioxus::html::FocusData::new(FilterTestFocus) };
         (@data Mounted, $event:ident) => {
-            if let Some(state)=$event.downcast::<FilterDelayedMount>() {
+            if let Some(state)=$event.downcast::<FilterTokenMount>() {
+                MountedData::new(state.clone())
+            } else if let Some(state)=$event.downcast::<FilterDelayedMount>() {
                 MountedData::new(state.clone())
             } else {
                 MountedData::new(FilterTestMount($event.downcast::<Rc<Cell<usize>>>().unwrap().clone()))
@@ -1866,14 +2050,20 @@ mod tests {
         mutations: dioxus::core::Mutations,
         name: &str,
     ) -> Vec<dioxus::core::ElementId> {
+        filter_listener_ids_ref(&mutations, name)
+    }
+    fn filter_listener_ids_ref(
+        mutations: &dioxus::core::Mutations,
+        name: &str,
+    ) -> Vec<dioxus::core::ElementId> {
         let mut current = dioxus::core::ElementId::ROOT;
         let mut ids = Vec::new();
-        for edit in mutations.edits {
+        for edit in &mutations.edits {
             match edit {
                 dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
-                    current = id
+                    current = *id
                 }
-                dioxus::core::Mutation::NewEventListener { name: event } if event == name => {
+                dioxus::core::Mutation::NewEventListener { name: event } if *event == name => {
                     ids.push(current)
                 }
                 _ => {}
@@ -1909,7 +2099,15 @@ mod tests {
     ) -> bool {
         let data: Rc<dyn std::any::Any> =
             Rc::new(dioxus::html::PlatformEventData::new(Box::new(payload)));
-        let event = Event::new(data, true);
+        // Match pinned renderer metadata: mounted/focus do not bubble. A fake
+        // bubbling input mount would overwrite its ancestors' mounted handles.
+        let event = Event::new(
+            data,
+            !matches!(
+                name,
+                "mounted" | "focus" | "blur" | "resize" | "scroll" | "toggle"
+            ),
+        );
         dom.runtime().handle_event(name, event.clone(), id);
         event.propagates()
     }
@@ -2224,6 +2422,8 @@ mod tests {
         config: Rc<RefCell<FilterProgrammaticConfig>>,
         input: dioxus::core::ElementId,
         focus_count: Rc<Cell<usize>>,
+        token_list: dioxus::core::ElementId,
+        scroll: FilterTokenMount,
     }
     impl FilterProgrammaticHarness {
         fn new(
@@ -2254,13 +2454,18 @@ mod tests {
             }));
             dioxus::html::set_event_converter(Box::new(FilterTestConverter));
             let mut dom = VirtualDom::new_with_props(programmatic_filter_fixture, config.clone());
-            let ids = filter_listener_ids(dom.rebuild_to_vec(), "click");
+            let mutations = dom.rebuild_to_vec();
+            let mounts = filter_listener_ids_ref(&mutations, "mounted");
+            let token_list = mounts[mounts.len() - 2];
+            let ids = filter_listener_ids(mutations, "click");
             let input = ids[ids.len() - 2];
             Self {
                 dom,
                 config,
                 input,
                 focus_count: Rc::new(Cell::new(0)),
+                token_list,
+                scroll: FilterTokenMount::default(),
             }
         }
         fn settle(&mut self) {
@@ -2268,6 +2473,7 @@ mod tests {
             self.dom.render_immediate_to_vec();
         }
         fn mount(&mut self) {
+            dispatch_filter_event(&self.dom, "mounted", self.token_list, self.scroll.clone());
             dispatch_filter_event(&self.dom, "mounted", self.input, self.focus_count.clone());
             self.settle();
         }
@@ -2583,11 +2789,64 @@ mod tests {
     }
 
     #[test]
+    fn category_mounted_token_scroll_is_cancelled_by_clear_and_component_teardown() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut harness =
+            FilterProgrammaticHarness::new(CategoryFilterController::default(), None, false, false);
+        harness.mount();
+        harness.scroll.blocked.set(true);
+        harness
+            .command(plain_filter_state("pending append"))
+            .unwrap();
+        assert!(harness.scroll.started.get());
+        assert!(harness.scroll.scrolls.borrow().is_empty());
+        harness.command(FilterState::default()).unwrap();
+        harness.scroll.blocked.set(false);
+        if let Some(waker) = harness.scroll.waker.borrow_mut().take() {
+            waker.wake();
+        }
+        harness.settle();
+        assert!(
+            harness.scroll.scrolls.borrow().is_empty(),
+            "clear must cancel a suspended append scroll"
+        );
+        harness
+            .command(plain_filter_state("accepted append"))
+            .unwrap();
+        assert_eq!(*harness.scroll.scrolls.borrow(), [200.0]);
+        let focus = harness.focus_count.get();
+        harness.scroll.blocked.set(true);
+        harness.scroll.started.set(false);
+        harness
+            .command(plain_filter_state("removed while measuring"))
+            .unwrap();
+        assert!(harness.scroll.started.get());
+        harness.config.borrow_mut().visible = false;
+        harness.rerender();
+        harness.scroll.blocked.set(false);
+        if let Some(waker) = harness.scroll.waker.borrow_mut().take() {
+            waker.wake();
+        }
+        harness.settle();
+        assert_eq!(
+            *harness.scroll.scrolls.borrow(),
+            [200.0],
+            "an unmounted list cannot receive an old append scroll"
+        );
+        assert_eq!(
+            harness.focus_count.get(),
+            focus,
+            "chip scrolling never requests focus"
+        );
+    }
+
+    #[test]
     fn category_programmatic_scroll_waits_for_deferred_controlled_values_not_only_chip_count() {
         let _event_converter_guard = crate::test_event_converter_guard();
         let mut harness =
             FilterProgrammaticHarness::new(CategoryFilterController::default(), None, true, false);
         harness.mount();
+        let scrolls = harness.scroll.scrolls.borrow().len();
         harness
             .command(plain_filter_state("first proposal"))
             .unwrap();
@@ -2614,10 +2873,14 @@ mod tests {
         harness.config.borrow_mut().state_override = Some(plain_filter_state("latest proposal"));
         harness.rerender();
         assert!(harness.html().contains("latest proposal"));
-        #[cfg(not(any(feature = "web", feature = "desktop")))]
+        assert_eq!(
+            harness.scroll.scrolls.borrow().len(),
+            scrolls + 1,
+            "only matching acknowledged values scroll the mounted list"
+        );
         assert!(
             pending.borrow().is_none(),
-            "matching deferred values consume the after-render scroll request"
+            "matching deferred values consume the mounted scroll request"
         );
         assert_eq!(
             harness.config.borrow().events,
@@ -2780,9 +3043,13 @@ mod tests {
             }));
             dioxus::html::set_event_converter(Box::new(FilterTestConverter));
             let mut dom = VirtualDom::new_with_props(filter_order_fixture, config.clone());
-            let ids = filter_listener_ids(dom.rebuild_to_vec(), "input");
+            let mutations = dom.rebuild_to_vec();
+            let mounts = filter_listener_ids_ref(&mutations, "mounted");
+            let token_list = mounts[mounts.len() - 2];
+            let ids = filter_listener_ids(mutations, "input");
             let input = ids[0];
             let focus = Rc::new(Cell::new(0_usize));
+            dispatch_filter_event(&dom, "mounted", token_list, FilterTokenMount::default());
             dispatch_filter_event(&dom, "mounted", input, focus.clone());
             let mut harness = Self {
                 dom,
@@ -3125,7 +3392,6 @@ mod tests {
         let before = harness.labels().len();
         harness.key(Key::Backspace);
         assert_eq!(harness.labels().len(), before - 1);
-        #[cfg(not(any(feature = "web", feature = "desktop")))]
         assert!(
             pending.borrow().is_none(),
             "settled removal creates no new scroll request"
@@ -3176,8 +3442,13 @@ mod tests {
         events: Vec<String>,
         changes: Vec<FilterState>,
         keyboard: FilterKeyboardCapture,
+        top_layer: bool,
     }
-    type FilterKeyboardSignals = (Signal<Option<FilterKeyboardFocus>>, Signal<u64>);
+    type FilterKeyboardSignals = (
+        Signal<Option<FilterKeyboardFocus>>,
+        Signal<u64>,
+        Signal<bool>,
+    );
     #[derive(Clone, Default)]
     pub(super) struct FilterKeyboardCapture(pub(super) Rc<RefCell<Option<FilterKeyboardSignals>>>);
     impl FilterKeyboardCapture {
@@ -3197,7 +3468,7 @@ mod tests {
         let input = config.clone();
         let clear = config.clone();
         rsx! { CategoryFilter {
-            categories: settings.categories, suggestions: settings.suggestions, default_state: settings.initial,
+            categories: settings.categories, suggestions: settings.suggestions, default_state: settings.initial,enable_top_layer:settings.top_layer,
             label:"Legacy input",label_categories:"Category menu",label_plain_text:"Plain menu",placeholder:"Search criteria",
             aria_label_filter_input:settings.input_label,aria_label_reset_button:settings.reset_label,aria_label_operator_button:settings.operator_label,
             non_selectable_categories:BTreeMap::from([("vendor".into(),"Legacy vendor fallback".into())]),
@@ -3240,6 +3511,7 @@ mod tests {
                 events: vec![],
                 changes: vec![],
                 keyboard: FilterKeyboardCapture::default(),
+                top_layer: false,
             }));
             let mut dom = VirtualDom::new_with_props(category_mode_fixture, config.clone());
             dioxus::html::set_event_converter(Box::new(FilterTestConverter));
@@ -3301,6 +3573,47 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn category_top_layer_option_request_waits_for_rendered_layout_readiness() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut harness = CategoryModeHarness::new(Some(categories()));
+        harness.config.borrow_mut().top_layer = true;
+        harness.update();
+        let capture = harness.config.borrow().keyboard.clone();
+        let mut ready = capture.0.borrow().as_ref().unwrap().2;
+        filter_key_at(&harness.dom, harness.input, Key::ArrowDown);
+        harness.settle();
+        let first = capture
+            .request()
+            .expect("opening focus must wait for mounted native layout");
+        assert!(matches!(first.target, FilterFocusTarget::Element(_)));
+        harness.settle();
+        assert_eq!(
+            capture.request(),
+            Some(first.clone()),
+            "waiting does not consume the request"
+        );
+        filter_key_at(&harness.dom, harness.input, Key::Escape);
+        harness.settle();
+        assert!(capture.request().is_none());
+        harness.dom.in_runtime(|| ready.set(true));
+        harness.settle();
+        assert!(
+            capture.request().is_none(),
+            "a late layout-ready notification cannot revive canceled focus"
+        );
+        harness.dom.in_runtime(|| ready.set(false));
+        filter_key_at(&harness.dom, harness.input, Key::ArrowDown);
+        harness.settle();
+        assert!(capture.request().is_some());
+        harness.dom.in_runtime(|| ready.set(true));
+        harness.settle();
+        assert!(
+            capture.request().is_none(),
+            "post-render readiness releases the current request once"
+        );
     }
 
     #[test]
@@ -3800,11 +4113,72 @@ mod tests {
         assert_eq!(harness.config.borrow().events, ["change"]);
     }
 
+    #[test]
+    fn category_popup_layout_flips_clamps_and_preserves_inline_mode() {
+        let metrics = FilterPopupMetrics {
+            anchor_x: 950.0,
+            anchor_y: 550.0,
+            anchor_width: 200.0,
+            anchor_height: 40.0,
+            content_height: 200.0,
+            viewport: FilterViewport {
+                left: 0.0,
+                top: 0.0,
+                width: 1000.0,
+                height: 600.0,
+            },
+        };
+        let layout = place_filter_popup(Some(metrics), true);
+        assert_eq!(layout.placement, "top");
+        assert!(
+            layout.style.contains("left:792px")
+                && layout.style.contains("top:346px")
+                && layout.style.contains("width:200px")
+        );
+        let narrow = place_filter_popup(
+            Some(FilterPopupMetrics {
+                anchor_x: 20.0,
+                anchor_y: 10.0,
+                anchor_width: 300.0,
+                anchor_height: 40.0,
+                content_height: 500.0,
+                viewport: FilterViewport {
+                    left: 0.0,
+                    top: 0.0,
+                    width: 100.0,
+                    height: 200.0,
+                },
+            }),
+            true,
+        );
+        assert_eq!(narrow.placement, "bottom");
+        assert!(
+            narrow.style.contains("left:8px")
+                && narrow.style.contains("width:84px")
+                && narrow.style.contains("max-height:140px")
+        );
+        assert!(
+            layout.style.contains("visibility:visible"),
+            "placed layout must explicitly clear the initial hidden declaration"
+        );
+        let inline = place_filter_popup(Some(metrics), false);
+        assert!(
+            inline.style.contains("visibility:visible")
+                && inline.style.contains("position:absolute")
+                && inline.style.contains("width:auto")
+                && inline.style.contains("top:100%"),
+            "inline adaptation must overwrite prior native layout declarations"
+        );
+        assert_eq!(place_filter_popup(None, true).style, "visibility:hidden");
+    }
+
     fn top_layer_fixture() -> Element {
+        let anchor = use_signal(|| None::<Rc<MountedData>>);
+        let ready = use_signal(|| false);
         rsx! {
-            FilterOptionsSurface {anchor_id:"first-input",enable_top_layer:true,onnativeerror:move |_|{},onclose:move |_|{},div {role:"listbox","First choices"}}
-            FilterOptionsSurface {anchor_id:"second-input",enable_top_layer:true,onnativeerror:move |_|{},onclose:move |_|{},div {role:"listbox","Second choices"}}
-            FilterOptionsSurface {anchor_id:"inline-input",enable_top_layer:false,onnativeerror:move |_|{},onclose:move |_|{},div {role:"listbox","Inline choices"}}
+            FilterOptionsSurface {ready,anchor,anchor_id:"first-input",enable_top_layer:true,onnativeerror:move |_|{},onclose:move |_|{},div {role:"listbox","First choices"}}
+            FilterOptionsSurface {ready,anchor,anchor_id:"second-input",enable_top_layer:true,onnativeerror:move |_|{},onclose:move |_|{},div {role:"listbox","Second choices"}}
+            FilterOptionsSurface {ready,anchor,anchor_id:"inline-input",enable_top_layer:false,onnativeerror:move |_|{},onclose:move |_|{},div {role:"listbox","Inline choices"}}
         }
     }
     #[test]

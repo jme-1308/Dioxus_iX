@@ -12,6 +12,8 @@ mod descendant_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
+#[path = "dioxus_first_probe/filter_layout_review.rs"]
+mod filter_layout_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
@@ -88,6 +90,9 @@ fn Preview() -> Element {
     });
     if scope == "?visibility" {
         return rsx! { visibility_review::VisibilityPreview {} };
+    }
+    if scope == "?filterlayout" {
+        return rsx! { filter_layout_review::FilterLayoutReview {} };
     }
     if scope == "?virtualnav" {
         return rsx! { virtual_navigation_review::VirtualNavigationPreview {} };
