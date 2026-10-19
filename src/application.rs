@@ -2305,9 +2305,122 @@ impl Default for AppSwitchConfig {
     }
 }
 
+struct MenuOverlayFocusState {
+    alive: bool,
+    generation: u64,
+    shown: Option<MenuOverlayKind>,
+    owned: bool,
+    return_requested: bool,
+    invoker: Option<crate::overlay_runtime::MountedFocusTarget>,
+    task: Option<dioxus::core::Task>,
+}
+impl Default for MenuOverlayFocusState {
+    fn default() -> Self {
+        Self {
+            alive: true,
+            generation: 0,
+            shown: None,
+            owned: false,
+            return_requested: false,
+            invoker: None,
+            task: None,
+        }
+    }
+}
 #[derive(Clone, Copy, PartialEq)]
 struct MenuOverlayContext {
     active: Signal<Option<MenuOverlayKind>>,
+    focus: Signal<MenuOverlayFocusState>,
+}
+impl MenuOverlayContext {
+    fn remember(mut self, target: Option<crate::overlay_runtime::MountedFocusTarget>) {
+        self.focus.write().invoker = target;
+    }
+    fn owned(mut self, owned: bool) {
+        let pending = {
+            let mut state = self.focus.write();
+            state.owned = owned;
+            if !owned { state.task.take() } else { None }
+        };
+        if let Some(pending) = pending {
+            pending.cancel();
+        }
+    }
+    fn close(mut self) {
+        self.focus.write().return_requested = true;
+        self.active.set(None);
+    }
+    fn reconcile(mut self) {
+        let current = *self.active.peek();
+        let (generation, pending, returning) = {
+            let mut state = self.focus.write();
+            if !state.alive || state.shown == current {
+                return;
+            }
+            state.shown = current;
+            state.generation = state.generation.wrapping_add(1);
+            let pending = state.task.take();
+            let returning = if current.is_none() {
+                let target = state.invoker.take();
+                (state.owned || state.return_requested)
+                    .then_some(target)
+                    .flatten()
+            } else {
+                None
+            };
+            state.return_requested = false;
+            if current.is_none() {
+                state.owned = false;
+            }
+            (state.generation, pending, returning)
+        };
+        if let Some(pending) = pending {
+            pending.cancel();
+        }
+        if let Some(target) = returning {
+            self.queue_focus(target, generation, None);
+        }
+    }
+    fn queue_focus(
+        mut self,
+        target: crate::overlay_runtime::MountedFocusTarget,
+        generation: u64,
+        expected: Option<MenuOverlayKind>,
+    ) {
+        let owner = Rc::downgrade(&dioxus::core::Runtime::current());
+        let scope = dioxus::core::current_scope_id();
+        dioxus::core::queue_effect(move || {
+            let live = self
+                .focus
+                .try_peek()
+                .is_ok_and(|state| state.alive && state.generation == generation)
+                && self
+                    .active
+                    .try_peek()
+                    .is_ok_and(|current| *current == expected);
+            if !live {
+                return;
+            }
+            let (Some(owner), Some(node)) = (owner.upgrade(), target.live_node()) else {
+                return;
+            };
+            let task = owner.in_scope(scope, || {
+                spawn(async move {
+                    let _ = node.set_focus(true).await;
+                })
+            });
+            if let Ok(mut state) = self.focus.try_write() {
+                state.task = Some(task);
+            }
+        });
+        dioxus::core::needs_update();
+    }
+    fn autofocus(self, target: crate::overlay_runtime::MountedFocusTarget, kind: MenuOverlayKind) {
+        self.reconcile();
+        if *self.active.peek() == Some(kind) {
+            self.queue_focus(target, self.focus.peek().generation, Some(kind));
+        }
+    }
 }
 
 fn navigation() -> NavigationContext {
@@ -3117,12 +3230,38 @@ pub fn Menu(
     use_context_provider(|| nav.clone());
     let local_overlay = use_signal(|| initial_overlay);
     let mut overlay = active_overlay.unwrap_or(local_overlay);
-    use_context_provider(|| MenuOverlayContext { active: overlay });
+    let focus = use_signal(MenuOverlayFocusState::default);
+    let overlay_context = MenuOverlayContext {
+        active: overlay,
+        focus,
+    };
+    use_context_provider(|| overlay_context);
+    use_effect(move || {
+        let _ = overlay();
+        overlay_context.reconcile();
+    });
+    use_drop(move || {
+        let mut focus = focus;
+        if let Ok(mut state) = focus.try_write() {
+            state.alive = false;
+            state.generation = state.generation.wrapping_add(1);
+            let pending = state.task.take();
+            drop(state);
+            if let Some(pending) = pending {
+                pending.cancel();
+            }
+        }
+    });
+    let focus_runtime = crate::overlay_runtime::use_overlay_runtime();
+    let settings_invoker = format!("{menu_id}-settings");
+    let about_invoker = format!("{menu_id}-about");
+    let settings_focus_id = settings_invoker.clone();
+    let about_focus_id = about_invoker.clone();
+    let settings_focus_runtime = focus_runtime.clone();
+    let about_focus_runtime = focus_runtime;
     let owner_id = menu_id.clone();
     let about_owner_id = menu_id.clone();
-    let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let roving_bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let cleanup_bridge = bridge.clone();
     let cleanup_roving = roving_bridge.clone();
     let lifetime_roving = roving.clone();
     let hover_coordinator = use_category_hover_coordinator();
@@ -3140,11 +3279,7 @@ pub fn Menu(
         if let Some(bridge) = cleanup_roving.borrow_mut().take() {
             let _ = bridge.send("finish");
         }
-        if let Some(bridge) = cleanup_bridge.borrow_mut().take() {
-            let _ = bridge.send("finish");
-        }
     });
-    let mount_id = menu_id.clone();
     let roving_mount = menu_id.clone();
     let input_roving = roving.clone();
     let hover_owner = menu_id.clone();
@@ -3162,7 +3297,6 @@ pub fn Menu(
     });
     rsx! {
         nav { id: menu_id.clone(), class: "ix-menu", "aria-label": application_name.clone(), "data-menu-root":"", "data-expanded": expanded().to_string(),
-            onmounted: move |_| { *bridge.borrow_mut() = Some(dioxus::document::eval(&menu_focus_bridge(&mount_id))); },
             input {r#type:"hidden","data-menu-observer":menu_id.clone(),oninput:move |event|input_roving.observation(event)},
             input {r#type:"hidden","data-menu-hover-observer":menu_id.clone(),"data-menu-document-owner":document_owner,oninput:move |event|hover_coordinator.observation(&hover_owner,event)},
             if let Some(name) = application_name.clone() { div { class: "ix-menu-app-name", "{name}" } }
@@ -3181,15 +3315,17 @@ pub fn Menu(
                     div {"data-menu-light":"bottom", {bottom}}
                     div {"data-menu-utilities":"",MenuUtilityContent {
                 if settings.is_some() {
-                    MenuItem { label: "Settings", icon: "cogwheel", close_on_select: false, active: overlay() == Some(MenuOverlayKind::Settings), onclick: move |_| {
+                    MenuItem { id: settings_invoker, label: "Settings", icon: "cogwheel", close_on_select: false, active: overlay() == Some(MenuOverlayKind::Settings), onclick: move |_| {
                         if let Some(next) = request_menu_overlay(overlay(), MenuOverlayKind::Settings, onbeforeopensettings) {
+                            if next.is_some() { overlay_context.remember(settings_focus_runtime.capture_registered_focus(&settings_focus_id)); }
                             overlay.set(next); onopensettings.call(());
                         }
                     } }
                 }
                 if enable_toggle_theme { MenuItem { label: "Toggle theme", icon: "light-dark", close_on_select: false, onclick: move |_| ontoggletheme.call(()) } }
-                if about.is_some() { MenuItem { label: "About & legal information", icon: "info", close_on_select: false, active: overlay() == Some(MenuOverlayKind::About), onclick: move |_| {
+                if about.is_some() { MenuItem { id: about_invoker, label: "About & legal information", icon: "info", close_on_select: false, active: overlay() == Some(MenuOverlayKind::About), onclick: move |_| {
                     if let Some(next) = request_menu_overlay(overlay(), MenuOverlayKind::About, onbeforeopenabout) {
+                        if next.is_some() { overlay_context.remember(about_focus_runtime.capture_registered_focus(&about_focus_id)); }
                         overlay.set(next); onopenabout.call(());
                     }
                 } } }
@@ -3210,56 +3346,6 @@ fn MenuUtilityContent(children: Element) -> Element {
     context.utility = true;
     use_context_provider(|| context);
     rsx! {{children}}
-}
-
-// The bridge only remembers native focus and observes mounted/unmounted overlay
-// nodes. Overlay selection, vetoes and notifications remain Rust state changes.
-fn menu_focus_bridge(menu_id: &str) -> String {
-    let id = serde_json::to_string(menu_id).expect("menu id serialization");
-    format!(
-        r#"
-        const nav = document.getElementById({id});
-        if (!nav) return;
-        const owner = {id};
-        const panelForMenu = () => Array.from(document.querySelectorAll('.ix-menu-overlay[data-menu-owner]')).find(node => node.dataset.menuOwner === owner) || null;
-        let panel = null;
-        let invoker = null;
-        let outsideFocus = document.activeElement;
-        let focusOwned = false;
-        const focusIn = event => {{
-            focusOwned = !!event.target.closest?.('.ix-menu-overlay[data-menu-owner="' + owner + '"]');
-            if (!focusOwned) outsideFocus = event.target;
-        }};
-        document.addEventListener('focusin', focusIn, true);
-        const sync = () => {{
-            const next = panelForMenu();
-            if (next === panel) return;
-            if (next) {{
-                // A second action may replace Settings with About directly.
-                // Preserve the prior invoker while focus remains in the old panel.
-                if (!panel || !panel.contains(outsideFocus)) invoker = outsideFocus;
-                panel = next;
-                focusOwned = focusOwned || panel.contains(document.activeElement);
-                return;
-            }}
-            const active = document.activeElement;
-            const owned = panel && (panel.contains(active) || (active === document.body && focusOwned));
-            panel = null;
-            focusOwned = false;
-            if (owned && invoker instanceof HTMLElement && invoker.isConnected && !invoker.matches(':disabled,[aria-disabled="true"]') && !invoker.closest('[hidden],[inert]') && invoker.getClientRects().length) {{
-                invoker.focus({{preventScroll: true}});
-            }}
-            invoker = null;
-        }};
-        let finish;
-        const removed = new Promise(resolve => {{ finish = resolve; }});
-        const observer = new MutationObserver(() => {{ if (!nav.isConnected) finish(); else sync(); }});
-        observer.observe(document.documentElement, {{childList:true,subtree:true}});
-        sync();
-        try {{ await Promise.race([removed, dioxus.recv()]); }}
-        finally {{ observer.disconnect(); document.removeEventListener('focusin', focusIn, true); }}
-        "#
-    )
 }
 
 /// Navigation action or link with active, disabled and notification states.
@@ -3983,7 +4069,7 @@ pub fn MenuSettings(
     #[props(default = "Close Settings".to_string())] aria_label_close_button: String,
 ) -> Element {
     let context = try_consume_context::<MenuOverlayContext>();
-    rsx! { MenuOverlay { label: label.clone(), show, context, onclose, close_label: aria_label_close_button,
+    rsx! { MenuOverlay { kind: MenuOverlayKind::Settings, label: label.clone(), show, context, onclose, close_label: aria_label_close_button,
         {children}
     } }
 }
@@ -3998,7 +4084,7 @@ pub fn MenuAbout(
     #[props(default = "Close About".to_string())] aria_label_close_button: String,
 ) -> Element {
     let context = try_consume_context::<MenuOverlayContext>();
-    rsx! { MenuOverlay { label: label.clone(), show, context, onclose, close_label: aria_label_close_button,
+    rsx! { MenuOverlay { kind: MenuOverlayKind::About, label: label.clone(), show, context, onclose, close_label: aria_label_close_button,
         {children}
     } }
 }
@@ -4006,454 +4092,79 @@ pub fn MenuAbout(
 #[component]
 fn MenuOverlay(
     children: Element,
+    kind: MenuOverlayKind,
     label: String,
     show: bool,
     context: Option<MenuOverlayContext>,
     onclose: EventHandler<()>,
     close_label: String,
 ) -> Element {
-    rsx! {
-        if show {
-            section { class: "ix-menu-overlay-panel", role: "dialog", "aria-label": label.clone(),
-                onkeydown: move |event| if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); if let Some(mut context) = context { context.active.set(None); } onclose.call(()); },
-                div { class: "ix-menu-overlay-header", h2 { "{label}" }
-                    button { class: "ix-app-icon-button", r#type: "button", "aria-label": close_label,
-                        onmounted: move |event| async move { let _ = event.set_focus(true).await; },
-                        onclick: move |_| { if let Some(mut context) = context { context.active.set(None); } onclose.call(()); },
-                        crate::Icon { name: "close".to_string(), size: 24 }
-                    }
-                }
-                div { class: "ix-menu-overlay-content", {children} }
-            }
-        }
-    }
-}
-
-/// Side pane presentation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PaneVariant {
-    #[default]
-    Inline,
-    Floating,
-}
-
-/// Side of the content occupied by a pane.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PaneComposition {
-    Left,
-    Right,
-    #[default]
-    Top,
-    Bottom,
-}
-
-impl PaneComposition {
-    fn class(self) -> &'static str {
-        match self {
-            Self::Left => "left",
-            Self::Right => "right",
-            Self::Top => "top",
-            Self::Bottom => "bottom",
-        }
-    }
-}
-
-/// Determines which pair of panes spans the full available cross axis.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PaneLayoutOrder {
-    #[default]
-    FullVertical,
-    FullHorizontal,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct PaneSettings {
-    composition: PaneComposition,
-    variant: PaneVariant,
-    borderless: bool,
-}
-
-#[derive(Clone, Copy)]
-struct PaneContext {
-    settings: Memo<PaneSettings>,
-}
-
-#[derive(Clone, Copy)]
-struct PaneLayoutContext {
-    close_requested: Signal<u64>,
-}
-
-/// Cancelable expansion request. Vetoing it preserves both the current pane
-/// state and the post-change notification. `slot` is empty outside a layout.
-#[derive(Clone)]
-pub struct PaneExpandedChangeEvent {
-    pub slot: String,
-    pub expanded: bool,
-    prevented: Rc<Cell<bool>>,
-}
-
-impl PaneExpandedChangeEvent {
-    pub fn prevent_default(&self) {
-        self.prevented.set(true);
-    }
-    pub fn default_prevented(&self) -> bool {
-        self.prevented.get()
-    }
-}
-
-fn request_pane_expansion(
-    current: bool,
-    next: bool,
-    slot: String,
-    before: EventHandler<PaneExpandedChangeEvent>,
-) -> bool {
-    if current == next {
-        return false;
-    }
-    let event = PaneExpandedChangeEvent {
-        slot,
-        expanded: next,
-        prevented: Rc::new(Cell::new(false)),
+    let mut local_active = use_signal(|| show.then_some(kind));
+    let local_focus = use_signal(MenuOverlayFocusState::default);
+    let local = MenuOverlayContext {
+        active: local_active,
+        focus: local_focus,
     };
-    before.call(event.clone());
-    !event.default_prevented()
-}
-
-#[component]
-fn PaneSlot(
-    children: Element,
-    composition: PaneComposition,
-    variant: PaneVariant,
-    borderless: bool,
-) -> Element {
-    let settings = use_memo(use_reactive(
-        (&composition, &variant, &borderless),
-        |(composition, variant, borderless)| PaneSettings {
-            composition,
-            variant,
-            borderless,
-        },
-    ));
-    use_context_provider(|| PaneContext { settings });
-    rsx! { div { class: "ix-pane-slot ix-pane-slot-{composition.class()}", {children} } }
-}
-
-/// Layout with independently collapsible left, right, top and bottom pane slots.
-#[component]
-pub fn PaneLayout(
-    children: Element,
-    #[props(default)] left: Option<Element>,
-    #[props(default)] right: Option<Element>,
-    #[props(default)] top: Option<Element>,
-    #[props(default)] bottom: Option<Element>,
-    #[props(default)] layout: PaneLayoutOrder,
-    #[props(default)] variant: PaneVariant,
-    #[props(default)] borderless: bool,
-) -> Element {
-    let mut close_requested = use_signal(|| 0_u64);
-    use_context_provider(|| PaneLayoutContext { close_requested });
-    rsx! {
-        div { class: "ix-pane-layout", "data-layout": if layout == PaneLayoutOrder::FullVertical { "full-vertical" } else { "full-horizontal" },
-            if let Some(left) = left { PaneSlot { composition: PaneComposition::Left, variant, borderless, {left} } }
-            if let Some(right) = right { PaneSlot { composition: PaneComposition::Right, variant, borderless, {right} } }
-            if let Some(top) = top { PaneSlot { composition: PaneComposition::Top, variant, borderless, {top} } }
-            if let Some(bottom) = bottom { PaneSlot { composition: PaneComposition::Bottom, variant, borderless, {bottom} } }
-            div { class: "ix-pane-layout-content", onclick: move |_| { let next = close_requested().wrapping_add(1); close_requested.set(next); }, {children} }
-        }
-    }
-}
-
-/// Collapsible pane with mutable expansion and optional external state updates.
-/// Changing `expanded` synchronizes the local state; user requests can be vetoed
-/// through `onbeforeexpandedchange`. The owning layout supplies composition and
-/// default styling. Desktop size is capped at half of the parent dimension;
-/// the upstream small breakpoint (48em) uses full-height mobile overlays.
-#[component]
-pub fn Pane(
-    children: Element,
-    heading: String,
-    #[props(default)] expanded: bool,
-    #[props(default)] composition: PaneComposition,
-    #[props(default)] variant: PaneVariant,
-    #[props(default = "240px".to_string())] size: String,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] header: Option<Element>,
-    #[props(default)] hide_on_collapse: bool,
-    #[props(default)] borderless: bool,
-    #[props(default)] no_padding: bool,
-    #[props(default)] close_on_click_outside: bool,
-    #[props(default)] ignore_layout_settings: bool,
-    #[props(default)] aria_label_icon: Option<String>,
-    #[props(default)] aria_label_collapse_close_button: Option<String>,
-    #[props(default)] onbeforeexpandedchange: EventHandler<PaneExpandedChangeEvent>,
-    #[props(default)] onexpandedchange: EventHandler<bool>,
-) -> Element {
-    let context = try_consume_context::<PaneContext>().map(|c| (c.settings)());
-    let composition = context.map(|c| c.composition).unwrap_or(composition);
-    let styling = context.filter(|_| !ignore_layout_settings);
-    let variant = styling.map(|c| c.variant).unwrap_or(variant);
-    let borderless = styling.map(|c| c.borderless).unwrap_or(borderless);
-    let layout = try_consume_context::<PaneLayoutContext>();
-    let mut state = use_signal(|| expanded);
-    use_effect(use_reactive((&expanded,), move |(expanded,)| {
-        state.set(expanded)
+    use_effect(use_reactive((&show, &kind), move |(show, kind)| {
+        local_active.set(show.then_some(kind));
+        local.reconcile();
     }));
-    let slot = context
-        .map(|_| composition.class().to_string())
-        .unwrap_or_default();
-    let request = use_callback(move |next: bool| {
-        if request_pane_expansion(*state.peek(), next, slot.clone(), onbeforeexpandedchange) {
-            state.set(next);
-            onexpandedchange.call(next);
-        }
-    });
-    let mut observed_close = use_signal(|| {
-        layout
-            .map(|layout| *layout.close_requested.peek())
-            .unwrap_or(0)
-    });
-    use_effect(use_reactive((&variant,), move |(variant,)| {
-        if let Some(layout) = layout {
-            let tick = (layout.close_requested)();
-            if tick != *observed_close.peek() {
-                observed_close.set(tick);
-                if variant == PaneVariant::Floating {
-                    request.call(false);
-                }
-            }
-        }
-    }));
-    let mut dimensions = use_signal(|| (0.0, 0.0, false));
-    let (width, height, mobile) = dimensions();
-    let vertical = matches!(composition, PaneComposition::Left | PaneComposition::Right);
-    let size = pane_expanded_size(&size, if vertical { width } else { height });
-    let expanded = state();
-    let id = use_hook(|| format!("ix-pane-{}", NAV_ID.fetch_add(1, Ordering::Relaxed)));
-    let root_id = format!("{id}-root");
-    let focus_id = root_id.clone();
-    let cleanup_id = root_id.clone();
     use_drop(move || {
-        let id = serde_json::to_string(&cleanup_id).expect("pane id serialization");
-        let _ = dioxus::document::eval(&format!(
-            "document.getElementById({id})?.__ixPaneDispose?.();"
-        ));
+        let mut focus = local_focus;
+        if let Ok(mut state) = focus.try_write() {
+            state.alive = false;
+            let pending = state.task.take();
+            drop(state);
+            if let Some(pending) = pending {
+                pending.cancel();
+            }
+        }
     });
-    let label = if expanded {
-        if hide_on_collapse || mobile {
-            "Close pane"
-        } else {
-            "Collapse pane"
-        }
-    } else {
-        "Expand pane"
-    };
-    let label = aria_label_collapse_close_button.unwrap_or_else(|| label.to_string());
-    let toggle_icon = if (hide_on_collapse || mobile) && expanded {
-        "close"
-    } else {
-        let position = if mobile {
-            match composition {
-                PaneComposition::Left => PaneComposition::Top,
-                PaneComposition::Right => PaneComposition::Bottom,
-                other => other,
-            }
-        } else {
-            composition
-        };
-        match (position, expanded) {
-            (PaneComposition::Left, true) | (PaneComposition::Right, false) => {
-                "double-chevron-left"
-            }
-            (PaneComposition::Right, true) | (PaneComposition::Left, false) => {
-                "double-chevron-right"
-            }
-            (PaneComposition::Top, true) | (PaneComposition::Bottom, false) => "double-chevron-up",
-            _ => "double-chevron-down",
-        }
-    };
+    let focus = context.unwrap_or(local);
+    rsx! { if show { MenuOverlaySurface { kind, label, focus, onclose, close_label, {children} } } }
+}
+
+#[component]
+fn MenuOverlaySurface(
+    children: Element,
+    kind: MenuOverlayKind,
+    label: String,
+    focus: MenuOverlayContext,
+    onclose: EventHandler<()>,
+    close_label: String,
+) -> Element {
+    let id = use_hook(|| {
+        format!(
+            "ix-menu-overlay-close-{}",
+            NAV_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let mounted = crate::use_focus_mount(id.clone());
+    let runtime = crate::overlay_runtime::use_overlay_runtime();
+    let focus_id = id.clone();
     rsx! {
-            aside { id: root_id.clone(), class: "ix-pane ix-pane-{composition.class()}", "aria-label": heading.clone(), hidden: !expanded && hide_on_collapse,
-                "data-expanded": expanded.to_string(), "data-floating": (variant == PaneVariant::Floating).to_string(),
-                "data-mobile": mobile.to_string(), "data-hide-on-collapse": hide_on_collapse.to_string(),
-                "data-close-on-outside": close_on_click_outside.to_string(),
-                "data-borderless": borderless.to_string(), style: "--ix-pane-size:{size}px",
-                onmounted: move |_| {
-                    let id = root_id.clone();
-                    spawn(async move {
-                        let mut bridge = dioxus::document::eval(PANE_DOM_BRIDGE);
-                        if bridge.send(id).is_err() { return; }
-                        while let Ok((kind, width, height, mobile)) = bridge.recv::<(String, f64, f64, bool)>().await {
-                            match kind.as_str() {
-                                "measure" if width.is_finite() && height.is_finite() => dimensions.set((width.max(0.0), height.max(0.0), mobile)),
-                                "outside" => request.call(false),
-                                "disposed" => break,
-                                _ => {}
-                            }
-                        }
-                    });
-                },
-                onkeydown: move |event| match event.key() {
-                    Key::Escape if expanded && variant == PaneVariant::Floating => { event.prevent_default(); event.stop_propagation(); request.call(false); }
-                    Key::Tab if expanded && variant == PaneVariant::Floating => {
-                        event.prevent_default(); event.stop_propagation();
-                        let id = focus_id.clone();
-                        spawn(async move { pane_advance_focus(id, event.modifiers().shift()).await; });
-                    }
-                    _ => {}
-                },
-                div { class: "ix-pane-header",
-                    button { class: "ix-app-icon-button", r#type: "button", "aria-label": label, "aria-expanded": expanded.to_string(), "aria-controls": id.clone(),
-                        onclick: move |_| request.call(!expanded), crate::Icon { name: toggle_icon.to_string(), size: 24 }
-                    }
-                    div { class: "ix-pane-heading", if let Some(icon) = icon { span { role: if aria_label_icon.is_some() { Some("img") } else { None }, "aria-label": aria_label_icon, crate::Icon { name: icon, size: 24 } } } span { "{heading}" } }
-                    if expanded { {header} }
+        section { class: "ix-menu-overlay-panel", role: "dialog", "aria-label": label.clone(),
+            onfocusin: move |_| focus.owned(true),
+            onfocusout: move |_| focus.owned(false),
+            onkeydown: move |event| if event.key() == Key::Escape {
+                event.prevent_default(); event.stop_propagation(); focus.close(); onclose.call(());
+            },
+            div { class: "ix-menu-overlay-header", h2 { "{label}" }
+                button { id, class: "ix-app-icon-button ix-menu-overlay-close", r#type: "button", "aria-label": close_label,
+                    onmounted: move |event| {
+                        mounted.call(event);
+                        if let Some(target) = runtime.capture_registered_focus(&focus_id) { focus.autofocus(target,kind); }
+                    },
+                    onclick: move |_| { focus.close(); onclose.call(()); },
+                    crate::Icon { name: "close".to_string(), size: 24 }
                 }
-                div { id, class: "ix-pane-content", hidden: !expanded, "data-no-padding": no_padding.to_string(), {children} }
             }
+            div { class: "ix-menu-overlay-content", {children} }
+        }
     }
 }
 
-fn pane_expanded_size(size: &str, parent: f64) -> f64 {
-    let size = pane_size(size);
-    if size.ends_with('%') {
-        return if size == "50%" {
-            (parent / 2.0).round()
-        } else {
-            (parent / 3.0).round()
-        };
-    }
-    let pixels = size.trim_end_matches("px").parse::<f64>().unwrap_or(320.0);
-    let half_parent = (parent / 2.0).round();
-    if half_parent > 0.0 {
-        pixels.min(half_parent)
-    } else {
-        pixels
-    }
-}
-
-fn pane_focus_index(current: Option<usize>, count: usize, backwards: bool) -> Option<usize> {
-    if count == 0 {
-        return None;
-    }
-    Some(match current.filter(|current| *current < count) {
-        Some(current) if backwards => (current + count - 1) % count,
-        Some(current) => (current + 1) % count,
-        None if backwards => count - 1,
-        None => 0,
-    })
-}
-
-async fn pane_advance_focus(id: String, backwards: bool) {
-    let query = crate::dom_query::eval(
-        r#"
-        const id = await dioxus.recv(), pane = document.getElementById(id);
-        if (!pane || pane.dataset.expanded !== 'true') return null;
-        const items = [...pane.querySelectorAll('button,a[href],input,select,textarea,[tabindex]')].filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && !el.closest('[aria-hidden="true"],[hidden],[inert]') && el.getClientRects().length);
-        return [items.indexOf(document.activeElement), items.length];
-    "#,
-    );
-    if query.send(id.clone()).is_err() {
-        return;
-    }
-    let Ok(value) = query.await else {
-        return;
-    };
-    let Ok((current, count)) = serde_json::from_value::<(i64, usize)>(value) else {
-        return;
-    };
-    let Some(index) = pane_focus_index(usize::try_from(current).ok(), count, backwards) else {
-        return;
-    };
-    let focus = crate::dom_query::eval(
-        r#"
-        const [id, index] = await dioxus.recv(), pane = document.getElementById(id);
-        if (!pane || pane.dataset.expanded !== 'true') return null;
-        const items = [...pane.querySelectorAll('button,a[href],input,select,textarea,[tabindex]')].filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && !el.closest('[aria-hidden="true"],[hidden],[inert]') && el.getClientRects().length);
-        items[index]?.focus(); return null;
-    "#,
-    );
-    let _ = focus.send((id, index));
-    let _ = focus.await;
-}
-
-// Native metrics, focus activation/restoration and outside-click delivery only.
-// Expansion decisions, cancellation, size limits and Tab traversal stay in Rust.
-const PANE_DOM_BRIDGE: &str = r#"
-const id = await dioxus.recv(), pane = document.getElementById(id);
-if (!pane) return;
-pane.__ixPaneDispose?.();
-const parent = pane.closest('.ix-pane-layout') ?? pane.parentElement;
-const stackKey = Symbol.for('dioxus-ix.pane-focus-stack');
-const stack = document[stackKey] ??= [];
-let disposed = false, trapped = false, previousFocus = null, frame = 0;
-const focusable = () => [...pane.querySelectorAll('button,a[href],input,select,textarea,[tabindex]')].filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && !el.closest('[aria-hidden="true"],[hidden],[inert]') && el.getClientRects().length);
-const top = () => stack.at(-1) === pane;
-const releaseFocus = () => {
-    const at = stack.indexOf(pane); if (at >= 0) stack.splice(at, 1);
-    const active = document.activeElement, target = previousFocus;
-    previousFocus = null; trapped = false;
-    if (target?.isConnected && (pane.contains(active) || active === document.body || active === document.documentElement)) target.focus({preventScroll:true});
-};
-const syncFocus = () => {
-    const active = pane.dataset.expanded === 'true' && pane.dataset.floating === 'true';
-    if (active && !trapped) {
-        previousFocus = document.activeElement; trapped = true; stack.push(pane);
-        cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
-            if (!disposed && top() && pane.dataset.expanded === 'true') (pane.querySelector('[autofocus]') ?? focusable()[0])?.focus({preventScroll:true});
-        });
-    } else if (!active && trapped) releaseFocus();
-};
-const measure = () => {
-    if (disposed) return;
-    const rect = parent?.getBoundingClientRect();
-    dioxus.send(['measure', rect?.width ?? 0, rect?.height ?? 0, matchMedia('(max-width:48em)').matches]);
-};
-const outsideEvents = new WeakSet();
-const captureOutside = event => {
-    if (pane.dataset.expanded !== 'true' || pane.dataset.closeOnOutside !== 'true' || event.composedPath().includes(pane)) return;
-    if (pane.dataset.floating === 'true' && !top()) return;
-    outsideEvents.add(event);
-};
-const outside = event => {
-    // Capture eligibility before the target handler; deliver during bubbling
-    // only if its action did not already close the pane. Opening clicks were
-    // never eligible, independent of synchronous web or desktop IPC timing.
-    if (!outsideEvents.has(event)) return;
-    outsideEvents.delete(event);
-    if (!disposed && pane.dataset.expanded === 'true') dioxus.send(['outside', 0, 0, false]);
-};
-const focusIn = event => {
-    if (!trapped || !top() || pane.contains(event.target)) return;
-    // Native top-layer content belongs to the nested control, not the pane's
-    // regular DOM subtree in every renderer. Allow its own focus controller.
-    if (event.target.closest?.('dialog[open],[popover]:popover-open')) return;
-    (pane.querySelector('[autofocus]') ?? focusable()[0])?.focus({preventScroll:true});
-};
-const resize = new ResizeObserver(measure); if (parent) resize.observe(parent);
-const attributes = new MutationObserver(syncFocus); attributes.observe(pane, {attributes:true, attributeFilter:['data-expanded','data-floating']});
-const detached = new MutationObserver(() => { if (!pane.isConnected) dispose(); });
-detached.observe(document.documentElement, {childList:true, subtree:true});
-const dispose = () => {
-    if (disposed) return; disposed = true; cancelAnimationFrame(frame);
-    resize.disconnect(); attributes.disconnect(); detached.disconnect();
-    window.removeEventListener('resize', measure);
-    window.removeEventListener('click', captureOutside, true); window.removeEventListener('click', outside);
-    document.removeEventListener('focusin', focusIn); if (trapped) releaseFocus();
-    delete pane.__ixPaneDispose; dioxus.send(['disposed', 0, 0, false]);
-};
-pane.__ixPaneDispose = dispose;
-window.addEventListener('resize', measure);
-window.addEventListener('click', captureOutside, true); window.addEventListener('click', outside);
-document.addEventListener('focusin', focusIn);
-measure(); syncFocus();
-"#;
-
-fn pane_size(size: &str) -> &str {
-    match size {
-        "240px" | "320px" | "360px" | "480px" | "600px" | "33%" | "50%" => size,
-        _ => "320px",
-    }
-}
+include!("application/pane.rs");
 
 /// Responsive column grid. Column widths are fractions of `columns`, clamped to 2–12.
 #[component]
@@ -4551,6 +4262,9 @@ mod document_tests;
 
 #[cfg(test)]
 mod tests {
+    mod menu_overlay_focus_tests {
+        include!("application/menu_overlay_focus_tests.rs");
+    }
     mod menu_mounted_focus_tests {
         include!("application/menu_mounted_focus_tests.rs");
     }
@@ -7616,16 +7330,6 @@ mod tests {
         assert_eq!(pane_expanded_size("33%", 719.0), 240.0);
         assert_eq!(pane_expanded_size("480px", 0.0), 480.0);
         assert_eq!(pane_expanded_size("invalid", 400.0), 200.0);
-    }
-
-    #[test]
-    fn pane_focus_wraps_both_directions_and_recovers_removed_controls() {
-        assert_eq!(pane_focus_index(Some(2), 3, false), Some(0));
-        assert_eq!(pane_focus_index(Some(0), 3, true), Some(2));
-        assert_eq!(pane_focus_index(None, 3, false), Some(0));
-        assert_eq!(pane_focus_index(None, 3, true), Some(2));
-        assert_eq!(pane_focus_index(Some(8), 2, false), Some(0));
-        assert_eq!(pane_focus_index(Some(0), 0, false), None);
     }
 
     #[test]

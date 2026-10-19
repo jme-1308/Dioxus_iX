@@ -1,6 +1,8 @@
 //! Excluded preview of R02 framework focus, resize and post-render notifications.
 use dioxus::prelude::*;
 use dioxus_ix::*;
+#[path = "dioxus_first_probe/application_focus_review.rs"]
+mod application_focus_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
@@ -69,6 +71,9 @@ fn Preview() -> Element {
                 .unwrap_or_default()
         }
     });
+    if scope == "?applicationfocus" {
+        return rsx! { application_focus_review::ApplicationFocusPreview {} };
+    }
     if scope == "?opening" {
         return rsx! { descendant_review::DescendantPreview {} };
     }
