@@ -17,12 +17,13 @@ class Panel {
   marker = 'current';
   calls = [];
   fail = false;
+  prevent = false;
   getAttribute() { return this.marker; }
   matches() { return this.open; }
   showPopover(options) {
     this.calls.push({ shown: true, inert: this.inert, options });
     if (this.fail) throw new Error('native rejection');
-    this.open = true;
+    if (!this.prevent) this.open = true;
   }
   hidePopover() {
     this.calls.push({ shown: false });
@@ -39,9 +40,9 @@ const run = (panel, shown, guard = null, invoker = null) => execute(
 // Select keeps its explicit native source. Repeated presentation is idempotent.
 {
   const panel = new Panel();
-  assert.equal(await run(panel, true, null, input.id), null);
+  assert.equal(await run(panel, true, null, input.id), true);
   assert.deepEqual(panel.calls, [{ shown: true, inert: false, options: { source: input } }]);
-  assert.equal(await run(panel, true, null, input.id), null);
+  assert.equal(await run(panel, true, null, input.id), true);
   assert.equal(panel.calls.length, 1);
 }
 
@@ -49,10 +50,10 @@ const run = (panel, shown, guard = null, invoker = null) => execute(
 // Inert is restored even when the native operation throws.
 {
   const panel = new Panel();
-  assert.equal(await run(panel, true), null);
+  assert.equal(await run(panel, true), true);
   assert.equal(panel.calls[0].inert, true);
   assert.equal(panel.inert, false);
-  assert.equal(await run(panel, false), null);
+  assert.equal(await run(panel, false), true);
   assert.deepEqual(panel.calls.at(-1), { shown: false });
   panel.inert = true;
   panel.fail = true;
@@ -63,13 +64,27 @@ const run = (panel, shown, guard = null, invoker = null) => execute(
 // A stale rendered intent cannot open or close the current surface.
 {
   const panel = new Panel();
-  assert.equal(await run(panel, true, ['data-current', 'old']), null);
+  assert.equal(await run(panel, true, ['data-current', 'old']), false);
   assert.equal(panel.calls.length, 0);
   panel.open = true;
-  assert.equal(await run(panel, false, ['data-current', 'old']), null);
+  assert.equal(await run(panel, false, ['data-current', 'old']), false);
   assert.equal(panel.open, true);
   panel.isConnected = false;
-  assert.equal(await run(panel, true, ['data-current', 'current']), null);
+  assert.equal(await run(panel, true, ['data-current', 'current']), false);
+  assert.equal(panel.calls.length, 0);
+  panel.isConnected = true;
+  assert.equal(await run(panel, false, ['data-current', 'current']), true);
+  assert.equal(panel.open, false);
+  assert.deepEqual(panel.calls, [{ shown: false }]);
+}
+
+// A native opening canceled without throwing must not be reported as applied.
+{
+  const panel = new Panel();
+  panel.prevent = true;
+  assert.match(await run(panel, true), /visibility did not match request/);
+  assert.equal(panel.open, false);
+  assert.equal(panel.inert, false);
 }
 
 assert.match(await run(null, true), /not mounted/);
@@ -77,4 +92,4 @@ assert.match(await run(new Panel(), true, null, 'removed-invoker'), /Invoker is 
 const unsupported = new Panel();
 unsupported.showPopover = undefined;
 assert.match(await run(unsupported, true), /unavailable/);
-console.log('PASS: native invoker, inert promotion, guarded visibility, idempotence and explicit errors');
+console.log('PASS: native invoker, inert promotion, confirmed guarded visibility, idempotence and explicit errors');

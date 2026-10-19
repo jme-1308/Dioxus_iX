@@ -18,20 +18,27 @@ static NEXT_SURFACE: AtomicU64 = AtomicU64::new(1);
 /// caller owns visibility and lifetime; a rendered marker rejects stale intents.
 /// An explicit source is the native invoker. Other surfaces promote inertly so
 /// the browser cannot override focus owned by their Dioxus mounted handles.
+/// Returns true for confirmed visibility, or false for a stale guarded intent.
 pub(crate) async fn present(
     id: &str,
     shown: bool,
     guard: Option<(&str, &str)>,
     source: Option<&str>,
-) -> Result<(), crate::NativeSurfaceError> {
+) -> Result<bool, crate::NativeSurfaceError> {
     #[cfg(any(feature = "web", feature = "desktop"))]
     {
         let task = crate::dom_query::eval(PRESENT);
         task.send((id, shown, guard, source))
             .map_err(|error| crate::NativeSurfaceError::Rejected(error.to_string()))?;
-        match task.join::<Option<String>>().await {
-            Ok(None) => Ok(()),
-            Ok(Some(error)) => Err(crate::NativeSurfaceError::Rejected(error)),
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Reply {
+            Applied(bool),
+            Rejected(String),
+        }
+        match task.join::<Reply>().await {
+            Ok(Reply::Applied(applied)) => Ok(applied),
+            Ok(Reply::Rejected(error)) => Err(crate::NativeSurfaceError::Rejected(error)),
             Err(error) => Err(crate::NativeSurfaceError::Rejected(error.to_string())),
         }
     }
@@ -45,7 +52,7 @@ pub(crate) async fn present(
 #[cfg(any(feature = "web", feature = "desktop"))]
 const PRESENT: &str = r#"
 const [id,shown,guard,source]=await dioxus.recv(),panel=document.getElementById(id);
-if(guard&&(!panel?.isConnected||panel.getAttribute(guard[0])!==guard[1]))return null;
+if(guard&&(!panel?.isConnected||panel.getAttribute(guard[0])!==guard[1]))return false;
 if(!panel?.isConnected)return 'Surface is not mounted';
 const invoker=source?document.getElementById(source):null;
 if(source&&!invoker)return 'Invoker is not mounted';
@@ -59,7 +66,8 @@ try {
             try{panel.showPopover();}finally{panel.inert=inert;}
         }
     }else if(!shown&&open)panel.hidePopover();
-    return null;
+    if(!panel.isConnected)return guard?false:'Surface is not mounted';
+    return panel.matches(':popover-open')===shown?true:'Native popover visibility did not match request';
 }catch(error){return String(error);}
 "#;
 

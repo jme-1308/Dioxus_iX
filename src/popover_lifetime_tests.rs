@@ -1,6 +1,6 @@
 //! Opening admission must survive cancellation of its owning Rust future.
-//! These tests stop at the deliberate pre-native yield, so no renderer, DOM
-//! bridge or native opening is required and no completion is fabricated.
+//! Opening tests stop at the Dioxus pre-native render boundary. They flush real
+//! framework effects without a DOM bridge or fabricated native completion.
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -13,6 +13,120 @@ fn fixture() -> Element {
     let capture = consume_context::<Capture>();
     *capture.borrow_mut() = Some(popover);
     VNode::empty()
+}
+
+#[test]
+fn popover_render_waiter_requires_the_framework_post_render_effect() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::task::Wake;
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let mut dom = VirtualDom::new(VNode::empty);
+    dom.rebuild_in_place();
+    let mut scheduler = Context::from_waker(Waker::noop());
+    assert!(
+        std::pin::pin!(dom.wait_for_work())
+            .poll(&mut scheduler)
+            .is_pending()
+    );
+    let wakes = Arc::new(WakeCount::default());
+    let waker = Waker::from(wakes.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut waiter = Box::pin(popover_after_render());
+
+    dom.in_scope(ScopeId::ROOT, || {
+        assert!(waiter.as_mut().poll(&mut context).is_pending());
+        assert!(
+            waiter.as_mut().poll(&mut context).is_pending(),
+            "polling again cannot substitute for a render"
+        );
+    });
+    assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+    assert!(
+        std::pin::pin!(dom.wait_for_work())
+            .poll(&mut scheduler)
+            .is_ready()
+    );
+    assert!(waiter.as_mut().poll(&mut context).is_pending());
+    dom.render_immediate_to_vec();
+    assert!(waiter.as_mut().poll(&mut context).is_pending());
+    // Pinned Dioxus flushes post-render effects on the following idle pass.
+    assert!(
+        std::pin::pin!(dom.wait_for_work())
+            .poll(&mut scheduler)
+            .is_pending()
+    );
+    assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+    assert!(waiter.as_mut().poll(&mut context).is_ready());
+}
+
+#[test]
+fn canceled_render_waiter_cannot_resume_or_release_later_opening() {
+    let capture: Capture = Rc::new(RefCell::new(None));
+    let mut dom = VirtualDom::new(fixture).with_root_context(capture.clone());
+    dom.rebuild_in_place();
+    let mut popover = capture.borrow().unwrap();
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(
+        std::pin::pin!(dom.wait_for_work())
+            .poll(&mut context)
+            .is_pending()
+    );
+
+    let (mut later, generation) = dom.in_scope(ScopeId::ROOT, || {
+        popover
+            .surface
+            .node
+            .set(Some(Rc::new(MountedData::new(()))));
+        let mut canceled = Box::pin(popover.show_native());
+        assert!(canceled.as_mut().poll(&mut context).is_pending());
+        drop(canceled);
+        assert!(!*popover.opening.peek());
+
+        let mut later = Box::pin(popover.show_native());
+        assert!(later.as_mut().poll(&mut context).is_pending());
+        assert!(
+            later.as_mut().poll(&mut context).is_pending(),
+            "a later admission owns its own render waiter"
+        );
+        (later, *popover.surface.generation.peek())
+    });
+    assert!(
+        std::pin::pin!(dom.wait_for_work())
+            .poll(&mut context)
+            .is_ready()
+    );
+    assert!(later.as_mut().poll(&mut context).is_pending());
+    dom.render_immediate_to_vec();
+    assert!(
+        std::pin::pin!(dom.wait_for_work())
+            .poll(&mut context)
+            .is_pending()
+    );
+    dom.in_scope(ScopeId::ROOT, || {
+        assert_eq!(*popover.surface.generation.peek(), generation);
+        assert!(
+            *popover.opening.peek(),
+            "flushing the canceled waiter's effect cannot release a later admission"
+        );
+        assert!(
+            !popover.is_open(),
+            "effect delivery cannot resume a dropped opening or perform native work"
+        );
+        assert!(!*popover.reported_open.peek());
+        drop(later);
+        assert!(!*popover.opening.peek());
+    });
 }
 
 #[test]

@@ -15,13 +15,6 @@ use dioxus::prelude::*;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(any(
-    all(feature = "web", target_arch = "wasm32"),
-    all(feature = "desktop", not(target_arch = "wasm32"))
-))]
-#[path = "popover_native.rs"]
-mod popover_native;
-
 #[cfg(test)]
 #[path = "modal_focus_tests.rs"]
 mod modal_focus_tests;
@@ -131,6 +124,41 @@ impl Surface {
         Some(bounds.size.width > 0.0 && bounds.size.height > 0.0)
     }
 
+    // The caller queues this after Dioxus publishes the current generation.
+    // Native code checks that rendered value rather than maintaining another
+    // command counter; Rust still validates ownership before and after the call.
+    async fn present_popover(self, generation: u64, shown: bool) -> Result<(), NativeSurfaceError> {
+        let current = || {
+            self.generation
+                .try_peek()
+                .is_ok_and(|value| *value == generation)
+                && self.open.try_peek().is_ok_and(|value| *value == shown)
+        };
+        if !current() {
+            return Err(NativeSurfaceError::Superseded);
+        }
+        if !self.node.try_peek().is_ok_and(|node| node.is_some()) {
+            return Err(NativeSurfaceError::NotMounted);
+        }
+        let id = self.id();
+        let marker = generation.to_string();
+        let result = crate::native_popover::present(
+            &id,
+            shown,
+            Some(("data-surface-generation", &marker)),
+            None,
+        )
+        .await;
+        if !current() {
+            return Err(NativeSurfaceError::Superseded);
+        }
+        match result {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(NativeSurfaceError::Superseded),
+            Err(error) => Err(error),
+        }
+    }
+
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     fn element(self) -> Result<web_sys::Element, NativeSurfaceError> {
         self.node
@@ -142,8 +170,8 @@ impl Surface {
             .ok_or(NativeSurfaceError::UnsupportedRenderer)
     }
 
-    // MountedData has no top-layer showModal/showPopover operation. This native
-    // integration only presents the surface; it never discovers or executes focus.
+    // Modal and non-blocking Modal keep their native presentation semantics.
+    // Retained Popover presentation uses the shared binding above instead.
     async fn native_open(self, modal: bool) -> Result<(), NativeSurfaceError> {
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
         {
@@ -272,6 +300,34 @@ impl Surface {
         #[cfg(not(any(feature = "web", feature = "desktop")))]
         false
     }
+}
+
+// queue_effect is the pinned Dioxus post-render boundary. Keep this one waiter
+// local to its Rust future; cancellation leaves no native command to execute.
+async fn popover_after_render() {
+    let state = Rc::new(std::cell::RefCell::new((false, None::<std::task::Waker>)));
+    let rendered = state.clone();
+    dioxus::core::queue_effect(move || {
+        let waker = {
+            let mut state = rendered.borrow_mut();
+            state.0 = true;
+            state.1.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    });
+    dioxus::core::needs_update();
+    std::future::poll_fn(move |context| {
+        let mut state = state.borrow_mut();
+        if state.0 {
+            std::task::Poll::Ready(())
+        } else {
+            state.1 = Some(context.waker().clone());
+            std::task::Poll::Pending
+        }
+    })
+    .await;
 }
 
 /// Upstream modal width presets, including full-width and full-screen layouts.
@@ -926,20 +982,9 @@ impl PopoverHandle {
             popover: self,
             generation,
         };
-        // Source's resolved-dialog await lets earlier dismissal continuations
-        // issue their native hides first. Yield the Rust task once for the same
-        // command order across the desktop IPC bridge.
-        let mut yielded = false;
-        std::future::poll_fn(|cx| {
-            if yielded {
-                std::task::Poll::Ready(())
-            } else {
-                yielded = true;
-                cx.waker().wake_by_ref();
-                std::task::Poll::Pending
-            }
-        })
-        .await;
+        // Publish the current generation through Dioxus before native work.
+        // This replaces the private native command counter and source-like yield.
+        popover_after_render().await;
         if *self.surface.generation.peek() != generation
             || node.as_ref().is_some_and(|node| !node.is_registered())
         {
@@ -961,7 +1006,7 @@ impl PopoverHandle {
         if let Some(node) = &node {
             node.did_present();
         }
-        let result = self.surface.native_open(false).await;
+        let result = self.surface.present_popover(generation, true).await;
         if *self.surface.generation.peek() != generation {
             return Err(NativeSurfaceError::Superseded);
         }
@@ -1242,11 +1287,19 @@ impl PopoverHandle {
         ))]
         {
             let hide = move || {
+                // Hide only after Dioxus renders this generation. Its confirmed
+                // completion still precedes registered mounted focus return.
                 spawn(async move {
-                    if popover_native::close(self.surface, generation).await {
+                    popover_after_render().await;
+                    if self
+                        .surface
+                        .present_popover(generation, false)
+                        .await
+                        .is_ok()
+                    {
                         complete();
                     }
-                })
+                });
             };
             if let Some(node) = node {
                 node.with_owner(hide);
