@@ -8,6 +8,7 @@ use crate::overlay_completion::CompletionQueue;
 use crate::overlay_domain::{Domain, DomainCallbacks, SurfaceValidity};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
 use dioxus::prelude::*;
+use dioxus_core::Task;
 use serde::Deserialize;
 use std::{
     cell::RefCell,
@@ -212,8 +213,14 @@ struct Runtime {
     item_kinds: BTreeMap<String, ItemKind>,
     item_visual_signal: Option<Signal<Option<String>>>,
     bridge: Option<dioxus::document::Eval>,
+    bridge_task: Option<Task>,
+    bridge_leases: usize,
+    bridge_epoch: u64,
+    bridge_owner: Option<(Weak<dioxus::core::Runtime>, CopyValue<()>)>,
+    bridge_ready: Option<Signal<bool>>,
     domain: Option<Domain>,
     document: String,
+    document_generation: u64,
     categories: BTreeMap<usize, CategoryCallback>,
     focus_observers: BTreeMap<String, ScopedFocusRegistration>,
     focus_observer_sequence: u64,
@@ -252,7 +259,7 @@ pub(crate) struct MountedFocusTarget {
     logical_target: String,
     focus_id: String,
     node: Weak<MountedData>,
-    document: String,
+    document_generation: u64,
     renderer: Option<Weak<dioxus::core::Runtime>>,
 }
 impl MountedFocusTarget {
@@ -271,7 +278,7 @@ impl MountedFocusTarget {
         let runtime = self.runtime.upgrade()?;
         let node = self.node.upgrade()?;
         let state = runtime.borrow();
-        (state.document == self.document
+        (state.document_generation == self.document_generation
             && state.item_mounts.get(&self.key).is_some_and(|mount| {
                 mount.target == self.logical_target
                     && mount.focus_id == self.focus_id
@@ -502,8 +509,15 @@ impl RuntimeHandle {
             item_visual_signal: dioxus::core::Runtime::try_current()
                 .map(|_| Signal::new_in_scope(None, ScopeId::ROOT)),
             bridge: None,
+            bridge_task: None,
+            bridge_leases: 0,
+            bridge_epoch: 0,
+            bridge_owner: None,
+            bridge_ready: dioxus::core::Runtime::try_current()
+                .map(|_| Signal::new_in_scope(false, ScopeId::ROOT)),
             domain: None,
             document: String::new(),
+            document_generation: 0,
             categories: BTreeMap::new(),
             focus_observers: BTreeMap::new(),
             focus_observer_sequence: 0,
@@ -543,6 +557,7 @@ impl RuntimeHandle {
         }
     }
     pub(crate) fn request_scoped_focus(&self, root: &str, generation: u64, request: u64) -> bool {
+        self.read_bridge_ready();
         let state = self.0.borrow();
         if !state.focus_observers.get(root).is_some_and(|entry| {
             entry.generation == generation
@@ -778,7 +793,7 @@ impl RuntimeHandle {
             logical_target: mount.target.clone(),
             focus_id: id.into(),
             node: Rc::downgrade(&mount.node),
-            document: state.document.clone(),
+            document_generation: state.document_generation,
             renderer: mount.renderer.clone(),
         })
     }
@@ -1887,6 +1902,9 @@ impl RuntimeHandle {
             let mut state = self.0.borrow_mut();
             // Adopting another document cancels old-document native work.
             if !state.document.is_empty() {
+                // The initial typed report binds an already-mounted renderer;
+                // only a later document change invalidates its saved handles.
+                state.document_generation = state.document_generation.wrapping_add(1);
                 state.submenu_marks.clear();
 
                 state.item_visual_host = None;
@@ -2513,15 +2531,120 @@ impl RuntimeHandle {
         drop(runtime);
         self.publish_ownership();
     }
-    fn start_bridge(&self) {
-        if self.0.borrow().bridge.is_some() {
-            return;
+    /// Existing request effects subscribe to source availability. A renderless
+    /// lease may start after its parent's initial effect; no request is queued.
+    fn read_bridge_ready(&self) {
+        if let Some(ready) = self.0.borrow().bridge_ready {
+            let _ = ready.try_read();
         }
-        let owner = serde_json::to_string(&self.owner_id()).expect("overlay runtime owner");
-        let bridge = dioxus::document::eval(
-            &crate::overlay_registry_dom::BRIDGE.replace("__OWNER__", &owner),
-        );
-        self.0.borrow_mut().bridge = Some(bridge);
+    }
+    fn publish_bridge_ready(&self, value: bool) {
+        let ready = self.0.borrow().bridge_ready;
+        if let Some(mut ready) = ready
+            && let Ok(mut current) = ready.try_write()
+            && *current != value
+        {
+            *current = value;
+        }
+    }
+    fn acquire_bridge(
+        &self,
+        document: Option<Rc<dyn dioxus::document::Document>>,
+        renderer: Weak<dioxus::core::Runtime>,
+    ) {
+        {
+            let mut state = self.0.borrow_mut();
+            state.bridge_leases += 1;
+            if state.bridge.is_some() {
+                return;
+            }
+        }
+        let (Some(document), Some(renderer)) = (document, renderer.upgrade()) else {
+            return;
+        };
+        renderer.in_scope(ScopeId::ROOT, || {
+            let (owner, sequence, epoch) = {
+                let mut state = self.0.borrow_mut();
+                state.bridge_epoch = state.bridge_epoch.wrapping_add(1);
+                state.bridge_owner = Some((
+                    Rc::downgrade(&renderer),
+                    CopyValue::new_in_scope((), ScopeId::ROOT),
+                ));
+                (
+                    serde_json::to_string(&state.owner).expect("overlay runtime owner"),
+                    state.sequence,
+                    state.bridge_epoch,
+                )
+            };
+            // Desktop's real Document provider is below ROOT. Use the provider
+            // captured by the lease while the Eval/task belong to ROOT.
+            let script = crate::overlay_registry_dom::BRIDGE
+                .replace("__OWNER__", &owner)
+                .replace("__START_SEQUENCE__", &sequence.to_string());
+            let bridge = document.eval(script);
+            let mut receiver = bridge;
+            let weak = Rc::downgrade(&self.0);
+            let task = spawn(async move {
+                while let Ok(report) = receiver.recv::<Report>().await {
+                    let Some(runtime) = weak.upgrade().map(RuntimeHandle) else {
+                        break;
+                    };
+                    if !runtime.receive_report(epoch, report) {
+                        break;
+                    }
+                }
+            });
+            {
+                let mut state = self.0.borrow_mut();
+                state.bridge = Some(bridge);
+                state.bridge_task = Some(task);
+            }
+            self.publish_bridge_ready(true);
+        });
+    }
+    fn release_bridge(&self) {
+        let stopped = {
+            let mut state = self.0.borrow_mut();
+            if state.bridge_leases == 0 {
+                return;
+            }
+            state.bridge_leases -= 1;
+            if state.bridge_leases != 0 {
+                return;
+            }
+            state.bridge_epoch = state.bridge_epoch.wrapping_add(1);
+            state.bridge_owner = None;
+            (state.bridge.take(), state.bridge_task.take())
+        };
+        if let Some(bridge) = stopped.0 {
+            let _ = bridge.send(serde_json::json!({"finish":true}));
+        }
+        if let Some(task) = stopped.1 {
+            task.cancel();
+        }
+        self.publish_bridge_ready(false);
+    }
+    fn receive_report(&self, epoch: u64, report: Report) -> bool {
+        let current = {
+            let state = self.0.borrow();
+            state.bridge_epoch == epoch
+                && state.bridge_leases > 0
+                && state.bridge.is_some()
+                && state.bridge_owner.as_ref().is_some_and(|(renderer, live)| {
+                    renderer.upgrade().is_some() && live.try_read().is_ok()
+                })
+        };
+        if !current {
+            return false;
+        }
+        self.observe(&report);
+        true
+    }
+    #[cfg(test)]
+    pub(crate) fn test_report(&self, value: serde_json::Value) {
+        if let Ok(report) = serde_json::from_value(value) {
+            self.observe(&report);
+        }
     }
     fn set_navigation_mode(&self, id: &str, generation: u64, mode: &str) -> bool {
         if !matches!(mode, "active-descendant" | "roving-tabindex") {
@@ -2977,6 +3100,7 @@ impl RuntimeHandle {
             }
         });
     }
+    #[cfg(test)]
     fn input(&self, event: FormEvent) {
         event.stop_propagation();
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
@@ -3649,6 +3773,7 @@ impl NodeHandle {
         let Some(runtime) = self.runtime() else {
             return false;
         };
+        runtime.read_bridge_ready();
         if !runtime.entry(&self.id).is_some_and(|entry| {
             entry.mounted
                 && entry.generation == self.generation
@@ -3918,13 +4043,22 @@ pub(crate) fn use_overlay_runtime() -> RuntimeHandle {
 
 #[component]
 pub(crate) fn OverlayTransport(runtime: RuntimeHandle) -> Element {
-    let owner = runtime.owner_id();
-    let mounted = runtime.clone();
-    let input = runtime.clone();
-    rsx! { input { r#type:"hidden", "data-ix-overlay-transport":owner,
-        onmounted:move |_| mounted.start_bridge(),
-        oninput:move |event| input.input(event),
-    } }
+    let document = use_hook(try_consume_context::<Rc<dyn dioxus::document::Document>>);
+    let renderer = use_hook(|| Rc::downgrade(&dioxus::core::Runtime::current()));
+    let leased = use_hook(|| Rc::new(std::cell::Cell::new(false)));
+    let active = leased.clone();
+    let source = runtime.clone();
+    use_effect(move || {
+        if !active.replace(true) {
+            source.acquire_bridge(document.clone(), renderer.clone());
+        }
+    });
+    use_drop(move || {
+        if leased.replace(false) {
+            runtime.release_bridge();
+        }
+    });
+    VNode::empty()
 }
 
 #[path = "submenu_runtime.rs"]
@@ -4810,6 +4944,313 @@ mod tests {
         );
         runtime.unregister_focus_observer("z-peer", current_generation.get());
         runtime.unregister_focus_observer("a-first", first_generation);
+    }
+
+    #[derive(Default)]
+    struct TypedStreamBackend {
+        queued: std::collections::VecDeque<serde_json::Value>,
+        sent: Vec<serde_json::Value>,
+        waker: Option<std::task::Waker>,
+    }
+    struct TypedStreamEval(Rc<RefCell<TypedStreamBackend>>);
+    impl dioxus::document::Evaluator for TypedStreamEval {
+        fn send(&self, value: serde_json::Value) -> Result<(), dioxus::document::EvalError> {
+            self.0.borrow_mut().sent.push(value);
+            Ok(())
+        }
+        fn poll_recv(
+            &mut self,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<serde_json::Value, dioxus::document::EvalError>> {
+            let mut state = self.0.borrow_mut();
+            if let Some(value) = state.queued.pop_front() {
+                std::task::Poll::Ready(Ok(value))
+            } else {
+                state.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+        fn poll_join(
+            &mut self,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<serde_json::Value, dioxus::document::EvalError>> {
+            std::task::Poll::Pending
+        }
+    }
+    #[derive(Default)]
+    struct TypedStreamState {
+        scripts: Vec<String>,
+        streams: Vec<Rc<RefCell<TypedStreamBackend>>>,
+    }
+    struct TypedStreamDocument {
+        owner: dioxus::signals::Owner,
+        state: Rc<RefCell<TypedStreamState>>,
+    }
+    impl dioxus::document::Document for TypedStreamDocument {
+        fn eval(&self, script: String) -> dioxus::document::Eval {
+            assert_eq!(current_scope_id(), ScopeId::ROOT);
+            assert!(
+                try_consume_context::<Rc<dyn dioxus::document::Document>>().is_none(),
+                "ROOT intentionally has no Document provider"
+            );
+            assert!(!script.contains("__START_SEQUENCE__"));
+            let owner: String = serde_json::from_str(
+                script
+                    .split("const owner=")
+                    .nth(1)
+                    .unwrap()
+                    .split(",listeners=")
+                    .next()
+                    .unwrap(),
+            )
+            .unwrap();
+            let sequence: u64 = script
+                .split("let alive=true,sequence=")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let backend = Rc::new(RefCell::new(TypedStreamBackend::default()));
+            backend.borrow_mut().queued.push_back(serde_json::json!({"owner":owner,"document":"typed stream fixture","sequence":sequence+1,"kind":"observe","active_default":true}));
+            self.state.borrow_mut().scripts.push(script);
+            self.state.borrow_mut().streams.push(backend.clone());
+            dioxus::document::Eval::new(
+                self.owner.insert(
+                    Box::new(TypedStreamEval(backend)) as Box<dyn dioxus::document::Evaluator>
+                ),
+            )
+        }
+    }
+    #[derive(Clone)]
+    struct TypedStreamFixture {
+        document: Rc<dyn dioxus::document::Document>,
+        runtime: Rc<RefCell<Option<RuntimeHandle>>>,
+        first: Rc<Cell<Option<Signal<bool>>>>,
+        second: Rc<Cell<Option<Signal<bool>>>>,
+        attempts: Rc<Cell<usize>>,
+    }
+    impl PartialEq for TypedStreamFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.runtime, &other.runtime)
+        }
+    }
+    #[component]
+    fn TypedStreamProvider(fixture: TypedStreamFixture) -> Element {
+        use_context_provider(|| fixture.document.clone());
+        let runtime = fixture.runtime.borrow().clone().unwrap();
+        rsx! { OverlayTransport { runtime } }
+    }
+    fn typed_stream_root(fixture: TypedStreamFixture) -> Element {
+        let runtime = use_overlay_runtime();
+        *fixture.runtime.borrow_mut() = Some(runtime.clone());
+        let first = use_signal(|| true);
+        let second = use_signal(|| true);
+        fixture.first.set(Some(first));
+        fixture.second.set(Some(second));
+        let passive = runtime.clone();
+        let generation =
+            use_hook(|| passive.register_focus_observer("typed-startup".into(), Rc::new(|_| {})));
+        let request = runtime.clone();
+        let attempts = fixture.attempts.clone();
+        use_effect(move || {
+            attempts.set(attempts.get() + 1);
+            let _ = request.request_scoped_focus("typed-startup", generation, 42);
+        });
+        use_drop(move || runtime.unregister_focus_observer("typed-startup", generation));
+        rsx! {
+            div { "Renderless typed stream" }
+            if first() { TypedStreamProvider { fixture:fixture.clone() } }
+            if second() { TypedStreamProvider { fixture } }
+        }
+    }
+    fn typed_stream_fixture() -> (TypedStreamFixture, Rc<RefCell<TypedStreamState>>) {
+        let state = Rc::new(RefCell::new(TypedStreamState::default()));
+        (
+            TypedStreamFixture {
+                document: Rc::new(TypedStreamDocument {
+                    owner: Default::default(),
+                    state: state.clone(),
+                }),
+                runtime: Rc::default(),
+                first: Rc::default(),
+                second: Rc::default(),
+                attempts: Rc::default(),
+            },
+            state,
+        )
+    }
+    fn typed_packet(runtime: &RuntimeHandle, sequence: u64, active: &str) -> Report {
+        Report {
+            owner: runtime.owner_id(),
+            document: "typed stream fixture".into(),
+            sequence,
+            kind: "observe".into(),
+            active_id: active.into(),
+            ..Default::default()
+        }
+    }
+    fn typed_push(stream: &Rc<RefCell<TypedStreamBackend>>, value: serde_json::Value) {
+        let wake = {
+            let mut state = stream.borrow_mut();
+            state.queued.push_back(value);
+            state.waker.take()
+        };
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+    }
+
+    #[test]
+    fn typed_overlay_stream_uses_scoped_provider_shares_leases_and_restarts_from_current_sequence()
+    {
+        let (fixture, native) = typed_stream_fixture();
+        let mut dom = VirtualDom::new_with_props(typed_stream_root, fixture.clone());
+        dom.rebuild_in_place();
+        settle_item_effects(&mut dom);
+        let runtime = fixture.runtime.borrow().clone().unwrap();
+        assert_eq!(
+            native.borrow().scripts.len(),
+            1,
+            "two renderless leases share one native stream"
+        );
+        assert_eq!(runtime.0.borrow().bridge_leases, 2);
+        assert_eq!(
+            runtime.0.borrow().sequence,
+            1,
+            "typed receiver admits initial native report"
+        );
+        let html = dioxus_ssr::render(&dom);
+        assert!(!html.contains("data-ix-overlay-transport"));
+        let stream = native.borrow().streams[0].clone();
+        assert!(
+            stream
+                .borrow()
+                .sent
+                .iter()
+                .any(|value| value["focus_request"]["request"] == 42),
+            "startup request effect observes source readiness without a request queue"
+        );
+        assert!(fixture.attempts.get() >= 1);
+        let epoch = runtime.0.borrow().bridge_epoch;
+        typed_push(
+            &stream,
+            serde_json::json!({"owner":runtime.owner_id(),"document":"typed stream fixture","sequence":7,"kind":"observe","active_id":"first-input"}),
+        );
+        settle_item_effects(&mut dom);
+        assert_eq!(runtime.0.borrow().sequence, 7);
+        dom.in_scope(ScopeId::ROOT, || fixture.first.get().unwrap().set(false));
+        settle_item_effects(&mut dom);
+        assert_eq!(runtime.0.borrow().bridge_leases, 1);
+        assert_eq!(native.borrow().scripts.len(), 1);
+        assert!(
+            !stream
+                .borrow()
+                .sent
+                .iter()
+                .any(|value| value["finish"] == true)
+        );
+        typed_push(
+            &stream,
+            serde_json::json!({"owner":runtime.owner_id(),"document":"typed stream fixture","sequence":8,"kind":"observe","active_id":"peer-input"}),
+        );
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            runtime.0.borrow().observation.as_ref().unwrap().active_id,
+            "peer-input",
+            "root task outlives the first provider component"
+        );
+        dom.in_scope(ScopeId::ROOT, || fixture.second.get().unwrap().set(false));
+        settle_item_effects(&mut dom);
+        assert!(runtime.0.borrow().bridge.is_none());
+        assert!(runtime.0.borrow().bridge_task.is_none());
+        assert_eq!(
+            stream
+                .borrow()
+                .sent
+                .iter()
+                .filter(|value| value["finish"] == true)
+                .count(),
+            1
+        );
+        assert!(!runtime.receive_report(epoch, typed_packet(&runtime, 999, "retired")));
+        assert_eq!(runtime.0.borrow().sequence, 8);
+        dom.in_scope(ScopeId::ROOT, || fixture.second.get().unwrap().set(true));
+        settle_item_effects(&mut dom);
+        assert_eq!(native.borrow().scripts.len(), 2);
+        assert!(native.borrow().scripts[1].contains("sequence=8,"));
+        assert_eq!(
+            runtime.0.borrow().sequence,
+            9,
+            "restarted initial report exceeds the retained sequence"
+        );
+        assert!(!runtime.receive_report(epoch, typed_packet(&runtime, 1000, "retired-again")));
+        let active_epoch = runtime.0.borrow().bridge_epoch;
+        let mut foreign = typed_packet(&runtime, 999, "foreign");
+        foreign.owner = "other-root".into();
+        assert!(runtime.receive_report(active_epoch, foreign));
+        assert_eq!(
+            runtime.0.borrow().sequence,
+            9,
+            "current source still uses normal owner admission"
+        );
+        let renderer = runtime.0.borrow().bridge_owner.as_ref().unwrap().0.clone();
+        let restarted = native.borrow().streams[1].clone();
+        drop(dom);
+        assert!(
+            renderer.upgrade().is_none(),
+            "receiver retains neither renderer nor original consumer"
+        );
+        assert_eq!(runtime.0.borrow().bridge_leases, 0);
+        assert_eq!(
+            restarted
+                .borrow()
+                .sent
+                .iter()
+                .filter(|value| value["finish"] == true)
+                .count(),
+            1
+        );
+        assert!(
+            !runtime.receive_report(active_epoch, typed_packet(&runtime, 1001, "removed-root"))
+        );
+    }
+
+    #[test]
+    fn typed_overlay_streams_keep_independent_roots_and_reports_isolated() {
+        let (first, first_native) = typed_stream_fixture();
+        let (second, second_native) = typed_stream_fixture();
+        let mut a = VirtualDom::new_with_props(typed_stream_root, first.clone());
+        let mut b = VirtualDom::new_with_props(typed_stream_root, second.clone());
+        a.rebuild_in_place();
+        b.rebuild_in_place();
+        settle_item_effects(&mut a);
+        settle_item_effects(&mut b);
+        let ra = first.runtime.borrow().clone().unwrap();
+        let rb = second.runtime.borrow().clone().unwrap();
+        assert_ne!(ra.owner_id(), rb.owner_id());
+        assert_eq!(
+            (
+                first_native.borrow().scripts.len(),
+                second_native.borrow().scripts.len()
+            ),
+            (1, 1)
+        );
+        let epoch = ra.0.borrow().bridge_epoch;
+        a.in_scope(ScopeId::ROOT, || {
+            assert!(ra.receive_report(epoch, typed_packet(&rb, 100, "wrong-root")));
+        });
+        assert_eq!(ra.0.borrow().sequence, 1);
+        drop(a);
+        assert!(ra.0.borrow().bridge.is_none());
+        assert!(rb.0.borrow().bridge.is_some());
+        let active_epoch = rb.0.borrow().bridge_epoch;
+        b.in_scope(ScopeId::ROOT, || {
+            assert!(rb.receive_report(active_epoch, typed_packet(&rb, 2, "live-root")));
+        });
+        assert_eq!(rb.0.borrow().sequence, 2);
     }
 
     struct Model {
@@ -6207,31 +6648,6 @@ mod tests {
             OverlayTransport { runtime }
         }
     }
-    struct PublicationConverter;
-    macro_rules! publication_converter {
-        (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
-            impl dioxus::html::HtmlEventConverter for PublicationConverter {
-                $(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data {let _=event;publication_converter!(@data $group,event)})*
-            }
-        };
-        (@data Form,$event:ident)=>{dioxus::html::FormData::new(RawForm($event.downcast::<String>().unwrap().clone()))};
-        (@data $other:ident,$event:ident)=>{panic!("Unexpected publication test event")};
-    }
-    dioxus::html::with_html_event_groups!(publication_converter);
-    fn publication_dispatch(
-        dom: &VirtualDom,
-        transport: dioxus::core::ElementId,
-        name: &str,
-        value: serde_json::Value,
-    ) -> bool {
-        let data: Rc<dyn std::any::Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
-            value.to_string(),
-        )));
-        let original = Event::new(data, true);
-        dom.runtime()
-            .handle_event(name, original.clone(), transport);
-        !original.default_action_enabled()
-    }
     fn publication_attr(tag: &str, name: &str) -> Option<String> {
         let rest = tag.split_once(&format!(" {name}="))?.1;
         if let Some(quoted) = rest.strip_prefix('"') {
@@ -6333,34 +6749,18 @@ mod tests {
     }
     #[test]
     fn actual_vdom_item_effect_publishes_mixed_host_cues_without_another_input() {
-        let _guard = crate::test_event_converter_guard();
-        dioxus::html::set_event_converter(Box::new(PublicationConverter));
         let fixture = PublicationFixture::default();
         let mut dom = VirtualDom::new_with_props(publication_root, fixture.clone());
-        let edits = dom.rebuild_to_vec();
+        dom.rebuild_in_place();
         let runtime = fixture.runtime.borrow().clone().unwrap();
         assert!(
             runtime.0.borrow().item_visual_signal.is_some(),
             "real VDOM signal path"
         );
-        let mut current = dioxus::core::ElementId::ROOT;
-        let mut transport = None;
-        for edit in edits.edits {
-            match edit {
-                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
-                    current = id
-                }
-                dioxus::core::Mutation::SetAttribute {
-                    name,
-                    value: dioxus::core::AttributeValue::Text(value),
-                    ..
-                } if name == "data-ix-overlay-transport" && value == runtime.owner_id() => {
-                    transport = Some(current)
-                }
-                _ => {}
-            }
-        }
-        let transport = transport.expect("actual rendered overlay transport");
+        assert!(
+            !dioxus_ssr::render(&dom).contains("data-ix-overlay-transport"),
+            "transport is renderless"
+        );
         let initial = dioxus_ssr::render(&dom);
         let root_tag = initial
             .split('>')
@@ -6414,7 +6814,7 @@ mod tests {
             "kind":"observe",
             "nodes":[{"id":root,"generation":generation,
                 "mode":"active-descendant","inside":true,"on_trigger":true}]});
-        assert!(!publication_dispatch(&dom, transport, "input", report));
+        dom.in_scope(ScopeId::ROOT, || runtime.test_report(report));
         let node = NodeHandle {
             runtime: Rc::downgrade(&runtime.0),
             id: root.clone(),
@@ -7555,6 +7955,20 @@ mod tests {
         assert!(runtime.mounted_focus_target("unregistered").is_none());
         node.unregister();
         assert!(runtime.0.borrow().nodes.is_empty());
+    }
+    #[test]
+    fn mounted_focus_capture_survives_initial_document_binding_but_not_document_change() {
+        let runtime = RuntimeHandle::new();
+        let mounted = Rc::new(MountedData::new(ItemMountMock::default()));
+        runtime.register_item_control_mount("invoker", "invoker", "invoker", mounted.clone());
+        let initial = runtime.capture_registered_focus("invoker").unwrap();
+        runtime.attach_document("initial typed document");
+        assert!(Rc::ptr_eq(&initial.live_node().unwrap(), &mounted));
+        let bound = runtime.capture_registered_focus("invoker").unwrap();
+        runtime.attach_document("different document");
+        assert!(initial.live_node().is_none());
+        assert!(bound.live_node().is_none());
+        assert!(runtime.capture_registered_focus("invoker").is_some());
     }
     #[test]
     fn runtime_capture_uses_registered_physical_ids_and_keeps_cleanup_identity_after_removal() {

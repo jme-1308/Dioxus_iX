@@ -48,6 +48,8 @@ mod tab_exit_review;
 mod text_control_method_review;
 #[path = "dioxus_first_probe/tooltip_mounted_review.rs"]
 mod tooltip_mounted_review;
+#[path = "dioxus_first_probe/transport_lifetime_review.rs"]
+mod transport_lifetime_review;
 #[path = "dioxus_first_probe/trigger_placement_review.rs"]
 mod trigger_placement_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
@@ -118,6 +120,9 @@ fn Preview() -> Element {
                 .unwrap_or_default()
         }
     });
+    if scope == "?transport" {
+        return rsx! { transport_lifetime_review::TransportLifetimeReview {} };
+    }
     if scope == "?viewport" {
         return rsx! { application_viewport_review::ApplicationViewportReview {} };
     }

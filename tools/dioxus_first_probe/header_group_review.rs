@@ -112,7 +112,9 @@ const NATIVE_HEADER_GROUP_CHECK: &str = r#"
 await dioxus.recv();
 const byId=id=>document.getElementById(id),active=()=>document.activeElement,state=()=>byId('r0245-state');
 const root=()=>byId('r0245-stage').querySelector('.ix-header-layout'),more=()=>root()?.querySelector('.ix-header-more-button');
-const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' state='+state()?.textContent);};
+// Separate synthetic actions from asynchronous typed observation delivery.
+const settleInput=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate()){await settleInput();return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' state='+state()?.textContent);};
 const key=(node,value,shiftKey=false)=>{const event=new KeyboardEvent('keydown',{key:value,code:value,shiftKey,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const edit=(id,value)=>{const node=byId(id);node.focus();node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));};
 const open=async(last=false)=>{more().focus();key(more(),last?'End':'Home');await wait(last?'End entry to Apply':'Home entry to Input',()=>root().dataset.open==='true'&&active()===byId(last?'r0245-apply':'r0245-input'));};
@@ -121,7 +123,7 @@ await wait('Header registered and ready',()=>root()?.dataset.ixOverlayReady==='t
 await open();
 const firstInput=byId('r0245-input');
 if(key(firstInput,'Tab').defaultPrevented)throw new Error('Interior Input Tab intercepted');
-byId('r0245-apply').focus();if(!key(active(),'Tab').defaultPrevented)throw new Error('Forward boundary not claimed');
+byId('r0245-apply').focus();await settleInput();if(!key(active(),'Tab').defaultPrevented)throw new Error('Forward boundary not claimed');
 await wait('forward wraps to Input',()=>active()===firstInput);
 if(!key(firstInput,'Tab',true).defaultPrevented)throw new Error('Reverse boundary not claimed');
 await wait('reverse wraps to Apply',()=>active()===byId('r0245-apply'));

@@ -462,6 +462,16 @@ impl Harness {
     }
 }
 
+// Inject typed native facts in this fixture's original Dioxus runtime. Actual
+// input/key/click handlers continue to dispatch through their rendered controls.
+fn typed_report(
+    dom: &VirtualDom,
+    runtime: &overlay_runtime::RuntimeHandle,
+    report: serde_json::Value,
+) {
+    dom.in_scope(ScopeId::ROOT, || runtime.test_report(report));
+}
+
 fn item_tag(html: &str, id: &str) -> String {
     let at = html.find(&format!("id=\"{id}\"")).unwrap();
     let start = html[..at].rfind('<').unwrap();
@@ -514,12 +524,6 @@ fn dioxus_keys_ignore_native_attempts_to_reorder_registered_items() {
         let context = h.context();
         let node = context.node.borrow().clone().unwrap();
         let runtime = node.runtime().unwrap();
-        let transport = h
-            .attrs
-            .iter()
-            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-            .unwrap();
         let mut order = context
             .entries
             .borrow()
@@ -527,13 +531,11 @@ fn dioxus_keys_ignore_native_attempts_to_reorder_registered_items() {
             .map(|entry| h.attrs[&h.target(&entry.label).raw()]["data-ix-item-key"].clone())
             .collect::<Vec<_>>();
         order.reverse();
-        dispatch(
+        typed_report(
             &h.dom,
-            "input",
-            transport,
+            &runtime,
             serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation(),"item_order":order}]})
-            .to_string(),
+            "nodes":[{"id":node.id(),"generation":node.generation(),"item_order":order}]}),
         );
         assert!(h.key("Menu", Key::End).0);
         assert_eq!(selected_label(&context).unwrap(), "Explicit");
@@ -1271,19 +1273,11 @@ fn registered_inventory_key_from(
     let runtime = node.runtime().unwrap();
     let mode = context.state.borrow().settings.mode;
     register_inventory(&context, facts);
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
-    dispatch(
+    typed_report(
         &h.dom,
-        "input",
-        transport,
+        &runtime,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),"open":true}]})
-        .to_string(),
+        "nodes":[{"id":node.id(),"generation":node.generation(),"open":true}]}),
     );
     h.dom.in_runtime(|| {
         let event = key_event(key, Modifiers::empty());
@@ -1448,23 +1442,19 @@ fn direct_item_focus_and_blur_render_owned_aria_without_native_inventory() {
     h.dom.in_runtime(|| sibling.open());
     h.settle();
     assert!(node.inventory().is_some());
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
     let document = format!("direct-focus-{}", runtime.owner_id());
-    dispatch(
+    typed_report(
         &h.dom,
-        "input",
-        transport,
+        &runtime,
         serde_json::json!({"owner":runtime.owner_id(),"document":document,
-        "sequence":1,"kind":"observe","nodes":[]})
-        .to_string(),
+        "sequence":1,"kind":"observe","nodes":[]}),
     );
-    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
-        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
+    typed_report(
+        &h.dom,
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"document":document,
+        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}),
+    );
     dispatch(&h.dom, "focus", h.target("Alpha"), ());
     h.settle();
     assert_eq!(h.config.borrow().item_focus_events, 1);
@@ -1559,25 +1549,21 @@ fn linked_open_cue_and_typed_trigger_aria_follow_current_rust_submenu_state() {
     let node = context.node.borrow().as_ref().unwrap().clone();
     let runtime = node.runtime().unwrap();
     let host = rendered_cue_host(&h, "Detached leaf");
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
     let document = format!("rendered-linked-cue-{}", runtime.owner_id());
-    dispatch(
+    typed_report(
         &h.dom,
-        "input",
-        transport,
+        &runtime,
         serde_json::json!({
             "owner":runtime.owner_id(),"document":document,"sequence":1,"kind":"observe",
             "nodes":[{"id":node.id(),"generation":node.generation()}]
-        })
-        .to_string(),
+        }),
     );
-    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
-        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
+    typed_report(
+        &h.dom,
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"document":document,
+        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}),
+    );
     assert!(
         runtime.keyboard_mode(),
         "the observed document enables keyboard focus cues"
@@ -1866,12 +1852,6 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
                 );
             }
         }
-        let transport = h
-            .attrs
-            .iter()
-            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-            .unwrap();
         register_inventory(&context, &facts);
         let before = h.config.borrow().requests.clone();
         node.set_surface_metadata(overlay_runtime::SurfaceMetadata {
@@ -1884,7 +1864,7 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
                 "popover":"","exact_active":inside && candidate == index,"contains_active":inside && candidate == index
             })).collect::<Vec<_>>()
         });
-        dispatch(&h.dom, "input", transport, report.to_string());
+        typed_report(&h.dom, &runtime, report.clone());
         let revision_before = *context.revision.peek();
         let prevented = h.dom.in_runtime(|| {
             let event = key_event(
@@ -2348,24 +2328,20 @@ fn shared_modality_cleanup_and_open_active_descendant_mode_change_focus_the_moun
     let context = h.context();
     let node = context.node.borrow().clone().unwrap();
     let runtime = node.runtime().unwrap();
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
     let document = format!("trigger-focus-test-{}", runtime.owner_id());
-    dispatch(
+    typed_report(
         &h.dom,
-        "input",
-        transport,
+        &runtime,
         serde_json::json!({"owner":runtime.owner_id(),"document":document,"sequence":1,
         "kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation()}]})
-        .to_string(),
+        "nodes":[{"id":node.id(),"generation":node.generation()}]}),
     );
-    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
-        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
+    typed_report(
+        &h.dom,
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"document":document,
+        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}),
+    );
     assert!(
         runtime.keyboard_mode(),
         "ordinary cleanup reads document modality, so the fixture must attach its document"
@@ -3145,23 +3121,15 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     let parent_node = parent.node.borrow().clone().unwrap();
     let child_node = child.node.borrow().clone().unwrap();
     let runtime = parent_node.runtime().unwrap();
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
-    dispatch(
+    typed_report(
         &h.dom,
-        "input",
-        transport,
+        &runtime,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
             {"id":parent_node.id(),"generation":parent_node.generation(),
                 "mode":"active-descendant"},
             {"id":child_node.id(),"generation":child_node.generation(),
                 "mode":"active-descendant"}
-        ]})
-        .to_string(),
+        ]}),
     );
     let trigger = parent_facts
         .hosts
@@ -3252,14 +3220,12 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     let mut native_facts = child_facts.clone();
     native_facts.hosts[0].kind = ItemKind::NativeOptIn;
     register_inventory(&child, &native_facts);
-    dispatch(
+    typed_report(
         &h.dom,
-        "input",
-        transport,
+        &runtime,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"kind":"observe","nodes":[
             {"id":child_node.id(),"generation":child_node.generation()}
-        ]})
-        .to_string(),
+        ]}),
     );
     h.dom.in_runtime(|| {
         assert!(

@@ -111,11 +111,13 @@ pub fn TabExitPreview() -> Element {
 const NATIVE_TAB_EXIT_CHECK: &str = r#"
 await dioxus.recv();
 const byId=id=>document.getElementById(id),surface=()=>document.querySelector('.r0210-custom');
-const wait=async(label,predicate)=>{for(let n=0;n<200;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+document.activeElement?.id);};
+// Separate synthetic actions from asynchronous typed observation delivery.
+const settleInput=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+const wait=async(label,predicate)=>{for(let n=0;n<200;n++){if(predicate()){await settleInput();return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+document.activeElement?.id);};
 const key=(node,value,shiftKey=false)=>{const event=new KeyboardEvent('keydown',{key:value,shiftKey,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const enter=async(root,first)=>{root.focus();key(root,'Home');await wait('menu item '+first,()=>document.activeElement===byId(first));};
 const choose=async(index,id)=>{const select=byId('r0210-destination');select.value=String(index);select.dispatchEvent(new Event('change',{bubbles:true}));await wait('destination '+id,()=>byId(id)&&!byId(id).disabled);};
-await wait('registered trigger ready',()=>byId('r0210-custom-trigger')&&surface()?.querySelector('[data-ix-overlay-native="true"]'));
+await wait('custom trigger and menu mounted',()=>byId('r0210-custom-trigger')?.getBoundingClientRect().width>0&&surface()?.querySelector('[role=menu]')?.isConnected);
 const destinations=['r0210-field','r0210-native-after','r0210-library-after','r0210-icon-after'];
 for(const [index,id]of destinations.entries()){
  await choose(index,id);byId('r0210-custom-trigger').scrollIntoView({block:'center'});

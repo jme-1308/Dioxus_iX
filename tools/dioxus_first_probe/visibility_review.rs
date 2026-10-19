@@ -96,17 +96,20 @@ const STYLES: &str = "body{margin:0}.visibility-review{min-height:100vh;padding:
 const NATIVE_VISIBILITY_CHECK: &str = r#"
 await dioxus.recv();
 const byId=id=>document.getElementById(id),built=()=>document.querySelector('.r0219-built'),custom=()=>document.querySelector('.r0219-custom');
-const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' '+byId('r0219-state')?.textContent);};
+// Keep synthetic clicks on separate browser turns so typed observations and
+// Dioxus prop updates settle before the next user action. No duration is tested.
+const settleInput=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate()){await settleInput();return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' '+byId('r0219-state')?.textContent);};
 const opened=root=>root?.getAttribute('data-ix-overlay-open')==='true',shown=root=>!!root?.querySelector('dialog:popover-open');
-await wait('library anchors ready',()=>built()&&custom()&&document.querySelector('[data-ix-overlay-native=true]'));
+await wait('library and custom anchors mounted',()=>built()?.getBoundingClientRect().width>0&&custom()?.isConnected&&byId('r0219-custom-trigger')?.getBoundingClientRect().width>0);
 const first=byId('r0219-built-scroll'),second=byId('r0219-custom-scroll');
 first.scrollIntoView({block:'center'});built().click();await wait('built-in open',()=>opened(built())&&shown(built()));
 first.scrollTop=420;await wait('Dioxus visibility dismisses built-in',()=>!opened(built()));
 first.scrollTop=0;await wait('built-in anchor visible',()=>built().getBoundingClientRect().top>=first.getBoundingClientRect().top);
-byId('r0219-veto').click();built().click();await wait('veto setup open',()=>opened(built()));first.scrollTop=420;
+byId('r0219-veto').click();await wait('veto enabled',()=>byId('r0219-state').dataset.veto==='true');built().click();await wait('veto setup open',()=>opened(built()));first.scrollTop=420;
 await new Promise(resolve=>setTimeout(resolve,400));if(!opened(built()))throw new Error('visibility ignored dismissal veto');
 first.scrollTop=0;byId('r0219-veto').click();byId('r0219-outside').click();await wait('veto released close',()=>!opened(built()));
-byId('r0219-suppress').click();built().click();await wait('suppression setup open',()=>opened(built()));first.scrollTop=420;
+byId('r0219-suppress').click();await wait('suppression enabled',()=>byId('r0219-state').dataset.suppress==='true');built().click();await wait('suppression setup open',()=>opened(built()));first.scrollTop=420;
 await new Promise(resolve=>setTimeout(resolve,400));if(!opened(built()))throw new Error('visibility ignored suppression');
 byId('r0219-outside').click();await wait('suppressed ordinary outside closes',()=>!opened(built()));first.scrollTop=0;byId('r0219-suppress').click();
 second.scrollIntoView({block:'center'});await wait('custom framework visibility ready',()=>byId('r0219-custom-trigger').dataset.visible==='true');byId('r0219-custom-trigger').click();await wait('custom paired anchor open',()=>opened(custom())&&shown(custom()));

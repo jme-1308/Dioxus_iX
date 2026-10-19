@@ -224,7 +224,13 @@ const STYLES: &str = "body{margin:0}.generic-focus-review{min-height:100vh;box-s
 const NATIVE_FOCUS_CHECK: &str = r#"
 await dioxus.recv();
 const byId=id=>document.getElementById(id),active=()=>document.activeElement;
-const wait=async(label,predicate)=>{for(let n=0;n<200;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' geometry='+JSON.stringify({viewport:{width:document.documentElement.clientWidth,height:document.documentElement.clientHeight,visual:window.visualViewport?{width:visualViewport.width,height:visualViewport.height}:null},header:document.querySelector('.ix-header-layout')?.dataset,more:document.querySelector('.ix-header-more-button')?.getBoundingClientRect().toJSON(),popup:document.querySelector('[data-header-popup-host][data-active="true"]')?.getBoundingClientRect().toJSON(),style:document.querySelector('[data-header-popup-host][data-active="true"]')?.getAttribute('style')}));};
+// Synthetic actions wait for the visible state and its asynchronous native
+// observation before dispatching the next key; elapsed time is not asserted.
+const settleInput=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+const wait=async(label,predicate)=>{for(let n=0;n<200;n++){if(predicate()){await settleInput();return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' geometry='+JSON.stringify({viewport:{width:document.documentElement.clientWidth,height:document.documentElement.clientHeight,visual:window.visualViewport?{width:visualViewport.width,height:visualViewport.height}:null},header:document.querySelector('.ix-header-layout')?.dataset,more:document.querySelector('.ix-header-more-button')?.getBoundingClientRect().toJSON(),popup:document.querySelector('[data-header-popup-host][data-active="true"]')?.getBoundingClientRect().toJSON(),style:document.querySelector('[data-header-popup-host][data-active="true"]')?.getAttribute('style')}));};
+// Real focus and key input arrive on separate browser turns. Yield after the
+// driver's imperative focus so typed native facts can reach Dioxus before Tab.
+const focusControl=async node=>{node.focus();await settleInput();};
 const key=(node,value,shiftKey=false)=>{const event=new KeyboardEvent('keydown',{key:value,code:value,shiftKey,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const trigger=()=>byId('r0211-popover-trigger').querySelector('button');
 const panel=()=>byId(trigger().getAttribute('aria-controls'));
@@ -241,12 +247,12 @@ const canceledRequests=+byId('r0211-state').dataset.closeRequests;
 if(!key(field,'Escape',true).defaultPrevented)throw new Error('Consumer Escape cancellation lost');
 await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 if(!isOpen(panel())||+byId('r0211-state').dataset.closeRequests!==canceledRequests)throw new Error('Canceled Escape reached global dismissal');
-byId('r0211-popover-close').focus();if(!key(active(),'Tab').defaultPrevented)throw new Error('Popover forward boundary not trapped');
+await focusControl(byId('r0211-popover-close'));if(!key(active(),'Tab').defaultPrevented)throw new Error('Popover forward boundary not trapped');
 await wait('Popover forward wrap',()=>active()===byId('r0211-header-action'));
 if(!key(active(),'Tab',true).defaultPrevented)throw new Error('Popover reverse boundary not trapped');
 await wait('Popover reverse wrap',()=>active()===byId('r0211-popover-close'));
 field.focus();key(field,'F7');await wait('positive Tab priority enabled',()=>byId('r0211-content-action').tabIndex===1);
-byId('r0211-popover-close').focus();if(!key(active(),'Tab').defaultPrevented)throw new Error('Positive Tab forward boundary not trapped');
+await focusControl(byId('r0211-popover-close'));if(!key(active(),'Tab').defaultPrevented)throw new Error('Positive Tab forward boundary not trapped');
 await wait('positive Tab forward wrap',()=>active()===byId('r0211-content-action'));
 if(!key(active(),'Tab',true).defaultPrevented)throw new Error('Positive Tab reverse boundary not trapped');
 await wait('positive Tab reverse wrap',()=>active()===byId('r0211-popover-close'));
@@ -290,7 +296,7 @@ key(headerField,'F3');await wait('large Header preserves field',()=>header().dat
 if(header().dataset.open==='true'){key(more(),'Escape');await wait('Header close before opening cases',()=>header().dataset.open==='false');}
 more().focus();key(more(),'Home');await wait('Header Home entry',()=>header().dataset.open==='true'&&active()===byId('r0211-overflow-note'));
 if(key(active(),'Tab').defaultPrevented)throw new Error('Interior Header Tab was intercepted');
-byId('r0211-overflow-last').focus();if(!key(active(),'Tab').defaultPrevented)throw new Error('Header forward boundary not trapped');
+await focusControl(byId('r0211-overflow-last'));if(!key(active(),'Tab').defaultPrevented)throw new Error('Header forward boundary not trapped');
 await wait('Header forward wrap',()=>active()===byId('r0211-overflow-note'));
 if(!key(active(),'Tab',true).defaultPrevented)throw new Error('Header reverse boundary not trapped');
 await wait('Header reverse wrap',()=>active()===byId('r0211-overflow-last'));

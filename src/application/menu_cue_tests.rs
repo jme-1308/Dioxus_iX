@@ -7,34 +7,16 @@ fn cue_runtime(h: &mut MenuHarness, category: &CategoryNavigation) -> RuntimeHan
     let node = category.0.overlay.borrow().as_ref().unwrap().clone();
     let runtime = node.runtime().unwrap();
     let owner = runtime.owner_id();
-    let transport = h
-        .attributes
-        .iter()
-        .find(|(_, attributes)| attributes.get("data-ix-overlay-transport") == Some(&owner))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
-    menu_dispatch(
-        &h.dom,
-        "input",
-        transport,
-        serde_json::json!({
+    menu_report(&h.dom, &runtime, serde_json::json!({
         "owner":owner,"document":format!("menu-cue-test-{owner}"),"sequence":1,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation()}]})
-        .to_string(),
-    );
-    menu_dispatch(
-        &h.dom,
-        "input",
-        transport,
-        serde_json::json!({
+        "nodes":[{"id":node.id(),"generation":node.generation()}]}));
+    menu_report(&h.dom, &runtime, serde_json::json!({
             "owner": owner,
             "document": format!("menu-cue-test-{owner}"),
             "sequence": 2,
             "kind": "document",
             "document_event": {"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}
-        })
-        .to_string(),
-    );
+        }));
     h.settle();
     assert!(runtime.keyboard_mode());
     runtime

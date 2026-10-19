@@ -355,6 +355,15 @@ fn menu_dispatch(
     dom.runtime().handle_event(name, event.clone(), id);
     (!event.default_action_enabled(), event.propagates())
 }
+// Typed native packet injection shares production admission in this fixture's
+// original Dioxus runtime. Real component controls keep their event dispatch.
+fn menu_report(
+    dom: &VirtualDom,
+    runtime: &crate::overlay_runtime::RuntimeHandle,
+    report: serde_json::Value,
+) {
+    dom.in_scope(ScopeId::ROOT, || runtime.test_report(report));
+}
 #[derive(Clone, Default)]
 struct GenericMenuItemCapture {
     calls: Rc<Cell<usize>>,
@@ -422,13 +431,6 @@ fn source_item_dom(
                 ..
             } if name == "id" => {
                 ids.insert(value, current);
-            }
-            dioxus::core::Mutation::SetAttribute {
-                name,
-                value: dioxus::core::AttributeValue::Text(_),
-                ..
-            } if name == "data-ix-overlay-transport" => {
-                ids.insert("$overlay-transport".to_string(), current);
             }
             dioxus::core::Mutation::SetAttribute {
                 name,
@@ -502,19 +504,18 @@ fn rendered_focus_events_update_menu_select_and_category_cues_without_inventory(
     ] {
         menu_dispatch(&dom, "mounted", target, MenuTestMount::default());
     }
-    menu_dispatch(
+    menu_report(
         &dom,
-        "input",
-        ids["$overlay-transport"],
+        &runtime,
         serde_json::json!({
         "owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),
-        "sequence":1,"kind":"observe","nodes":[]})
-        .to_string(),
+        "sequence":1,"kind":"observe","nodes":[]}),
     );
-    menu_dispatch(
-            &dom, "input", ids["$overlay-transport"],
-            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string(),
-        );
+    menu_report(
+        &dom,
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}),
+    );
     assert!(runtime.keyboard_mode());
     menu_dispatch(&dom, "focus", parent, ());
     for _ in 0..4 {
@@ -572,8 +573,11 @@ fn rendered_focus_events_update_menu_select_and_category_cues_without_inventory(
     menu_dispatch(&dom, "blur", ids["$select-option"], ());
     assert!(runtime.item_visual_key().is_none());
     menu_dispatch(&dom, "focus", ids["mixed-select"], ());
-    menu_dispatch(&dom, "input", ids["$overlay-transport"],
-            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":3,"kind":"document","document_event":{"sequence":2,"action":"input","input_kind":"mousedown"}}).to_string());
+    menu_report(
+        &dom,
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":3,"kind":"document","document_event":{"sequence":2,"action":"input","input_kind":"mousedown"}}),
+    );
     for _ in 0..4 {
         dom.render_immediate_to_vec();
     }
@@ -935,20 +939,22 @@ impl MenuHarness {
         let node = category.0.overlay.borrow().as_ref().unwrap().clone();
         let runtime = node.runtime().unwrap();
         let owner = runtime.owner_id();
-        let transport = self
-            .attributes
-            .iter()
-            .find(|(_, attributes)| attributes.get("data-ix-overlay-transport") == Some(&owner))
-            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-            .unwrap();
-        menu_dispatch(&self.dom,"input",transport,serde_json::json!({
+        menu_report(
+            &self.dom,
+            &runtime,
+            serde_json::json!({
             "owner":owner,"document":format!("category-fixture-{owner}"),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation()}]}).to_string());
-        menu_dispatch(&self.dom, "input", transport, serde_json::json!({
-            "owner": owner, "document": format!("category-fixture-{owner}"),
-            "sequence": 2, "kind":"document", "document_event":{"sequence":1,"action":"input",
-                "input_kind":if keyboard {"keydown"} else {"mousedown"},"key":if keyboard {"Tab"} else {""}}
-        }).to_string());
+            "nodes":[{"id":node.id(),"generation":node.generation()}]}),
+        );
+        menu_report(
+            &self.dom,
+            &runtime,
+            serde_json::json!({
+                "owner": owner, "document": format!("category-fixture-{owner}"),
+                "sequence": 2, "kind":"document", "document_event":{"sequence":1,"action":"input",
+                    "input_kind":if keyboard {"keydown"} else {"mousedown"},"key":if keyboard {"Tab"} else {""}}
+            }),
+        );
         self.settle();
         assert_eq!(runtime.keyboard_mode(), keyboard);
     }
@@ -2473,7 +2479,6 @@ struct AppSwitchHarness {
     menu_trigger: Option<dioxus::core::ElementId>,
     menu_control: Option<dioxus::core::ElementId>,
     sidebar_child_input: Option<dioxus::core::ElementId>,
-    overlay_input: Option<dioxus::core::ElementId>,
     slot_buttons: BTreeMap<String, dioxus::core::ElementId>,
     mounts: Vec<dioxus::core::ElementId>,
 }
@@ -2560,7 +2565,6 @@ impl AppSwitchHarness {
             menu_trigger: None,
             menu_control: None,
             sidebar_child_input: None,
-            overlay_input: None,
             slot_buttons: BTreeMap::new(),
             mounts: vec![],
         };
@@ -2603,34 +2607,28 @@ impl AppSwitchHarness {
                         .or_default()
                         .insert(name, value);
                 }
-                dioxus::core::Mutation::NewEventListener { name } => {
-                    match name.as_str() {
-                        "input" => {
-                            if self.attrs.get(&current.raw()).is_some_and(|attrs| {
-                                attrs
-                                    .get("id")
-                                    .is_some_and(|id| id == "sidebar-child-input")
-                            }) {
-                                self.sidebar_child_input = Some(current);
-                            } else if self.attrs.get(&current.raw()).is_some_and(|attrs| {
-                                attrs.contains_key("data-ix-overlay-transport")
-                            }) {
-                                self.overlay_input = Some(current);
-                            }
+                dioxus::core::Mutation::NewEventListener { name } => match name.as_str() {
+                    "input" => {
+                        if self.attrs.get(&current.raw()).is_some_and(|attrs| {
+                            attrs
+                                .get("id")
+                                .is_some_and(|id| id == "sidebar-child-input")
+                        }) {
+                            self.sidebar_child_input = Some(current);
                         }
-                        "beforetoggle" => {
-                            if self.attrs.get(&current.raw()).is_some_and(|attrs| {
-                                attrs
-                                    .get("class")
-                                    .is_some_and(|class| class.starts_with("ix-modal "))
-                            }) {
-                                self.dialog = Some(current);
-                            }
-                        }
-                        "mounted" => self.mounts.push(current),
-                        _ => {}
                     }
-                }
+                    "beforetoggle" => {
+                        if self.attrs.get(&current.raw()).is_some_and(|attrs| {
+                            attrs
+                                .get("class")
+                                .is_some_and(|class| class.starts_with("ix-modal "))
+                        }) {
+                            self.dialog = Some(current);
+                        }
+                    }
+                    "mounted" => self.mounts.push(current),
+                    _ => {}
+                },
                 dioxus::core::Mutation::Remove => {
                     if self.menu_trigger == Some(current) {
                         self.menu_trigger = None;
@@ -2845,7 +2843,11 @@ impl AppSwitchHarness {
         first_node.set_mounted();
         header_node.set_mounted();
         nodes.push(serde_json::json!({"id":header,"generation":self.header_rendered_root_attribute("data-ix-overlay-generation").parse::<u64>().unwrap()}));
-        menu_dispatch(&self.dom,"input",self.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe","nodes":nodes}).to_string());
+        menu_report(
+            &self.dom,
+            &runtime,
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe","nodes":nodes}),
+        );
         first
     }
     fn header_peer_effects(&mut self) -> usize {
@@ -3571,10 +3573,13 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
 
     let root = harness.header_root_attrs()["id"].clone();
     let more = format!("{root}-more");
-    let transport = harness
-        .overlay_input
-        .expect("actual Header shared overlay transport");
-    let owner = harness.attrs[&transport.raw()]["data-ix-overlay-transport"].clone();
+    let owner = harness
+        .settings
+        .borrow()
+        .overlay_runtime
+        .clone()
+        .unwrap()
+        .owner_id();
     assert_eq!(harness.header_root_attrs()["data-ix-overlay-owner"], owner);
     let more_target = harness
         .attrs

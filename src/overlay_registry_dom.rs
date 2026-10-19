@@ -8,7 +8,7 @@
 //! delivers global input, while Rust alone authorizes ownership and actions.
 //! `__OWNER__` is replaced by a serialized runtime owner ID. Rust owns all
 //! hierarchy, item membership/metadata, menu/focus policy, and open/close decisions;
-//! All deliveries use noncancelable `input`; typed Dioxus controls own keyboard
+//! Typed Eval channels deliver read-only reports; Dioxus controls own keyboard
 //! cancellation, activation and boundary focus. No raw native Tab dispatch or
 //! prevent/stop acknowledgement transport is retained.
 
@@ -17,17 +17,13 @@ const owner=__OWNER__,listeners=new AbortController(),signal=listeners.signal;
 const documentSlot=Symbol.for('dioxus-ix.document-native-domain.v1');
 const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:owner,eventSequence:0});
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
-let alive=true,sequence=0,lastSignature='',documentEvents=null,lastFocus=null,movedSequence=0;
+let alive=true,sequence=__START_SEQUENCE__,lastSignature='',documentEvents=null,lastFocus=null,movedSequence=0;
 // Mounted focus registration uses Rust-authored IDs; unidentified DOM controls
 // have no programmatic focus fallback and need no native identity registry.
 function nativeId(el){return el instanceof HTMLElement?el.id:'';}
 // Dioxus owns overlay lifetimes, relationships and surface descriptors. The
 // remaining native lookups provide current focus/eligibility, keyed-move and
 // global outside-event facts. Foreign shadow-tree discovery is unsupported.
-function transport(){
-  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input instanceof HTMLInputElement&&input.isConnected&&input.getAttribute('data-ix-overlay-transport')===owner)return input;
-  return null;
-}
 function deepActive(){
   let a=document.activeElement;
   while(a){
@@ -137,14 +133,10 @@ function collectFacts(){
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
-function send(report){
-  const input=transport();if(!alive||!input)return;
-  input.value=JSON.stringify(report);
-  input.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));
-}
+function send(report){if(alive)dioxus.send(report);}
 
 function reportObserve(records=[],focusChanged=false,focusoutMove=null,focusRequest=null){
-  if(!alive||!transport())return;
+  if(!alive)return;
   const pending=observer.takeRecords();
   records=Array.from(records).concat(pending);
   const active=deepActive(),moved=movedRegisteredFocus(records,active);
@@ -153,7 +145,6 @@ function reportObserve(records=[],focusChanged=false,focusoutMove=null,focusRequ
   if(explicitBlur||!document.hasFocus())lastFocus=null;
   else if(active&&active!==document.body&&active!==document.documentElement&&!active.matches('[data-ix-overlay-host]'))lastFocus=registeredFocus(active);
   else if(lastFocus&&!document.getElementById(lastFocus.focus_id)?.isConnected)lastFocus=null;
-  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   const report=collectFacts();
   report.focus_changed=focusChanged||explicitBlur;
   if(focusRequest)report.focus_request=focusRequest;
@@ -164,11 +155,10 @@ function reportObserve(records=[],focusChanged=false,focusoutMove=null,focusRequ
 }
 // Pinned Document has no typed document/window input listener API. This sole
 // shared adapter reports input facts; Dioxus and Rust own decisions and actions.
-// Only callbacks are retained: each delivery resolves its owner's live transport.
+// Only callbacks are retained; each active stream uses its own typed channel.
 function sendDocumentEvent(action,event,deliverySequence){
   if(action==='blur')lastFocus=null;
   if(!alive)return false;
-  const input=transport();if(!input)return false;
   const document_event={sequence:deliverySequence,action};
   if(action==='input'){
     document_event.input_kind=event.type;
@@ -184,8 +174,7 @@ function sendDocumentEvent(action,event,deliverySequence){
       if(id&&anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node))&&!document_event.anchors.includes(id))document_event.anchors.push(id);
     }
   }
-  input.value=JSON.stringify({owner,document:nativeDocument.identity,sequence:++sequence,kind:'document',document_event});
-  input.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));
+  send({owner,document:nativeDocument.identity,sequence:++sequence,kind:'document',document_event});
   return true;
 }
 function subscribeDocumentEvents(){
@@ -231,7 +220,6 @@ observer.observe(document.documentElement,{subtree:true,childList:true,attribute
   'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','open','hidden','disabled','tabindex','autofocus','inert','class',
   'data-ix-item-key','data-ix-overlay-items-host-id','aria-activedescendant','data-ix-overlay-active-item'
 ]});
-document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 try{
   reportObserve();
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
@@ -242,7 +230,5 @@ try{
 }finally{
   alive=false;listeners.abort();observer.disconnect();
   unsubscribeDocumentEvents();
-  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
-  if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');
 }
 "#;

@@ -94,13 +94,16 @@ const STYLES: &str = "body{margin:0}.trigger-placement-review{box-sizing:border-
 const NATIVE_TRIGGER_PLACEMENT_CHECK: &str = r#"
 await dioxus.recv();
 const byId=id=>document.getElementById(id),root=name=>document.querySelector('.r0247-'+name),panel=name=>root(name)?.querySelector(':scope > [role="menu"]'),opened=name=>root(name)?.dataset.ixOverlayOpen==='true',state=()=>byId('r0247-state');
-const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' active='+document.activeElement?.id+' state='+state()?.textContent);};
+// Separate synthetic actions from asynchronous typed observation delivery.
+const settleInput=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate()){await settleInput();return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' active='+document.activeElement?.id+' state='+state()?.textContent);};
 const key=(node,value)=>node.dispatchEvent(new KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true}));
 const placement=async(name,value)=>{await wait(name+' placement '+value,()=>panel(name)?.dataset.placement===value);if(panel(name).dataset.configuredPlacement!=='bottom-end')throw new Error(name+' configured placement changed');};
-const parent=async()=>{if(!opened('parent'))root('parent').click();await wait('parent open',()=>opened('parent'));};
+const presented=name=>panel(name)?.matches(':popover-open')&&getComputedStyle(panel(name)).visibility==='visible';
+const parent=async()=>{if(!opened('parent'))root('parent').click();await wait('parent open',()=>opened('parent')&&presented('parent'));};
 const escape=async(name)=>{if(opened(name)){panel(name).focus();key(panel(name),'Escape');await wait(name+' closed',()=>!opened(name));}};
-await wait('initial mounts',()=>['standalone','parent','linked','custom','internal'].every(name=>panel(name))&&byId('r0247-custom-trigger')&&document.querySelector('input[data-ix-overlay-native="true"]'));
-root('standalone').click();await wait('standalone open',()=>opened('standalone'));await placement('standalone','bottom-end');
+await wait('trigger and menu mounts',()=>['standalone','parent','linked','custom','internal'].every(name=>panel(name)?.isConnected)&&byId('r0247-custom-trigger')?.isConnected);
+root('standalone').click();await wait('standalone open',()=>opened('standalone')&&presented('standalone'));await placement('standalone','bottom-end');
 if(byId('r0247-overview-disabled').getAttribute('aria-disabled')!=='true')throw new Error('disabled action lost');
 const before=+state().dataset.actions;byId('r0247-overview-action').click();await wait('standalone action once and closes',()=>+state().dataset.actions===before+1&&!opened('standalone'));
 await parent();panel('parent').focus();key(panel('parent'),'Home');await wait('linked row keyboard focus',()=>document.activeElement===byId('r0247-linked-trigger'));key(document.activeElement,'ArrowRight');await wait('linked child keyboard opens',()=>opened('linked')&&document.activeElement===byId('r0247-service-action'));await placement('linked','right-start');key(document.activeElement,'ArrowLeft');await wait('linked return',()=>!opened('linked')&&document.activeElement===byId('r0247-linked-trigger'));

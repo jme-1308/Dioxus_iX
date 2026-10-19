@@ -118,14 +118,16 @@ await dioxus.recv();
 const byId=id=>document.getElementById(id),active=()=>document.activeElement,state=()=>byId('r0246-state');
 const root=()=>byId('r0246-stage').querySelector('.ix-header-layout'),more=()=>root()?.querySelector('.ix-header-more-button');
 const first=()=>byId('r0246-notifications'),last=()=>byId('r0246-remote'),radio=value=>byId('r0246-choice-form')?.querySelector('input[type="radio"][value="'+value+'"]');
-const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' state='+state()?.textContent);};
+// Separate synthetic actions from asynchronous typed observation delivery.
+const settleInput=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate()){await settleInput();return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' state='+state()?.textContent);};
 const key=(node,value,shiftKey=false)=>{const event=new KeyboardEvent('keydown',{key:value,code:value,shiftKey,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const open=async(end=false)=>{more().focus();key(more(),end?'End':'Home');await wait(end?'End enters Toggle':'Home enters Checkbox',()=>root().dataset.open==='true'&&active()===(end?last():first()));};
 const close=async()=>{if(root().dataset.open==='true'){first().focus();key(active(),'Escape');await wait('Escape returns to More',()=>root().dataset.open==='false'&&active()===more());}};
 await wait('Header and choices registered',()=>root()?.dataset.ixOverlayReady==='true'&&more()&&!more().hidden&&first()&&last());
 await open();const initialFirst=first(),initialLast=last();
 if(key(first(),'Tab').defaultPrevented)throw new Error('interior Checkbox Tab intercepted');
-last().focus();if(!key(active(),'Tab').defaultPrevented)throw new Error('Toggle forward boundary not claimed');await wait('forward wraps to Checkbox',()=>active()===first());
+last().focus();await settleInput();if(!key(active(),'Tab').defaultPrevented)throw new Error('Toggle forward boundary not claimed');await wait('forward wraps to Checkbox',()=>active()===first());
 if(!key(first(),'Tab',true).defaultPrevented)throw new Error('Checkbox reverse boundary not claimed');await wait('reverse wraps to Toggle',()=>active()===last());
 if(byId('r0246-locked')?.disabled!==true)throw new Error('locked checkbox not disabled');
 const beforeCheckbox=+state().dataset.checkboxChanges;first().click();await wait('Checkbox changes exactly once',()=>state().dataset.notifications==='true'&&+state().dataset.checkboxChanges===beforeCheckbox+1);
