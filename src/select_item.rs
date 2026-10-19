@@ -30,6 +30,10 @@ pub fn SelectItem(
     let dropdown_key = binding.clone();
     let mounted_id = host_id.clone();
     let active = binding.active();
+    let option_active = binding.runtime.part_active(
+        &binding.key,
+        crate::dropdown_inventory::HostPartKind::SelectOption,
+    );
     let roving_tabindex = binding.tabindex();
     let checked_attribute =
         serde_json::to_string(&checked_content_attribute(&attributes)).unwrap_or_default();
@@ -63,14 +67,22 @@ pub fn SelectItem(
     }));
     let inner_value = value.clone();
     let key_value = value.clone();
-    let attributes = attributes
+    let mut attributes = attributes
         .into_iter()
         .filter(|attribute| roving_tabindex.is_none() || attribute.name != "tabindex")
         .collect::<Vec<_>>();
+    let class = crate::dropdown::item_host_class(
+        &mut attributes,
+        if active {
+            "ix-select-item ix-focused"
+        } else {
+            "ix-select-item"
+        },
+    );
     rsx! {
         div {
             id: host_id,
-            class: "ix-select-item",
+            class,
             role: "presentation", "aria-hidden": "true", "aria-label": aria_label,
             "data-ix-item-kind": "select", "data-ix-item-key": binding.key,
             "data-ix-item-runtime": binding.runtime.owner_id(),
@@ -83,9 +95,11 @@ pub fn SelectItem(
             onkeydown: move |event: KeyboardEvent| { dropdown_key.navigation_key(event); },
             ..attributes,
             div {
-                class: if selected { "ix-dropdown-item ix-select-item-option select-item-checked" } else { "ix-dropdown-item ix-select-item-option" },
+                class: format!("ix-dropdown-item ix-select-item-option{}{}",
+                    if selected { " select-item-checked" } else { "" },
+                    if option_active { " ix-focused" } else { "" }),
                 role: "option", "aria-hidden": "true", "checked": selected, "disabled": disabled,
-                "data-active": active.to_string(),
+                "data-active": option_active.to_string(),
                 "data-ix-reflect-checked": serde_json::to_string(&selected.then_some("")).unwrap_or_default(),
                 "data-ix-item-part": "select-option", "data-ix-descendant-kind": "dropdown", "data-ix-item-focusable": "false",
                 onclick: move |_| { if !disabled { onitemclick.call(inner_value.clone()); } },

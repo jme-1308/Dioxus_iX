@@ -3554,14 +3554,22 @@ pub fn MenuItem(
     };
     if generic {
         let source_active = item_host.active();
-        let attributes = attributes
+        let mut attributes = attributes
             .into_iter()
             .filter(|attribute| {
                 !(nested.is_some() && attribute.name == "hidden"
                     || roving_tabindex.is_some() && attribute.name == "tabindex")
             })
             .collect::<Vec<_>>();
-        rsx! {div {id:host_id,class:if source_active{"ix-source-menu-item ix-focused"}else{"ix-source-menu-item"},style,hidden:source_hidden,
+        let class = crate::dropdown::item_host_class(
+            &mut attributes,
+            if source_active {
+                "ix-source-menu-item ix-focused"
+            } else {
+                "ix-source-menu-item"
+            },
+        );
+        rsx! {div {id:host_id,class,style,hidden:source_hidden,
             "data-ix-item-kind":"menu","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":(!disabled).to_string(),"data-active":source_active.to_string(),
             // Host click is the source activation target. It does not invoke
             // the generated link/button's activation or application adapters.
@@ -3608,6 +3616,10 @@ pub fn MenuCategory(
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
     let item_host = crate::dropdown::use_item_host("category");
+    let parent_active = item_host.runtime.part_active(
+        &item_host.key,
+        crate::dropdown_inventory::HostPartKind::CategoryParent,
+    );
     let roving_tabindex = if item_host.generic {
         item_host.tabindex()
     } else {
@@ -3844,12 +3856,13 @@ pub fn MenuCategory(
         })
         .collect::<Vec<_>>()
         .join(";");
-    let attributes = attributes
+    let mut attributes = attributes
         .into_iter()
         .filter(|attribute| {
             attribute.name != "style" && (roving_tabindex.is_none() || attribute.name != "tabindex")
         })
         .collect::<Vec<_>>();
+    let host_class = crate::dropdown::item_host_class(&mut attributes, "ix-menu-category");
     let host_style = format!("{style};{consumer_style};anchor-name:--ix-menu-category-anchor-{id}");
     let flyout_style = format!("position-anchor:--ix-menu-category-anchor-{id}");
     let popup_id = format!("ix-category-popup-{id}");
@@ -3869,7 +3882,7 @@ pub fn MenuCategory(
     let mounted_id = host_id.clone();
     let mounted_parent_id = parent_id.clone();
     rsx! {
-        div { id:host_id.clone(),class:"ix-menu-category",hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
+        div { id:host_id.clone(),class:host_class,hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
             "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
             "data-ix-overlay-root":overlay_id.clone(),"data-ix-overlay-owner":overlay_runtime.owner_id(),
             "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-items-host-id":host_id,"data-ix-overlay-native-surface":"category",
@@ -3881,7 +3894,10 @@ pub fn MenuCategory(
             "data-menu-category-popup-open":popup_open.to_string(),"data-menu-category-panel-open":panel_open.to_string(),"data-menu-category-body-surface":if body_in_panel{"panel"}else{"popup"},
             ..attributes,
             crate::overlay_runtime::OverlayTransport {runtime:overlay_runtime.clone()}
-            button {id:parent_id.clone(),class:if active||nested_active{"ix-menu-item ix-menu-item-active"}else{"ix-menu-item"},r#type:"button",title:(!disable_tooltip).then(||label.clone()),
+            button {id:parent_id.clone(),class:format!("ix-menu-item{}{}",
+                    if active||nested_active { " ix-menu-item-active" } else { "" },
+                    if parent_active { " ix-focused" } else { "" }),r#type:"button",title:(!disable_tooltip).then(||label.clone()),
+                "data-active":parent_active.to_string(),
                 "data-ix-item-control":"",
                 "data-ix-item-part":"category-parent","data-ix-descendant-kind":"menu","data-ix-item-focusable":"true",
                 role:"menuitem",tabindex:roving_tabindex.unwrap_or(tabindex),"aria-haspopup":"menu","data-menu-control":root_roving.as_ref().map(|_|id.to_string()),"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
@@ -4575,7 +4591,7 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-menu{display:flex;flex-direction:column;position:absolute;inset-block:0;inset-inline-start:0;width:3.5rem;max-width:100%;background:var(--ix-color-surface-1);border-inline-end:1px solid var(--ix-color-border);padding:.5rem 0;box-sizing:border-box;z-index:32;transition:width 120ms ease-out;min-height:0}.ix-theme .ix-menu[data-expanded=true]{width:16rem;box-shadow:4px 4px 16px #0003}.ix-theme .ix-application[data-menu-pinned=true] .ix-menu{box-shadow:none}
 .ix-theme .ix-menu-navigation{display:flex;flex-direction:column;flex:1;min-height:0}.ix-theme .ix-menu-navigation:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}.ix-theme .ix-menu-primary{flex:1;min-height:0;overflow-y:auto;overflow-x:clip;padding-block:.25rem}.ix-theme .ix-menu-bottom{flex:none;padding-block-start:.5rem}.ix-theme .ix-menu-app-name{padding:.75rem;font-size:1rem;overflow:hidden;white-space:nowrap;font-weight:600}.ix-theme .ix-menu:not([data-expanded=true]) .ix-menu-app-name{display:none}
 .ix-theme .ix-menu-item{display:flex;align-items:center;position:relative;min-height:3rem;gap:.75rem;width:100%;box-sizing:border-box;border:0;background:transparent;color:var(--ix-color-text);font:inherit;font-size:.875rem;text-align:start;text-decoration:none;padding:.375rem .75rem;cursor:pointer;white-space:nowrap}.ix-theme .ix-menu-item-icon{display:flex;align-items:center;justify-content:center;flex:none;width:2rem;min-height:2rem}.ix-theme .ix-menu-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.ix-theme .ix-menu-item:hover{background:var(--ix-color-surface-2)}.ix-theme .ix-menu-item-active{background:var(--ix-color-surface-2);color:var(--ix-color-primary)}.ix-theme .ix-menu-item-active:before{content:'';position:absolute;inset-inline-start:0;inset-block:.5rem;width:2px;background:var(--ix-color-primary)}.ix-theme .ix-menu-item:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-3px}.ix-theme .ix-menu-item:disabled,.ix-theme .ix-menu-item[aria-disabled=true]{opacity:.45;cursor:not-allowed}
+.ix-theme .ix-menu-item:hover{background:var(--ix-color-surface-2)}.ix-theme .ix-menu-item-active{background:var(--ix-color-surface-2);color:var(--ix-color-primary)}.ix-theme .ix-menu-item-active:before{content:'';position:absolute;inset-inline-start:0;inset-block:.5rem;width:2px;background:var(--ix-color-primary)}.ix-theme .ix-menu-item:focus-visible,.ix-theme .ix-menu-item.ix-focused,.ix-theme .ix-source-menu-item.ix-focused>.ix-menu-item{outline:2px solid var(--ix-color-focus);outline-offset:-3px}.ix-theme .ix-menu-item:disabled,.ix-theme .ix-menu-item[aria-disabled=true]{opacity:.45;cursor:not-allowed}
 .ix-theme .ix-menu:not([data-expanded=true])>.ix-menu-navigation [data-menu-light]>.ix-menu-item>.ix-menu-label,.ix-theme .ix-menu:not([data-expanded=true])>.ix-menu-navigation [data-menu-light]>a>.ix-menu-item>.ix-menu-label,.ix-theme .ix-menu:not([data-expanded=true])>.ix-menu-navigation [data-menu-utilities]>.ix-menu-item>.ix-menu-label,.ix-theme .ix-menu:not([data-expanded=true]) .ix-menu-category>button>.ix-menu-label,.ix-theme .ix-menu:not([data-expanded=true]) .ix-menu-category-chevron{display:none}
 .ix-theme .ix-menu-notifications{display:inline-flex;align-items:center;justify-content:center;min-width:1rem;height:1rem;padding:0 .125rem;background:var(--ix-color-danger);color:var(--ix-color-on-primary);border-radius:.625rem;font-size:.625rem;margin-inline-start:auto;line-height:1;flex:none}.ix-theme .ix-menu:not([data-expanded=true]) .ix-menu-notifications{position:absolute;inset-inline-end:.25rem;top:.25rem}
 .ix-theme .ix-menu-item[data-menu-category-child][aria-disabled=true]{pointer-events:none}.ix-theme .ix-menu-category-items[hidden],.ix-theme .ix-menu-category-flyout[hidden]{display:none}.ix-theme .ix-menu-category{position:relative}.ix-theme .ix-menu-category-chevron{margin-inline-start:auto}.ix-theme .ix-menu-category-items .ix-menu-item{padding-inline-start:2rem}.ix-theme .ix-menu-category-flyout{position:fixed;inset:auto;top:anchor(top);left:calc(anchor(right) + 3px);margin:0;transform:none;min-width:14rem;max-width:18rem;background:var(--ix-color-surface-1);border:1px solid var(--ix-color-border);box-shadow:4px 8px 24px #0004;z-index:40;padding:.25rem 0}.ix-theme .ix-menu-category-flyout{overflow:visible}.ix-theme .ix-menu-category-flyout::before{content:'';position:absolute;top:0;bottom:0;left:-4px;width:4px;pointer-events:auto}.ix-theme .ix-menu-category-flyout .ix-menu-label{display:inline!important}.ix-theme .ix-menu-category-flyout .ix-menu-item{padding-inline:.75rem}.ix-theme .ix-menu-category-heading{padding:.75rem;font-size:.875rem;font-weight:600;border-bottom:1px solid var(--ix-color-border)}
@@ -4923,6 +4939,13 @@ mod tests {
                 } if name == "id" => {
                     ids.insert(value, current);
                 }
+                dioxus::core::Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(_),
+                    ..
+                } if name == "data-ix-overlay-transport" => {
+                    ids.insert("$overlay-transport".to_string(), current);
+                }
                 _ => {}
             }
         }
@@ -4960,6 +4983,95 @@ mod tests {
         );
         let ordinary = item_opening_tag(&html, "ordinary-menu-item");
         assert!(ordinary.starts_with("<button ") && !ordinary.contains("data-ix-item-kind"));
+    }
+    #[test]
+    fn rendered_generic_menu_and_category_parent_cues_follow_the_current_rust_signal() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(MenuTestConverter));
+        let capture = GenericMenuItemCapture::default();
+        let (mut dom, ids) = source_item_dom(capture.clone());
+        let category = capture.category.borrow().clone().unwrap();
+        let runtime = category
+            .0
+            .overlay
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .runtime()
+            .unwrap();
+        let html = dioxus_ssr::render(&dom);
+        let host = |id: &str,
+                    kind: &str,
+                    parts: serde_json::Value|
+         -> crate::dropdown_inventory::HostFacts {
+            let tag = item_opening_tag(&html, id);
+            let key = tag
+                .split("data-ix-item-key=\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap();
+            serde_json::from_value(serde_json::json!({
+                "item":format!("rendered-{id}"),"capture":format!("rendered-{id}"),"kind":kind,
+                "target":id,"registration_key":key,"source_focusable":true,"parts":parts
+            }))
+            .unwrap()
+        };
+        let category_host = host(
+            "consumer-category",
+            "category",
+            serde_json::json!([
+                {"kind":"category-parent","capture":"rendered-category-parent","source_focusable":true}
+            ]),
+        );
+        let menu_host = host("mixed-menu-consumer", "menu", serde_json::json!([]));
+        menu_dispatch(
+            &dom,
+            "input",
+            ids["$overlay-transport"],
+            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-category-cue-{}",runtime.owner_id()),"sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab","nodes":[]}).to_string(),
+        );
+        assert!(
+            runtime.keyboard_mode(),
+            "the observed document enables keyboard focus cues"
+        );
+        dom.in_runtime(|| runtime.mark_item_visual(&category_host));
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        let html = dioxus_ssr::render(&dom);
+        let outer = item_opening_tag(&html, "consumer-category");
+        assert!(!outer.contains("ix-focused") && !outer.contains("data-active"));
+        let parent = html
+            .split('>')
+            .find(|tag| tag.contains("data-ix-item-part=\"category-parent\""))
+            .unwrap();
+        assert!(parent.contains("ix-focused") && parent.contains("data-active=\"true\""));
+        assert!(
+            runtime.item_visual_key().is_none(),
+            "Category highlights its parent without making the outer host an AD item"
+        );
+        dom.in_runtime(|| runtime.mark_item_visual(&menu_host));
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        let html = dioxus_ssr::render(&dom);
+        let menu = item_opening_tag(&html, "mixed-menu-consumer");
+        assert!(menu.contains("ix-focused") && menu.contains("data-active=\"true\""));
+        let parent = html
+            .split('>')
+            .find(|tag| tag.contains("data-ix-item-part=\"category-parent\""))
+            .unwrap();
+        assert!(!parent.contains("ix-focused") && parent.contains("data-active=\"false\""));
+        dom.in_runtime(|| runtime.clear_item_visual());
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert!(
+            item_opening_tag(&dioxus_ssr::render(&dom), "mixed-menu-consumer")
+                .contains("data-active=\"false\"")
+        );
     }
     #[test]
     fn generic_menu_host_click_delivers_real_consumer_once_without_inner_side_effects() {

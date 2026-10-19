@@ -3,6 +3,8 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
+#[path = "dioxus_first_probe/cue_review.rs"]
+mod cue_review;
 #[path = "dioxus_first_probe/descendant_review.rs"]
 mod descendant_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
@@ -73,6 +75,9 @@ fn Preview() -> Element {
     }
     if scope == "?exits" {
         return rsx! { tab_exit_review::TabExitPreview {} };
+    }
+    if scope == "?cues" {
+        return rsx! { cue_review::CuePreview {} };
     }
     if scope == "?modal" {
         return rsx! { modal_focus_review::ModalFocusPreview {} };

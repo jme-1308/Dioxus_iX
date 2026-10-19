@@ -1,4 +1,4 @@
-//! Focus-cue protocol regressions through the actual runtime form handlers.
+//! Rust cue state driven by admitted native observations and mounted focus.
 use super::*;
 use crate::dropdown_inventory::{HostPartFacts, HostPartKind, ItemRef};
 use std::cell::Cell;
@@ -37,7 +37,6 @@ fn query(runtime: &RuntimeHandle, value: serde_json::Value) -> bool {
 
 struct Owner {
     node: NodeHandle,
-    open: Rc<Cell<bool>>,
     reads: Rc<Cell<usize>>,
     callbacks: Rc<Cell<usize>>,
 }
@@ -77,7 +76,6 @@ fn owner(runtime: &RuntimeHandle, generation: u64) -> Owner {
     );
     Owner {
         node,
-        open,
         reads,
         callbacks,
     }
@@ -131,28 +129,17 @@ fn focusin(runtime: &RuntimeHandle, sequence: u64, hosts: &[HostFacts], focused:
     value["item_focus_host"] = serde_json::to_value(focused).unwrap();
     runtime.input(event(value));
 }
-fn cue(runtime: &RuntimeHandle, host: &HostFacts, part: Option<&str>, active: bool) -> bool {
-    query(
-        runtime,
-        serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-        "item_cue":{"key":host.registration_key,"capture":host.capture,"part":part,"active":active}}),
-    )
-}
-
 #[test]
-fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work() {
+fn current_host_and_part_cues_are_repeatable_without_consuming_focus_work() {
     let runtime = RuntimeHandle::new();
     let mut dom = VirtualDom::new(|| rsx! { div {} });
     dom.rebuild_in_place();
     let owner = dom.runtime().in_scope(ScopeId::ROOT, || owner(&runtime, 1));
-    let mut a = host("a", "actual-a", ItemKind::Select);
-    a.parts.push(HostPartFacts {
-        kind: HostPartKind::SelectOption,
-        capture: "actual-a-inner".into(),
-        source_focusable: false,
-    });
+    // The option need not have a native ID/capture: its cue belongs to Select.
+    let a = host("a", "actual-a", ItemKind::Select);
     let b = host("b", "actual-b", ItemKind::Menu);
     let mut category = host("category", "actual-category", ItemKind::Category);
+    category.source_focusable = false;
     category.parts.push(HostPartFacts {
         kind: HostPartKind::CategoryParent,
         capture: "actual-category-parent".into(),
@@ -168,11 +155,17 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
         );
     }
     observe(&runtime, 1, 1, &hosts);
-    assert!(
-        !cue(&runtime, &a, None, false),
-        "unknown projection is not a clear command"
-    );
-    focusin(&runtime, 2, &hosts, &a);
+    assert_eq!(runtime.item_visual_key(), None);
+    let observation = |owner: String, path: Vec<String>| {
+        serde_json::json!({
+            "owner":owner,"sequence":0,
+            "item_focus_observation":{"hosts":hosts,"path":path}
+        })
+    };
+    assert!(query(
+        &runtime,
+        observation(runtime.owner_id(), vec![a.capture.clone()])
+    ));
     let delivered = Rc::new(Cell::new(0));
     let completion = delivered.clone();
     assert!(
@@ -191,68 +184,64 @@ fn item_cue_queries_project_current_exact_hosts_and_parts_without_consuming_work
     let reads = owner.reads.get();
     let callbacks = owner.callbacks.get();
     for _ in 0..3 {
-        assert!(cue(&runtime, &a, None, true));
-        assert!(cue(&runtime, &a, Some("actual-a-inner"), true));
-        assert!(!cue(&runtime, &a, None, false));
-        assert!(cue(&runtime, &b, None, false));
-        assert!(!cue(&runtime, &b, None, true));
-        assert!(!cue(&runtime, &a, Some("actual-category-parent"), true));
-        assert!(!cue(&runtime, &category, None, false));
-        assert!(!cue(&runtime, &category, None, true));
+        assert_eq!(runtime.item_visual_key().as_deref(), Some("a"));
+        assert_eq!(runtime.item_visual_target().as_deref(), Some("consumer-a"));
+        assert!(runtime.part_active("a", HostPartKind::SelectOption));
+        assert!(!runtime.part_active("b", HostPartKind::SelectOption));
+        assert!(!runtime.part_active("category", HostPartKind::CategoryParent));
+        assert!(!runtime.part_active("a", HostPartKind::CategoryParent));
     }
     assert_eq!(
         owner.reads.get(),
         reads,
-        "pure offers never invoke registered read callbacks"
+        "cue reads do not invoke application callbacks"
     );
-    assert_eq!(owner.callbacks.get(), callbacks);
-    let mut wrong_owner = serde_json::json!({"owner":"foreign-runtime","sequence":0,
-        "item_cue":{"key":a.registration_key,"capture":a.capture,"active":true}});
-    assert!(!query(&runtime, wrong_owner.clone()));
-    wrong_owner["owner"] = runtime.owner_id().into();
-    wrong_owner["item_cue"]["capture"] = "copied-object".into();
-    assert!(!query(&runtime, wrong_owner));
-    let mut copy = a.clone();
-    copy.capture = "copied-object".into();
-    copy.item = ItemRef(copy.capture.clone());
-    let mut copied_report = report(&runtime, 3, 1, "observe", std::slice::from_ref(&copy));
-    copied_report["key"] = "".into();
-    runtime.input(event(copied_report));
-    let after_observe_reads = owner.reads.get();
-    assert!(!cue(&runtime, &copy, None, true));
-    assert!(!cue(&runtime, &copy, None, false));
-    assert!(
-        cue(&runtime, &a, None, true),
-        "copy cannot retarget the bound object"
-    );
-    assert_eq!(
-        owner.reads.get(),
-        after_observe_reads,
-        "pure projection invokes no read callback"
-    );
-    assert!(after_observe_reads >= reads);
     assert_eq!(owner.callbacks.get(), callbacks);
     assert_eq!(runtime.pending_completions(), frames);
     assert_eq!(runtime.pending_item_focus_count(), jobs);
     assert_eq!(delivered.get(), 0);
-    focusin(&runtime, 4, &hosts, &category);
-    assert!(cue(&runtime, &a, None, false));
-    assert!(cue(
+    assert!(!query(
         &runtime,
-        &category,
-        Some("actual-category-parent"),
-        true
+        observation(
+            "foreign-runtime".into(),
+            vec![category.parts[0].capture.clone()]
+        )
     ));
+    assert!(!query(
+        &runtime,
+        observation(runtime.owner_id(), vec!["copied-object".into()])
+    ));
+    assert_eq!(runtime.item_visual_key().as_deref(), Some("a"));
+    assert!(query(
+        &runtime,
+        observation(
+            runtime.owner_id(),
+            vec![category.parts[0].capture.clone(), category.capture.clone()]
+        )
+    ));
+    assert_eq!(
+        runtime.item_visual_key(),
+        None,
+        "Category outer host is not an AD active item"
+    );
+    assert_eq!(runtime.item_visual_target(), None);
+    assert!(runtime.part_active("category", HostPartKind::CategoryParent));
+    assert!(!runtime.part_active("a", HostPartKind::SelectOption));
+    // An ineligible parent cannot retain a cue after the next observation.
+    let mut ineligible = category.clone();
+    ineligible.parts[0].source_focusable = false;
+    assert!(query(
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
+        "item_focus_observation":{"hosts":[ineligible],"path":[category.parts[0].capture]}})
+    ));
+    assert!(!runtime.part_active("category", HostPartKind::CategoryParent));
+    focusin(&runtime, 4, &hosts, &a);
     let mut pointer_clear = report(&runtime, 5, 1, "modality", &hosts);
     pointer_clear["input_kind"] = "mousedown".into();
     runtime.input(event(pointer_clear));
-    assert!(cue(
-        &runtime,
-        &category,
-        Some("actual-category-parent"),
-        false
-    ));
-    assert!(cue(&runtime, &a, None, false));
+    assert_eq!(runtime.item_visual_key(), None);
+    assert!(!runtime.part_active("a", HostPartKind::SelectOption));
 }
 
 #[test]
@@ -284,12 +273,11 @@ fn mounted_focus_attempt_publishes_cues_after_await_and_unmount_cancels_the_next
         "focus permission alone does not publish a cue"
     );
     focusin(&runtime, 2, &hosts, &b);
-    assert!(cue(&runtime, &b, None, true));
+    assert_eq!(runtime.item_visual_key().as_deref(), Some("b"));
     mock.pending.set(false);
     mock.waker.borrow_mut().take().unwrap().wake();
     super::tests::settle_item_effects(&mut dom);
-    assert!(cue(&runtime, &a, None, true));
-    assert!(cue(&runtime, &b, None, false));
+    assert_eq!(runtime.item_visual_key().as_deref(), Some("a"));
     assert_eq!(callbacks.get(), 1);
     assert_eq!(runtime.pending_item_focus_count(), 0);
     assert!(
@@ -303,111 +291,44 @@ fn mounted_focus_attempt_publishes_cues_after_await_and_unmount_cancels_the_next
     assert_eq!(callbacks.get(), 1);
 }
 
-fn root_offer(
-    runtime: &RuntimeHandle,
-    generation: u64,
-    field: &str,
-    value: Option<&str>,
-) -> serde_json::Value {
-    serde_json::json!({"owner":runtime.owner_id(),"sequence":0,"item_root_cue":{
-        "root":"cue-root","generation":generation,"capture":format!("root-object-{generation}"),
-        "trigger_capture":format!("trigger-object-{generation}"),"field":field,"value":value}})
-}
 #[test]
-fn root_cue_queries_read_fresh_mode_open_projection_and_reject_stale_registration() {
+fn unmounted_or_replaced_registered_control_does_not_inherit_the_current_cue() {
     let runtime = RuntimeHandle::new();
-    let old = owner(&runtime, 1);
-    let host = host("a", "actual-a", ItemKind::Dropdown);
-    runtime.register_item_cue(host.registration_key.clone(), host.kind);
-    observe(&runtime, 1, 1, std::slice::from_ref(&host));
-    focusin(&runtime, 2, std::slice::from_ref(&host), &host);
-    let mode_ad = Rc::new(Cell::new(true));
-    let active = Rc::new(RefCell::new(Some("consumer-a".to_string())));
-    let reader_calls = Rc::new(Cell::new(0));
-    let mode = mode_ad.clone();
-    let current = active.clone();
-    let opened = old.open.clone();
-    let count = reader_calls.clone();
-    old.node.set_item_visual_reader(Rc::new(move || {
-        count.set(count.get() + 1);
-        RootVisual {
-            active: current.borrow().clone(),
-            aria: if mode.get() && opened.get() {
-                current.borrow().clone()
-            } else {
-                None
-            },
-        }
-    }));
-    for field in ["active", "aria", "trigger-aria"] {
-        assert!(query(
-            &runtime,
-            root_offer(&runtime, 1, field, Some("consumer-a"))
-        ));
-        assert!(!query(
-            &runtime,
-            root_offer(&runtime, 1, field, Some("wrong-id"))
-        ));
-    }
-    let before = reader_calls.get();
-    for field in ["capture", "trigger_capture", "generation", "root"] {
-        let mut wrong = root_offer(&runtime, 1, "trigger-aria", Some("consumer-a"));
-        wrong["item_root_cue"][field] = if field == "generation" {
-            serde_json::json!(2)
-        } else {
-            serde_json::json!("other-object")
-        };
-        assert!(!query(&runtime, wrong));
-    }
-    assert_eq!(
-        reader_calls.get(),
-        before,
-        "bad binding cannot invoke projection reader"
+    let mut dom = VirtualDom::new(|| rsx! { div {} });
+    dom.rebuild_in_place();
+    let _owner = dom.runtime().in_scope(ScopeId::ROOT, || owner(&runtime, 1));
+    let select = host("select", "actual-select", ItemKind::Select);
+    runtime.register_item_cue(select.registration_key.clone(), select.kind);
+    runtime.register_item_mount(
+        &select.registration_key,
+        &select.target,
+        Rc::new(MountedData::new(())),
     );
-    mode_ad.set(false);
-    assert!(query(&runtime, root_offer(&runtime, 1, "aria", None)));
-    assert!(!query(
-        &runtime,
-        root_offer(&runtime, 1, "aria", Some("consumer-a"))
-    ));
-    assert!(query(
-        &runtime,
-        root_offer(&runtime, 1, "active", Some("consumer-a"))
-    ));
-    mode_ad.set(true);
-    old.open.set(false);
-    assert!(query(
-        &runtime,
-        root_offer(&runtime, 1, "trigger-aria", None)
-    ));
-    *active.borrow_mut() = Some("fresh-current-target".into());
-    assert!(query(
-        &runtime,
-        root_offer(&runtime, 1, "active", Some("fresh-current-target"))
-    ));
-    assert!(!query(
-        &runtime,
-        root_offer(&runtime, 1, "active", Some("consumer-a"))
-    ));
-    let replacement = owner(&runtime, 2);
-    replacement
-        .node
-        .set_item_visual_reader(Rc::new(|| RootVisual {
-            active: None,
-            aria: None,
-        }));
-    assert!(!query(
-        &runtime,
-        root_offer(&runtime, 1, "active", Some("fresh-current-target"))
-    ));
-    runtime.input(event(report(
-        &runtime,
-        3,
-        2,
-        "observe",
-        std::slice::from_ref(&host),
-    )));
-    assert!(query(&runtime, root_offer(&runtime, 2, "active", None)));
-    replacement.node.unregister();
-    assert!(!query(&runtime, root_offer(&runtime, 2, "active", None)));
+    observe(&runtime, 1, 1, std::slice::from_ref(&select));
+    focusin(&runtime, 2, std::slice::from_ref(&select), &select);
+    assert!(runtime.part_active("select", HostPartKind::SelectOption));
+    runtime.register_item_mount(
+        &select.registration_key,
+        &select.target,
+        Rc::new(MountedData::new(())),
+    );
+    assert_eq!(runtime.item_visual_key(), None);
+    assert!(!runtime.part_active("select", HostPartKind::SelectOption));
+    focusin(&runtime, 3, std::slice::from_ref(&select), &select);
+    assert!(runtime.part_active("select", HostPartKind::SelectOption));
+    runtime.unregister_item_cue(&select.registration_key);
+    assert_eq!(runtime.item_visual_key(), None);
+    assert_eq!(runtime.item_visual_target(), None);
+    assert!(!runtime.part_active("select", HostPartKind::SelectOption));
+    runtime.register_item_cue(select.registration_key.clone(), select.kind);
+    runtime.register_item_mount(
+        &select.registration_key,
+        &select.target,
+        Rc::new(MountedData::new(())),
+    );
+    assert_eq!(
+        runtime.item_visual_key(),
+        None,
+        "a reused key and public ID need a new focus attempt"
+    );
 }

@@ -249,6 +249,25 @@ pub(crate) fn item_host_id(attributes: &[Attribute], default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
+/// Merge consumer classes before spreading attributes so one rendered class
+/// value retains the component's current Rust-owned state classes.
+pub(crate) fn item_host_class(attributes: &mut Vec<Attribute>, base: impl Into<String>) -> String {
+    let mut class = base.into();
+    attributes.retain(|attribute| {
+        if attribute.name != "class" {
+            return true;
+        }
+        if let dioxus::core::AttributeValue::Text(value) = &attribute.value {
+            if !value.is_empty() {
+                class.push(' ');
+                class.push_str(value);
+            }
+        }
+        false
+    });
+    class
+}
+
 /// Native focus policy. Default mode retains consumer tabindex values and uses
 /// the source visible marker; MenuItem/Category projection can move DOM focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -486,21 +505,24 @@ impl DropdownContext {
     fn active_dom_id(&self) -> Option<String> {
         let owner = self.navigation_owner(true);
         let node = owner.node.borrow().clone();
-        if let Some(node) = node
-            && let Some(facts) = node.inventory()
-        {
+        if let Some(node) = node {
             let runtime = node.runtime()?;
-            let _ = runtime.item_visual_target()?;
-            let inventory = Inventory::new(InventoryMode::ActiveDescendant, facts);
-            return inventory
-                .query_hosts()
-                .into_iter()
-                .find(|host| {
-                    runtime.item_visual_matches(host)
-                        && host.kind != ItemKind::Category
-                        && host.source_focusable
-                })
-                .map(|host| host.target);
+            // Opening can render a trigger before its inventory arrives. Read
+            // the cue signal now so that the later first cue updates its ARIA.
+            let visual_target = runtime.item_visual_target();
+            if let Some(facts) = node.inventory() {
+                visual_target?;
+                let inventory = Inventory::new(InventoryMode::ActiveDescendant, facts);
+                return inventory
+                    .query_hosts()
+                    .into_iter()
+                    .find(|host| {
+                        runtime.item_visual_matches(host)
+                            && host.kind != ItemKind::Category
+                            && host.source_focusable
+                    })
+                    .map(|host| host.target);
+            }
         }
         owner
             .state
@@ -1350,6 +1372,19 @@ impl DropdownHandle {
             .and_then(|context| context.open.try_read().ok().map(|open| *open))
             .unwrap_or(false)
     }
+    /// Current active item ID for a custom trigger's `aria-activedescendant`.
+    /// Bind this together with [`use_dropdown_trigger_mount`] when rendering a
+    /// custom trigger. Closed menus and roving navigation have no descendant.
+    pub fn active_descendant(self) -> Option<String> {
+        let context = self.try_context()?;
+        let _ = context.revision.try_read().ok();
+        if !context.open.try_read().ok().is_some_and(|open| *open)
+            || context.state.borrow().settings.mode != DropdownNavigationMode::ActiveDescendant
+        {
+            return None;
+        }
+        context.active_dom_id()
+    }
     pub fn open(self) {
         self.open_at(false);
     }
@@ -1596,14 +1631,7 @@ pub fn DropdownTrigger(
     let id = context.node_id();
     let trigger_id = context.trigger_id();
     let host_id = context.host_id();
-    let active_id = if context.state.borrow().settings.mode
-        == DropdownNavigationMode::ActiveDescendant
-        && dropdown.is_open()
-    {
-        context.active_dom_id()
-    } else {
-        None
-    };
+    let active_id = dropdown.active_descendant();
     rsx! { button {
         id:trigger_id, class:"ix-dropdown-external-trigger ix-button ix-button-{variant.as_str()} {class}",
         r#type:"button",disabled:blocked,"aria-label":aria_label,"aria-busy":loading.to_string(),
@@ -1773,16 +1801,6 @@ fn DropdownSurface(
                     }
                 }),
             );
-            let projection = context.clone();
-            node.set_item_visual_reader(Rc::new(move || {
-                let active = projection.active_dom_id();
-                let aria = (projection.state.borrow().settings.mode
-                    == DropdownNavigationMode::ActiveDescendant
-                    && *projection.open.peek())
-                .then(|| active.clone())
-                .flatten();
-                overlay_runtime::RootVisual { active, aria }
-            }));
             let shape_context = context.clone();
             node.set_anchor_shape_handler(Rc::new(move |in_dropdown_item| {
                 let changed = {
@@ -2105,17 +2123,13 @@ pub fn DropdownItem(
         }
     });
     let owner = context.as_ref().map(|context| context.node_id());
-    let active = if context
-        .as_ref()
-        .is_some_and(|context| context.state.borrow().native)
-    {
-        host_binding.active()
-    } else {
-        context.as_ref().is_some_and(|context| {
+    let source_active = host_binding.active();
+    let active = source_active
+        || context.as_ref().is_some_and(|context| {
             let _ = (context.revision)();
-            context.state.borrow().active == Some(id)
-        })
-    };
+            let state = context.state.borrow();
+            !state.native && state.active == Some(id)
+        });
     let trigger_marker = linked.as_ref().map(DropdownContext::node_id);
     let linked_open = linked
         .as_ref()
@@ -2150,8 +2164,25 @@ pub fn DropdownItem(
         (None, Some(child)) => Some(format!("anchor-name:--ix-dropdown-anchor-{}", child.id)),
         (style, None) => style,
     };
+    let class = item_host_class(
+        &mut attributes,
+        format!(
+            "ix-dropdown-item{}{}{}",
+            if compact {
+                " ix-dropdown-quick-action"
+            } else {
+                ""
+            },
+            if active { " ix-focused" } else { "" },
+            if linked_open {
+                " ix-dropdown-submenu-trigger-active"
+            } else {
+                ""
+            }
+        ),
+    );
     rsx! {div {
-        id:host_id,class:if compact{"ix-dropdown-item ix-dropdown-quick-action"}else{"ix-dropdown-item"},
+        id:host_id,class,
         role:if checked||checkable{"menuitemcheckbox"}else{"menuitem"},"data-ix-dropdown-item":id.to_string(),
         "data-ix-dropdown-owner":owner,"data-ix-dropdown-label":label.clone(),
         "data-ix-item-kind":"dropdown","data-ix-item-key":host_binding.key,"data-ix-item-runtime":host_binding.runtime.owner_id(),
@@ -2163,6 +2194,7 @@ pub fn DropdownItem(
         "aria-label":compact.then_some(label.clone()),title:compact.then_some(label.clone()),
         "aria-haspopup":dropdown.map(|_|"menu"),"aria-expanded":dropdown.map(|_|linked_open.to_string()),
         "aria-controls":linked.as_ref().map(DropdownContext::host_id),
+        "aria-activedescendant":dropdown.and_then(DropdownHandle::active_descendant),
         "aria-checked":(checked||checkable).then_some(checked.to_string()),
         onmounted:move |event|{mounted_host.mount(&mounted_id,event.data());if let Some(context)=&mount_context{if let Some(entry)=context.entries.borrow_mut().get_mut(&id){entry.mounted=Some(event.data());}}
             linked_mount.call(event);},
@@ -2296,7 +2328,7 @@ pub(crate) const STYLES: &str = r#"
 .ix-dropdown-item:disabled { opacity:.45; }
 .ix-dropdown-header { padding:8px 16px;font-size:14px;color:var(--ix-color-text-secondary); }
 .ix-dropdown-submenu-menu{position:fixed;inset:50% auto auto 50%;transform:translate(-50%,-50%);box-sizing:border-box;width:min(200px,calc(100vw - 16px));min-width:0;max-width:calc(100vw - 16px);max-height:min(320px,calc(100dvh - 16px));z-index:21}
-.ix-dropdown-submenu-trigger[aria-expanded=true]{background:var(--ix-color-surface-2)}
+.ix-dropdown-submenu-trigger[aria-expanded=true],.ix-dropdown-item.ix-dropdown-submenu-trigger-active{background:var(--ix-color-surface-2)}
 @supports (position-anchor:--example) and (position-area:right){
  .ix-dropdown-submenu-menu{inset:auto;transform:none;position-area:right span-bottom;align-self:start;margin:0 4px;position-try-fallbacks:flip-inline,flip-block,flip-inline flip-block,--ix-submenu-contained,--ix-submenu-contained-above}
  @position-try --ix-submenu-contained{position-area:bottom span-right;inset:auto;justify-self:start;align-self:start;margin:4px 0;width:min(200px,calc(100vw - 16px));height:max-content;max-width:calc(100vw - 16px);max-height:min(320px,calc(100dvh - 16px))}
@@ -3417,6 +3449,119 @@ mod tests {
         );
         assert!(runtime.pending_item_focus_count() == 0);
     }
+
+    fn rendered_cue_host(h: &Harness, label: &str) -> crate::dropdown_inventory::HostFacts {
+        let attributes = &h.attrs[&h.target(label).raw()];
+        let id = &attributes["id"];
+        serde_json::from_value(serde_json::json!({
+            "item":format!("rendered-{id}"),"capture":format!("rendered-{id}"),
+            "kind":"dropdown","target":id,"registration_key":attributes["data-ix-item-key"],
+            "source_focusable":true
+        }))
+        .unwrap()
+    }
+    fn cue_tag<'a>(html: &'a str, id: &str) -> &'a str {
+        html.split('>')
+            .find(|tag| tag.contains(&format!(" id=\"{id}\"")))
+            .unwrap_or_else(|| panic!("missing cue target {id}"))
+    }
+
+    #[test]
+    fn mounted_navigation_cues_render_classes_root_aria_and_survive_props_without_inheriting_replacement()
+     {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            alpha_id: Some("rendered-cue-alpha".into()),
+            ..Fixture::default()
+        });
+        h.click("Menu");
+        let context = h.context();
+        let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
+        let host = rendered_cue_host(&h, "Alpha");
+        let facts = InventoryFacts {
+            items_host: ItemRef("rendered-cue-items".into()),
+            hosts: vec![host.clone()],
+            navigation_order: vec![host.item.clone()],
+            query_order: vec![host.item.clone()],
+            slots: None,
+        };
+        assert!(registered_inventory_key(&h, 1, "Home", &facts));
+        h.settle();
+        let html = h.html();
+        let item = cue_tag(&html, &host.target);
+        assert!(item.contains("ix-focused") && item.contains("data-active=\"true\""));
+        assert!(
+            cue_tag(&html, &context.trigger_id())
+                .contains("aria-activedescendant=\"rendered-cue-alpha\"")
+        );
+        h.config.borrow_mut().listener_revision += 1;
+        h.update();
+        assert!(cue_tag(&h.html(), &host.target).contains("ix-focused"));
+        h.config.borrow_mut().visible = false;
+        h.update();
+        assert!(runtime.item_visual_target().is_none());
+        h.config.borrow_mut().visible = true;
+        h.update();
+        let html = h.html();
+        let replacement = cue_tag(&html, &host.target);
+        assert!(
+            replacement.contains("data-active=\"false\"") && !replacement.contains("ix-focused")
+        );
+    }
+
+    #[test]
+    fn linked_open_cue_and_typed_trigger_aria_follow_current_rust_submenu_state() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.click("Menu");
+        h.click("Linked");
+        let child = h.config.borrow().linked.get().unwrap();
+        let context = child.context();
+        let node = context.node.borrow().as_ref().unwrap().clone();
+        let runtime = node.runtime().unwrap();
+        let host = rendered_cue_host(&h, "Detached leaf");
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        dispatch(&h.dom,"input",transport,serde_json::json!({
+            "owner":runtime.owner_id(),"document":format!("rendered-linked-cue-{}",runtime.owner_id()),
+            "sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab",
+            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
+                "inventory":{"items_host":"rendered-child-items","hosts":[host],"navigation_order":[host.item],"query_order":[host.item]}}]
+        }).to_string());
+        assert!(
+            runtime.keyboard_mode(),
+            "the observed document enables keyboard focus cues"
+        );
+        h.dom.in_runtime(|| runtime.mark_item_visual(&host));
+        h.settle();
+        assert_eq!(
+            child.active_descendant().as_deref(),
+            Some(host.target.as_str())
+        );
+        let html = h.html();
+        let linked_id = h.attrs[&h.target("Linked").raw()]["id"].clone();
+        let linked = cue_tag(&html, &linked_id);
+        assert!(linked.contains("ix-dropdown-submenu-trigger-active"));
+        assert!(linked.contains(&format!("aria-activedescendant=\"{}\"", host.target)));
+        assert!(
+            cue_tag(&html, &context.trigger_id())
+                .contains(&format!("aria-activedescendant=\"{}\"", host.target))
+        );
+        h.dom.in_runtime(|| child.close(false));
+        h.settle();
+        assert!(child.active_descendant().is_none());
+        let html = h.html();
+        let linked = cue_tag(&html, &linked_id);
+        assert!(
+            !linked.contains("ix-dropdown-submenu-trigger-active")
+                && !linked.contains("aria-activedescendant")
+        );
+    }
+
     #[test]
     fn registered_roving_inventory_projects_logical_tab_order_before_render() {
         let _guard = crate::test_event_converter_guard();

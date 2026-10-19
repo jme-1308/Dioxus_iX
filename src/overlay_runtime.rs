@@ -1,6 +1,6 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
-use crate::dropdown_inventory::{HostFacts, InventoryFacts, ItemKind, ItemRef};
+use crate::dropdown_inventory::{HostFacts, HostPartKind, InventoryFacts, ItemKind, ItemRef};
 use crate::overlay_completion::CompletionQueue;
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
@@ -140,7 +140,6 @@ struct Entry {
     root_click_without_host: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
-    item_visual: Option<Rc<dyn Fn() -> RootVisual>>,
     submenu: Option<SubmenuAccess>,
     navigation: Option<NavigationConfiguration>,
     suppress_trigger_restore: bool,
@@ -189,7 +188,6 @@ struct Runtime {
     item_visual: Option<String>,
     item_visual_target: Option<String>,
     item_visual_known: bool,
-    item_cues_dirty: bool,
     item_visual_host: Option<HostFacts>,
     item_cue_hosts: crate::item_visual::CueHosts,
     item_root_captures: BTreeMap<String, (u64, String, String)>,
@@ -264,37 +262,6 @@ struct SubmenuAccess {
     trigger_click: Rc<dyn Fn()>,
 }
 
-#[derive(Deserialize)]
-struct SubmenuMarkerOffer {
-    root: String,
-    generation: u64,
-    root_capture: String,
-    capture: String,
-    active: bool,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct RootVisual {
-    pub(crate) active: Option<String>,
-    pub(crate) aria: Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum RootCueField {
-    Active,
-    Aria,
-    TriggerAria,
-}
-#[derive(Deserialize)]
-struct RootCueOffer {
-    root: String,
-    generation: u64,
-    capture: String,
-    #[serde(default)]
-    trigger_capture: Option<String>,
-    field: RootCueField,
-    value: Option<String>,
-}
 #[derive(Clone, Copy)]
 struct ItemTabindex {
     revision: u64,
@@ -357,7 +324,6 @@ impl RuntimeHandle {
             item_visual: None,
             item_visual_target: None,
             item_visual_known: false,
-            item_cues_dirty: false,
             item_visual_host: None,
             item_cue_hosts: Default::default(),
             item_root_captures: BTreeMap::new(),
@@ -380,6 +346,27 @@ impl RuntimeHandle {
         signal
             .and_then(|signal| signal.try_read().ok().map(|value| value.clone()))
             .unwrap_or(value)
+    }
+    /// Reads the same reactive selection as the outer host. Select's option
+    /// inherits its host cue; Category marks only its eligible parent control.
+    pub(crate) fn part_active(&self, key: &str, kind: HostPartKind) -> bool {
+        let _ = self.item_visual_key();
+        let state = self.0.borrow();
+        let Some(host) = state
+            .item_visual_host
+            .as_ref()
+            .filter(|host| host.registration_key == key)
+        else {
+            return false;
+        };
+        match (host.kind, kind) {
+            (ItemKind::Select, HostPartKind::SelectOption) => host.source_focusable,
+            (ItemKind::Category, HostPartKind::CategoryParent) => host
+                .parts
+                .iter()
+                .any(|part| part.kind == kind && part.source_focusable),
+            _ => false,
+        }
     }
     pub(crate) fn item_visual_target(&self) -> Option<String> {
         let _ = self.item_visual_key();
@@ -446,6 +433,15 @@ impl RuntimeHandle {
         state.item_cue_hosts.unregister(key);
     }
     fn cancel_item_key(&self, key: &str) {
+        let selected = self
+            .0
+            .borrow()
+            .item_visual_host
+            .as_ref()
+            .is_some_and(|host| host.registration_key == key);
+        if selected {
+            self.clear_item_visual();
+        }
         let roots: Vec<_> = self
             .0
             .borrow()
@@ -780,7 +776,6 @@ impl RuntimeHandle {
                 return;
             }
             state.item_visual = key.clone();
-            state.item_cues_dirty = true;
             state.item_visual_target = target;
             state.item_visual_host = host;
             state.item_visual_signal
@@ -789,10 +784,6 @@ impl RuntimeHandle {
             && let Ok(mut value) = signal.try_write()
         {
             *value = key;
-        }
-        let bridge = self.0.borrow().bridge;
-        if let Some(bridge) = bridge {
-            let _ = bridge.send(serde_json::json!({"item_cues":true}));
         }
     }
     pub(crate) fn clear_item_visual(&self) {
@@ -990,7 +981,6 @@ impl RuntimeHandle {
                     root_click_without_host: false,
                     anchor_intersection: None,
                     anchor_shape: None,
-                    item_visual: None,
                     submenu: None,
                     navigation,
                     suppress_trigger_restore,
@@ -1106,7 +1096,6 @@ impl RuntimeHandle {
                 state.item_visual = None;
                 state.item_visual_target = None;
                 state.item_visual_known = false;
-                state.item_cues_dirty = false;
                 for entry in state.nodes.values_mut() {
                     if let Some(configuration) = &mut entry.navigation {
                         configuration.version = configuration.version.wrapping_add(1).max(1);
@@ -1673,7 +1662,6 @@ impl RuntimeHandle {
             return;
         };
         self.0.borrow_mut().submenu_marks.remove(&capture);
-        self.wake_submenu_markers();
         if let Some(access) = entry.submenu {
             self.with_owner(&parent, entry.generation, || (access.reset)());
         }
@@ -2910,74 +2898,6 @@ impl RuntimeHandle {
             event.prevent_default();
             return;
         }
-        if let Some(offer) = query.submenu_marker {
-            if self.permits_submenu_marker(&offer) {
-                event.prevent_default();
-            }
-            return;
-        }
-        if query.item_cues_pending {
-            if std::mem::take(&mut self.0.borrow_mut().item_cues_dirty) {
-                event.prevent_default();
-            }
-            return;
-        }
-        if let Some(offer) = query.item_cue {
-            let state = self.0.borrow();
-            if state.item_cue_hosts.permits(
-                &offer,
-                state.item_visual_host.as_ref(),
-                state.item_visual_known,
-            ) {
-                event.prevent_default();
-            }
-            return;
-        }
-        if let Some(offer) = query.item_root_cue {
-            let authorized = {
-                let state = self.0.borrow();
-                state.item_visual_known
-                    && state.item_root_captures.get(&offer.root).is_some_and(
-                        |(generation, root, trigger)| {
-                            *generation == offer.generation
-                                && !root.is_empty()
-                                && *root == offer.capture
-                                && (!matches!(offer.field, RootCueField::TriggerAria)
-                                    || offer.trigger_capture.as_ref().is_some_and(|capture| {
-                                        !capture.is_empty() && capture == trigger
-                                    }))
-                        },
-                    )
-            };
-            if !authorized {
-                return;
-            }
-            // The reader is internal projection only: no application callbacks,
-            // queue consumption or renderer work is permitted in this query.
-            let expected = self
-                .with_owner(&offer.root, offer.generation, || {
-                    let entry = self.entry(&offer.root)?;
-                    if entry.generation != offer.generation
-                        || self.read_current(&offer.root, &entry).is_none()
-                    {
-                        return None;
-                    }
-                    let projection = (entry.item_visual.as_ref()?)();
-                    Some(match offer.field {
-                        RootCueField::Active => projection.active,
-                        RootCueField::Aria | RootCueField::TriggerAria => projection.aria,
-                    })
-                })
-                .flatten();
-            if expected.is_some_and(|expected| expected == offer.value)
-                && self
-                    .entry(&offer.root)
-                    .is_some_and(|entry| entry.generation == offer.generation)
-            {
-                event.prevent_default();
-            }
-            return;
-        }
         if let Some(capture) = query.capture_retained {
             let state = self.0.borrow();
             let retained = state.submenu_marks.contains_key(&capture)
@@ -3647,18 +3567,6 @@ impl NodeHandle {
             runtime.unregister(&self.id, self.generation);
         }
     }
-    pub(crate) fn set_item_visual_reader(&self, reader: Rc<dyn Fn() -> RootVisual>) {
-        if let Some(runtime) = self.runtime() {
-            let mut state = runtime.0.borrow_mut();
-            if let Some(entry) = state
-                .nodes
-                .get_mut(&self.id)
-                .filter(|entry| entry.generation == self.generation)
-            {
-                entry.item_visual = Some(reader);
-            }
-        }
-    }
 }
 
 pub(crate) fn use_overlay_runtime() -> RuntimeHandle {
@@ -3837,17 +3745,9 @@ struct Query {
     owner: String,
     sequence: u64,
     #[serde(default)]
-    item_cues_pending: bool,
-    #[serde(default)]
     capture_retained: Option<String>,
     #[serde(default)]
     item_focus_observation: Option<crate::item_visual::FocusObservation>,
-    #[serde(default)]
-    submenu_marker: Option<SubmenuMarkerOffer>,
-    #[serde(default)]
-    item_cue: Option<crate::item_visual::CueOffer>,
-    #[serde(default)]
-    item_root_cue: Option<RootCueOffer>,
     #[serde(default)]
     activate_target: Option<String>,
     #[serde(default)]
@@ -4576,7 +4476,7 @@ mod tests {
             if visible() {
                 crate::Dropdown { label: "Publication", suppress_trigger_visibility_check: true,
                     crate::DropdownItem { id: "publication-dropdown", label: "Dropdown" }
-                    crate::SelectItem { id: "publication-select", value: "select", label: "Select" }
+                    crate::SelectItem { id: "publication-select", value: "select", label: "Select", class: "consumer-publication-select" }
                     crate::MenuItem { id: "publication-menu", label: "Menu" }
                     crate::MenuCategory { id: "publication-category", label: "Category", span { "Child" } }
                 }
@@ -4622,7 +4522,15 @@ mod tests {
             .find(|tag| publication_attr(tag, "id").as_deref() == Some(id))
             .unwrap_or_else(|| panic!("Missing rendered source host {id}"))
     }
-    fn publication_cues(html: &str, expected: Option<&str>) {
+    fn publication_cues(html: &str, expected: Option<&str>, category_active: bool) {
+        assert!(
+            publication_attr(publication_tag(html, "publication-select"), "class").is_some_and(
+                |class| class
+                    .split_whitespace()
+                    .any(|name| name == "consumer-publication-select")
+            ),
+            "consumer class survives Dioxus cue updates"
+        );
         for id in [
             "publication-dropdown",
             "publication-select",
@@ -4636,6 +4544,12 @@ mod tests {
                     "false"
                 }),
                 "rendered cue on {id}, expected {expected:?}"
+            );
+            assert_eq!(
+                publication_attr(publication_tag(html, id), "class")
+                    .is_some_and(|class| class.split_whitespace().any(|name| name == "ix-focused")),
+                expected == Some(id),
+                "Dioxus-rendered focus class on {id}"
             );
         }
         assert_eq!(
@@ -4658,6 +4572,27 @@ mod tests {
                 "false"
             }),
             "Select's generated inner cue follows its source host"
+        );
+        assert_eq!(
+            publication_attr(select_inner, "class")
+                .is_some_and(|class| class.split_whitespace().any(|name| name == "ix-focused")),
+            expected == Some("publication-select")
+        );
+        let category_parent_id = publication_attr(
+            publication_tag(html, "publication-category"),
+            "data-menu-category-return-target",
+        )
+        .unwrap();
+        let category_parent = publication_tag(html, &category_parent_id);
+        assert_eq!(
+            publication_attr(category_parent, "data-active").as_deref(),
+            Some(if category_active { "true" } else { "false" })
+        );
+        assert_eq!(
+            publication_attr(category_parent, "class")
+                .is_some_and(|class| class.split_whitespace().any(|name| name == "ix-focused")),
+            category_active,
+            "Category cue belongs to its physical parent control"
         );
         let root = html
             .split('>')
@@ -4733,9 +4668,13 @@ mod tests {
             let tag = publication_tag(&html,id);
             serde_json::json!({"item":format!("actual-{id}"),"capture":format!("actual-{id}"),
                 "kind":kind,"target":id,"registration_key":publication_attr(tag,"data-ix-item-key").unwrap(),
-                "source_focusable":true})
+                "source_focusable":kind != "category",
+                "parts":if kind == "category" { vec![serde_json::json!({
+                    "kind":"category-parent", "capture":publication_attr(tag,"data-menu-category-return-target").unwrap(),
+                    "source_focusable":true
+                })] } else { Vec::new() }})
         }).collect::<Vec<_>>();
-        publication_cues(&html, None);
+        publication_cues(&html, None, false);
         let order = hosts
             .iter()
             .map(|host| host["item"].clone())
@@ -4754,7 +4693,11 @@ mod tests {
         assert_eq!(runtime.pending_item_focus_count(), 1);
         settle_item_effects(&mut dom);
         assert_eq!(runtime.pending_item_focus_count(), 0);
-        publication_cues(&dioxus_ssr::render(&dom), Some("publication-dropdown"));
+        publication_cues(
+            &dioxus_ssr::render(&dom),
+            Some("publication-dropdown"),
+            false,
+        );
         // Publish through real owner effects and mounted methods, without a
         // bridge receipt or a later keyboard/focusin event.
         for id in [
@@ -4778,6 +4721,7 @@ mod tests {
             publication_cues(
                 &dioxus_ssr::render(&dom),
                 (id != "publication-category").then_some(id),
+                id == "publication-category",
             );
         }
         let facts: HostFacts = serde_json::from_value(hosts[1].clone()).unwrap();

@@ -26,8 +26,6 @@ const navigationBindings=new Map();
 const anchorObservers=new Map();
 const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map();let itemObjectSequence=0;
 const itemInventoryLeases=new Map();
-let reconcilingItemCues=false,itemCueReconcileQueued=false,itemCueRetainedRequested=false,itemCueForcedRequested=false;
-const itemCueCapturedPending=new Set();
 function captureItem(element){
   if(!(element instanceof HTMLElement))return null;
   const target=nativeId(element);if(!target)return null;
@@ -488,14 +486,8 @@ function send(report,event){
     }
   }
   pruneItemCaptures();
-  syncItemCues();
 }
 
-function itemCueQuery(cue){
-  const input=transport();if(!alive||!input)return false;
-  input.value=JSON.stringify({owner,sequence:0,item_cue:cue});
-  return !input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-}
 // The source's global focus patch reports its exact attempted target after
 // native focus, including a no-op. Document listeners instead see the retargeted
 // target. Project only renderer-owned control/part boundaries into source hosts.
@@ -531,132 +523,8 @@ function reportItemFocus(target,documentEvent=false){
   const input=transport();if(!input)return;
   input.value=JSON.stringify({owner,sequence:0,item_focus_observation:{path,hosts}});
   input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-  syncItemCues();
 }
 nativeDocument.focusReaders.set(owner,reportItemFocus);
-function liveItemCueBinding(host,key,capture,part,partCapture,partKind,allowDetached){
-  if(!alive||(!allowDetached&&!host.isConnected)||host.getAttribute('data-ix-item-runtime')!==owner||host.getAttribute('data-ix-item-key')!==key||itemCaptureNodes.get(capture)?.element!==host)return false;
-  return !part||((allowDetached||part.isConnected)&&part.closest('[data-ix-item-kind]')===host&&part.getAttribute('data-ix-item-part')===partKind&&itemCaptureNodes.get(partCapture)?.element===part);
-}
-function syncOneItemCue(host,part=null,allowDetached=false){
-  const key=host.getAttribute('data-ix-item-key');if(!key)return;
-  const binding=captureItem(host),partBinding=part?captureItem(part):null;
-  if(!binding||(part&&!partBinding))return;
-  const element=part||host,partKind=part?.getAttribute('data-ix-item-part');
-  const valid=()=>liveItemCueBinding(host,key,binding.capture,part,partBinding?.capture,partKind,allowDetached);
-  if(!valid())return;
-  // Agreement between class and data-active can still be stale. Ask current
-  // Rust even when both DOM fields already agree; never infer policy from them.
-  const current=element.getAttribute('data-active')==='true';
-  for(const active of [current,!current]){
-    const cue={key,capture:binding.capture,active};if(partBinding)cue.part=partBinding.capture;
-    if(!itemCueQuery(cue))continue;
-    if(!valid())return;
-    const value=active?'true':'false';
-    if(element.getAttribute('data-active')!==value)element.setAttribute('data-active',value);
-    if(element.classList.contains('ix-focused')!==active)element.classList.toggle('ix-focused',active);
-    return;
-  }
-}
-function rootCueQuery(cue){
-  const input=transport();if(!alive||!input)return false;
-  input.value=JSON.stringify({owner,sequence:0,item_root_cue:cue});
-  return !input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-}
-function syncOneRootCue(root,trigger,field,attribute,candidates){
-  const id=root.getAttribute('data-ix-overlay-root'),generation=Number(root.getAttribute('data-ix-overlay-generation'));
-  const rootBinding=captureItem(root),triggerBinding=trigger?captureItem(trigger):null;
-  const element=field==='trigger-aria'?trigger:root;
-  if(!id||!Number.isSafeInteger(generation)||!rootBinding||!(element instanceof HTMLElement)||(field==='trigger-aria'&&!triggerBinding))return;
-  const valid=()=>alive&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.getAttribute('data-ix-overlay-root')===id&&Number(root.getAttribute('data-ix-overlay-generation'))===generation&&itemCaptureNodes.get(rootBinding.capture)?.element===root&&(field!=='trigger-aria'||(trigger.isConnected&&findTrigger(id,root)===trigger&&itemCaptureNodes.get(triggerBinding.capture)?.element===trigger));
-  const offered=Array.from(new Set([element.getAttribute(attribute),null,...candidates]));
-  for(const value of offered){
-    if(!valid())return;
-    const cue={root:id,generation,capture:rootBinding.capture,field,value};
-    if(field==='trigger-aria')cue.trigger_capture=triggerBinding.capture;
-    if(!rootCueQuery(cue))continue;
-    if(!valid())return;
-    if(value===null){if(element.hasAttribute(attribute))element.removeAttribute(attribute);}
-    else if(element.getAttribute(attribute)!==value)element.setAttribute(attribute,value);
-    return;
-  }
-}
-function queueItemCueReconcile(){
-  if(itemCueReconcileQueued||!alive)return;
-  itemCueReconcileQueued=true;
-  queueMicrotask(()=>{itemCueReconcileQueued=false;if(alive)syncItemCues();});
-}
-function itemCuesPending(){
-  const input=transport();if(!alive||!input)return false;
-  input.value=JSON.stringify({owner,sequence:0,item_cues_pending:true});
-  return !input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-}
-function syncSubmenuMarkers(roots){
-  const input=transport();if(!alive||!input)return;
-  for(const [capture,binding] of itemCaptureNodes){
-    const element=binding.element;
-    if(!(element instanceof HTMLElement)||(!element.matches(itemSelector)&&!element.classList.contains('ix-dropdown-submenu-trigger-active')))continue;
-    const current=element.classList.contains('ix-dropdown-submenu-trigger-active');
-    let answered=false;
-    for(const root of roots){
-      const rootBinding=captureItem(root);if(!rootBinding)continue;
-      for(const active of [current,!current]){
-        input.value=JSON.stringify({owner,sequence:0,submenu_marker:{root:root.getAttribute('data-ix-overlay-root'),generation:Number(root.getAttribute('data-ix-overlay-generation')),root_capture:rootBinding.capture,capture,active}});
-        if(input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true})))continue;
-        if(element.classList.contains('ix-dropdown-submenu-trigger-active')!==active)element.classList.toggle('ix-dropdown-submenu-trigger-active',active);
-        answered=true;break;
-      }
-      if(answered)break;
-    }
-  }
-}
-function syncItemCues(captured=null,retained=false,force=false){
-  if(!alive)return;
-  if(captured instanceof HTMLElement)itemCueCapturedPending.add(captured);
-  itemCueRetainedRequested||=retained;
-  itemCueForcedRequested||=force;
-  if(reconcilingItemCues){queueItemCueReconcile();return;}
-  reconcilingItemCues=true;
-  try{
-    // Consume only a work notification, before projection. A producer during
-    // this pass sets new Rust work and keeps its independent wake command.
-    const pending=itemCuesPending(),forced=itemCueForcedRequested;
-    itemCueForcedRequested=false;
-    const capturedHosts=new Set(itemCueCapturedPending);itemCueCapturedPending.clear();
-    const includeRetained=itemCueRetainedRequested;itemCueRetainedRequested=false;
-    if(!pending&&!forced)return;
-    // Any entry can consume the dirty flag before its queued wake arrives.
-    // Therefore that entry must also offer retained detached original hosts.
-    if(includeRetained||pending)for(const binding of itemCaptureNodes.values())if(binding.element instanceof HTMLElement&&binding.element.hasAttribute('data-ix-item-kind'))capturedHosts.add(binding.element);
-    const roots=Array.from(registryElements('[data-ix-overlay-root]')).filter(root=>root instanceof HTMLElement&&root.isConnected&&root.getAttribute('data-ix-overlay-owner')===owner&&root.hasAttribute('data-ix-overlay-mode'));
-    syncSubmenuMarkers(roots);
-    const candidates=new Set();
-    // Offers cover every captured inventory in this owner, including a linked
-    // child whose physical host is elsewhere. Rust selects each root's value.
-    for(const root of roots){
-      const id=root.getAttribute('data-ix-overlay-root'),facts=inventoryFacts(findItemsHost(root,id));
-      for(const host of facts?.hosts||[])if(host.target)candidates.add(host.target);
-    }
-    const seen=new Set();
-    const projectHost=(host,allowDetached)=>{
-      if(!(host instanceof HTMLElement)||(!allowDetached&&!host.isConnected)||host.getAttribute('data-ix-item-runtime')!==owner||seen.has(host))return;
-      seen.add(host);
-      if(['dropdown','select','menu'].includes(host.getAttribute('data-ix-item-kind')))syncOneItemCue(host,null,allowDetached);
-      for(const part of itemParts(host))syncOneItemCue(host,part,allowDetached);
-    };
-    // An admitted attempt retains its original object even after DOM removal.
-    // No ID lookup may substitute a replacement for that detached object.
-    for(const host of capturedHosts)projectHost(host,true);
-    for(const host of registryElements('[data-ix-item-kind][data-ix-item-runtime]'))projectHost(host,false);
-    for(const root of roots){
-      const trigger=findTrigger(root.getAttribute('data-ix-overlay-root'),root);
-      syncOneRootCue(root,trigger,'active','data-ix-overlay-active-item',candidates);
-      syncOneRootCue(root,trigger,'aria','aria-activedescendant',candidates);
-      if(trigger)syncOneRootCue(root,trigger,'trigger-aria','aria-activedescendant',candidates);
-    }
-  }finally{reconcilingItemCues=false;}
-}
-
 function syncNativeSurfaces(){
   for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
@@ -782,20 +650,6 @@ document.addEventListener('pointerdown',e=>send(collectFacts('pointer',e),e),{ca
 document.addEventListener('focusin',event=>reportItemFocus(event.target,true),{capture:true,signal});
 document.addEventListener('focusin',reportObserve,{signal});
 document.addEventListener('focusout',event=>{reportItemFocus(event.target,true);queueMicrotask(()=>{if(alive)reportObserve();});},{passive:true,signal});
-function itemCueMutation(change){
-  if(change.type!=='attributes'||!(change.target instanceof HTMLElement))return false;
-  const element=change.target,name=change.attributeName;
-  const host=element.matches('[data-ix-item-kind]')?element:element.closest('[data-ix-item-kind]');
-  if(host?.getAttribute('data-ix-item-runtime')===owner&&
-    (element===host||element.hasAttribute('data-ix-item-part'))&&
-    ['class','data-active','data-ix-item-kind','data-ix-item-key','data-ix-item-runtime','data-ix-item-part','data-ix-item-focusable'].includes(name))return true;
-  if(element.hasAttribute('data-ix-overlay-mode')&&element.getAttribute('data-ix-overlay-owner')===owner&&
-    ['aria-activedescendant','data-ix-overlay-active-item','data-ix-overlay-mode'].includes(name))return true;
-  if(name==='aria-activedescendant')for(const root of registryElements('[data-ix-overlay-root][data-ix-overlay-mode]')){
-    if(root.getAttribute('data-ix-overlay-owner')===owner&&findTrigger(root.getAttribute('data-ix-overlay-root'),root)===element)return true;
-  }
-  return false;
-}
 const observer=new MutationObserver(changes=>{
   // Each outstanding source ID wait observes real child-list changes. Resolve
   // all retained attempts in their admission order, never only the latest ID.
@@ -815,15 +669,10 @@ const observer=new MutationObserver(changes=>{
     retryTriggerAttempts();
   }
   reportObserve();
-  // Child-list/log/geometry work is still observed for raw discovery, but only
-  // writes to actual cue fields force projection without a Rust work signal.
-  // Otherwise a consumer logging query events could recursively request more
-  // queries merely by appending ordinary text to the document.
-  if(changes.some(itemCueMutation))syncItemCues(null,false,true);
 });
 function observeRegistryScope(scope){observer.observe(scope===document?document.documentElement:scope,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-trigger-version','data-ix-overlay-trigger-dispose-version','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
-  'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-revision','data-ix-overlay-top-layer','data-ix-overlay-focus-version','data-ix-overlay-focus-target','data-small','data-open','hidden','disabled','tabindex','inert','class'
+  'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','hidden','disabled','tabindex','inert','class'
   ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
   ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked','slot','name'
 ]});}
@@ -842,13 +691,12 @@ try{
   while(alive){const command=await dioxus.recv();if(command?.finish)break;
     if(command?.assignment_ack){acknowledgeTriggerAssignment(command.assignment_ack);reportObserve();}
     if(command?.navigation_config)configureNavigation(command.navigation_config);
-    if(command?.item_cues)syncItemCues(null,true);
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();observer.disconnect();
   for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   itemCaptureNodes.clear();
-  itemInventoryLeases.clear();itemCueCapturedPending.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
+  itemInventoryLeases.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);
   if(nativeDocument.focusReaders.get(owner)===reportItemFocus)nativeDocument.focusReaders.delete(owner);
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');

@@ -223,21 +223,9 @@ fn configured_receiver_click_toggles_once_while_path_only_and_invalid_reports_do
 }
 
 #[test]
-fn submenu_marker_query_uses_exact_root_and_object_capture_without_consuming_truth() {
+fn submenu_routing_marker_tracks_current_inventory_and_registered_owner() {
     let (_dom, _state, runtime, node) = fixture();
     bind(&runtime);
-    let marker = |capture: &str, active| {
-        serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-        "submenu_marker":{"root":"configured","generation":1,"root_capture":"actual-root",
-            "capture":capture,"active":active}})
-    };
-    let permitted = |value| {
-        let event = form(value);
-        runtime.query(event.clone());
-        !event.default_action_enabled()
-    };
-    assert!(permitted(marker("actual-member", false)));
-    assert!(!permitted(marker("actual-member", true)));
     let host = HostFacts {
         item: ItemRef("actual-member".into()),
         kind: ItemKind::Select,
@@ -255,29 +243,28 @@ fn submenu_marker_query_uses_exact_root_and_object_capture_without_consuming_tru
         linked_trigger: None,
         parts: Vec::new(),
     };
+    let mut observed = native_node();
+    observed["configured_trigger_listener"] = serde_json::Value::Null;
+    observed["inventory"] = serde_json::json!({"items_host":"actual-items",
+        "hosts":[host.clone()],"navigation_order":[host.item.clone()],"query_order":[host.item.clone()]});
+    send(
+        &runtime,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
+        "kind":"observe","nodes":[observed]}),
+    );
+    assert_eq!(runtime.first_submenu_marker("configured", 1), None);
     node.mark_submenu_trigger(&host);
     for _ in 0..2 {
-        assert!(permitted(marker("actual-member", true)));
-        assert!(!permitted(marker("actual-member", false)));
-    }
-    assert!(!permitted(marker("same-public-id-new-object", true)));
-    assert!(permitted(marker("same-public-id-new-object", false)));
-    for (field, value) in [
-        ("root", serde_json::json!("copied-root-id")),
-        ("generation", serde_json::json!(2)),
-        ("root_capture", serde_json::json!("copied-root")),
-        ("capture", serde_json::json!("")),
-    ] {
-        let mut invalid = marker("actual-member", true);
-        invalid["submenu_marker"][field] = value;
-        assert!(
-            !permitted(invalid),
-            "{field} cannot authorize a marker write"
+        assert_eq!(
+            runtime.first_submenu_marker("configured", 1).as_deref(),
+            Some("actual-member")
         );
     }
+    assert_eq!(runtime.first_submenu_marker("configured", 2), None);
+    assert_eq!(runtime.first_submenu_marker("copied-root-id", 1), None);
     node.unregister();
-    assert!(!permitted(marker("actual-member", true)));
-    assert!(!permitted(marker("actual-member", false)));
+    assert_eq!(runtime.first_submenu_marker("configured", 1), None);
+    assert!(!runtime.0.borrow().submenu_marks.contains_key(&host.capture));
 }
 
 #[derive(Clone, Default)]
