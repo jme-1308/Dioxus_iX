@@ -7,8 +7,9 @@ use dioxus::prelude::*;
 /// A rendered Select item can also participate in a generic Dropdown. Selection
 /// is controlled by `selected`; activation never toggles it automatically.
 ///
-/// The outer host and inner option are distinct. Generic Dropdown keyboard
-/// activation clicks the host, invoking `onclick` without an inner `onitemclick`.
+/// The outer host and inner option are distinct. Enter/Space activation invokes
+/// the semantic `onitemclick` notification with the current Rust value; generic
+/// Dropdown activation uses the same action and owns its dismissal.
 /// Pointer activation of the inner option invokes `onitemclick` with its Rust
 /// value, then bubbles the original click to `onclick`. The value is a typed
 /// adapter for the source's bubbling inner-element payload.
@@ -30,6 +31,8 @@ pub fn SelectItem(
     let host_id = item_host_id(&attributes, &binding.host_id);
     let mounted_host = binding.clone();
     let dropdown_key = binding.clone();
+    let option_key = binding.clone();
+    let generic = binding.generic;
     let focus_host = binding.clone();
     let blur_host = binding.clone();
     let focus_option = binding.clone();
@@ -73,6 +76,26 @@ pub fn SelectItem(
     }));
     let inner_value = value.clone();
     let key_value = value.clone();
+    let keyboard_action = use_callback(move |event: KeyboardEvent| {
+        if !event.default_action_enabled()
+            || disabled
+            || !(event.key() == Key::Enter || event.key() == Key::Character(" ".into()))
+        {
+            return;
+        }
+        onitemclick.call(key_value.clone());
+    });
+    binding.set_keyboard_action(&host_id, keyboard_action);
+    let standalone_action = use_callback(move |event: KeyboardEvent| {
+        if !event.default_action_enabled()
+            || disabled
+            || !(event.key() == Key::Enter || event.key() == Key::Character(" ".into()))
+        {
+            return;
+        }
+        keyboard_action.call(event.clone());
+        event.prevent_default();
+    });
     let mut attributes = attributes
         .into_iter()
         .filter(|attribute| roving_tabindex.is_none() || attribute.name != "tabindex")
@@ -100,7 +123,9 @@ pub fn SelectItem(
             onfocus: move |event| { focus_host.focus(true,None); onfocus.call(event); },
             onblur: move |event| { blur_host.blur(); onblur.call(event); },
             onclick: move |event| onclick.call(event),
-            onkeydown: move |event: KeyboardEvent| { dropdown_key.navigation_key(event); },
+            onkeydown: move |event: KeyboardEvent| {
+                if !dropdown_key.navigation_key(event.clone()) && !generic { standalone_action.call(event); }
+            },
             ..attributes,
             div {
                 class: format!("ix-dropdown-item ix-select-item-option{}{}",
@@ -114,9 +139,12 @@ pub fn SelectItem(
                 onblur: move |_| blur_option.blur(),
                 onclick: move |_| { if !disabled { onitemclick.call(inner_value.clone()); } },
                 onkeydown: move |event: KeyboardEvent| {
-                    if !disabled && (event.key() == Key::Enter || event.key() == Key::Character(" ".into())) {
-                        onitemclick.call(key_value.clone());
+                    if !event.default_action_enabled() { return; }
+                    if option_key.navigation_key(event.clone()) {
+                        event.stop_propagation();
+                        return;
                     }
+                    if !generic { standalone_action.call(event); }
                 },
                 span { "{text}" }
                 if selected { crate::Icon { name: "single-check", size: 16 } }
@@ -130,6 +158,122 @@ pub fn SelectItem(
 mod tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc};
+
+    struct TestKey(Key);
+    impl dioxus::html::ModifiersInteraction for TestKey {
+        fn modifiers(&self) -> Modifiers {
+            Modifiers::empty()
+        }
+    }
+    impl dioxus::html::HasKeyboardData for TestKey {
+        fn key(&self) -> Key {
+            self.0.clone()
+        }
+        fn code(&self) -> dioxus::html::Code {
+            dioxus::html::Code::Unidentified
+        }
+        fn location(&self) -> dioxus::html::Location {
+            dioxus::html::Location::Standard
+        }
+        fn is_auto_repeating(&self) -> bool {
+            false
+        }
+        fn is_composing(&self) -> bool {
+            false
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    struct Converter;
+    macro_rules! converter {
+        (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
+            impl dioxus::html::HtmlEventConverter for Converter {
+                $(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data {let _=event;converter!(@data $group,event)})*
+            }
+        };
+        (@data Keyboard,$event:ident)=>{dioxus::html::KeyboardData::new(TestKey($event.downcast::<Key>().unwrap().clone()))};
+        (@data $other:ident,$event:ident)=>{panic!("unexpected Select item test event")};
+    }
+    dioxus::html::with_html_event_groups!(converter);
+
+    #[test]
+    fn host_and_inner_keyboard_activation_emit_one_semantic_value_without_mouse_events() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(Converter));
+        type Capture = (Rc<RefCell<Vec<String>>>, Rc<RefCell<usize>>);
+        fn app(capture: Capture) -> Element {
+            let host_click = capture.1.clone();
+            let enabled = capture.0.clone();
+            let disabled = capture.0.clone();
+            rsx! {
+                SelectItem {id:"enabled",value:"value",onclick:move |_|*host_click.borrow_mut()+=1,
+                    onitemclick:move |value|enabled.borrow_mut().push(value)}
+                SelectItem {id:"disabled",value:"disabled",disabled:true,
+                    onitemclick:move |value|disabled.borrow_mut().push(value)}
+            }
+        }
+        let values = Rc::new(RefCell::new(Vec::new()));
+        let mouse = Rc::new(RefCell::new(0));
+        let mut dom = VirtualDom::new_with_props(app, (values.clone(), mouse.clone()));
+        let mut current = dioxus::core::ElementId::ROOT;
+        let mut host = String::new();
+        let mut targets = std::collections::BTreeMap::new();
+        for edit in dom.rebuild_to_vec().edits {
+            match edit {
+                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
+                    current = id
+                }
+                dioxus::core::Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(value),
+                    ..
+                } if name == "id" && (value == "enabled" || value == "disabled") => {
+                    host = value.clone();
+                    targets.insert(value, current);
+                }
+                dioxus::core::Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(value),
+                    ..
+                } if name == "class" && value.contains("ix-select-item-option") => {
+                    targets.insert(format!("{host}-option"), current);
+                }
+                _ => {}
+            }
+        }
+        let key = |target: &str, key: Key, prevented: bool| {
+            let data: Rc<dyn std::any::Any> =
+                Rc::new(dioxus::html::PlatformEventData::new(Box::new(key)));
+            let event = Event::new(data, true);
+            if prevented {
+                event.prevent_default();
+            }
+            dom.runtime()
+                .handle_event("keydown", event.clone(), targets[target]);
+            !event.default_action_enabled()
+        };
+        assert!(key("enabled", Key::Enter, false));
+        assert!(key("enabled-option", Key::Enter, false));
+        assert!(key("enabled-option", Key::Character(" ".into()), false));
+        assert_eq!(
+            *values.borrow(),
+            ["value", "value", "value"],
+            "inner bubbling cannot invoke the host action twice"
+        );
+        assert_eq!(
+            *mouse.borrow(),
+            0,
+            "keyboard does not fabricate a MouseEvent"
+        );
+        assert!(!key("disabled-option", Key::Enter, false));
+        assert!(key("enabled-option", Key::Enter, true));
+        assert_eq!(
+            values.borrow().len(),
+            3,
+            "disabled and prevented events have no semantic action"
+        );
+    }
 
     #[test]
     fn standalone_select_host_and_inner_option_keep_distinct_source_roles() {

@@ -4,10 +4,10 @@ use dioxus_ix::*;
 
 #[component]
 fn CustomTrigger(dropdown: DropdownHandle, revision: usize) -> Element {
-    let mounted = use_dropdown_trigger_mount(dropdown);
+    let binding = use_dropdown_trigger_binding(dropdown);
     rsx! { button {
         id:"r02-custom-trigger", r#type:"button", class:"ix-button ix-button-secondary",
-        onmounted:mounted, "aria-haspopup":"menu", "aria-expanded":dropdown.is_open().to_string(), "Custom equipment actions {revision}"
+        onmounted:binding.onmounted,onvisible:binding.onvisible,onkeydown:binding.onkeydown, "aria-haspopup":"menu", "aria-expanded":dropdown.is_open().to_string(), "Custom equipment actions {revision}"
     } }
 }
 
@@ -32,8 +32,8 @@ pub fn TriggerPreview() -> Element {
                 if show() { CustomTrigger { key:"{revision()}", dropdown:custom, revision:revision() } }
                 Dropdown { controller:custom, trigger:Some("r02-custom-trigger".into()), label:"Custom equipment actions", class:"r02-custom-surface", enable_top_layer:true,
                     navigation_mode:if roving(){DropdownNavigationMode::RovingTabindex}else{DropdownNavigationMode::ActiveDescendant},
-                    DropdownItem { id:"r02-custom-first", label:"Inspect equipment", keep_open:true, onclick:move |_|count.set(count()+1) }
-                    DropdownItem { id:"r02-custom-mode", label:"Switch navigation mode", keep_open:true, onclick:move |_|roving.set(!roving()) }
+                    DropdownItem { id:"r02-custom-first", label:"Inspect equipment", keep_open:true, onitemclick:move |_|count.set(count()+1) }
+                    DropdownItem { id:"r02-custom-mode", label:"Switch navigation mode", keep_open:true, onitemclick:move |_|roving.set(!roving()) }
                     DropdownItem { label:"Unavailable action", disabled:true }
                 }
                 div { class:"trigger-actions",

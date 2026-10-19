@@ -6,9 +6,7 @@ use crate::dropdown_inventory::{
     Activation, Inventory, InventoryFacts, InventoryMode, ItemKind, ItemRef,
 };
 use crate::overlay_registry::{CloseBehavior, OverlayKind};
-use crate::overlay_runtime::{
-    self, Callbacks, Change, KeyDecision, KeyFacts, KeyRoute, NodeHandle, Reason,
-};
+use crate::overlay_runtime::{self, Callbacks, Change, KeyDecision, KeyFacts, NodeHandle, Reason};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -63,18 +61,16 @@ impl ItemHostBinding {
     pub(crate) fn tabindex(&self) -> Option<i32> {
         self.runtime.item_tabindex(&self.key)
     }
+    pub(crate) fn set_keyboard_action(&self, target: &str, action: EventHandler<KeyboardEvent>) {
+        if let Some(context) = &self.context {
+            context
+                .actions
+                .borrow_mut()
+                .insert(self.key.clone(), (target.to_string(), action));
+        }
+    }
     pub(crate) fn navigation_key(&self, event: KeyboardEvent) -> bool {
-        if !event.default_action_enabled()
-            || !matches!(
-                event.key(),
-                Key::Home
-                    | Key::End
-                    | Key::ArrowUp
-                    | Key::ArrowDown
-                    | Key::ArrowLeft
-                    | Key::ArrowRight
-            )
-        {
+        if !event.default_action_enabled() {
             return false;
         }
         let Some(context) = &self.context else {
@@ -85,15 +81,30 @@ impl ItemHostBinding {
             if !state.alive
                 || !state.surface
                 || !state.mounted
-                || !state.external
                 || state.blocked
                 || state.settings.disable_focus_handling
-                || state.settings.mode != DropdownNavigationMode::ActiveDescendant
-                || !context.open.try_peek().is_ok_and(|open| *open)
-                || !context.blocked.try_peek().is_ok_and(|blocked| !*blocked)
+                || !*context.open.peek()
+                || *context.blocked.peek()
             {
                 return false;
             }
+        }
+        let navigation = matches!(
+            event.key(),
+            Key::Home
+                | Key::End
+                | Key::ArrowUp
+                | Key::ArrowDown
+                | Key::ArrowLeft
+                | Key::ArrowRight
+                | Key::Tab
+                | Key::Escape
+                | Key::Enter
+        ) || event.key() == Key::Character(" ".into())
+            || context.state.borrow().settings.mode == DropdownNavigationMode::RovingTabindex
+                && event.key().to_string().chars().count() == 1;
+        if !navigation {
+            return false;
         }
         let Some(node) = context
             .node
@@ -103,38 +114,36 @@ impl ItemHostBinding {
         else {
             return false;
         };
-        let Some(inventory) = node.inventory() else {
+        let inventory = node.inventory();
+        let host = inventory.as_ref().and_then(|inventory| {
+            inventory.hosts.iter().find(|host| {
+                host.registration_key == self.key
+                    && host.kind != ItemKind::NativeOptIn
+                    && host.eligible(context.state.borrow().settings.mode.inventory_mode())
+                    && node.is_item_registered(host)
+            })
+        });
+        // A native field keeps editing defaults; only explicitly typed items
+        // enter item navigation. No arbitrary DOM fallback is installed.
+        if inventory.is_some() && host.is_none() {
             return false;
-        };
-        let Some(host) = inventory.hosts.iter().find(|host| {
-            host.registration_key == self.key
-                && host.kind != ItemKind::NativeOptIn
-                && host.eligible(InventoryMode::ActiveDescendant)
-                && node.is_item_registered(host)
-        }) else {
+        }
+        let target = host.map(|host| host.target.clone()).or_else(|| {
+            context
+                .actions
+                .borrow()
+                .get(&self.key)
+                .map(|(target, _)| target.clone())
+        });
+        let activation =
+            matches!(event.key(), Key::Enter) || event.key() == Key::Character(" ".into());
+        if activation && !context.actions.borrow().contains_key(&self.key) {
             return false;
-        };
-        let facts = KeyFacts {
-            route: KeyRoute::Navigation,
-            navigation_mode: Some("active-descendant".into()),
-            key: event.key().to_string(),
-            shift: event.modifiers().contains(Modifiers::SHIFT),
-            alt: event.modifiers().contains(Modifiers::ALT),
-            ctrl: event.modifiers().contains(Modifiers::CONTROL),
-            meta: event.modifiers().contains(Modifiers::META),
-            focused_target: Some(host.target.clone()),
-            inside: true,
-            inventory: Some(inventory),
-            ..Default::default()
-        };
-        context.state.borrow_mut().native = true;
-        let decision = context.key(&facts);
-        if decision.prevent {
-            event.prevent_default();
         }
-        if decision.stop || event.key() == Key::ArrowLeft && !*context.open.peek() {
-            event.stop_propagation();
-        }
+        direct_key(context, event.clone(), false, target, true);
+        // This item already dispatched into its owning menu. A second ancestor
+        // Dioxus handler must not perform the same action again.
+        event.stop_propagation();
         true
     }
 }
@@ -161,6 +170,13 @@ pub(crate) fn use_item_host(kind: &'static str) -> ItemHostBinding {
     let dropped = key.clone();
     use_drop(move || cleanup.unregister_item_cue(&dropped));
     let context = try_use_context::<DropdownContext>();
+    let action_owner = context.clone();
+    let action_key = key.clone();
+    use_drop(move || {
+        if let Some(context) = action_owner {
+            context.actions.borrow_mut().remove(&action_key);
+        }
+    });
     ItemHostBinding {
         host_id: key.clone(),
         key,
@@ -188,16 +204,20 @@ pub fn use_focus_mount(id: impl Into<String>) -> EventHandler<MountedEvent> {
 pub struct DropdownItemBinding {
     /// Attach to the same stable element that carries the item's `id`.
     pub onmounted: EventHandler<MountedEvent>,
+    /// Apply to a nonediting control's `onkeydown` for roving navigation.
+    /// Editable fields leave this unbound to retain their editing keys.
+    pub onkeydown: EventHandler<KeyboardEvent>,
     /// Apply to that element's `tabindex`. `None` preserves its natural tab order.
     pub tabindex: Option<i32>,
 }
 
 /// Bind a custom Dioxus control to Dropdown keyboard navigation.
 ///
-/// Apply both returned fields, give the control the same stable `id`, and mark
+/// Apply the mounted and tabindex fields, give the control the same stable `id`, and mark
 /// it with `data-ix-roving-item`. Registered buttons and fields participate in
 /// opening focus in both navigation modes; active-descendant mode preserves
-/// native editing keys once they are focused. Dioxus owns focus, scrolling,
+/// native editing keys once they are focused. Nonediting buttons also attach
+/// `onkeydown` for roving navigation; editable fields leave it unbound. Dioxus owns focus, scrolling,
 /// tab order and cleanup. There is no JavaScript fallback for unregistered controls. Use a
 /// different component key when replacing the element. If the control has an
 /// authored tab index, use `item.tabindex.or(Some(authored_index))`.
@@ -214,6 +234,7 @@ pub struct DropdownItemBinding {
 ///             id: "custom-action",
 ///             "data-ix-roving-item": "",
 ///             onmounted: item.onmounted,
+///             onkeydown: item.onkeydown,
 ///             tabindex: item.tabindex,
 ///             "Custom action"
 ///         }
@@ -224,9 +245,20 @@ pub fn use_dropdown_item(id: impl Into<String>) -> DropdownItemBinding {
     let binding = use_item_host("native-opt-in");
     let tabindex = binding.tabindex();
     let target = id.into();
+    let keyboard = binding.context.clone();
+    let key_target = target.clone();
     let onmounted = use_callback(move |event: MountedEvent| binding.mount(&target, event.data()));
+    let onkeydown = use_callback(move |event: KeyboardEvent| {
+        if matches!(event.key(), Key::Enter) || event.key() == Key::Character(" ".into()) {
+            return;
+        }
+        if let Some(context) = &keyboard {
+            direct_key(context, event, false, Some(key_target.clone()), true);
+        }
+    });
     DropdownItemBinding {
         onmounted,
+        onkeydown,
         tabindex,
     }
 }
@@ -431,7 +463,6 @@ struct MenuState {
     focus_epoch: u64,
     focus_target: String,
     focus_pending: Option<FocusRequest>,
-    native: bool,
     forward: Option<DropdownHandle>,
     placement: DropdownPlacement,
     fallback_placement: Option<DropdownPlacement>,
@@ -449,6 +480,8 @@ struct TriggerVisibility {
     intersecting: bool,
     geometry: Option<overlay_runtime::AnchorIntersection>,
 }
+type ItemKeyboardActions = BTreeMap<String, (String, EventHandler<KeyboardEvent>)>;
+
 #[derive(Clone)]
 struct DropdownContext {
     id: usize,
@@ -457,19 +490,12 @@ struct DropdownContext {
     revision: Signal<u64>,
     state: Rc<RefCell<MenuState>>,
     entries: Rc<RefCell<BTreeMap<usize, MenuEntry>>>,
+    actions: Rc<RefCell<ItemKeyboardActions>>,
     node: Rc<RefCell<Option<NodeHandle>>>,
     trigger: Rc<RefCell<Option<TriggerMount>>>,
     focus_task: Rc<RefCell<Option<dioxus::core::Task>>>,
 }
 impl DropdownContext {
-    fn native_key_route(&self) -> bool {
-        self.state.borrow().native
-            || self
-                .node
-                .borrow()
-                .as_ref()
-                .is_some_and(NodeHandle::native_observed)
-    }
     fn node_id(&self) -> String {
         format!("ix-dropdown-node-{}", self.id)
     }
@@ -480,22 +506,6 @@ impl DropdownContext {
         format!("ix-dropdown-trigger-{}", self.id)
     }
     fn navigation_owner(&self, reactive: bool) -> Self {
-        if self.native_key_route() {
-            if reactive {
-                let _ = self.revision.try_read();
-            }
-            return self
-                .state
-                .borrow()
-                .forward
-                .and_then(DropdownHandle::try_context)
-                .filter(|child| {
-                    child.id != self.id
-                        && child.state.borrow().alive
-                        && child.state.borrow().surface
-                })
-                .unwrap_or_else(|| self.clone());
-        }
         let mut owner = self.clone();
         let mut visited = Vec::new();
         loop {
@@ -833,12 +843,7 @@ impl DropdownContext {
         if changed && let Some(node) = self.node.borrow().clone() {
             if change.open {
                 let state = self.state.borrow();
-                node.configure_navigation(
-                    state.settings.mode.as_str(),
-                    !state.settings.disable_focus_handling,
-                );
-            } else {
-                node.clear_navigation();
+                node.set_navigation_mode(state.settings.mode.as_str());
             }
         }
         if restore_trigger {
@@ -971,6 +976,37 @@ impl DropdownContext {
             result.prevent = true;
             if let Some(target) = inventory.navigate(&facts.key, current.as_ref()) {
                 self.publish_host(raw, &target);
+            }
+            return result;
+        }
+        if mode == DropdownNavigationMode::RovingTabindex
+            && facts.key.chars().count() == 1
+            && facts.key != " "
+            && !facts.ctrl
+            && !facts.meta
+            && !facts.alt
+        {
+            let hosts = inventory.query_hosts();
+            let entries = self.entries.borrow();
+            let start = current
+                .as_ref()
+                .and_then(|item| hosts.iter().position(|host| &host.item == item))
+                .unwrap_or(hosts.len().saturating_sub(1));
+            let prefix = facts.key.to_lowercase();
+            let target = (1..=hosts.len())
+                .map(|offset| &hosts[(start + offset) % hosts.len()])
+                .find(|host| {
+                    entries.values().any(|entry| {
+                        entry.host_id == host.target
+                            && !entry.disabled
+                            && entry.label.to_lowercase().starts_with(&prefix)
+                    })
+                })
+                .map(|host| host.item.clone());
+            drop(entries);
+            if let Some(target) = target {
+                self.publish_host(raw, &target);
+                result.prevent = true;
             }
             return result;
         }
@@ -1160,10 +1196,7 @@ impl DropdownContext {
         }
         visited.push(self.id);
         let mut result = KeyDecision::default();
-        let ordinary = facts.route == KeyRoute::Navigation;
-        if !self.state.borrow().alive
-            || !ordinary && (facts.default_prevented || self.state.borrow().blocked)
-        {
+        if !self.state.borrow().alive || facts.default_prevented || self.state.borrow().blocked {
             return result;
         }
         let (open, mode, no_focus, no_trap, anchor_submenu) = {
@@ -1180,7 +1213,7 @@ impl DropdownContext {
             facts.key.as_str(),
             "Home" | "End" | "ArrowDown" | "ArrowUp" | "Enter" | " "
         );
-        if !ordinary && facts.on_trigger && opening_key {
+        if facts.on_trigger && opening_key {
             if !open {
                 if anchor_submenu {
                     // Anchor-submenu keyboard delegation is a separate source
@@ -1205,7 +1238,11 @@ impl DropdownContext {
                         self.focus_edge(last);
                     }
                 }
-            } else if mode == DropdownNavigationMode::RovingTabindex && !facts.alt && !no_focus {
+            } else if mode == DropdownNavigationMode::RovingTabindex
+                && !facts.alt
+                && !no_focus
+                && !matches!(facts.key.as_str(), "Enter" | " ")
+            {
                 result.prevent = true;
                 let owner = self.navigation_owner(false);
                 if let Some(raw) = &facts.inventory {
@@ -1220,13 +1257,14 @@ impl DropdownContext {
                     owner.publish_item(target, true, true);
                 }
             }
-            if !open || mode == DropdownNavigationMode::RovingTabindex {
+            if !open
+                || mode == DropdownNavigationMode::RovingTabindex
+                    && !matches!(facts.key.as_str(), "Enter" | " ")
+            {
                 return result;
             }
         }
-        // The experimental listener returns for an already-open AD menu.
-        // Ordinary navigation is a separately installed, retained listener.
-        if facts.route == KeyRoute::Trigger || !open || (!ordinary && no_focus) {
+        if !open || no_focus {
             return result;
         }
         if facts.key == "Tab" {
@@ -1383,7 +1421,7 @@ impl DropdownContext {
                     } else if facts.key != "ArrowRight" {
                         result.prevent = true;
                         result.stop = mode == DropdownNavigationMode::RovingTabindex;
-                        result.activate = Some(format!("ix-dropdown-item-{id}"));
+                        result.activate = Some(entry.host_id);
                     }
                 }
             }
@@ -1509,7 +1547,6 @@ pub fn use_dropdown() -> DropdownHandle {
                 focus_epoch: 0,
                 focus_target: "none".into(),
                 focus_pending: None,
-                native: false,
                 forward: None,
                 placement: DropdownPlacement::default(),
                 fallback_placement: None,
@@ -1518,6 +1555,7 @@ pub fn use_dropdown() -> DropdownHandle {
             }))
         }),
         entries: use_hook(|| Rc::new(RefCell::new(BTreeMap::new()))),
+        actions: use_hook(|| Rc::new(RefCell::new(BTreeMap::new()))),
         node: use_hook(|| Rc::new(RefCell::new(None))),
         trigger: use_hook(|| Rc::new(RefCell::new(None))),
         focus_task: use_hook(|| Rc::new(RefCell::new(None))),
@@ -1623,23 +1661,24 @@ impl PartialEq for DropdownContext {
     }
 }
 
-/// Mounted-element and visibility handlers for a custom Dropdown trigger.
+/// Mounted-element, visibility and keyboard handlers for a custom Dropdown trigger.
 ///
-/// Attach both handlers to the same stable Dioxus element. The framework owns
+/// Attach all three handlers to the same stable Dioxus element. The framework owns
 /// its visibility observer and releases it when that element is removed.
 #[derive(Clone, Copy)]
 pub struct DropdownTriggerBinding {
     pub onmounted: EventHandler<MountedEvent>,
     pub onvisible: EventHandler<VisibleEvent>,
+    pub onkeydown: EventHandler<KeyboardEvent>,
 }
 
 /// Register a custom Dioxus trigger for focus restoration, automatic placement
 /// and dismissal when its anchor leaves the viewport.
 ///
-/// Attach `onmounted` and `onvisible` to the element referenced by
+/// Attach `onmounted`, `onvisible` and `onkeydown` to the element referenced by
 /// `Dropdown.trigger`. Use a new component key when replacing that control or
 /// its controller. ID-only controls do not support programmatic trigger focus
-/// or anchor visibility; no JavaScript fallback is used.
+/// anchor visibility or keyboard navigation; no JavaScript fallback is used.
 pub fn use_dropdown_trigger_binding(dropdown: DropdownHandle) -> DropdownTriggerBinding {
     use_trigger_binding(dropdown.try_context(), false, None, false)
 }
@@ -1647,12 +1686,12 @@ pub fn use_dropdown_trigger_binding(dropdown: DropdownHandle) -> DropdownTrigger
 /// Register a custom Dioxus trigger for Dropdown focus restoration only.
 ///
 /// Attach this handler to the stable element referenced by `Dropdown.trigger`.
-/// Its ID still supplies click/key discovery; this hook supplies the mounted
+/// Its ID still supplies legacy click assignment; this hook supplies the mounted
 /// focus handle and releases it with the calling component's scope. Use a new
 /// component key when replacing the trigger or its controller. ID-only triggers
 /// remain usable for discovery but do not receive programmatic trigger focus.
 /// This mount-only hook does not observe anchor visibility or clipping; use
-/// [`use_dropdown_trigger_binding`] for both focus and visibility support.
+/// [`use_dropdown_trigger_binding`] for focus, visibility and keyboard support.
 pub fn use_dropdown_trigger_mount(dropdown: DropdownHandle) -> EventHandler<MountedEvent> {
     use_trigger_binding(dropdown.try_context(), false, None, false).onmounted
 }
@@ -1689,6 +1728,7 @@ fn use_trigger_binding(
         }
     });
     let visible_owner = owned.clone();
+    let key_owner = owned.clone();
     let onmounted = use_callback(move |event: MountedEvent| {
         let node = event.data();
         if let Some((previous, mounted)) = owned.borrow_mut().take() {
@@ -1751,9 +1791,24 @@ fn use_trigger_binding(
             },
         );
     });
+    let onkeydown = use_callback(move |event: KeyboardEvent| {
+        let owner = key_owner.borrow().clone();
+        let Some((context, node)) = owner else {
+            return;
+        };
+        if context
+            .trigger
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(&current.node, &node) && !current.blocked.get())
+        {
+            direct_key(&context, event, true, None, false);
+        }
+    });
     DropdownTriggerBinding {
         onmounted,
         onvisible,
+        onkeydown,
     }
 }
 
@@ -1779,7 +1834,6 @@ pub fn DropdownTrigger(
         false,
     );
     let click = context.clone();
-    let key = context.clone();
     let id = context.node_id();
     let trigger_id = context.trigger_id();
     let host_id = context.host_id();
@@ -1791,7 +1845,7 @@ pub fn DropdownTrigger(
         "data-ix-overlay-trigger":id,style:"anchor-name:--ix-dropdown-anchor-{context.id}",
         onmounted:binding.onmounted,onvisible:binding.onvisible,
         onclick:move |event:MouseEvent| {if !blocked&&!click.state.borrow().blocked&&event.default_action_enabled()&&click.trigger_click_allowed(){let previous=*click.open.peek();click.request_from_trigger(!previous,Reason::Trigger,click.keyboard_mode());}},
-        onkeydown:move |event:KeyboardEvent| {if !key.native_key_route(){fallback_key(&key,event,true);}},
+        onkeydown:binding.onkeydown,
         if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
         else if let Some(icon)=icon {Icon {name:icon,size:20}}
         {children}
@@ -1927,10 +1981,7 @@ fn DropdownSurface(
                         !event.default_prevented()
                     }),
                     apply: Rc::new(move |change| apply.apply(change)),
-                    key: Some(Rc::new(move |facts| {
-                        key.state.borrow_mut().native = true;
-                        key.key(facts)
-                    })),
+                    key: Some(Rc::new(move |facts| key.key(facts))),
                 },
             );
             *context.node.borrow_mut() = Some(node.clone());
@@ -2004,7 +2055,6 @@ fn DropdownSurface(
             state.mounted = false;
             state.focus_epoch = state.focus_epoch.wrapping_add(1);
             state.focus_pending = None;
-            state.native = false;
         }
         let task = drop_context.focus_task.borrow_mut().take();
         if let Some(task) = task {
@@ -2041,10 +2091,7 @@ fn DropdownSurface(
                     state.forward = None;
                 }
                 if *configure.open.peek() {
-                    configure_node.configure_navigation(
-                        mode.as_str(),
-                        !configure.state.borrow().settings.disable_focus_handling,
-                    );
+                    configure_node.set_navigation_mode(mode.as_str());
                     if mode == DropdownNavigationMode::RovingTabindex {
                         configure.focus_edge(false);
                     } else if !configure.state.borrow().settings.disable_focus_handling {
@@ -2105,6 +2152,13 @@ fn DropdownSurface(
     };
     let click_context = context.clone();
     let key_context = context.clone();
+    let trigger_focused = use_hook(|| Rc::new(Cell::new(false)));
+    let focused_in = trigger_focused.clone();
+    let focused_out = trigger_focused.clone();
+    let content_key = context.clone();
+    let panel_focused = use_hook(|| Rc::new(Cell::new(false)));
+    let panel_focus = panel_focused.clone();
+    let panel_blur = panel_focused.clone();
     let runtime_owner = runtime.owner_id();
     let root_role = (!external).then_some("button");
     let trigger_marker = (!external).then_some(id.clone());
@@ -2130,9 +2184,10 @@ fn DropdownSurface(
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,
         style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
-        onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;trigger_binding.onmounted.call(event.clone());mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.configure_navigation(state.settings.mode.as_str(),!state.settings.disable_focus_handling);drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}mount_context.apply_trigger_visibility();},
+        onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;trigger_binding.onmounted.call(event.clone());mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.set_navigation_mode(state.settings.mode.as_str());drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}mount_context.apply_trigger_visibility();},
         onclick:move |event:MouseEvent| {if !external&&!blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled()&&click_context.trigger_click_allowed(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}},
-        onkeydown:move |event:KeyboardEvent|{if !key_context.native_key_route(){fallback_key(&key_context,event,!external);}},
+        onfocus:move |_|focused_in.set(true), onblur:move |_|focused_out.set(false),
+        onkeydown:move |event:KeyboardEvent|{if !external&&trigger_focused.get(){direct_key(&key_context,event,true,None,false);}},
         ..trigger_visibility,
         if !external {button {class:"ix-dropdown-trigger ix-button ix-button-{variant.as_str()}",r#type:"button",disabled:blocked,"aria-hidden":"true",inert:true,tabindex:-1,
             if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
@@ -2143,6 +2198,8 @@ fn DropdownSurface(
             "data-ix-overlay-host":id,"data-placement":effective_placement.as_str(),"data-configured-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
             popover:enable_top_layer.then_some("manual"),
             style:format!("position-anchor:--ix-dropdown-anchor-{};--ix-dropdown-area:{};{}",context.id,effective_placement.area(),if suppress_automatic_placement {"position-try-fallbacks:none"} else {""}),
+            onfocus:move |_|panel_focus.set(true),onblur:move |_|panel_blur.set(false),
+            onkeydown:move |event:KeyboardEvent|{if panel_focused.get()||matches!(event.key(),Key::Escape|Key::Tab){direct_key(&content_key,event.clone(),false,None,true);event.stop_propagation();}},
             onfocusin:move |_|{if let Some(transport)=focus_retention.borrow().as_ref(){let _=transport.send("focus");}},
             onfocusout:move |_|{if let Some(transport)=blur_retention.borrow().as_ref(){let _=transport.send("blur");}},
             {children}
@@ -2151,48 +2208,66 @@ fn DropdownSurface(
     } }
 }
 
-// The fallback is for renderer-only/SSR dispatch and the interval before native
-// registration. Actual native navigation uses one raw shared-runtime report.
-fn fallback_key(context: &DropdownContext, event: KeyboardEvent, on_trigger: bool) {
-    let owner = context.navigation_owner(false);
-    let order = owner.entries.borrow().keys().copied().collect::<Vec<_>>();
-    let facts = KeyFacts {
-        key: event.key().to_string(),
-        shift: event.modifiers().contains(Modifiers::SHIFT),
-        alt: event.modifiers().contains(Modifiers::ALT),
-        ctrl: event.modifiers().contains(Modifiers::CONTROL),
-        meta: event.modifiers().contains(Modifiers::META),
-        default_prevented: !event.default_action_enabled(),
-        focused_target: None,
-        focused_item: None,
-        items: order,
-        focus_count: 0,
-        focusable_ids: Vec::new(),
-        focused_index: None,
-        on_trigger,
-        inside: !on_trigger,
-        popover_ancestor: false,
-        inventory: None,
-        route: KeyRoute::Legacy,
-        navigation_mode: None,
+// One Dioxus path on both targets, independent of native observation readiness.
+fn direct_key(
+    context: &DropdownContext,
+    event: KeyboardEvent,
+    on_trigger: bool,
+    focused_target: Option<String>,
+    inside: bool,
+) {
+    let Some(node) = context
+        .node
+        .borrow()
+        .clone()
+        .filter(NodeHandle::is_registered)
+    else {
+        return;
     };
-    if event.key() == Key::Escape {
-        let node = context.node.borrow().clone();
-        if let Some(node) = node {
-            if let Some(runtime) = node.runtime() {
-                runtime.dismiss_root(node.id(), Reason::Escape, true);
-                event.stop_propagation();
+    let Some(mut facts) = node.dioxus_key_facts(&event, on_trigger, focused_target, inside) else {
+        return;
+    };
+    if facts.inventory.is_none() {
+        let owner = context.navigation_owner(false);
+        facts.items = owner.entries.borrow().keys().copied().collect();
+        facts.focused_item = facts.focused_target.as_ref().and_then(|target| {
+            owner
+                .entries
+                .borrow()
+                .iter()
+                .find(|(_, entry)| &entry.host_id == target)
+                .map(|(id, _)| *id)
+        });
+    }
+    let decision = node.dioxus_key(facts);
+    if let Some(target) = decision.activate.as_ref() {
+        let owner = context.navigation_owner(false);
+        let action = owner
+            .actions
+            .borrow()
+            .values()
+            .find(|(id, _)| id == target)
+            .map(|(_, action)| *action);
+        if let Some(action) = action {
+            action.call(event.clone());
+            // Item activation has a semantic Rust callback; no native click is
+            // fabricated. Existing close policy still honors keep-open/veto.
+            let close = matches!(
+                owner.state.borrow().settings.behavior,
+                DropdownCloseBehavior::Both | DropdownCloseBehavior::Inside
+            );
+            if close && event.default_action_enabled() {
+                owner.request(false, Reason::Keyboard, false);
             }
         }
-        return;
     }
-    let decision = context.key(&facts);
     if decision.prevent {
         event.prevent_default();
     }
     if decision.stop {
         event.stop_propagation();
     }
+    context.notify();
 }
 
 /// Heading content inside a Dropdown surface.
@@ -2306,7 +2381,7 @@ pub fn DropdownItem(
             && context.as_ref().is_some_and(|context| {
                 let _ = (context.revision)();
                 let state = context.state.borrow();
-                !state.native && state.active == Some(id)
+                state.active == Some(id)
             });
     let trigger_marker = linked.as_ref().map(DropdownContext::node_id);
     let linked_open = linked
@@ -2317,13 +2392,32 @@ pub fn DropdownItem(
     let mounted_host = host_binding.clone();
     let mounted_id = host_id.clone();
     let linked_binding = use_trigger_binding(linked.clone(), blocked, Some(host_id.clone()), true);
-    let key_context = context.clone();
     let navigation_host = host_binding.clone();
     let focus_host = host_binding.clone();
     let blur_host = host_binding.clone();
     let focus_context = context.clone();
     let click_label = label.clone();
-    let key_label = label.clone();
+    let generic = host_binding.generic;
+    let action_label = label.clone();
+    let action = use_callback(move |event: KeyboardEvent| {
+        if disabled
+            || !event.default_action_enabled()
+            || dropdown
+                .and_then(DropdownHandle::try_context)
+                .is_some_and(|child| child.state.borrow().blocked)
+        {
+            return;
+        }
+        let notification = DropdownItemClickEvent {
+            label: action_label.clone(),
+            prevented: Rc::new(Cell::new(false)),
+        };
+        onitemclick.call(notification.clone());
+        if generic && (keep_open || notification.default_prevented()) {
+            event.prevent_default();
+        }
+    });
+    host_binding.set_keyboard_action(&host_id, action);
     let tabindex = host_binding.tabindex();
     let mut attributes = attributes;
     let consumer_style = attributes.iter().rev().find_map(|attribute| {
@@ -2407,11 +2501,14 @@ pub fn DropdownItem(
                 event.prevent_default();
             }else if keep_open{event.prevent_default();}
         },
-        onkeydown:move |event:KeyboardEvent|{if !disabled&&!dropdown.and_then(DropdownHandle::try_context).is_some_and(|child|child.state.borrow().blocked) {
+        onkeydown:move |event:KeyboardEvent|{
+            if blocked || !event.default_action_enabled(){return;}
             if navigation_host.navigation_key(event.clone()){return;}
-            if event.key()==Key::Enter||event.key()==Key::Character(" ".into()){onitemclick.call(DropdownItemClickEvent{label:key_label.clone(),prevented:Rc::new(Cell::new(false))});}
-            if let Some(context)=&key_context{if !context.native_key_route(){fallback_key(context,event.clone(),false);event.stop_propagation();}}
-        }},
+            if dropdown.is_some(){linked_binding.onkeydown.call(event);}
+            else if matches!(event.key(),Key::Enter)||event.key()==Key::Character(" ".into()){
+                action.call(event);
+            }
+        },
         ..attributes,
         if let Some(name)=icon{Icon {name,size:20}}
         if !compact{span {"{label}"}}

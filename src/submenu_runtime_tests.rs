@@ -397,7 +397,7 @@ fn return_fixture_kind(disabled: bool, registered: bool, kind: ItemKind) -> Retu
 #[test]
 fn submenu_close_returns_registered_parent_through_mounted_focus_scroll_and_roving_state() {
     let mut fixture = return_fixture(false, true);
-    assert!(fixture.parent.configure_navigation("roving-tabindex", true));
+    assert!(fixture.parent.set_navigation_mode("roving-tabindex"));
     assert!(fixture.parent.is_item_registered(&fixture.host));
     let stale = NodeHandle {
         generation: fixture.parent.generation + 1,
@@ -433,11 +433,7 @@ fn submenu_close_returns_registered_parent_through_mounted_focus_scroll_and_rovi
         "the old outer cue marker is not physical focus support"
     );
     assert!(category.parent.is_item_registered(&category.host));
-    assert!(
-        category
-            .parent
-            .configure_navigation("roving-tabindex", true)
-    );
+    assert!(category.parent.set_navigation_mode("roving-tabindex"));
     category.runtime.close_submenu("nested-return");
     tests::settle_item_effects(&mut category.dom);
     assert_eq!(*category.mount.0.borrow(), ["focus", "scroll"]);
@@ -517,27 +513,30 @@ fn closed_linked_trigger_arrow_right_reaches_parent_but_other_keys_and_open_chil
             }
         }));
     }
-    // The builtin parent root is its trigger and an ancestor of the physically
-    // focused linked item. Its own trigger is on the composed event path even
-    // though the child trigger, rather than the parent root, is the key target.
-    let mut report: Report = serde_json::from_value(serde_json::json!({
-        "owner":fixture.runtime.owner_id(),"sequence":2,"kind":"key","phase":"bubble",
-        "key":"ArrowRight","active_id":"return-trigger",
-        "hosts":["configured"],"triggers":["nested-return","configured"],"nodes":[
-            {"id":"configured","generation":1,"connected":true,"inside":true,
-                "mode":"active-descendant","on_trigger":false,"trigger_on_path":true},
-            {"id":"nested-return","generation":1,"connected":true,"inside":false,
-                "mode":"active-descendant","on_trigger":true,"trigger_on_path":true}
-        ]
-    }))
-    .unwrap();
-    assert!(fixture.runtime.key(&report).prevent);
+    let child = NodeHandle {
+        runtime: Rc::downgrade(&fixture.runtime.0),
+        id: "nested-return".into(),
+        generation: 1,
+    };
+    let dispatch = |node: &NodeHandle, key: &str, on_trigger, inside| {
+        fixture.dom.in_scope(ScopeId::ROOT, || {
+            node.dioxus_key(KeyFacts {
+                key: key.into(),
+                focused_target: Some("return-trigger".into()),
+                on_trigger,
+                inside,
+                ..KeyFacts::default()
+            })
+        })
+    };
+    // Dioxus chooses the actual registered source before dispatch: a closed
+    // linked item's Right belongs to its lexical parent; the linked trigger's
+    // own activation and an open child route through the child binding.
+    assert!(dispatch(&fixture.parent, "ArrowRight", false, true).prevent);
     assert_eq!(*delivered.borrow(), ["parent"]);
-    report.key = "Enter".into();
-    assert!(fixture.runtime.key(&report).prevent);
+    assert!(dispatch(&child, "Enter", true, false).prevent);
     assert_eq!(*delivered.borrow(), ["parent", "child"]);
     fixture.child_open.set(true);
-    report.key = "ArrowRight".into();
-    assert!(fixture.runtime.key(&report).prevent);
+    assert!(dispatch(&child, "ArrowRight", true, false).prevent);
     assert_eq!(*delivered.borrow(), ["parent", "child", "child"]);
 }

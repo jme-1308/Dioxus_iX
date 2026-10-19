@@ -113,11 +113,22 @@ fn report(
             "inventory":{"items_host":"actual-items","hosts":hosts,"navigation_order":order,"query_order":order}}]})
 }
 fn observe(runtime: &RuntimeHandle, sequence: u64, generation: u64, hosts: &[HostFacts]) {
-    runtime.input(event(report(runtime, sequence, generation, "key", hosts)));
+    let mut observation = report(runtime, sequence, generation, "observe", hosts);
+    observation["document"] = format!("{}-focus-test", runtime.owner_id()).into();
+    runtime.input(event(observation));
+    let node = NodeHandle {
+        runtime: Rc::downgrade(&runtime.0),
+        id: "cue-root".into(),
+        generation,
+    };
+    let key = super::tests::typed_keyboard("ArrowDown", Modifiers::empty());
+    let facts = node.dioxus_key_facts(&key, true, None, false).unwrap();
+    node.dioxus_key(facts);
     assert!(
         runtime.keyboard_mode(),
         "actual admitted key establishes modality"
     );
+    assert_eq!(runtime.document_keyboard_mode(), Some(true));
 }
 fn keyboard(runtime: &RuntimeHandle, sequence: u64) {
     runtime.input(event(

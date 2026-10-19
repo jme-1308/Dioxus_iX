@@ -4,10 +4,10 @@ use dioxus_ix::*;
 
 #[component]
 fn ExitTrigger(dropdown: DropdownHandle) -> Element {
-    let mounted = use_dropdown_trigger_mount(dropdown);
+    let binding = use_dropdown_trigger_binding(dropdown);
     rsx! { button {
         id:"r0210-custom-trigger", r#type:"button", class:"ix-button ix-button-secondary",
-        onmounted:mounted, "aria-haspopup":"menu", "aria-expanded":dropdown.is_open().to_string(),
+        onmounted:binding.onmounted,onvisible:binding.onvisible,onkeydown:binding.onkeydown, "aria-haspopup":"menu", "aria-expanded":dropdown.is_open().to_string(),
         "Custom equipment actions"
     } }
 }

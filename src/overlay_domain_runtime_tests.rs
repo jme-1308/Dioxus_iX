@@ -2,6 +2,7 @@
 //! Rust inputs to the real runtime handler, not native bridge/browser evidence.
 
 use super::*;
+use dioxus::html::Modifiers;
 use std::cell::Cell;
 
 #[derive(Clone, Copy)]
@@ -449,9 +450,110 @@ fn trap_report(
         "nodes":nodes
     })
 }
+struct DomainKey(String, Modifiers);
+impl dioxus::html::ModifiersInteraction for DomainKey {
+    fn modifiers(&self) -> Modifiers {
+        self.1
+    }
+}
+impl dioxus::html::HasKeyboardData for DomainKey {
+    fn key(&self) -> dioxus::html::Key {
+        use dioxus::html::Key;
+        match self.0.as_str() {
+            "Tab" => Key::Tab,
+            "Escape" => Key::Escape,
+            "Home" => Key::Home,
+            "End" => Key::End,
+            "ArrowDown" => Key::ArrowDown,
+            "ArrowUp" => Key::ArrowUp,
+            "ArrowLeft" => Key::ArrowLeft,
+            "ArrowRight" => Key::ArrowRight,
+            "Enter" => Key::Enter,
+            value => Key::Character(value.into()),
+        }
+    }
+    fn code(&self) -> dioxus::html::Code {
+        dioxus::html::Code::Unidentified
+    }
+    fn location(&self) -> dioxus::html::Location {
+        dioxus::html::Location::Standard
+    }
+    fn is_auto_repeating(&self) -> bool {
+        false
+    }
+    fn is_composing(&self) -> bool {
+        false
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value) -> FormEvent {
-    let event = trap_form(report);
-    dom.in_scope(fixture.scope(), || fixture.runtime().input(event.clone()));
+    let event = trap_form(report.clone());
+    let runtime = fixture.runtime();
+    let node = fixture.node();
+    if report["kind"] == "key"
+        && runtime
+            .entry(node.id())
+            .is_some_and(|entry| entry.kind == OverlayKind::Dropdown)
+    {
+        // Fixture JSON supplies only current order/tab facts. The key itself
+        // enters the same Rust API used by Dioxus KeyboardEvent handlers.
+        let mut observation = report.clone();
+        observation["kind"] = "observe".into();
+        dom.in_scope(fixture.scope(), || runtime.input(trap_form(observation)));
+        let source = report["nodes"]
+            .as_array()
+            .and_then(|nodes| nodes.iter().find(|fact| fact["id"] == node.id()));
+        if let Some(mode) = source.and_then(|fact| fact["mode"].as_str()) {
+            dom.in_scope(fixture.scope(), || node.set_navigation_mode(mode));
+        }
+        let contains = |field: &str| {
+            report[field]
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == node.id()))
+        };
+        let on_trigger =
+            contains("triggers") || source.is_some_and(|source| source["on_trigger"] == true);
+        let inside = contains("hosts") || source.is_some_and(|source| source["inside"] == true);
+        let mut modifiers = Modifiers::empty();
+        if report["shift"] == true {
+            modifiers |= Modifiers::SHIFT;
+        }
+        if report["alt"] == true {
+            modifiers |= Modifiers::ALT;
+        }
+        if report["ctrl"] == true {
+            modifiers |= Modifiers::CONTROL;
+        }
+        if report["meta"] == true {
+            modifiers |= Modifiers::META;
+        }
+        let key = Event::new(
+            Rc::new(dioxus::html::KeyboardData::new(DomainKey(
+                report["key"].as_str().unwrap_or_default().into(),
+                modifiers,
+            ))),
+            true,
+        );
+        if report["default_prevented"] == true {
+            key.prevent_default();
+        }
+        let focused = report["active_id"].as_str().map(str::to_owned);
+        let decision = dom.in_scope(fixture.scope(), || {
+            node.dioxus_key_facts(&key, on_trigger, focused, inside)
+                .map(|facts| node.dioxus_key(facts))
+                .unwrap_or_default()
+        });
+        if decision.prevent {
+            event.prevent_default();
+        }
+        if decision.stop || decision.immediate_stop {
+            event.stop_propagation();
+        }
+    } else {
+        dom.in_scope(fixture.scope(), || runtime.input(event.clone()));
+    }
     event
 }
 

@@ -52,7 +52,7 @@ fn CustomDropdownAction(onmodechange: EventHandler<()>) -> Element {
     rsx! { button {
         id:"r02-mixed-custom", r#type:"button", "data-ix-roving-item":"",
         onmounted:item.onmounted, tabindex:item.tabindex.or(Some(authored_index())),
-        onkeydown:move |event:KeyboardEvent|match event.key(){Key::F2=>authored_index.set(7),Key::F3=>onmodechange.call(()),_=>{}},
+        onkeydown:move |event:KeyboardEvent|match event.key(){Key::F2=>authored_index.set(7),Key::F3=>onmodechange.call(()),_=>item.onkeydown.call(event)},
         "Custom control"
     } }
 }
