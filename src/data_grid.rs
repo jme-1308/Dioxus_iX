@@ -615,9 +615,6 @@ struct GridFocus {
     lane: GridLane,
 }
 
-#[derive(Clone)]
-struct GridModel(Rc<RefCell<Rc<Vec<DataGridRow>>>>);
-
 /// One stable validation target per grid, outside the horizontally scrolling
 /// cell plane. Editors can reference it without passing IDs through every row.
 #[derive(Clone)]
@@ -921,107 +918,206 @@ fn reveal_grid_row(
     focused.set(Some(focus));
 }
 
-// Only DOM measurement lives in this bridge. Column order, filtering and width
-// bounds stay in Rust. Rust supplies all filtered values, including unmounted
-// rows, to one reusable cell clone. Autosizing never mounts the entire dataset.
-const MEASURE_CONTENT: &str = r#"
-const request = await dioxus.recv();
-let header;
-if (request.header_id) header = document.getElementById(request.header_id);
-else {
-  const grid = document.getElementById(request.grid_id);
-  const separator = Array.from(grid?.querySelectorAll('.ix-data-grid-resizer') ?? []).find(node => {
-    const rect = node.getBoundingClientRect();
-    return request.x >= rect.left && request.x <= rect.right && request.y >= rect.top && request.y <= rect.bottom;
-  });
-  header = separator?.closest('.ix-data-grid-heading');
+fn autosize_values(rows: &[DataGridRow], column: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    rows.iter()
+        .map(|row| row.value(column))
+        .filter(|value| seen.insert((*value).to_string()))
+        .map(str::to_string)
+        .collect()
 }
-if (!header) return null;
-const grid = header.closest('.ix-data-grid');
-if (!grid) return null;
-const column = header.dataset.columnId;
-const sample = Array.from(grid.querySelectorAll('.ix-data-grid-cell')).find(node => node.dataset.columnId === column);
-const nodes = [header];
-const host = document.createElement('div');
-host.setAttribute('aria-hidden', 'true'); host.inert = true;
-host.style.cssText = 'position:fixed;left:-100000px;top:0;width:max-content;visibility:hidden;pointer-events:none;';
-grid.append(host);
-let width = 0;
-try {
-  for (const node of nodes) {
-    const clone = node.cloneNode(true);
-    const style = getComputedStyle(node);
-    // A cloned header lives outside its header row, so preserve inherited type.
-    for (const property of ['font-family','font-size','font-weight','font-style','line-height','letter-spacing']) {
-      clone.style.setProperty(property, style.getPropertyValue(property));
-    }
-    clone.removeAttribute('id');
-    for (const child of clone.querySelectorAll('[id]')) child.removeAttribute('id');
-    for (const child of clone.querySelectorAll('[popover],.ix-data-grid-resizer,.ix-data-grid-tooltip')) child.remove();
-    clone.style.cssText += ';position:static;width:max-content;min-width:0;max-width:none;overflow:visible;';
-    for (const child of clone.querySelectorAll('.ix-data-grid-cell-text,.ix-data-grid-title,.ix-data-grid-sort,.ix-data-grid-header-label')) {
-      child.style.cssText += ';width:max-content;min-width:max-content;max-width:none;overflow:visible;flex:none;';
-    }
-    host.append(clone);
-    width = Math.max(width, clone.getBoundingClientRect().width);
-    clone.remove();
-  }
-  if (sample) {
-    const clone = sample.cloneNode(true), style = getComputedStyle(sample);
-    clone.removeAttribute('id'); clone.removeAttribute('aria-describedby');
-    for (const child of clone.querySelectorAll('.ix-data-grid-tooltip')) child.remove();
-    for (const property of ['font-family','font-size','font-weight','font-style','line-height','letter-spacing']) clone.style.setProperty(property, style.getPropertyValue(property));
-    clone.style.cssText += ';position:static;width:max-content;min-width:0;max-width:none;overflow:visible;';
-    const text = clone.querySelector('.ix-data-grid-cell-text');
-    if (text) {
-      text.style.cssText += ';width:max-content;min-width:max-content;max-width:none;overflow:visible;flex:none;';
-      host.append(clone);
-      for (const value of request.values[column] ?? []) { text.textContent = value; width = Math.max(width, clone.getBoundingClientRect().width); }
-    }
-  }
-  return Number.isFinite(width) && width > 0 ? {column_id: column, width: Math.ceil(width)} : null;
-} finally { host.remove(); }
-"#;
 
-fn autosize_values(rows: &[DataGridRow]) -> BTreeMap<String, Vec<String>> {
-    let mut values = BTreeMap::<String, Vec<String>>::new();
-    for row in rows {
-        for (column, text) in &row.cells {
-            values.entry(column.clone()).or_default().push(text.clone());
+#[derive(Clone, PartialEq)]
+struct GridAutosizeRequest {
+    serial: u64,
+    column: DataGridColumn,
+    values: Vec<String>,
+    sort: Option<DataGridSortDirection>,
+    filtered: bool,
+}
+#[derive(Default)]
+struct GridAutosizeInputs {
+    columns: Vec<DataGridColumn>,
+    rows: Rc<Vec<DataGridRow>>,
+    state: DataGridState,
+}
+impl GridAutosizeInputs {
+    fn request(&self, id: &str, serial: u64) -> Option<GridAutosizeRequest> {
+        let column = self
+            .columns
+            .iter()
+            .find(|column| column.id == id && column.resizable)?
+            .clone();
+        Some(GridAutosizeRequest {
+            serial,
+            values: autosize_values(&self.rows, id),
+            sort: self
+                .state
+                .sort
+                .as_ref()
+                .filter(|(column, _)| column == id)
+                .map(|(_, direction)| *direction),
+            filtered: self
+                .state
+                .filters
+                .get(id)
+                .is_some_and(DataGridTextFilter::is_active),
+            column,
+        })
+    }
+    fn current(&self, request: &GridAutosizeRequest) -> bool {
+        self.request(&request.column.id, request.serial).as_ref() == Some(request)
+    }
+}
+#[derive(Clone)]
+struct GridSeparatorMount {
+    node: Rc<MountedData>,
+    owner: Rc<Cell<bool>>,
+}
+#[derive(Clone)]
+struct GridAutosizeContext {
+    pending: Signal<Option<GridAutosizeRequest>>,
+    inputs: Rc<RefCell<GridAutosizeInputs>>,
+    separators: Rc<RefCell<BTreeMap<String, GridSeparatorMount>>>,
+    serial: Rc<Cell<u64>>,
+    alive: Rc<Cell<bool>>,
+}
+impl GridAutosizeContext {
+    fn cancel(&self) {
+        self.serial.set(self.serial.get().wrapping_add(1));
+        let mut pending = self.pending;
+        if let Ok(mut pending) = pending.try_write() {
+            *pending = None;
         }
     }
-    values
+    fn fit(&self, id: &str) {
+        self.cancel();
+        if !self.alive.get() {
+            return;
+        }
+        let request = self.inputs.borrow().request(id, self.serial.get());
+        let mut pending = self.pending;
+        pending.set(request);
+    }
+    fn current(&self, serial: u64) -> bool {
+        self.alive.get()
+            && self.serial.get() == serial
+            && self.pending.try_peek().is_ok_and(|pending| {
+                pending
+                    .as_ref()
+                    .is_some_and(|request| request.serial == serial)
+            })
+    }
+    fn complete(&self, serial: u64, width: Option<f64>, onchange: EventHandler<DataGridState>) {
+        if !self.current(serial) {
+            return;
+        }
+        let request = self.pending.peek().clone().unwrap();
+        let next = {
+            let inputs = self.inputs.borrow();
+            width
+                .filter(|width| width.is_finite() && *width > 0.0)
+                .filter(|_| inputs.current(&request))
+                .map(|width| {
+                    let mut next = inputs.state.clone();
+                    next.resize_column(&request.column, width.ceil());
+                    next
+                })
+        };
+        self.cancel();
+        if let Some(next) = next {
+            onchange.call(next);
+        }
+    }
+    fn fit_at(&self, x: f64, y: f64) {
+        self.cancel();
+        let serial = self.serial.get();
+        let context = self.clone();
+        let separators = self
+            .separators
+            .borrow()
+            .iter()
+            .map(|(id, mount)| (id.clone(), mount.clone()))
+            .collect::<Vec<_>>();
+        spawn(async move {
+            for (id, mount) in separators {
+                if !context.alive.get() || context.serial.get() != serial {
+                    return;
+                }
+                if !mount.owner.get() {
+                    continue;
+                }
+                let Ok(rect) = mount.node.get_client_rect().await else {
+                    continue;
+                };
+                if !context.alive.get() || context.serial.get() != serial {
+                    return;
+                }
+                let current = context.separators.borrow().get(&id).is_some_and(|current| {
+                    Rc::ptr_eq(&current.node, &mount.node) && current.owner.get()
+                });
+                if current
+                    && rect.size.width > 0.0
+                    && rect.size.height > 0.0
+                    && x >= rect.origin.x
+                    && x <= rect.origin.x + rect.size.width
+                    && y >= rect.origin.y
+                    && y <= rect.origin.y + rect.size.height
+                {
+                    context.fit(&id);
+                    return;
+                }
+            }
+        });
+    }
 }
 
-async fn content_width(header_id: String, rows: Rc<Vec<DataGridRow>>) -> Option<f64> {
-    let task = crate::dom_query::eval(MEASURE_CONTENT);
-    task.send(serde_json::json!({"header_id":header_id,"values":autosize_values(&rows)}))
-        .ok()?;
-    task.join::<Option<ContentMeasure>>()
-        .await
-        .ok()
-        .flatten()
-        .map(|measurement| measurement.width)
+fn grid_header_title(title: &str, sort: Option<DataGridSortDirection>) -> Element {
+    rsx! { "{title}" if let Some(direction) = sort { Icon { name: if direction == DataGridSortDirection::Ascending { "sort-ascending" } else { "sort-descending" }, size:16 } } }
+}
+fn grid_cell_text(text: &str, intrinsic: bool) -> Element {
+    rsx! { span { class:"ix-data-grid-cell-text", style:intrinsic.then_some("width:max-content;min-width:max-content;overflow:visible;flex:none"), "{text}" } }
 }
 
-#[derive(serde::Deserialize)]
-struct ContentMeasure {
-    column_id: String,
-    width: f64,
-}
-
-async fn content_width_at(
-    grid_id: String,
-    x: f64,
-    y: f64,
-    rows: Rc<Vec<DataGridRow>>,
-) -> Option<ContentMeasure> {
-    let task = crate::dom_query::eval(MEASURE_CONTENT);
-    task.send(
-        serde_json::json!({ "grid_id": grid_id, "x": x, "y": y, "values":autosize_values(&rows) }),
-    )
-    .ok()?;
-    task.join::<Option<ContentMeasure>>().await.ok().flatten()
+/// Inert, temporary Dioxus markup inherits the grid's font and the same Header/
+/// cell classes. Max-content layout measures every unique value, including rows
+/// outside the virtual window; one mounted rectangle supplies their maximum.
+#[component]
+fn GridAutosizeProbe(
+    request: GridAutosizeRequest,
+    onmeasure: EventHandler<Option<f64>>,
+) -> Element {
+    let alive = use_hook(|| Rc::new(Cell::new(true)));
+    let drop_alive = alive.clone();
+    use_drop(move || drop_alive.set(false));
+    let column = &request.column;
+    let title_class = if column.sortable {
+        "ix-data-grid-sort"
+    } else if column.reorderable {
+        "ix-data-grid-header-label ix-data-grid-title-button"
+    } else {
+        "ix-data-grid-header-label"
+    };
+    rsx! {
+        div { "data-grid-autosize-probe":request.serial, inert:true, "aria-hidden":"true", style:"position:fixed;left:-100000px;top:0;width:max-content;visibility:hidden;pointer-events:none",
+            onmounted:move |event| { let node=event.data();let alive=alive.clone();spawn(async move { let width=node.get_client_rect().await.ok().map(|rect|rect.size.width);if alive.get(){onmeasure.call(width);} }); },
+            div { class:"ix-data-grid-header", style:"position:static;display:block;height:auto;min-width:0;width:max-content",
+                div { class:"ix-data-grid-heading", style:"position:static;min-width:0;width:max-content",
+                    div { class:"ix-data-grid-title", style:"width:max-content;min-width:max-content;overflow:visible;flex:none",
+                        if column.sortable || column.reorderable { button { class:title_class,r#type:"button",tabindex:"-1",style:"width:max-content;min-width:max-content;overflow:visible;flex:none",{grid_header_title(&column.title,request.sort)} } }
+                        else { span { class:title_class,style:"width:max-content;min-width:max-content;overflow:visible;flex:none",{grid_header_title(&column.title,None)} } }
+                    }
+                    if column.filterable { button {class:"ix-data-grid-filter-trigger",r#type:"button",tabindex:"-1","data-active":request.filtered.to_string(),Icon {name:if request.filtered{"filter-filled"}else{"filter"},size:16}} }
+                }
+            }
+            for value in &request.values {
+                div {class:"ix-data-grid-cell",style:"position:static;width:max-content;min-width:0;overflow:visible",
+                    if column.row_drag {button {class:"ix-data-grid-drag",r#type:"button",tabindex:"-1",Icon {name:"drag-gripper",size:16}}}
+                    {grid_cell_text(value,true)}
+                }
+            }
+        }
+    }
 }
 
 fn grid_template(
@@ -1110,7 +1206,6 @@ pub fn DataGrid(
     let validation = use_context_provider(|| GridValidationContext {
         id: format!("{grid_id}-edit-error"),
     });
-    let autosize_grid_id = grid_id.clone();
     let scroll_id = format!("{grid_id}-scroll");
     let row_height = row_height.max(24);
     let mut viewport = use_signal(|| GridViewport {
@@ -1129,8 +1224,20 @@ pub fn DataGrid(
     let header_mount = use_grid_focus_lane(None, None);
     use_drop(move || focus_context.cancel());
 
-    let latest_state = use_hook(|| Rc::new(RefCell::new(state.clone())));
-    *latest_state.borrow_mut() = state.clone();
+    let fit_request = use_signal(|| None::<GridAutosizeRequest>);
+    let autosize = use_context_provider(|| GridAutosizeContext {
+        pending: fit_request,
+        inputs: Rc::new(RefCell::new(GridAutosizeInputs::default())),
+        separators: Rc::new(RefCell::new(BTreeMap::new())),
+        serial: Rc::new(Cell::new(0)),
+        alive: Rc::new(Cell::new(true)),
+    });
+    let drop_autosize = autosize.clone();
+    use_drop(move || {
+        drop_autosize.alive.set(false);
+        drop_autosize.cancel();
+        drop_autosize.separators.borrow_mut().clear();
+    });
     let row_label_column = columns.first().map(|column| column.id.clone());
     let columns: Vec<_> = state
         .ordered_columns(&columns)
@@ -1145,9 +1252,19 @@ pub fn DataGrid(
             .collect::<Vec<_>>(),
     );
     let visible_count = visible.len();
-    let model = use_context_provider(|| GridModel(Rc::new(RefCell::new(visible.clone()))));
-    *model.0.borrow_mut() = visible.clone();
-    let autosize_model = model;
+    *autosize.inputs.borrow_mut() = GridAutosizeInputs {
+        columns: columns.clone(),
+        rows: visible.clone(),
+        state: state.clone(),
+    };
+    let stale_fit = autosize
+        .pending
+        .peek()
+        .as_ref()
+        .is_some_and(|request| !autosize.inputs.borrow().current(request));
+    if stale_fit {
+        autosize.cancel();
+    }
     let window = if suppress_row_virtualisation {
         0..visible_count
     } else {
@@ -1483,7 +1600,8 @@ pub fn DataGrid(
     let header_state = state.clone();
     let header_rows = rows.clone();
     let resize_state = state.clone();
-    let autosize_columns = columns.clone();
+    let hit_autosize = autosize.clone();
+    let measured_autosize = autosize.clone();
     let validation_error = editing().and_then(|session| session.error);
     rsx! {
         div { id: grid_id, class: "ix-data-grid {class}", "data-striped": striped.to_string(), "data-virtualized": (!suppress_row_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
@@ -1493,13 +1611,7 @@ pub fn DataGrid(
             // The fixed resize overlay can become the native click target. Delegate
             // its double-click by hit-testing separators at the actual click point.
             ondoubleclick: move |event: MouseEvent| {
-                let point = event.client_coordinates(); let id = autosize_grid_id.clone(); let columns = autosize_columns.clone(); let latest = latest_state.clone();
-                let model = autosize_model.0.borrow().clone();
-                spawn(async move { if let Some(measurement) = content_width_at(id, point.x, point.y, model).await {
-                    if let Some(column) = columns.iter().find(|column| column.id == measurement.column_id) {
-                        let mut next = latest.borrow().clone(); next.resize_column(column, measurement.width); onstatechange.call(next);
-                    }
-                } });
+                let point = event.client_coordinates(); resizing.set(None); hit_autosize.fit_at(point.x,point.y);
             },
             div { id: scroll_id, class: "ix-data-grid-scroll", role: "grid", "aria-label": label, "aria-rowcount": visible_count + 1, "aria-colcount": columns.len() + 1, "aria-multiselectable": "true",
                 onmounted: move |event| { let node = event.data(); focus_context.root.set(Some(node.clone())); spawn(async move { if let Ok(rect) = node.get_client_rect().await { if let Ok(mut current) = viewport.try_write() { current.height = rect.size.height.max(1.0); } } }); },
@@ -1524,6 +1636,9 @@ pub fn DataGrid(
                     }
                 }
                 if state.visible_rows(&rows).is_empty() { div { class: "ix-data-grid-empty", role: "status", "No Rows To Show" } }
+            }
+            if let Some(request)=autosize.pending.read().clone() {
+                GridAutosizeProbe {key:"{request.serial}",request:request.clone(),onmeasure:{let context=measured_autosize.clone();move |width|context.complete(request.serial,width,onstatechange)}}
             }
             if let Some(error) = validation_error {
                 div { id: validation.id.clone(), class: "ix-data-grid-edit-error", role: "alert", "{error}" }
@@ -1578,9 +1693,31 @@ fn GridHeader(
     mut column_dragging: Signal<Option<String>>,
     mut column_drop_target: Signal<Option<String>>,
 ) -> Element {
-    let model = use_context::<GridModel>();
-    let pointer_model = model.clone();
-    let enter_model = model;
+    let autosize = use_context::<GridAutosizeContext>();
+    let separator_owner = use_hook(|| Rc::new(Cell::new(true)));
+    let drop_owner = separator_owner.clone();
+    let drop_autosize = autosize.clone();
+    let drop_column = column.id.clone();
+    use_drop(move || {
+        drop_owner.set(false);
+        let mut separators = drop_autosize.separators.borrow_mut();
+        if separators
+            .get(&drop_column)
+            .is_some_and(|mount| Rc::ptr_eq(&mount.owner, &drop_owner))
+        {
+            separators.remove(&drop_column);
+        }
+    });
+    if !column.resizable {
+        autosize.separators.borrow_mut().remove(&column.id);
+    }
+    let mount_autosize = autosize.clone();
+    let mount_column = column.id.clone();
+    let pointer_autosize = autosize.clone();
+    let pointer_fit_column = column.id.clone();
+    let enter_autosize = autosize.clone();
+    let enter_fit_column = column.id.clone();
+    let resize_autosize = autosize.clone();
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let mut title_mounted = use_signal(|| None::<Rc<MountedData>>);
     let mut restore_keyboard_focus = use_signal(|| false);
@@ -1606,11 +1743,6 @@ fn GridHeader(
             GRID_ID.fetch_add(1, Ordering::Relaxed)
         )
     });
-    let autosize_id = header_id.clone();
-    let enter_autosize_id = header_id.clone();
-    let autosize_column = column.clone();
-    let autosize_state = latest_state.clone();
-    let enter_autosize_state = latest_state.clone();
     let title_drag_id = column.id.clone();
     let drop_id = column.id.clone();
     let drag_over_id = column.id.clone();
@@ -1679,8 +1811,7 @@ fn GridHeader(
         if column.sortable { button { class: "ix-data-grid-sort", r#type: "button", "aria-label": "Sort {column.title}", "aria-description": if reorderable { "Move column with Alt+Left or Alt+Right." } else { "" },
             onmounted: move |event| title_mounted.set(Some(event.data())),
             onclick: move |_| { let mut next = sort_state.clone(); next.cycle_sort(&sort_column); onstatechange.call(next); },
-            "{column.title}"
-            if let Some(direction) = sort { Icon { name: if direction == DataGridSortDirection::Ascending { "sort-ascending" } else { "sort-descending" }, size: 16 } }
+            {grid_header_title(&column.title,sort)}
         } } else if reorderable { button { class: "ix-data-grid-header-label ix-data-grid-title-button", r#type: "button", "aria-label": "Move column {column.title}", "aria-description": "Move column with Alt+Left or Alt+Right.", onmounted: move |event| title_mounted.set(Some(event.data())), "{column.title}" } }
         else { span { class: "ix-data-grid-header-label", "{column.title}" } }
         }
@@ -1695,20 +1826,19 @@ fn GridHeader(
             }
         }
         if column.resizable {
-            div { class: "ix-data-grid-resizer", role: "separator", tabindex: "0", "aria-orientation": "vertical", "aria-label": "Resize {column.title}",
+            div { onmounted:move |event|{mount_autosize.separators.borrow_mut().insert(mount_column.clone(),GridSeparatorMount {node:event.data(),owner:separator_owner.clone()});},class: "ix-data-grid-resizer", role: "separator", tabindex: "0", "aria-orientation": "vertical", "aria-label": "Resize {column.title}",
                 title: "Drag or Left/Right to resize. Double-click or Enter to fit content.",
                 "aria-description": "Left and Right resize the column. Enter fits its header and filtered row content.",
                 "aria-valuemin": column.min_width.max(24), "aria-valuemax": column.max_width.max(column.min_width.max(24)),
                 "aria-valuenow": displayed_width,
                 ondoubleclick: move |event: MouseEvent| {
                     event.prevent_default(); event.stop_propagation(); resizing.set(None);
-                    let id = autosize_id.clone(); let column = autosize_column.clone(); let latest = autosize_state.clone();
-                    let rows = pointer_model.0.borrow().clone();
-                    spawn(async move { if let Some(width) = content_width(id, rows).await { let mut next = latest.borrow().clone(); next.resize_column(&column, width); measured_width.set(Some(column.clamp_width(width))); onstatechange.call(next); } });
+                    pointer_autosize.fit(&pointer_fit_column);
                 },
                 onfocus: move |_| { let node = mounted.peek().clone(); spawn(async move { if let Some(node) = node { if let Ok(rect) = node.get_client_rect().await { measured_width.set(Some(rect.size.width.round() as u32)); } } }); },
                 onpointerdown: move |event: PointerEvent| {
                     event.prevent_default(); event.stop_propagation();
+                    resize_autosize.cancel();
                     let start_x = event.client_coordinates().x; let column = pointer_column.clone(); let node = mounted.peek().clone();
                     let id = GRID_ID.fetch_add(1, Ordering::Relaxed);
                     // Capture releases immediately, even when the desktop renderer
@@ -1730,13 +1860,11 @@ fn GridHeader(
                         event.prevent_default(); event.stop_propagation();
                         let step = if event.modifiers().shift() { 25.0 } else { 10.0 };
                         let node = mounted.peek().clone(); let mut next = key_state.clone(); let column = key_column.clone();
-                        let id = enter_autosize_id.clone();
                         if key == Key::Enter {
-                            let latest = enter_autosize_state.clone();
-                            let rows = enter_model.0.borrow().clone();
-                            spawn(async move { if let Some(width) = content_width(id, rows).await { let mut next = latest.borrow().clone(); next.resize_column(&column, width); measured_width.set(Some(column.clamp_width(width))); onstatechange.call(next); } });
+                            enter_autosize.fit(&enter_fit_column);
                             return;
                         }
+                        enter_autosize.cancel();
                         spawn(async move { if let Some(node) = node { if let Ok(rect) = node.get_client_rect().await {
                             let width = match key { Key::Home => column.min_width as f64, Key::End => column.max_width as f64,
                                 Key::ArrowLeft => rect.size.width - step, _ => rect.size.width + step };
@@ -2033,7 +2161,7 @@ fn GridCell(
             Icon { name: "drag-gripper", size: 16 }
         } }
         if let Some(session)=session.clone() { GridTextEditor {session,title:column.title.clone(),editing,edit_action,retiring} }
-        else { span { class: "ix-data-grid-cell-text", "{text}" } }
+        else { {grid_cell_text(&text,false)} }
         if editing.read().is_none() && show_tooltip() && !tooltip.is_empty() { span { id: tooltip_id.clone(), class: "ix-data-grid-tooltip", role: "tooltip", style: "--ix-grid-tip-x:{point().0}px;--ix-grid-tip-y:{point().1}px", "{tooltip}" } }
     } }
 }
@@ -2614,6 +2742,121 @@ mod tests {
         );
     }
     #[test]
+    fn autosize_request_tracks_unique_filtered_values_and_current_presentation() {
+        let mut column = edit_column("status");
+        column.sortable = true;
+        column.filterable = true;
+        column.row_drag = true;
+        let original = Rc::new(vec![
+            DataGridRow::new("a").cell("status", "Normal"),
+            DataGridRow::new("b").cell("status", "Normal"),
+            DataGridRow::new("offscreen").cell("status", "A much wider offscreen status"),
+        ]);
+        let mut inputs = GridAutosizeInputs {
+            columns: vec![column],
+            rows: original.clone(),
+            state: DataGridState::default(),
+        };
+        let request = inputs.request("status", 7).unwrap();
+        assert_eq!(request.values, ["Normal", "A much wider offscreen status"]);
+        assert!(inputs.current(&request));
+        inputs.rows = Rc::new(vec![original[0].clone()]);
+        assert!(
+            !inputs.current(&request),
+            "a changed filtered projection invalidates the old measurement"
+        );
+        inputs.rows = original;
+        inputs.state.sort = Some(("status".into(), DataGridSortDirection::Ascending));
+        assert!(
+            !inputs.current(&request),
+            "the sort glyph is part of Header intrinsic width"
+        );
+        inputs.state.sort = None;
+        inputs.columns.clear();
+        assert!(!inputs.current(&request));
+    }
+    #[test]
+    fn autosize_latest_request_merges_current_state_and_rejects_removed_or_dead_owners() {
+        let mut dom = VirtualDom::new(|| rsx! {div{}});
+        dom.rebuild_in_place();
+        let mut column = DataGridColumn::new("status", "Status");
+        column.max_width = 400;
+        let context = dom.in_scope(ScopeId::ROOT, || GridAutosizeContext {
+            pending: Signal::new(None),
+            inputs: Rc::new(RefCell::new(GridAutosizeInputs {
+                columns: vec![column.clone()],
+                rows: Rc::new(rows()),
+                state: DataGridState::default(),
+            })),
+            separators: Rc::new(RefCell::new(BTreeMap::new())),
+            serial: Rc::new(Cell::new(0)),
+            alive: Rc::new(Cell::new(true)),
+        });
+        let changes = Rc::new(RefCell::new(Vec::<DataGridState>::new()));
+        let seen = changes.clone();
+        let onchange = dom.in_scope(ScopeId::ROOT, || {
+            EventHandler::new(move |next| seen.borrow_mut().push(next))
+        });
+        dom.in_runtime(|| {
+            context.fit("status");
+            let old = context.pending.peek().as_ref().unwrap().serial;
+            context.fit("status");
+            let current = context.pending.peek().as_ref().unwrap().serial;
+            context.complete(old, Some(100.0), onchange);
+            assert!(changes.borrow().is_empty());
+            context
+                .inputs
+                .borrow_mut()
+                .state
+                .selected
+                .insert("b".into());
+            context.complete(current, Some(900.0), onchange);
+            assert_eq!(changes.borrow()[0].column_widths["status"], 400);
+            assert!(changes.borrow()[0].selected.contains("b"));
+            assert!(context.pending.peek().is_none());
+            context.fit("status");
+            let removed = context.pending.peek().as_ref().unwrap().serial;
+            context.inputs.borrow_mut().columns.clear();
+            context.complete(removed, Some(100.0), onchange);
+            assert_eq!(changes.borrow().len(), 1);
+            context.inputs.borrow_mut().columns.push(column);
+            context.fit("status");
+            let dead = context.pending.peek().as_ref().unwrap().serial;
+            context.alive.set(false);
+            context.complete(dead, Some(100.0), onchange);
+            assert_eq!(changes.borrow().len(), 1);
+        });
+    }
+    #[test]
+    fn autosize_probe_is_inert_lightweight_markup_with_header_and_all_text_samples() {
+        fn probe() -> Element {
+            let mut column = DataGridColumn::new("status", "Status");
+            column.sortable = true;
+            column.filterable = true;
+            column.row_drag = true;
+            rsx! {GridAutosizeProbe {request:GridAutosizeRequest {serial:1,column,values:vec!["Normal".into(),"A much wider offscreen status".into()],sort:Some(DataGridSortDirection::Ascending),filtered:true},onmeasure:move |_|{}}}
+        }
+        let mut dom = VirtualDom::new(probe);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("data-grid-autosize-probe")
+                && html.contains(r#"aria-hidden="true""#)
+                && html.contains("inert")
+        );
+        assert!(html.contains("A much wider offscreen status"));
+        assert_eq!(html.matches(r#"class="ix-data-grid-cell""#).count(), 2);
+        assert!(
+            html.contains("ix-data-grid-header")
+                && html.contains("ix-data-grid-filter-trigger")
+                && html.contains("ix-data-grid-drag")
+        );
+        assert!(
+            !html.contains("data-row-id="),
+            "content samples never mount virtual GridRecord rows"
+        );
+    }
+    #[test]
     fn autosizing_receives_unmounted_filtered_values_and_keeps_selection_ids() {
         let rows: Vec<_> = (0..10_000)
             .map(|index| {
@@ -2639,11 +2882,8 @@ mod tests {
             10,
         );
         assert!(!window.contains(&9_999));
-        let values = autosize_values(&rows);
-        assert_eq!(
-            values["type"].last().unwrap(),
-            "Very long final offscreen record"
-        );
+        let values = autosize_values(&rows, "type");
+        assert_eq!(values.last().unwrap(), "Very long final offscreen record");
         let mut state = DataGridState::default();
         state.select_row(&rows, "row-9999", true, false);
         state.filters.insert(
@@ -2659,7 +2899,7 @@ mod tests {
         let visible: Vec<_> = state.visible_rows(&rows).into_iter().cloned().collect();
         assert_eq!(visible.len(), 5_000);
         assert!(
-            !autosize_values(&visible)["type"]
+            !autosize_values(&visible, "type")
                 .iter()
                 .any(|value| value == "Very long final offscreen record")
         );
@@ -2680,6 +2920,7 @@ mod tests {
             dom.rebuild_in_place();
             let html = dioxus_ssr::render(&dom);
             assert_eq!(html.matches("data-row-id=").count(), expected);
+            assert!(!html.contains("data-grid-autosize-probe"));
             assert!(html.contains("aria-rowcount=1001"));
             assert!(html.contains("aria-rowindex=19"));
             assert!(html.contains("height:42000px"));

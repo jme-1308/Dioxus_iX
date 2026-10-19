@@ -36,6 +36,7 @@ fn sample_grid_columns() -> Vec<DataGridColumn> {
     };
     let mut unit = DataGridColumn::new("unit", "Unit");
     unit.editable = false;
+    unit.max_width = 640;
     let mut group = DataGridColumn::new("group", "Group");
     group.sortable = true;
     group.filterable = true;
@@ -53,9 +54,16 @@ fn sample_grid_rows(shrunk: bool) -> Vec<DataGridRow> {
             } else {
                 "Sector B"
             };
+            let unit = if index == 1000 {
+                "kilopascals (differential manifold telemetry)"
+            } else if index % 2 == 0 {
+                "bar"
+            } else {
+                "rpm"
+            };
             DataGridRow::new(format!("row-{index:04}"))
                 .cell("title", format!("Setpoint {index:04}"))
-                .cell("unit", if index % 2 == 0 { "bar" } else { "rpm" })
+                .cell("unit", unit)
                 .cell("group", group)
         })
         .collect()
@@ -88,6 +96,11 @@ pub fn VirtualNavigationPreview() -> Element {
         .get("group")
         .is_some_and(DataGridTextFilter::is_active);
     let visible_grid_count = grid_state().visible_rows(&grid_rows()).len();
+    let unit_width = grid_state()
+        .column_widths
+        .get("unit")
+        .map(u32::to_string)
+        .unwrap_or_else(|| "none".into());
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
 
@@ -181,7 +194,8 @@ pub fn VirtualNavigationPreview() -> Element {
                     "data-narrow": grid_narrow().to_string(), "data-shrunk": grid_shrunk().to_string(),
                     "data-filtered": filtered_active.to_string(), "data-visible-count": visible_grid_count.to_string(),
                     "data-selected-count": grid_state().selected.len().to_string(), "data-last-edit": last_edit(),
-                    "Grid visible: {visible_grid_count}; selected: {grid_state().selected.len()}; last edit: {last_edit()}"
+                    "data-unit-width": unit_width.clone(),
+                    "Grid visible: {visible_grid_count}; selected: {grid_state().selected.len()}; unit width: {unit_width}; last edit: {last_edit()}"
                 }
             }
             div { onmounted: move |_| {
@@ -224,6 +238,9 @@ const gridRow=id=>gridRows().find(node=>node.dataset.rowId===id);
 const gridCell=(rowId,colId)=>Array.from(gridRow(rowId)?.querySelectorAll('[role="gridcell"][data-column-id]')??[]).find(node=>node.dataset.columnId===colId);
 const gridEditor=()=>byId('r0233-grid-host')?.querySelector('.ix-data-grid-editor');
 const gridAlert=()=>byId('r0233-grid-host')?.querySelector('[role="alert"]');
+const unitResizer=()=>byId('r0233-grid-host')?.querySelector('[role="separator"][aria-label="Resize Unit"]');
+const gridResizeOverlay=()=>byId('r0233-grid-host')?.querySelector('.ix-data-grid-resize-overlay');
+const unitWidth=()=>Number(byId('r0233-grid-state')?.dataset.unitWidth);
 
 await wait('initial virtualized tree and grid',()=>tree()?.dataset.visibleCount==='1000'&&treeItems().length>0&&treeItems().length<=40&&grid()?.getAttribute('aria-rowcount')==='1001'&&gridRows().length>0&&gridRows().length<=45);
 treeItem('branch-1').focus();
@@ -299,5 +316,35 @@ byId('r0233-grid-height').click();
 await wait('grid narrow height bounded rows',()=>byId('r0233-grid-state').dataset.narrow==='true'&&gridRows().length<=35);
 byId('r0233-grid-remount').click();
 await wait('grid remount preserves outside focus',()=>byId('r0233-grid-state').dataset.epoch==='1'&&grid()&&active()===outside);
-return {ok:true,tree:{end:true,page:true,home:true,collapse:true,remount:true,boundedRows:treeItems().length},grid:{end:true,offscreenEdit:true,validation:true,escape:true,shiftTab:true,tab:true,selection:true,filter:true,remount:true,boundedRows:gridRows().length}};
+await wait('grid top window leaves row-1000 unmounted',()=>grid()?.scrollTop===0&&gridRow('row-0001')&&!gridRow('row-1000')&&byId('r0233-grid-state').dataset.unitWidth==='none');
+unitResizer().focus();
+await wait('grid unit resizer focus',()=>active()===unitResizer());
+key(unitResizer(),'Enter');
+await wait('grid Enter fits unmounted long unit value',()=>unitWidth()>180&&!gridRow('row-1000'));
+const fullUnitWidth=unitWidth();
+byId('r0233-grid-filter-toggle').click();
+await wait('grid Calibration filter excludes row-1000',()=>byId('r0233-grid-state').dataset.filtered==='true'&&byId('r0233-grid-state').dataset.visibleCount==='5'&&!gridRow('row-1000'));
+unitResizer().focus();
+key(unitResizer(),'Enter');
+await wait('grid Enter shrinks filtered unit width',()=>unitWidth()>=80&&unitWidth()<fullUnitWidth-80);
+const filteredUnitWidth=unitWidth();
+byId('r0233-grid-filter-toggle').click();
+await wait('grid filter cleared before double-click fit',()=>byId('r0233-grid-state').dataset.filtered==='false'&&byId('r0233-grid-state').dataset.visibleCount==='1000'&&!gridRow('row-1000')&&unitWidth()===filteredUnitWidth);
+const sepRect=unitResizer().getBoundingClientRect(),sepX=sepRect.left+Math.min(3,sepRect.width/2),sepY=sepRect.top+sepRect.height/2;
+unitResizer().dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,clientX:sepX,clientY:sepY}));
+await wait('grid separator double-click fits unmounted long unit',()=>unitWidth()>180&&Math.abs(unitWidth()-fullUnitWidth)<=4&&!gridRow('row-1000'));
+unitResizer().focus();
+key(unitResizer(),'Home');
+await wait('grid unit width reset to min before overlay double-click',()=>unitWidth()===80);
+const ovRect=unitResizer().getBoundingClientRect(),ovX=ovRect.left+Math.min(3,ovRect.width/2),ovY=ovRect.top+ovRect.height/2;
+unitResizer().dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:ovX,clientY:ovY}));
+await wait('grid resize overlay mounted',()=>Boolean(gridResizeOverlay()));
+gridResizeOverlay().dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,clientX:ovX,clientY:ovY}));
+await wait('grid overlay double-click forwards separator fit',()=>unitWidth()>180&&Math.abs(unitWidth()-fullUnitWidth)<=4&&!gridRow('row-1000'));
+if(gridResizeOverlay())gridResizeOverlay().dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:ovX,clientY:ovY}));
+if(gridResizeOverlay())key(grid(),'Escape');
+await wait('grid resize overlay cleaned up',()=>!gridResizeOverlay());
+outside.focus();
+await wait('outside focus restored after autosize checks',()=>active()===outside);
+return {ok:true,tree:{end:true,page:true,home:true,collapse:true,remount:true,boundedRows:treeItems().length},grid:{end:true,offscreenEdit:true,validation:true,escape:true,shiftTab:true,tab:true,selection:true,filter:true,remount:true,autosizeEnter:fullUnitWidth>180,autosizeFilteredShrink:filteredUnitWidth>=80&&filteredUnitWidth<fullUnitWidth-80,autosizeDoubleClick:true,autosizeOverlayDoubleClick:true,unitWidth:unitWidth(),boundedRows:gridRows().length}};
 "#;
