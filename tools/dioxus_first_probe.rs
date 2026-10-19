@@ -22,6 +22,8 @@ mod modal_focus_review;
 mod tab_exit_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
 mod trigger_review;
+#[path = "dioxus_first_probe/visibility_review.rs"]
+mod visibility_review;
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 fn main() {
@@ -71,6 +73,9 @@ fn Preview() -> Element {
                 .unwrap_or_default()
         }
     });
+    if scope == "?visibility" {
+        return rsx! { visibility_review::VisibilityPreview {} };
+    }
     if scope == "?applicationfocus" {
         return rsx! { application_focus_review::ApplicationFocusPreview {} };
     }

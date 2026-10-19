@@ -715,6 +715,8 @@ pub(crate) fn HeaderLayout(
     let large_id = format!("{owner}-large");
     drop(state);
     let more_mount = crate::dropdown::use_focus_mount(more_id.clone());
+    let visible_model = model.clone();
+    let visible_node = stop_controller.node.clone();
     let runtime_owner = runtime.owner_id();
     rsx! {
         div { id:owner.clone(), class:"ix-header-layout",
@@ -754,6 +756,14 @@ pub(crate) fn HeaderLayout(
             }
             button {id:more_id,r#type:"button",class:"ix-app-icon-button ix-header-more-button",
                 onmounted:more_mount,
+                onvisible:move |event:VisibleEvent| {
+                    let alive = visible_model.borrow().alive;
+                    if alive
+                        && let Ok(intersecting) = event.is_intersecting()
+                    {
+                        visible_node.observe_anchor_visibility(intersecting, None);
+                    }
+                },
                 "data-ix-overlay-trigger":owner.clone(),
                 "data-header-more-button":owner.clone(),"data-testid":"show-more",hidden:!visible,
                 "aria-label":more_label,"aria-expanded":open.to_string(),"aria-controls":if active=="small" {small_id} else {large_id},

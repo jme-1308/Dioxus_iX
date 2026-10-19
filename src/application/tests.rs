@@ -168,6 +168,16 @@ impl dioxus::html::HasFocusData for MenuTestFocus {
     }
 }
 
+struct MenuTestVisible(bool);
+impl dioxus::html::HasVisibleData for MenuTestVisible {
+    fn is_intersecting(&self) -> dioxus::html::VisibleResult<bool> {
+        Ok(self.0)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct AppSwitchOpeningCapture(pub(super) Rc<RefCell<Option<AppSwitchOpeningState>>>);
 #[derive(Clone, Default)]
@@ -297,6 +307,7 @@ macro_rules! menu_test_converter {
         }};
         (@data Pointer,$event:ident) => {dioxus::html::PointerData::new(MenuTestPointer($event.downcast::<String>().unwrap().clone()))};
         (@data Form,$event:ident) => {dioxus::html::FormData::new(MenuTestForm($event.downcast::<String>().unwrap().clone()))};
+        (@data Visible,$event:ident) => {dioxus::html::VisibleData::new(MenuTestVisible(*$event.downcast::<bool>().unwrap()))};
         (@data Focus,$event:ident) => {dioxus::html::FocusData::new(MenuTestFocus)};
         (@data Toggle,$event:ident) => {dioxus::html::ToggleData::new(AppSwitchTestToggle)};
         (@data Mounted,$event:ident) => {MountedData::new($event.downcast::<MenuTestMount>().unwrap().clone())};
@@ -316,7 +327,7 @@ fn menu_dispatch(
         data,
         !matches!(
             name,
-            "focus" | "blur" | "mounted" | "pointerenter" | "pointerleave"
+            "focus" | "blur" | "mounted" | "pointerenter" | "pointerleave" | "visible"
         ),
     );
     dom.runtime().handle_event(name, event.clone(), id);
@@ -3816,20 +3827,13 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
         .expect("actual Header shared overlay transport");
     let owner = harness.attrs[&transport.raw()]["data-ix-overlay-transport"].clone();
     assert_eq!(harness.header_root_attrs()["data-ix-overlay-owner"], owner);
-    let visibility = |sequence| {
-        serde_json::json!({
-            "owner":owner,"document":"Header hidden More actual-handler regression",
-            "sequence":sequence,"kind":"anchor-visibility",
-            "nodes":[{"id":root,"generation":registration_generation,"connected":true,
-                "discovery_ready":true,"trigger_id":more,"anchor_id":more}],
-            "anchor_visibility":{"root":root,"generation":registration_generation,
-                "target":more,"intersecting":false}
-        })
-    };
-    assert_eq!(
-        menu_dispatch(&harness.dom, "input", transport, visibility(1).to_string()),
-        (false, false)
-    );
+    let more_target = harness
+        .attrs
+        .iter()
+        .find(|(_, attributes)| attributes.get("id") == Some(&more))
+        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+        .unwrap();
+    menu_dispatch(&harness.dom, "visible", more_target, false);
     harness.settle();
     assert_eq!(
         harness.settings.borrow().overflow_requests,
@@ -3839,14 +3843,11 @@ fn header_layout_hidden_more_waits_for_vetoable_native_visibility_request() {
     assert_eq!(
         harness.header_root_attrs()["data-open"],
         "true",
-        "observer admission honors the root veto"
+        "Dioxus visibility admission honors the root veto"
     );
 
     harness.settings.borrow_mut().overflow_veto = false;
-    assert_eq!(
-        menu_dispatch(&harness.dom, "input", transport, visibility(2).to_string()),
-        (false, false)
-    );
+    menu_dispatch(&harness.dom, "visible", more_target, false);
     harness.settle();
     assert_eq!(
         harness.settings.borrow().overflow_requests,

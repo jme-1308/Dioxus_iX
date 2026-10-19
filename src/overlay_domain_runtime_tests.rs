@@ -1396,12 +1396,12 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
 }
 
 #[test]
-fn header_child_veto_retries_only_on_matching_admitted_native_visibility_delivery() {
+fn header_child_visibility_events_honor_suppression_veto_and_unregistration() {
     let parent = Fixture::new("header-visibility-parent", 717);
     let child = Fixture::new("header-visibility-child", 718);
     let dom_parent = build_popover_fixture(&parent);
     let (dom_child, fixture) = build_header_exit_fixture(&child);
-    let document = "header child native visibility document";
+    let document = "header child visibility document";
     prepare_header_exit(&dom_parent, &parent, &dom_child, &fixture, document, false);
     child.0.borrow().veto.set(true);
     dom_child.in_scope(child.scope(), || {
@@ -1418,109 +1418,57 @@ fn header_child_veto_retries_only_on_matching_admitted_native_visibility_deliver
     assert_eq!(
         *fixture.order.borrow(),
         synchronous,
-        "ordinary native topology observations do not invent another dismissal"
+        "topology updates do not invent visibility dismissal"
     );
-    let visibility = |sequence, generation, target, intersecting| {
-        let mut nodes = header_exit_nodes(&fixture, &parent, true);
-        nodes[0]["anchor_id"] = "header-child-anchor".into();
-        serde_json::json!({
-            "owner":child.runtime().owner_id(),"document":document,"sequence":sequence,
-            "kind":"anchor-visibility","nodes":nodes,
-            "anchor_visibility":{"root":child.0.borrow().id,"generation":generation,
-                "target":target,"intersecting":intersecting}
-        })
-    };
-    for report in [
-        visibility(3, 1, "header-child-anchor", true),
-        visibility(4, 1, "header-child-trigger", false),
-        visibility(5, 2, "header-child-anchor", false),
-    ] {
-        assert!(deliver_trap(&dom_child, &child, report).default_action_enabled());
-        assert_eq!(
-            *fixture.order.borrow(),
-            synchronous,
-            "positive, wrong-anchor and stale-generation facts do not request close"
-        );
-    }
-    fixture.child.node().set_trigger_visibility_check(false);
-    assert!(
-        deliver_trap(
-            &dom_child,
-            &child,
-            visibility(6, 1, "header-child-anchor", false)
-        )
-        .default_action_enabled()
-    );
-    assert_eq!(
-        *fixture.order.borrow(),
-        synchronous,
-        "explicit source visibility suppression vetoes admission"
-    );
-    fixture.child.node().set_trigger_visibility_check(true);
-    assert!(
-        deliver_trap(
-            &dom_child,
-            &child,
-            visibility(7, 1, "header-child-anchor", false)
-        )
-        .default_action_enabled()
-    );
-    let mut after_delivery = synchronous;
-    after_delivery.push("child:before:false".into());
-    assert_eq!(
-        *fixture.order.borrow(),
-        after_delivery,
-        "one real false observer delivery supplies the later vetoed request"
-    );
+    let node = child.node();
+    dom_child.in_scope(child.scope(), || node.observe_anchor_visibility(true, None));
+    node.set_trigger_visibility_check(false);
+    dom_child.in_scope(child.scope(), || {
+        node.observe_anchor_visibility(false, None)
+    });
+    assert_eq!(*fixture.order.borrow(), synchronous);
+    node.set_trigger_visibility_check(true);
+    dom_child.in_scope(child.scope(), || {
+        node.observe_anchor_visibility(false, None)
+    });
+    let mut after = synchronous;
+    after.push("child:before:false".into());
+    assert_eq!(*fixture.order.borrow(), after);
     assert!(
         child.open(),
-        "the later native visibility request still honors the child veto"
+        "normal visibility dismissal honors the child's veto"
     );
-    // A separate legitimate observer event may ask again while veto retains
-    // the child; it is not a replay of the original synchronous cascade.
-    assert!(
-        deliver_trap(
-            &dom_child,
-            &child,
-            visibility(8, 1, "header-child-anchor", false)
-        )
-        .default_action_enabled()
-    );
-    after_delivery.push("child:before:false".into());
-    assert_eq!(*fixture.order.borrow(), after_delivery);
-    dom_child.in_scope(child.scope(), || child.node().unregister());
-    assert!(
-        deliver_trap(
-            &dom_child,
-            &child,
-            visibility(9, 1, "header-child-anchor", false)
-        )
-        .default_action_enabled()
-    );
+    dom_child.in_scope(child.scope(), || node.unregister());
+    dom_child.in_scope(child.scope(), || {
+        node.observe_anchor_visibility(false, None)
+    });
     assert_eq!(
         *fixture.order.borrow(),
-        after_delivery,
-        "dropped registration cannot receive a late native visibility request"
+        after,
+        "unregistered owner rejects late visibility"
     );
 }
 
-fn anchor_geometry_report(fixture: &Fixture, sequence: u64) -> serde_json::Value {
-    serde_json::json!({
-        "owner":fixture.runtime().owner_id(),"document":"positive anchor handler document",
-        "sequence":sequence,"kind":"anchor-visibility",
-        "nodes":[{"id":fixture.0.borrow().id,"generation":1,"connected":true,
-            "discovery_ready":true,"trigger_id":"geometry-trigger","anchor_id":"geometry-anchor"}],
-        "anchor_visibility":{"root":fixture.0.borrow().id,"generation":1,
-            "target":"geometry-anchor","intersecting":true,"geometry":{
-                "bounding":{"top":0.0,"bottom":40.0,"left":0.0,"right":100.0},
-                "intersection":{"top":10.0,"bottom":40.0,"left":0.0,"right":100.0},
-                "anchor_in_dropdown_item":true
-            }}
-    })
+fn anchor_geometry() -> AnchorIntersection {
+    AnchorIntersection {
+        bounding: AnchorRect {
+            top: 0.0,
+            bottom: 40.0,
+            left: 0.0,
+            right: 100.0,
+        },
+        intersection: AnchorRect {
+            top: 10.0,
+            bottom: 40.0,
+            left: 0.0,
+            right: 100.0,
+        },
+        anchor_in_dropdown_item: true,
+    }
 }
 
 #[test]
-fn positive_anchor_geometry_and_full_reset_reach_registered_owner_without_dismissal() {
+fn positive_anchor_geometry_and_full_reset_enter_registered_owner_from_another_vdom() {
     let fixture = Fixture::new("anchor-geometry-owner", 719);
     let dom = build(&fixture);
     let received = Rc::new(RefCell::new(Vec::<AnchorIntersection>::new()));
@@ -1533,53 +1481,32 @@ fn positive_anchor_geometry_and_full_reset_reach_registered_owner_without_dismis
             assert_owner(&owner, scope, 719);
             capture.borrow_mut().push(geometry);
         }));
-    dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(true, Reason::Trigger, false))
+    dom.in_scope(scope, || {
+        assert!(fixture.node().request(true, Reason::Trigger, false));
     });
     fixture.0.borrow_mut().calls.clear();
-    let runtime = fixture.runtime();
-    let clipped = trap_form(anchor_geometry_report(&fixture, 1));
-    dom.in_scope(fixture.scope(), || runtime.input(clipped.clone()));
-    assert!(clipped.default_action_enabled());
-    assert!(fixture.open());
-    assert!(
-        fixture.0.borrow().calls.is_empty(),
-        "positive geometry never emits a close request"
-    );
-    assert_eq!(received.borrow().len(), 1);
-    assert_eq!(received.borrow()[0].intersection.top, 10.0);
-    assert!(received.borrow()[0].anchor_in_dropdown_item);
-
-    let mut full = anchor_geometry_report(&fixture, 2);
-    full["anchor_visibility"]["geometry"]["intersection"] =
-        full["anchor_visibility"]["geometry"]["bounding"].clone();
-    full["anchor_visibility"]["geometry"]["anchor_in_dropdown_item"] = false.into();
-    let full_event = trap_form(full.clone());
-    dom.in_scope(fixture.scope(), || runtime.input(full_event.clone()));
-    assert!(full_event.default_action_enabled());
-    assert_eq!(
-        received.borrow().len(),
-        2,
-        "full intersection reaches the handler to reset previous clipping"
-    );
-    let full = received.borrow()[1];
-    assert_eq!(full.bounding, full.intersection);
-    assert!(!full.anchor_in_dropdown_item);
-    assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
-    // Native transport input belongs to its registered VDOM. Independently
-    // exercise the new callback dispatcher from another caller runtime without
-    // treating observe()'s earlier snapshot reads as cross-VDOM transport.
     let caller = Fixture::new("anchor-geometry-caller", 720);
     let dom_caller = build(&caller);
-    let report: Report = serde_json::from_value(anchor_geometry_report(&fixture, 3)).unwrap();
     dom_caller.in_scope(caller.scope(), || {
-        runtime.anchor_visibility(&report);
+        fixture
+            .node()
+            .observe_anchor_visibility(true, Some(anchor_geometry()))
     });
-    assert_eq!(received.borrow().len(), 3);
+    assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
+    assert_eq!(received.borrow().len(), 1);
+    assert_eq!(received.borrow()[0].intersection.top, 10.0);
+    let mut full = anchor_geometry();
+    full.intersection = full.bounding;
+    full.anchor_in_dropdown_item = false;
+    dom_caller.in_scope(caller.scope(), || {
+        fixture.node().observe_anchor_visibility(true, Some(full))
+    });
+    assert_eq!(received.borrow().as_slice(), &[anchor_geometry(), full]);
+    assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
 }
 
 #[test]
-fn anchor_geometry_admission_rejects_invalid_or_stale_facts_and_preserves_negative_veto() {
+fn anchor_visibility_rejects_invalid_closed_replaced_and_dropped_owners_and_honors_veto() {
     let fixture = Fixture::new("anchor-geometry-guards", 721);
     let dom = build(&fixture);
     let received = Rc::new(Cell::new(0));
@@ -1588,124 +1515,97 @@ fn anchor_geometry_admission_rejects_invalid_or_stale_facts_and_preserves_negati
         .node()
         .set_anchor_intersection_handler(Rc::new(move |_| capture.set(capture.get() + 1)));
     dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(true, Reason::Trigger, false))
+        assert!(fixture.node().request(true, Reason::Trigger, false));
     });
     fixture.0.borrow_mut().calls.clear();
-    for (index, invalid) in [
-        "wrong-target",
-        "stale-generation",
-        "disconnected",
-        "ordinary-observe",
-        "missing-geometry",
-        "inverted-bounding",
-        "inverted-intersection",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut report = anchor_geometry_report(&fixture, index as u64 + 1);
-        match invalid {
-            "wrong-target" => report["anchor_visibility"]["target"] = "geometry-trigger".into(),
-            "stale-generation" => report["anchor_visibility"]["generation"] = 2.into(),
-            "disconnected" => report["nodes"][0]["connected"] = false.into(),
-            "ordinary-observe" => report["kind"] = "observe".into(),
-            "missing-geometry" => {
-                report["anchor_visibility"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("geometry");
-            }
-            "inverted-bounding" => {
-                report["anchor_visibility"]["geometry"]["bounding"]["top"] = 50.0.into()
-            }
-            "inverted-intersection" => {
-                report["anchor_visibility"]["geometry"]["intersection"]["left"] = 101.0.into()
-            }
-            _ => unreachable!(),
-        }
-        assert!(deliver_trap(&dom, &fixture, report).default_action_enabled());
-        assert_eq!(received.get(), 0, "{invalid} cannot deliver geometry");
-        assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
+    let mut inverted = anchor_geometry();
+    inverted.bounding.top = 50.0;
+    let mut nonfinite = anchor_geometry();
+    nonfinite.intersection.left = f64::NAN;
+    for geometry in [None, Some(inverted), Some(nonfinite)] {
+        dom.in_scope(fixture.scope(), || {
+            fixture.node().observe_anchor_visibility(true, geometry)
+        });
     }
-    // JSON cannot carry NaN/Infinity. Overflowing a JSON number must fail
-    // deserialization rather than admit a nonfinite geometry callback.
-    let raw = anchor_geometry_report(&fixture, 8).to_string();
-    let overflowing = raw.replacen("\"top\":0.0", "\"top\":1e400", 1);
-    assert_ne!(raw, overflowing);
-    let event = Event::new(
-        Rc::new(dioxus::html::FormData::new(TrapForm(overflowing))),
-        true,
-    );
-    dom.in_scope(fixture.scope(), || fixture.runtime().input(event.clone()));
-    assert!(event.default_action_enabled());
     assert_eq!(received.get(), 0);
-
+    assert!(fixture.0.borrow().calls.is_empty());
     fixture.node().set_trigger_visibility_check(false);
-    assert!(
-        deliver_trap(&dom, &fixture, anchor_geometry_report(&fixture, 9)).default_action_enabled()
-    );
-    assert_eq!(
-        received.get(),
-        0,
-        "explicit visibility suppression also rejects positive facts"
-    );
+    dom.in_scope(fixture.scope(), || {
+        fixture
+            .node()
+            .observe_anchor_visibility(true, Some(anchor_geometry()))
+    });
+    assert_eq!(received.get(), 0);
     fixture.node().set_trigger_visibility_check(true);
     fixture.0.borrow().veto.set(true);
-    let mut negative = anchor_geometry_report(&fixture, 10);
-    negative["anchor_visibility"]["intersecting"] = false.into();
-    assert!(deliver_trap(&dom, &fixture, negative).default_action_enabled());
-    assert_eq!(
-        received.get(),
-        0,
-        "negative entry never invokes the positive geometry callback"
-    );
+    dom.in_scope(fixture.scope(), || {
+        fixture.node().observe_anchor_visibility(false, None)
+    });
+    assert!(fixture.open());
     assert_eq!(fixture.0.borrow().calls, [("before".into(), false)]);
-    assert!(
-        fixture.open(),
-        "negative delivery still honors normal close veto"
-    );
-
     fixture.0.borrow().veto.set(false);
     dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(false, Reason::Trigger, false))
+        assert!(fixture.node().request(false, Reason::Trigger, false));
     });
     fixture.0.borrow_mut().calls.clear();
-    assert!(
-        deliver_trap(&dom, &fixture, anchor_geometry_report(&fixture, 11)).default_action_enabled()
-    );
+    dom.in_scope(fixture.scope(), || {
+        fixture
+            .node()
+            .observe_anchor_visibility(true, Some(anchor_geometry()))
+    });
+    assert_eq!(received.get(), 0, "closed owners do not receive geometry");
+    dom.in_scope(fixture.scope(), || {
+        assert!(fixture.node().request(true, Reason::Trigger, false));
+    });
+    let old = fixture.node();
+    let runtime = fixture.runtime();
+    let replacement = dom.in_scope(fixture.scope(), || {
+        let callbacks = runtime.entry("anchor-geometry-guards").unwrap().callbacks;
+        runtime.register(
+            "anchor-geometry-guards".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        )
+    });
+    let capture = received.clone();
+    replacement.set_anchor_intersection_handler(Rc::new(move |_| capture.set(capture.get() + 1)));
+    dom.in_scope(fixture.scope(), || {
+        old.observe_anchor_visibility(false, None);
+        old.observe_anchor_visibility(true, Some(anchor_geometry()));
+    });
+    assert!(fixture.open());
     assert_eq!(
         received.get(),
         0,
-        "closed registration cannot receive clipping updates"
+        "old generation cannot mutate its replacement"
     );
-    assert!(fixture.0.borrow().calls.is_empty());
     dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(true, Reason::Trigger, false))
+        replacement.observe_anchor_visibility(true, Some(anchor_geometry()))
     });
-    assert!(
-        deliver_trap(&dom, &fixture, anchor_geometry_report(&fixture, 12)).default_action_enabled()
-    );
-    assert_eq!(
-        received.get(),
-        1,
-        "current open registration can receive later valid geometry"
-    );
+    assert_eq!(received.get(), 1);
     fixture.0.borrow_mut().calls.clear();
-    let late = trap_form(anchor_geometry_report(&fixture, 13));
-    let runtime = fixture.runtime();
     let owner = fixture.0.borrow().owner.clone().unwrap();
     drop(dom);
     assert!(owner.upgrade().is_none());
     let caller = Fixture::new("anchor-geometry-after-drop", 722);
     let dom_caller = build(&caller);
-    dom_caller.in_scope(caller.scope(), || runtime.input(late.clone()));
-    assert!(late.default_action_enabled());
+    dom_caller.in_scope(caller.scope(), || {
+        replacement.observe_anchor_visibility(true, Some(anchor_geometry()))
+    });
     assert_eq!(
         received.get(),
         1,
-        "retained runtime cannot deliver into dropped registration owner"
+        "a dropped VDOM cannot receive geometry through retained handles"
     );
     assert!(fixture.0.borrow().calls.is_empty());
+}
+
+fn anchor_shape_report(fixture: &Fixture, sequence: u64) -> serde_json::Value {
+    serde_json::json!({"owner":fixture.runtime().owner_id(),"document":"current anchor shape document",
+        "sequence":sequence,"kind":"observe","nodes":[{"id":fixture.0.borrow().id,"generation":1,"connected":true,
+        "discovery_ready":true,"trigger_id":"geometry-trigger","anchor_id":"geometry-anchor"}]})
 }
 
 #[test]
@@ -1732,7 +1632,7 @@ fn current_anchor_shape_is_independent_of_visibility_suppression_and_rejects_sta
     });
     fixture.0.borrow_mut().calls.clear();
     fixture.node().set_trigger_visibility_check(false);
-    let mut suppressed = anchor_geometry_report(&fixture, 1);
+    let mut suppressed = anchor_shape_report(&fixture, 1);
     suppressed["nodes"][0]["anchor_in_dropdown_item"] = true.into();
     assert!(deliver_trap(&dom, &fixture, suppressed).default_action_enabled());
     assert_eq!(
@@ -1746,11 +1646,10 @@ fn current_anchor_shape_is_independent_of_visibility_suppression_and_rejects_sta
         "shape admission does not fabricate positive geometry"
     );
 
-    let mut current = anchor_geometry_report(&fixture, 2);
+    let mut current = anchor_shape_report(&fixture, 2);
     current["kind"] = "observe".into();
     current["nodes"][0]["anchor_id"] = "reparented-current-anchor".into();
     current["nodes"][0]["anchor_in_dropdown_item"] = false.into();
-    current.as_object_mut().unwrap().remove("anchor_visibility");
     assert!(deliver_trap(&dom, &fixture, current.clone()).default_action_enabled());
     assert_eq!(
         *shapes.borrow(),
@@ -1866,11 +1765,10 @@ fn negative_anchor_focus(
     sequence: u64,
     nodes: &[serde_json::Value],
 ) {
-    let id = fixture.0.borrow().id;
-    let mut report = anchor_focus_report(fixture, document, sequence, "anchor-visibility", nodes);
-    report["anchor_visibility"] = serde_json::json!({"root":id,"generation":fixture.node().generation(),
-        "target":format!("{id}-trigger"),"intersecting":false});
-    assert!(deliver_trap(dom, fixture, report).default_action_enabled());
+    let _ = (document, sequence, nodes);
+    dom.in_scope(fixture.scope(), || {
+        fixture.node().observe_anchor_visibility(false, None)
+    });
 }
 
 fn release_anchor_tab(

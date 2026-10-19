@@ -22,7 +22,6 @@ const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden
 let alive=true,sequence=0,lastSignature='';
 const keyTargets=new Map(),clickTargets=new Map(),triggerKeyTargets=new Map(),navigationTargets=new Map(),handledBubbleKeys=new WeakSet();
 const navigationBindings=new Map();
-const anchorObservers=new Map();
 const itemObjectTokens=new WeakMap(),itemCaptureNodes=new Map();let itemObjectSequence=0;
 const itemInventoryLeases=new Map();
 function captureItem(element){
@@ -418,7 +417,7 @@ function collectFacts(kind,event,phase=''){
     const inventory=inventoryFacts(itemsHost),own_inventory=itemsHost===host?null:inventoryFacts(host);
     for(const item of inventory?.hosts||[])if(item.target)addCand(findElement(item.target));
     nodes.push({
-      id,owner:ro||'',generation,root_capture:captureItem(root)?.capture,trigger_capture:captureItem(trigger)?.capture,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),anchor_id:nativeId(anchor),
+      id,owner:ro||'',generation,root_capture:captureItem(root)?.capture,trigger_capture:captureItem(trigger)?.capture,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
       assignment_ancestors:trigger?triggerAncestors(trigger,id):[],
@@ -553,33 +552,6 @@ function syncKeyTargets(){
   for(const [target,listener]of triggerKeyTargets)if(!wantedTriggerKeys.has(target)){target.removeEventListener('keydown',listener);triggerKeyTargets.delete(target);}
   for(const [target,listener]of navigationTargets)if(!wantedNavigation.has(target)){target.removeEventListener('keydown',listener);navigationTargets.delete(target);}
 }
-function syncAnchorObservers(){
-  const wanted=new Set();
-  for(const root of registryElements('[data-ix-overlay-root]')){
-    if(!(root instanceof HTMLElement)||!root.isConnected||root.getAttribute('data-ix-overlay-owner')!==owner)continue;
-    if(!root.hasAttribute('data-ix-overlay-mode')||root.getAttribute('data-ix-overlay-open')!=='true'||root.getAttribute('data-ix-overlay-trigger-visibility-check')==='false')continue;
-    const id=root.getAttribute('data-ix-overlay-root'),target=findAnchor(root)||findTrigger(id,root),generation=root.getAttribute('data-ix-overlay-generation')||'0';
-    if(!id||!(target instanceof HTMLElement)||typeof IntersectionObserver==='undefined')continue;
-    wanted.add(id);const previous=anchorObservers.get(id);
-    if(previous?.root===root&&previous.target===target&&previous.generation===generation)continue;
-    previous?.observer.disconnect();
-    const binding={root,target,generation,observer:null};
-    binding.observer=new IntersectionObserver(entries=>{
-      if(!alive||anchorObservers.get(id)!==binding||!root.isConnected||!target.isConnected)return;
-      if(root.getAttribute('data-ix-overlay-open')!=='true'||root.getAttribute('data-ix-overlay-trigger-visibility-check')==='false'||root.getAttribute('data-ix-overlay-generation')!==generation||(findAnchor(root)||findTrigger(id,root))!==target)return;
-      for(const entry of entries){
-        if(entry.target!==target)continue;
-        const report=collectFacts('anchor-visibility',null,'visibility');
-        const rect=r=>({top:r.top,bottom:r.bottom,left:r.left,right:r.right});
-        report.anchor_visibility={root:id,generation:Number(generation),target:nativeId(target),intersecting:entry.isIntersecting,
-          geometry:{bounding:rect(entry.boundingClientRect),intersection:rect(entry.intersectionRect),anchor_in_dropdown_item:!!target.closest('[data-ix-dropdown-item]')}};
-        send(report,null);
-      }
-    },{threshold:[0,0.5,1]});
-    anchorObservers.set(id,binding);binding.observer.observe(target);
-  }
-  for(const [id,binding]of anchorObservers)if(!wanted.has(id)){binding.observer.disconnect();anchorObservers.delete(id);}
-}
 function reportObserve(){
   if(!alive)return;
   syncReflectedCheckedAttributes();
@@ -587,7 +559,6 @@ function reportObserve(){
   if(!transport())return;
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   syncNativeSurfaces();
-  syncAnchorObservers();
   const report=collectFacts('observe',null);
   const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
   if(sig!==lastSignature){lastSignature=sig;send(report,null);}
@@ -628,7 +599,7 @@ const observer=new MutationObserver(changes=>{
 });
 function observeRegistryScope(scope){observer.observe(scope===document?document.documentElement:scope,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-trigger-id','data-ix-overlay-trigger-version','data-ix-overlay-trigger-dispose-version','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
-  'data-ix-overlay-mode','data-ix-overlay-trigger-visibility-check','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','hidden','disabled','tabindex','inert','class'
+  'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','hidden','disabled','tabindex','inert','class'
   ,'data-ix-item-kind','data-ix-item-key','data-ix-item-focusable','data-active','data-ix-roving-item','checked'
   ,'data-ix-overlay-items-host-id','data-ix-item-runtime','data-ix-item-part','aria-activedescendant','data-ix-overlay-active-item','data-ix-reflect-checked','slot','name'
 ]});}
@@ -650,7 +621,6 @@ try{
   }
 }finally{
   alive=false;listeners.abort();keyTargets.clear();clickTargets.clear();triggerKeyTargets.clear();navigationTargets.clear();navigationBindings.clear();declaredTriggers.clear();observer.disconnect();
-  for(const binding of anchorObservers.values())binding.observer.disconnect();anchorObservers.clear();
   itemCaptureNodes.clear();
   itemInventoryLeases.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);

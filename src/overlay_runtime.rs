@@ -2242,7 +2242,6 @@ impl RuntimeHandle {
                 "key" if report.phase == "trap" => self.popover_tab(report),
                 "key" => self.key(report),
                 "click" => self.click(report),
-                "anchor-visibility" => self.anchor_visibility(report),
                 _ => KeyDecision::default(),
             }
         };
@@ -2694,45 +2693,37 @@ impl RuntimeHandle {
         }
         decision
     }
-    fn anchor_visibility(&self, report: &Report) -> KeyDecision {
-        let Some(fact) = report.anchor_visibility.as_ref() else {
-            return KeyDecision::default();
-        };
-        let Some(node) = report.nodes.iter().find(|node| {
-            node.id == fact.root && node.generation == fact.generation && node.connected
-        }) else {
-            return KeyDecision::default();
-        };
-        let expected = if node.anchor_id.is_empty() {
-            &node.trigger_id
-        } else {
-            &node.anchor_id
-        };
-        if expected.is_empty() || expected != &fact.target {
-            return KeyDecision::default();
-        }
-        let Some(entry) = self.entry(&fact.root).filter(|entry| {
-            entry.generation == fact.generation
+    fn anchor_visibility(
+        &self,
+        id: &str,
+        generation: u64,
+        intersecting: bool,
+        geometry: Option<AnchorIntersection>,
+    ) {
+        let Some(entry) = self.entry(id).filter(|entry| {
+            entry.generation == generation
                 && entry.kind.is_dropdown()
                 && entry.trigger_visibility_check
         }) else {
-            return KeyDecision::default();
+            return;
         };
-        self.with_owner(&fact.root, fact.generation, || {
-            if self.read_current(&fact.root, &entry) == Some(true) {
-                if fact.intersecting {
-                    if let Some(geometry) = fact.geometry.filter(|geometry| geometry.valid())
-                        && let Some(callback) = &entry.anchor_intersection
-                    {
-                        callback(geometry);
-                    }
-                    return;
+        // Dioxus owns the observed trigger and event lifecycle. Enter the
+        // registered surface owner before callbacks; no DOM identity receipt or
+        // native visibility transport is needed for an explicit component.
+        self.with_owner(id, generation, || {
+            if self.read_current(id, &entry) != Some(true) {
+                return;
+            }
+            if intersecting {
+                if let Some(geometry) = geometry.filter(|geometry| geometry.valid())
+                    && let Some(callback) = &entry.anchor_intersection
+                {
+                    callback(geometry);
                 }
-                // A real native observer delivery is a separate dismissal
-                // request in the registered owner's scope. Veto retains it.
+            } else {
                 self.request(
-                    &fact.root,
-                    fact.generation,
+                    id,
+                    generation,
                     Change {
                         open: false,
                         reason: Reason::AnchorVisibility,
@@ -2741,7 +2732,6 @@ impl RuntimeHandle {
                 );
             }
         });
-        KeyDecision::default()
     }
     fn host_click_sites(&self, report: &Report) -> KeyDecision {
         let mut prevented = report.default_prevented;
@@ -3479,6 +3469,18 @@ impl NodeHandle {
             entry.anchor_shape = Some(handler);
         }
     }
+    /// Deliver visibility from a registered Dioxus trigger's `onvisible`.
+    /// The component binding owns trigger lifetime; this handle additionally
+    /// rejects dropped/replaced surfaces and dispatches in the surface owner.
+    pub(crate) fn observe_anchor_visibility(
+        &self,
+        intersecting: bool,
+        geometry: Option<AnchorIntersection>,
+    ) {
+        if let Some(runtime) = self.runtime() {
+            runtime.anchor_visibility(&self.id, self.generation, intersecting, geometry);
+        }
+    }
     pub(crate) fn set_anchor_intersection_handler(&self, handler: AnchorIntersectionCallback) {
         let Some(runtime) = self.runtime() else {
             return;
@@ -3752,8 +3754,6 @@ struct Report {
     #[serde(default)]
     document_tab_candidates: Option<Vec<crate::popover_focus::TabCandidate>>,
     #[serde(default)]
-    anchor_visibility: Option<AnchorVisibility>,
-    #[serde(default)]
     active_hosts: Vec<String>,
     #[serde(default)]
     active_popover: String,
@@ -3797,8 +3797,6 @@ struct NodeFacts {
     #[serde(default)]
     trigger_id: String,
     #[serde(default)]
-    anchor_id: String,
-    #[serde(default)]
     anchor_in_dropdown_item: Option<bool>,
     #[serde(default)]
     header_controls: Vec<String>,
@@ -3828,15 +3826,6 @@ struct NodeFacts {
     trap_enabled: bool,
     #[serde(default)]
     tab_candidates: Vec<crate::popover_focus::TabCandidate>,
-}
-#[derive(Deserialize)]
-struct AnchorVisibility {
-    root: String,
-    generation: u64,
-    target: String,
-    intersecting: bool,
-    #[serde(default)]
-    geometry: Option<AnchorIntersection>,
 }
 #[derive(Deserialize)]
 struct Query {
