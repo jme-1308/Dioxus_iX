@@ -325,32 +325,56 @@ fn FeedbackExamples() -> Element {
 #[component]
 fn TooltipReviewExamples() -> Element {
     let mut actions = use_signal(|| 0usize);
+    let clipped = use_tooltip("review-tooltip-clipped");
+    let clipped_anchor = use_tooltip_anchor(clipped.clone(), "review-tooltip-clipped-anchor");
+    let shared = use_tooltip("review-tooltip-shared");
+    let shared_one = use_tooltip_anchor(shared.clone(), "review-tooltip-shared-one");
+    let shared_two = use_tooltip_anchor(shared.clone(), "review-tooltip-shared-two");
+    let interactive = use_tooltip("review-tooltip-interactive");
+    let interactive_anchor =
+        use_tooltip_anchor(interactive.clone(), "review-tooltip-interactive-anchor");
     rsx! {
         h3 { "Clipping, shared triggers and interactive content" }
         p { "Focus or hover a trigger to show its tooltip. The first tooltip escapes a clipped host. The next two triggers share one tooltip. Escape dismisses the open tooltip." }
         div { class: "review-tooltip-clip",
             span { id: "review-tooltip-clipped-anchor", class: "review-tooltip-trigger",
+                onmounted: clipped_anchor.onmounted, onresize: clipped_anchor.onresize, onvisible: clipped_anchor.onvisible,
+                onmouseenter: clipped_anchor.onmouseenter, onmouseleave: clipped_anchor.onmouseleave,
+                onfocusin: clipped_anchor.onfocusin, onfocusout: clipped_anchor.onfocusout, onkeydown: clipped_anchor.onkeydown,
+                "aria-describedby": clipped_anchor.describedby(""),
                 Button { variant: ButtonVariant::Secondary, aria_describedby: "review-tooltip-clipped", "Clipped tooltip trigger" }
             }
-            TooltipFor { id: "review-tooltip-clipped", anchor_id: "review-tooltip-clipped-anchor", placement: TooltipPlacement::Bottom,
+            TooltipFor { id: "review-tooltip-clipped", controller: clipped, placement: TooltipPlacement::Bottom,
                 "This tooltip remains visible outside the clipped container."
             }
         }
         div { class: "demo-row",
-            span { "data-review-tooltip": "shared", class: "review-tooltip-trigger",
+            span { id: "review-tooltip-shared-one", "data-review-tooltip": "shared", class: "review-tooltip-trigger",
+                onmounted: shared_one.onmounted, onresize: shared_one.onresize, onvisible: shared_one.onvisible,
+                onmouseenter: shared_one.onmouseenter, onmouseleave: shared_one.onmouseleave,
+                onfocusin: shared_one.onfocusin, onfocusout: shared_one.onfocusout, onkeydown: shared_one.onkeydown,
+                "aria-describedby": shared_one.describedby(""),
                 Button { variant: ButtonVariant::Secondary, aria_describedby: "review-tooltip-shared", "Shared trigger one" }
             }
-            span { "data-review-tooltip": "shared", class: "review-tooltip-trigger",
+            span { id: "review-tooltip-shared-two", "data-review-tooltip": "shared", class: "review-tooltip-trigger",
+                onmounted: shared_two.onmounted, onresize: shared_two.onresize, onvisible: shared_two.onvisible,
+                onmouseenter: shared_two.onmouseenter, onmouseleave: shared_two.onmouseleave,
+                onfocusin: shared_two.onfocusin, onfocusout: shared_two.onfocusout, onkeydown: shared_two.onkeydown,
+                "aria-describedby": shared_two.describedby(""),
                 Button { variant: ButtonVariant::Secondary, aria_describedby: "review-tooltip-shared", "Shared trigger two" }
             }
         }
-        TooltipFor { id: "review-tooltip-shared", anchor_selectors: vec!["[data-review-tooltip=shared]".into()],
+        TooltipFor { id: "review-tooltip-shared", controller: shared,
             title: "Shared contextual help", title_icon: "info", "One tooltip follows the active trigger."
         }
         span { id: "review-tooltip-interactive-anchor", class: "review-tooltip-trigger",
+                onmounted: interactive_anchor.onmounted, onresize: interactive_anchor.onresize, onvisible: interactive_anchor.onvisible,
+                onmouseenter: interactive_anchor.onmouseenter, onmouseleave: interactive_anchor.onmouseleave,
+                onfocusin: interactive_anchor.onfocusin, onfocusout: interactive_anchor.onfocusout, onkeydown: interactive_anchor.onkeydown,
+                "aria-describedby": interactive_anchor.describedby(""),
             Button { variant: ButtonVariant::Secondary, aria_describedby: "review-tooltip-interactive", "Interactive tooltip trigger" }
         }
-        TooltipFor { id: "review-tooltip-interactive", anchor_id: "review-tooltip-interactive-anchor", interactive: true,
+        TooltipFor { id: "review-tooltip-interactive", controller: interactive, interactive: true,
             placement: TooltipPlacement::Right, title: "Review action",
             p { "The tooltip stays open while you interact with its content." }
             Button { variant: ButtonVariant::Secondary, onclick: move |_| actions += 1, "Apply tooltip action" }

@@ -30,6 +30,8 @@ mod select_method_review;
 mod tab_exit_review;
 #[path = "dioxus_first_probe/text_control_method_review.rs"]
 mod text_control_method_review;
+#[path = "dioxus_first_probe/tooltip_mounted_review.rs"]
+mod tooltip_mounted_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
 mod trigger_review;
 #[path = "dioxus_first_probe/upload_interaction_review.rs"]
@@ -112,6 +114,9 @@ fn Preview() -> Element {
     }
     if scope == "?workflow" {
         return rsx! { workflow_order_review::WorkflowOrderReview {} };
+    }
+    if scope == "?tooltip" {
+        return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
     }
     if scope == "?filterlayout" {
         return rsx! { filter_layout_review::FilterLayoutReview {} };

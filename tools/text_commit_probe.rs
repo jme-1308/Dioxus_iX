@@ -14,7 +14,6 @@ fn main() {
         .with_window(
             dioxus::desktop::WindowBuilder::new()
                 .with_title("iX text commit probe")
-                .with_visible(false)
                 .with_inner_size(dioxus::desktop::LogicalSize::new(900.0, 1000.0)),
         )
         .with_menu(None);
@@ -88,14 +87,16 @@ try {
  const control=get('g03-tooltip-input'),description=control.getAttribute('aria-describedby'),tip=get(description);
  assert(tip?.getAttribute('role')==='tooltip','feedback description');
  assert(!get('g03-blank-tooltip')?.closest('.ix-field')?.querySelector('[role=tooltip]'),'blank feedback has no tooltip');
- const anchor=get(tip.dataset.anchorId);assert(tip.dataset.open!=='true','tooltip initially closed');
+ const anchor=control.closest('.ix-input-wrap')||control;assert(tip.dataset.open!=='true','tooltip initially closed');
+ anchor.scrollIntoView({block:'center'});await sleep(60);
  const started=performance.now();
  const opened=new Promise(resolve=>{const observer=new MutationObserver(()=>{if(tip.dataset.open==='true'){observer.disconnect();resolve(performance.now()-started)}});observer.observe(tip,{attributes:true,attributeFilter:['data-open']})});
  anchor.dispatchEvent(new MouseEvent('mouseenter'));
  const tooltipDelayMs=await opened;assert(tooltipDelayMs>=450,'tooltip delayed opening');
+ await wait(()=>tip.matches(':popover-open')&&tip.dataset.positioned==='true'&&getComputedStyle(tip).visibility==='visible'&&!tip.inert,'tooltip rendered and interactive');
  assert(tip.textContent.trim().length>0,'tooltip text');
  document.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Escape'}));await wait(()=>tip.dataset.open==='false','Escape closes tooltip');
  const oldId=tip.id;get('g03-unmount-toggle').click();await wait(()=>!get(oldId),'tooltip unmount');
  return {ok:true,tooltipDelayMs,inputCommits:commits('input').length,textareaCommits:commits('textarea').length,checks:['Enter/blur deduplication','unchanged/reverted','ixBlur order','programmatic baseline','textarea multiline','tooltip delay/Escape/unmount','blank feedback'],input:'synthetic DOM',renderer:navigator.userAgent};
-} catch(error) {return {ok:false,error:String(error)}}
+} catch(error) {const control=document.getElementById('g03-tooltip-input'),tip=document.getElementById(control?.getAttribute('aria-describedby'));return {ok:false,error:String(error),viewport:{width:innerWidth,height:innerHeight},controlRect:control?.getBoundingClientRect().toJSON(),tooltip:tip?{open:tip.matches(':popover-open'),positioned:tip.dataset.positioned,visible:getComputedStyle(tip).visibility,inert:tip.inert,anchor:tip.dataset.anchor}:null}}
 "#;

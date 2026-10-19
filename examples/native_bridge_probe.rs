@@ -1321,14 +1321,28 @@ fn NativeDateTimeBoundaryProbe() -> Element {
 
 #[component]
 fn NativeTooltipProbe() -> Element {
+    #[component]
+    fn RegisteredNativeTooltipAnchor(
+        controller: TooltipController,
+        id: String,
+        label: String,
+    ) -> Element {
+        let binding = use_tooltip_anchor(controller, id.clone());
+        rsx! {button {id,class:"native-tooltip-trigger",r#type:"button","aria-describedby":binding.describedby(""),
+            onmounted:binding.onmounted,onresize:binding.onresize,onvisible:binding.onvisible,
+            onmouseenter:binding.onmouseenter,onmouseleave:binding.onmouseleave,onfocusin:binding.onfocusin,onfocusout:binding.onfocusout,onkeydown:binding.onkeydown,
+            "{label}"
+        }}
+    }
+    let controller = use_tooltip("native-tooltip-layer");
     let mut mounted = use_signal(|| true);
     let mut actions = use_signal(|| 0usize);
     rsx! {
         if mounted() {
             div {id:"native-tooltip-clip",style:"position:fixed;right:8px;bottom:8px;width:360px;height:40px;overflow:hidden;display:flex;gap:12px;align-items:center",
-                button {id:"native-tooltip-first",class:"native-tooltip-trigger",r#type:"button","Native tooltip first"}
-                button {id:"native-tooltip-second",class:"native-tooltip-trigger",r#type:"button","Native tooltip second"}
-                TooltipFor {id:"native-tooltip-layer",anchor_selectors:vec![".native-tooltip-trigger".into()],placement:TooltipPlacement::Bottom,interactive:true,
+                RegisteredNativeTooltipAnchor {controller:controller.clone(),id:"native-tooltip-first",label:"Native tooltip first"}
+                RegisteredNativeTooltipAnchor {controller:controller.clone(),id:"native-tooltip-second",label:"Native tooltip second"}
+                TooltipFor {id:"native-tooltip-layer",controller:controller.clone(),placement:TooltipPlacement::Bottom,interactive:true,
                     title:"Native interactive help",p{"This panel must escape its clipped host and remain inside the viewport."}
                     button {id:"native-tooltip-action",r#type:"button",onclick:move |_|actions+=1,"Native tooltip action"}
                 }

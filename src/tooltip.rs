@@ -1,16 +1,12 @@
 //! Source-oriented contextual tooltips, with Rust timing and placement.
 //!
 //! Copyright (c) 2025-2026 Siemens AG. SPDX-License-Identifier: MIT.
-//! Native popover activation, DOM events and measurements use the approved DOM
-//! bridge; this module owns visibility, deadlines, flipping and arrow geometry.
+//! Dioxus owns registered anchors, events, mounted measurements and placement.
+//! Small native adapters cover only document notifications and popover methods.
 
 use dioxus::prelude::*;
 use serde::Deserialize;
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 /// Preferred side. The surface flips when that side does not fit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -211,22 +207,488 @@ impl Config {
     }
 }
 
-#[derive(Deserialize)]
-struct Observation {
-    kind: String,
-    #[serde(default)]
-    anchor: String,
-    metrics: Option<Metrics>,
-    error: Option<String>,
+#[derive(Clone)]
+struct Anchor {
+    id: String,
+    mount: Option<Rc<MountedData>>,
+    intersecting: bool,
+}
+static NEXT_PANEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+struct Panel {
+    token: u64,
+    mount: Option<Rc<MountedData>>,
+    config: Config,
+    onerror: EventHandler<String>,
+}
+struct TooltipModel {
+    alive: bool,
+    id: String,
+    next: u64,
+    anchors: std::collections::BTreeMap<u64, Anchor>,
+    panel: Option<Panel>,
+    lifecycle: Lifecycle,
+    coordinates: Option<Position>,
+    viewport: (f64, f64),
+    measurement: u64,
+}
+impl TooltipModel {
+    fn invalidate(&mut self) {
+        self.measurement = self.measurement.wrapping_add(1);
+    }
+    fn hide(&mut self) {
+        let generation = self.lifecycle.leave();
+        self.lifecycle.hide(generation);
+        self.coordinates = None;
+        self.invalidate();
+    }
+    fn current_anchor(&self) -> Option<u64> {
+        self.lifecycle.visible.as_ref()?.parse().ok()
+    }
+    fn remove_anchor(&mut self, token: u64) {
+        self.anchors.remove(&token);
+        let key = token.to_string();
+        if self.lifecycle.visible.as_ref() == Some(&key)
+            || self.lifecycle.pending.as_ref() == Some(&key)
+        {
+            self.hide();
+        }
+    }
 }
 
-/// Tooltip bound to external DOM anchors. IDs need no CSS escaping. Optional
-/// selectors may match multiple current or subsequently mounted anchors.
-/// The component adds its ID to each anchor's `aria-describedby`, preserving
-/// other descriptions and removing only its own token during cleanup.
+/// Shared tooltip state. Register anchors through [`use_tooltip_anchor`] and
+/// pass a clone to [`TooltipFor`]. Dioxus owns all element handles and events.
+/// Keep its ID stable; use a keyed remount to replace a controller or its ID.
+#[derive(Clone)]
+pub struct TooltipController {
+    model: Rc<RefCell<TooltipModel>>,
+    revision: Signal<u64>,
+}
+impl PartialEq for TooltipController {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.model, &other.model)
+    }
+}
+impl TooltipController {
+    fn notify(&self) {
+        let mut revision = self.revision;
+        if let Ok(mut value) = revision.try_write() {
+            *value = value.wrapping_add(1);
+        }
+    }
+    fn dismiss(&self) {
+        self.model.borrow_mut().hide();
+        self.notify();
+    }
+    fn enter(&self, token: u64) {
+        let request = {
+            let mut model = self.model.borrow_mut();
+            if !model.alive
+                || !model
+                    .anchors
+                    .get(&token)
+                    .is_some_and(|a| a.mount.is_some() && a.intersecting)
+            {
+                return;
+            }
+            let Some(panel) = model.panel.as_ref() else {
+                return;
+            };
+            let (panel_token, delay) = (panel.token, panel.config.show_delay);
+            model
+                .lifecycle
+                .enter(token.to_string())
+                .map(|generation| (generation, panel_token, delay))
+        };
+        let Some((generation, panel_token, delay)) = request else {
+            return;
+        };
+        let controller = self.clone();
+        spawn(async move {
+            if delay > 0 {
+                futures_timer::Delay::new(Duration::from_millis(delay)).await;
+            }
+            let shown = {
+                let mut model = controller.model.borrow_mut();
+                if !model.alive
+                    || model.panel.as_ref().map(|p| p.token) != Some(panel_token)
+                    || !model
+                        .anchors
+                        .get(&token)
+                        .is_some_and(|a| a.mount.is_some() && a.intersecting)
+                {
+                    return;
+                }
+                let shown = model.lifecycle.show(generation, token.to_string());
+                if shown {
+                    model.coordinates = None;
+                    model.invalidate();
+                }
+                shown
+            };
+            if shown {
+                controller.notify();
+                controller.measure();
+            }
+        });
+    }
+    fn leave(&self, token: Option<u64>) {
+        let request = {
+            let mut model = self.model.borrow_mut();
+            if let Some(token) = token {
+                let key = token.to_string();
+                if model.lifecycle.visible.as_ref() != Some(&key)
+                    && model.lifecycle.pending.as_ref() != Some(&key)
+                {
+                    return;
+                }
+            }
+            let Some(panel) = model.panel.as_ref() else {
+                return;
+            };
+            let (panel_token, delay) = (panel.token, panel.config.hide_delay());
+            (model.lifecycle.leave(), panel_token, delay)
+        };
+        let controller = self.clone();
+        spawn(async move {
+            if request.2 > 0 {
+                futures_timer::Delay::new(Duration::from_millis(request.2)).await;
+            }
+            {
+                let mut model = controller.model.borrow_mut();
+                if !model.alive || model.panel.as_ref().map(|p| p.token) != Some(request.1) {
+                    return;
+                }
+                model.lifecycle.hide(request.0);
+                if model.lifecycle.visible.is_none() {
+                    model.coordinates = None;
+                    model.invalidate();
+                }
+            }
+            controller.notify();
+        });
+    }
+    fn retain(&self) {
+        let mut model = self.model.borrow_mut();
+        if model.panel.as_ref().is_some_and(|p| p.config.interactive) {
+            model.lifecycle.leave();
+        }
+    }
+    fn measure(&self) {
+        let snapshot = {
+            let mut model = self.model.borrow_mut();
+            let Some(token) = model.current_anchor() else {
+                return;
+            };
+            let Some(anchor) = model.anchors.get(&token).and_then(|a| a.mount.clone()) else {
+                return;
+            };
+            let Some(panel) = model.panel.as_ref() else {
+                return;
+            };
+            let Some(panel_mount) = panel.mount.clone() else {
+                return;
+            };
+            let panel_token = panel.token;
+            let placement = panel.config.placement;
+            model.invalidate();
+            (
+                model.measurement,
+                token,
+                panel_token,
+                anchor,
+                panel_mount,
+                model.viewport,
+                placement,
+            )
+        };
+        let controller = self.clone();
+        spawn(async move {
+            let anchor = snapshot.3.get_client_rect().await;
+            let panel = snapshot.4.get_client_rect().await;
+            let mut model = controller.model.borrow_mut();
+            if !model.alive
+                || model.measurement != snapshot.0
+                || model.current_anchor() != Some(snapshot.1)
+                || model.panel.as_ref().map(|p| p.token) != Some(snapshot.2)
+                || !model
+                    .anchors
+                    .get(&snapshot.1)
+                    .and_then(|a| a.mount.as_ref())
+                    .is_some_and(|a| Rc::ptr_eq(a, &snapshot.3))
+                || !model
+                    .panel
+                    .as_ref()
+                    .and_then(|p| p.mount.as_ref())
+                    .is_some_and(|p| Rc::ptr_eq(p, &snapshot.4))
+            {
+                return;
+            }
+            match (anchor, panel) {
+                (Ok(anchor), Ok(panel)) => {
+                    // onvisible owns native clipping facts; no handwritten ancestor traversal.
+                    let metrics = Metrics {
+                        anchor: Rect {
+                            x: anchor.origin.x,
+                            y: anchor.origin.y,
+                            width: anchor.width(),
+                            height: anchor.height(),
+                        },
+                        width: panel.width(),
+                        height: panel.height(),
+                        viewport_width: snapshot.5.0,
+                        viewport_height: snapshot.5.1,
+                        clips: Vec::new(),
+                    };
+                    if snapshot.5.0 <= 0.0 || snapshot.5.1 <= 0.0 {
+                        return;
+                    }
+                    if let Some(next) = position(&metrics, snapshot.6) {
+                        if model.coordinates == Some(next) {
+                            return;
+                        }
+                        model.coordinates = Some(next);
+                    } else {
+                        model.hide();
+                    }
+                    drop(model);
+                    controller.notify();
+                }
+                _ => {
+                    let error = model.panel.as_ref().map(|p| p.onerror);
+                    model.hide();
+                    drop(model);
+                    controller.notify();
+                    if let Some(error) = error {
+                        error.call("Tooltip mounted measurements are unavailable".into());
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Create a tooltip owner. IDs are stable for the lifetime of this hook.
+pub fn use_tooltip(id: impl Into<String>) -> TooltipController {
+    use_tooltip_owner(id.into(), true)
+}
+fn use_tooltip_owner(id: String, native: bool) -> TooltipController {
+    let revision = use_signal(|| 0_u64);
+    let controller = use_hook(|| TooltipController {
+        model: Rc::new(RefCell::new(TooltipModel {
+            alive: true,
+            id,
+            next: 0,
+            anchors: Default::default(),
+            panel: None,
+            lifecycle: Default::default(),
+            coordinates: None,
+            viewport: (0.0, 0.0),
+            measurement: 0,
+        })),
+        revision,
+    });
+    let transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
+    let drop_controller = controller.clone();
+    let drop_transport = transport.clone();
+    use_drop(move || {
+        let mut model = drop_controller.model.borrow_mut();
+        model.alive = false;
+        model.hide();
+        model.anchors.clear();
+        model.panel = None;
+        if let Some(stream) = drop_transport.borrow_mut().take() {
+            let _ = stream.send("finish");
+        }
+    });
+    let native_controller = controller.clone();
+    use_effect(move || {
+        let _ = (native_controller.revision)();
+        let shown = {
+            let model = native_controller.model.borrow();
+            native && model.alive && model.panel.is_some() && model.lifecycle.visible.is_some()
+        };
+        if !shown {
+            if let Some(stream) = transport.borrow_mut().take() {
+                let _ = stream.send("finish");
+            }
+        }
+        #[cfg(any(
+            all(feature = "web", target_arch = "wasm32"),
+            all(feature = "desktop", not(target_arch = "wasm32"))
+        ))]
+        if shown && transport.borrow().is_none() {
+            let controller = native_controller.clone();
+            let mut stream = dioxus::document::eval(VIEWPORT_NOTIFICATIONS);
+            *transport.borrow_mut() = Some(stream);
+            spawn(async move {
+                while let Ok(facts) = stream.recv::<ViewportFacts>().await {
+                    let current = {
+                        let model = controller.model.borrow();
+                        model.alive && model.panel.is_some() && model.lifecycle.visible.is_some()
+                    };
+                    if !current {
+                        break;
+                    }
+                    if facts.escape {
+                        controller.dismiss();
+                    } else {
+                        controller.model.borrow_mut().viewport = (facts.width, facts.height);
+                        controller.measure();
+                    }
+                }
+            });
+        }
+    });
+    controller
+}
+
+/// Events and ARIA composition for one mounted Dioxus anchor. Wire every field
+/// to that element; keep its identity stable. Multiple anchors may share an owner.
+/// Controller and anchor ID are captured once; changing either requires a keyed remount.
+#[derive(Clone)]
+pub struct TooltipAnchorBinding {
+    pub onmounted: EventHandler<MountedEvent>,
+    pub onresize: EventHandler<ResizeEvent>,
+    pub onvisible: EventHandler<VisibleEvent>,
+    pub onmouseenter: EventHandler<MouseEvent>,
+    pub onmouseleave: EventHandler<MouseEvent>,
+    pub onfocusin: EventHandler<FocusEvent>,
+    pub onfocusout: EventHandler<FocusEvent>,
+    pub onkeydown: EventHandler<KeyboardEvent>,
+    controller: TooltipController,
+    token: u64,
+}
+impl TooltipAnchorBinding {
+    /// Merge the live panel ID with caller-owned tokens. After panel drop this
+    /// removes only the tooltip's token; other descriptions retain their order.
+    pub fn describedby(&self, existing: &str) -> Option<String> {
+        if self.controller.model.borrow().alive {
+            let _ = (self.controller.revision)();
+        }
+        let model = self.controller.model.borrow();
+        let mut tokens: Vec<&str> = existing
+            .split_whitespace()
+            .filter(|token| *token != model.id)
+            .collect();
+        if model.alive && model.panel.is_some() && model.anchors.contains_key(&self.token) {
+            tokens.push(&model.id);
+        }
+        (!tokens.is_empty()).then(|| tokens.join(" "))
+    }
+}
+
+pub fn use_tooltip_anchor(
+    controller: TooltipController,
+    anchor_id: impl Into<String>,
+) -> TooltipAnchorBinding {
+    let controller = use_hook(|| controller);
+    let id = anchor_id.into();
+    let token = use_hook(|| {
+        let mut model = controller.model.borrow_mut();
+        model.next += 1;
+        let token = model.next;
+        model.anchors.insert(
+            token,
+            Anchor {
+                id,
+                mount: None,
+                intersecting: true,
+            },
+        );
+        token
+    });
+    let drop_controller = controller.clone();
+    use_drop(move || {
+        drop_controller.model.borrow_mut().remove_anchor(token);
+        drop_controller.notify();
+    });
+    let mounted = controller.clone();
+    let resized = controller.clone();
+    let visible = controller.clone();
+    let entered = controller.clone();
+    let left = controller.clone();
+    let focused = controller.clone();
+    let blurred = controller.clone();
+    let keyed = controller.clone();
+    TooltipAnchorBinding {
+        onmounted: use_callback(move |event: MountedEvent| {
+            if let Some(anchor) = mounted.model.borrow_mut().anchors.get_mut(&token) {
+                anchor.mount = Some(event.data());
+            }
+            mounted.measure();
+        }),
+        onresize: use_callback(move |_: ResizeEvent| resized.measure()),
+        onvisible: use_callback(move |event: VisibleEvent| {
+            let intersects = event.is_intersecting().unwrap_or(true)
+                && event
+                    .get_intersection_rect()
+                    .is_ok_and(|r| r.width() > 0.0 && r.height() > 0.0);
+            {
+                let mut model = visible.model.borrow_mut();
+                if let Some(anchor) = model.anchors.get_mut(&token) {
+                    anchor.intersecting = intersects;
+                }
+                if let Ok(bounds) = event.get_root_bounds() {
+                    if bounds.width() > 0.0 && bounds.height() > 0.0 {
+                        model.viewport = (bounds.width(), bounds.height());
+                    }
+                }
+                if !intersects && model.current_anchor() == Some(token) {
+                    model.hide();
+                }
+            }
+            visible.notify();
+            visible.measure();
+        }),
+        onmouseenter: use_callback(move |_: MouseEvent| entered.enter(token)),
+        onmouseleave: use_callback(move |_: MouseEvent| left.leave(Some(token))),
+        onfocusin: use_callback(move |_: FocusEvent| focused.enter(token)),
+        onfocusout: use_callback(move |_: FocusEvent| blurred.leave(Some(token))),
+        onkeydown: use_callback(move |event: KeyboardEvent| {
+            if event.key() == Key::Escape {
+                keyed.dismiss();
+            }
+        }),
+        controller,
+        token,
+    }
+}
+
+#[cfg(any(
+    all(feature = "web", target_arch = "wasm32"),
+    all(feature = "desktop", not(target_arch = "wasm32"))
+))]
+#[derive(Deserialize)]
+struct ViewportFacts {
+    width: f64,
+    height: f64,
+    #[serde(default)]
+    escape: bool,
+}
+// Pinned MountedData has no document viewport or global scroll/resize/key API.
+// This primary adapter sends only document facts, never element queries, geometry,
+// listeners on anchors, ARIA/style writes, observers, or focus operations.
+#[cfg(any(
+    all(feature = "web", target_arch = "wasm32"),
+    all(feature = "desktop", not(target_arch = "wasm32"))
+))]
+const VIEWPORT_NOTIFICATIONS: &str = r#"
+const send=()=>dioxus.send({width:document.documentElement.clientWidth,height:document.documentElement.clientHeight,escape:false});
+const escape=event=>{if(event.key==='Escape'&&!event.defaultPrevented)dioxus.send({width:0,height:0,escape:true});};
+window.addEventListener('resize',send);document.addEventListener('scroll',send,true);document.addEventListener('keydown',escape);
+const viewport=window.visualViewport;if(viewport){viewport.addEventListener('resize',send);viewport.addEventListener('scroll',send);}
+send();try{await dioxus.recv();}finally{window.removeEventListener('resize',send);document.removeEventListener('scroll',send,true);document.removeEventListener('keydown',escape);if(viewport){viewport.removeEventListener('resize',send);viewport.removeEventListener('scroll',send);}}
+"#;
+
+/// Tooltip panel for explicitly registered Dioxus anchors. Pass the controller
+/// returned by [`use_tooltip`] and wire [`use_tooltip_anchor`] on each anchor.
+/// Legacy DOM selectors/IDs are unsupported and reported through `onnativeerror`;
+/// arbitrary DOM discovery has no JavaScript fallback. Keep the controller/ID
+/// stable for the panel lifetime; replace them with a keyed remount.
 #[component]
 pub fn TooltipFor(
     id: String,
+    controller: Option<TooltipController>,
     #[props(default)] anchor_id: String,
     #[props(default)] anchor_selectors: Vec<String>,
     #[props(default)] placement: TooltipPlacement,
@@ -240,9 +702,12 @@ pub fn TooltipFor(
     #[props(default)] onnativeerror: EventHandler<String>,
     children: Element,
 ) -> Element {
+    let own = use_tooltip_owner(id.clone(), controller.is_none());
+    let controller = controller.unwrap_or(own);
     render_tooltip(
         TooltipForProps {
             id,
+            controller: Some(controller),
             anchor_id,
             anchor_selectors,
             placement,
@@ -263,6 +728,7 @@ pub fn TooltipFor(
 fn render_tooltip(props: TooltipForProps, initial: Lifecycle) -> Element {
     let TooltipForProps {
         id,
+        controller,
         anchor_id,
         anchor_selectors,
         placement,
@@ -276,32 +742,77 @@ fn render_tooltip(props: TooltipForProps, initial: Lifecycle) -> Element {
         onnativeerror,
         children,
     } = props;
-    let mut lifecycle = use_signal(|| initial);
-    let mut coordinates = use_signal(|| None::<Position>);
-    let settings =
-        use_memo(use_reactive!(|placement,
-                                show_delay,
-                                hide_delay,
-                                interactive| {
-            Config {
-                placement,
-                show_delay,
-                hide_delay,
-                interactive,
-            }
-        }));
-    let alive = use_hook(|| Rc::new(Cell::new(true)));
-    let transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let drop_alive = alive.clone();
-    let drop_transport = transport.clone();
+    let controller = controller.expect("TooltipFor creates an owner");
+    let controller = use_hook(|| controller);
+    let panel_controller = controller.clone();
+    let config = Config {
+        placement,
+        show_delay,
+        hide_delay,
+        interactive,
+    };
+    let token = use_hook(|| {
+        let mut model = panel_controller.model.borrow_mut();
+        let token = NEXT_PANEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if model.id == id {
+            model.hide();
+            model.lifecycle = initial;
+            model.panel = Some(Panel {
+                token,
+                mount: None,
+                config,
+                onerror: onnativeerror,
+            });
+        }
+        token
+    });
+    let attachment = controller.clone();
+    use_effect(use_reactive((&id, &config), move |(id, config)| {
+        let mut model = attachment.model.borrow_mut();
+        if model.id != id {
+            drop(model);
+            onnativeerror.call("TooltipFor ID must match its TooltipController".into());
+            return;
+        }
+        if let Some(panel) = model.panel.as_mut().filter(|panel| panel.token == token) {
+            panel.config = config;
+            panel.onerror = onnativeerror;
+        }
+        drop(model);
+        attachment.notify();
+        attachment.measure();
+    }));
+    let dropped = controller.clone();
     use_drop(move || {
-        drop_alive.set(false);
-        if let Some(task) = drop_transport.borrow_mut().take() {
-            let _ = task.send("finish");
+        let mut model = dropped.model.borrow_mut();
+        if model.panel.as_ref().map(|p| p.token) == Some(token) {
+            model.hide();
+            model.panel = None;
+            drop(model);
+            dropped.notify();
         }
     });
-    let visible = lifecycle.read().visible.clone();
-    let style = coordinates()
+    let unsupported = !anchor_id.is_empty() || !anchor_selectors.is_empty();
+    use_effect(move || {
+        if unsupported {
+            onnativeerror.call("Tooltip DOM anchor IDs/selectors are unsupported; use use_tooltip_anchor and pass its controller".into());
+        }
+    });
+    let _ = (controller.revision)();
+    let (visible, coordinates, anchor, intent) = {
+        let model = controller.model.borrow();
+        (
+            model.lifecycle.visible.is_some(),
+            model.coordinates,
+            model
+                .current_anchor()
+                .and_then(|key| model.anchors.get(&key))
+                .map(|a| a.id.clone())
+                .unwrap_or_default(),
+            model.lifecycle.generation,
+        )
+    };
+    let style = coordinates
         .map(|p| {
             format!(
                 "left:{}px;top:{}px;--ix-tooltip-arrow:{}px",
@@ -309,136 +820,130 @@ fn render_tooltip(props: TooltipForProps, initial: Lifecycle) -> Element {
             )
         })
         .unwrap_or_default();
-    let side = coordinates().map(|p| p.side).unwrap_or(placement);
-    let selectors = serde_json::to_string(&anchor_selectors).unwrap_or_else(|_| "[]".into());
-    let mount_id = id.clone();
-    rsx! {
-        div {
-            id, class: "ix-tooltip {class}", role: "tooltip", popover: "manual",
-            "data-open": visible.is_some().to_string(),
-            "data-anchor": visible.unwrap_or_default(),
-            "data-anchor-id": anchor_id,
-            "data-anchor-selectors": selectors,
-            "data-placement": side.as_str(),
-            "data-interactive": interactive.to_string(),
-            "data-animation-frame": animation_frame.to_string(),
-            "data-positioned": coordinates().is_some().to_string(),
-            // HTML inert is a presence attribute. Dioxus alpha serializes a
-            // boolean false as inert="false", which still disables controls.
-            inert: lifecycle.read().visible.is_none().then_some("true"), style,
-            onclick: move |event| event.stop_propagation(),
-            onmounted: move |_| {
-                let id = mount_id.clone(); let alive = alive.clone(); let transport = transport.clone();
+    let side = coordinates.map(|p| p.side).unwrap_or(placement);
+    let marker = format!("{token}:{visible}:{intent}");
+    let mut mount_revision = use_signal(|| 0_u64);
+    let presentation = controller.clone();
+    use_effect(use_reactive(
+        (&id, &marker, &visible, &intent),
+        move |(id, marker, visible, intent)| {
+            if mount_revision() == 0 {
+                return;
+            }
+            #[cfg(any(
+                all(feature = "web", target_arch = "wasm32"),
+                all(feature = "desktop", not(target_arch = "wasm32"))
+            ))]
+            {
+                let controller = presentation.clone();
                 spawn(async move {
-                    let mut stream = dioxus::document::eval(OBSERVE);
-                    if stream.send(id).is_err() { return; }
-                    *transport.borrow_mut() = Some(stream);
-                    while let Ok(observation) = stream.recv::<Observation>().await {
-                        if !alive.get() { break; }
-                        let config = *settings.peek();
-                        match observation.kind.as_str() {
-                            "enter" => {
-                                let anchor = observation.anchor;
-                                let generation = lifecycle.write().enter(anchor.clone());
-                                if let Some(generation) = generation {
-                                    let alive = alive.clone();
-                                    spawn(async move {
-                                        if config.show_delay > 0 { futures_timer::Delay::new(Duration::from_millis(config.show_delay)).await; }
-                                        if alive.get() && lifecycle.write().show(generation, anchor) { coordinates.set(None); }
-                                    });
-                                }
-                            }
-                            "leave" => {
-                                let generation = lifecycle.write().leave(); let alive = alive.clone();
-                                spawn(async move {
-                                    futures_timer::Delay::new(Duration::from_millis(config.hide_delay())).await;
-                                    if alive.get() { lifecycle.write().hide(generation); }
-                                });
-                            }
-                            "retain" if config.interactive => { lifecycle.write().leave(); }
-                            "escape" | "missing" => { let mut state = lifecycle.write(); let generation = state.leave(); state.hide(generation); }
-                            "measure" => {
-                                if lifecycle.peek().visible.as_ref() != Some(&observation.anchor) { continue; }
-                                if let Some(metrics) = observation.metrics {
-                                    if let Some(result) = position(&metrics, config.placement) { if *coordinates.peek() != Some(result) { coordinates.set(Some(result)); } }
-                                    else { let mut state = lifecycle.write(); let generation = state.leave(); state.hide(generation); }
-                                }
-                            }
-                            "error" => {
-                                let mut state = lifecycle.write(); let generation = state.leave(); state.hide(generation); drop(state);
-                                onnativeerror.call(observation.error.unwrap_or_else(|| "Tooltip DOM bridge failed".into()));
-                            }
-                            _ => {}
+                    // MountedData lacks showPopover/hidePopover; guard the exact Dioxus
+                    // panel incarnation and intent. No observation or positioning here.
+                    let id = serde_json::to_string(&id).unwrap();
+                    let marker = serde_json::to_string(&marker).unwrap();
+                    let script = format!(
+                        r#"const panel=document.getElementById({id});if(!panel?.isConnected||panel.dataset.ixTooltipNative!=={marker})return null;try{{const open=panel.matches(':popover-open');if({visible}&&!open){{if(typeof panel.showPopover!=='function')throw new Error('Native popovers are unavailable');const inert=panel.inert;panel.inert=true;try{{panel.showPopover();}}finally{{panel.inert=inert;}}}}else if(!{visible}&&open)panel.hidePopover();return null;}}catch(error){{return String(error);}}"#
+                    );
+                    // Desktop alpha.2 may collect a finished eval before Rust
+                    // polls it. Reuse the acknowledged one-shot channel.
+                    let error = match crate::dom_query::eval(&script)
+                        .join::<Option<String>>()
+                        .await
+                    {
+                        Ok(error) => error,
+                        Err(error) => Some(format!("Tooltip native presentation failed: {error}")),
+                    };
+                    if let Some(error) = error {
+                        let model = controller.model.borrow();
+                        if model.panel.as_ref().map(|p| p.token) == Some(token)
+                            && model.lifecycle.generation == intent
+                        {
+                            drop(model);
+                            controller.dismiss();
+                            onnativeerror.call(error);
                         }
+                    } else {
+                        controller.measure();
                     }
                 });
-            },
-            div { class: "ix-tooltip-content",
-                if title.is_some() || title_icon.is_some() {
-                    div { class: "ix-tooltip-title",
-                        if let Some(icon) = title_icon { crate::Icon { name: icon, size: 16 } }
-                        if let Some(title) = title { strong { "{title}" } }
+            }
+            #[cfg(not(any(
+                all(feature = "web", target_arch = "wasm32"),
+                all(feature = "desktop", not(target_arch = "wasm32"))
+            )))]
+            let _ = (&id, &marker, visible, intent, &presentation);
+        },
+    ));
+    let sampling = controller.clone();
+    let sample_epoch = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
+    let drop_epoch = sample_epoch.clone();
+    use_drop(move || drop_epoch.set(drop_epoch.get().wrapping_add(1)));
+    use_effect(use_reactive(
+        (&visible, &animation_frame),
+        move |(visible, animation_frame)| {
+            sample_epoch.set(sample_epoch.get().wrapping_add(1));
+            let epoch = sample_epoch.get();
+            let sample_epoch = sample_epoch.clone();
+            if !visible || !animation_frame {
+                return;
+            }
+            let controller = sampling.clone();
+            spawn(async move {
+                loop {
+                    // Opt-in Rust sampling approximates animated movement; it is not a
+                    // browser animation-frame chronology contract.
+                    futures_timer::Delay::new(Duration::from_millis(16)).await;
+                    {
+                        let model = controller.model.borrow();
+                        if !model.alive
+                            || model.panel.as_ref().map(|p| p.token) != Some(token)
+                            || sample_epoch.get() != epoch
+                            || model.lifecycle.visible.is_none()
+                        {
+                            break;
+                        }
+                    }
+                    controller.measure();
+                }
+            });
+        },
+    ));
+    let mounted = controller.clone();
+    let resized = controller.clone();
+    let seen = controller.clone();
+    let retained = controller.clone();
+    let focused = controller.clone();
+    let left = controller.clone();
+    let blurred = controller.clone();
+    let keyed = controller.clone();
+    rsx! {
+        div {
+            id,class:"ix-tooltip {class}",role:"tooltip",popover:"manual",
+            "data-open":visible.to_string(),"data-anchor":anchor,"data-placement":side.as_str(),
+            "data-interactive":interactive.to_string(),"data-animation-frame":animation_frame.to_string(),
+            "data-positioned":coordinates.is_some().to_string(),"data-ix-tooltip-native":marker,
+            inert:(!visible).then_some("true"),style,
+            onclick:move |event|event.stop_propagation(),
+            onmounted:move |event:MountedEvent|{if let Some(panel)=mounted.model.borrow_mut().panel.as_mut().filter(|p|p.token==token){panel.mount=Some(event.data());}mount_revision.with_mut(|value|*value+=1);mounted.measure();},
+            onresize:move |_|resized.measure(),onvisible:move |_|seen.measure(),
+            onmouseenter:move |event|{event.stop_propagation();retained.retain();},
+            onfocusin:move |event|{event.stop_propagation();focused.retain();},
+            onmouseleave:move |event|{event.stop_propagation();left.leave(None);},
+            onfocusout:move |event|{event.stop_propagation();blurred.leave(None);},
+            onkeydown:move |event:KeyboardEvent|{if event.key()==Key::Escape {keyed.dismiss();}},
+            div {class:"ix-tooltip-content",
+                if title.is_some()||title_icon.is_some() {
+                    div {class:"ix-tooltip-title",
+                        if let Some(icon)=title_icon {crate::Icon{name:icon,size:16}}
+                        if let Some(title)=title {strong{"{title}"}}
                     }
                 }
                 {children}
             }
-            span { class: "ix-tooltip-arrow", "aria-hidden": "true" }
+            span {class:"ix-tooltip-arrow","aria-hidden":"true"}
         }
     }
 }
-
-// This bridge forwards DOM events and measurements. It does not decide tooltip
-// delays, visibility, placement or interaction state. Native activation mirrors
-// Rust's data-open attribute. The receive channel keeps cleanup alive until drop.
-const OBSERVE: &str = r#"
-const id=await dioxus.recv(), panel=document.getElementById(id);
-if(!panel)return;
-const send=(kind,extra={})=>dioxus.send({kind,...extra});
-const bindings=new Map(), anchors=new Map();let sequence=0,frame=0,raf=0,disposed=false,resolveRemoval;
-const removed=new Promise(resolve=>{resolveRemoval=resolve});
-const listen=(node,name,fn,options)=>{node.addEventListener(name,fn,options);return()=>node.removeEventListener(name,fn,options)};
-const rect=node=>{const r=node.getBoundingClientRect();return{x:r.left,y:r.top,width:r.width,height:r.height}};
-const measure=()=>{
- frame=0;if(disposed||panel.dataset.open!=='true')return;
- const token=panel.dataset.anchor,target=anchors.get(token);
- if(!target?.isConnected){send('missing');return;}
- const clips=[];
- for(let p=target.parentElement;p;p=p.parentElement){const s=getComputedStyle(p);if(/hidden|clip|scroll|auto/.test(s.overflow+s.overflowX+s.overflowY))clips.push(rect(p));}
- const r=rect(panel);send('measure',{anchor:token,metrics:{anchor:rect(target),width:r.width,height:r.height,viewport_width:document.documentElement.clientWidth,viewport_height:document.documentElement.clientHeight,clips}});
-};
-const schedule=()=>{if(!frame&&!disposed)frame=requestAnimationFrame(measure)};
-const ro=new ResizeObserver(schedule);ro.observe(panel);
-const restore=(node,entry)=>{
- entry.cleanups.forEach(fn=>fn());ro.unobserve(node);anchors.delete(entry.token);
- if(entry.added){const values=(node.getAttribute('aria-describedby')||'').split(/\s+/).filter(value=>value&&value!==id);if(values.length)node.setAttribute('aria-describedby',values.join(' '));else node.removeAttribute('aria-describedby');}
-};
-const bind=()=>{
- if(disposed)return;
- const targets=new Set(); const anchorId=panel.dataset.anchorId;
- if(anchorId){const node=document.getElementById(anchorId);if(node)targets.add(node);}
- try{for(const selector of JSON.parse(panel.dataset.anchorSelectors||'[]'))for(const node of panel.getRootNode().querySelectorAll(selector))targets.add(node);}catch(error){send('error',{error:String(error)});}
- for(const [node,entry]of bindings)if(!targets.has(node)||!node.isConnected){restore(node,entry);bindings.delete(node);}
- for(const node of targets){if(bindings.has(node))continue;const token=String(++sequence);anchors.set(token,node);
- const descriptions=(node.getAttribute('aria-describedby')||'').split(/\s+/).filter(Boolean),added=!descriptions.includes(id);if(added)node.setAttribute('aria-describedby',[...descriptions,id].join(' '));
- const cleanups=[listen(node,'mouseenter',()=>send('enter',{anchor:token})),listen(node,'mouseleave',()=>send('leave',{anchor:token})),listen(node,'focusin',()=>send('enter',{anchor:token})),listen(node,'focusout',()=>send('leave',{anchor:token}))];
- bindings.set(node,{token,added,cleanups});ro.observe(node);}
- schedule();
-};
-const sync=()=>{
- if(disposed)return;
- try{if(panel.dataset.open==='true'){if(!panel.matches(':popover-open')){if(typeof panel.showPopover!=='function')throw new Error('Native popovers are unavailable');panel.showPopover();}schedule();}
- else if(panel.matches(':popover-open'))panel.hidePopover();}catch(error){send('error',{error:String(error)});}
-};
-const loop=()=>{raf=0;if(disposed)return;if(panel.dataset.animationFrame==='true'&&panel.dataset.open==='true'){schedule();raf=requestAnimationFrame(loop)}};
-const local=new MutationObserver(records=>{if(records.some(r=>r.attributeName==='data-anchor-id'||r.attributeName==='data-anchor-selectors'))bind();sync();if(!raf)loop();});
-local.observe(panel,{attributes:true,attributeFilter:['data-open','data-anchor','data-anchor-id','data-anchor-selectors','data-animation-frame']});
-const body=new MutationObserver(()=>{if(!panel.isConnected){cleanup();return;}bind();});
-body.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['data-ix-tooltip']});
-const cleanupListeners=[listen(window,'resize',schedule),listen(document,'scroll',schedule,true),listen(document,'keydown',event=>{if(event.key==='Escape')send('escape')},true),listen(panel,'mouseenter',()=>{if(panel.dataset.interactive==='true')send('retain')}),listen(panel,'focusin',()=>{if(panel.dataset.interactive==='true')send('retain')}),listen(panel,'mouseleave',()=>send('leave')),listen(panel,'focusout',()=>send('leave'))];
-if(window.visualViewport){cleanupListeners.push(listen(window.visualViewport,'resize',schedule),listen(window.visualViewport,'scroll',schedule));}
-const cleanup=()=>{if(disposed)return;disposed=true;cancelAnimationFrame(frame);cancelAnimationFrame(raf);ro.disconnect();local.disconnect();body.disconnect();cleanupListeners.forEach(fn=>fn());for(const[node,entry]of bindings)restore(node,entry);bindings.clear();if(panel.isConnected&&panel.matches(':popover-open'))panel.hidePopover();resolveRemoval();};
-bind();sync();loop();try{await Promise.race([dioxus.recv(),removed]);}finally{cleanup();}
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -450,6 +955,7 @@ mod tests {
             render_tooltip(
                 TooltipForProps {
                     id: "open-tooltip".into(),
+                    controller: Some(use_tooltip("open-tooltip")),
                     anchor_id: "anchor".into(),
                     anchor_selectors: Vec::new(),
                     placement: TooltipPlacement::Top,
@@ -486,6 +992,211 @@ mod tests {
         let closed = dioxus_ssr::render(&closed_dom);
         assert!(closed.contains("data-open=\"false\""), "{closed}");
         assert!(closed.contains(" inert"), "{closed}");
+    }
+
+    type OwnerCapture = Rc<
+        RefCell<
+            Option<(
+                TooltipController,
+                TooltipAnchorBinding,
+                TooltipAnchorBinding,
+                Signal<bool>,
+            )>,
+        >,
+    >;
+    fn registered_owner_fixture() -> Element {
+        let capture = use_context::<OwnerCapture>();
+        let show = use_signal(|| true);
+        let controller = use_tooltip("registered-tooltip");
+        let first = use_tooltip_anchor(controller.clone(), "first");
+        let second = use_tooltip_anchor(controller.clone(), "second");
+        *capture.borrow_mut() = Some((controller.clone(), first.clone(), second.clone(), show));
+        rsx! {
+            button {"aria-describedby":first.describedby("external description"),"First"}
+            button {"aria-describedby":second.describedby("other"),"Second"}
+            if show() { TooltipFor {id:"registered-tooltip",controller:controller.clone(),interactive:true,"Description"} }
+        }
+    }
+    fn settle(dom: &mut VirtualDom) {
+        for _ in 0..6 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+        }
+    }
+    #[derive(Clone)]
+    struct RectMount(Rect);
+    impl dioxus::html::RenderedElementBacking for RectMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_client_rect(
+            &self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = dioxus::html::MountedResult<dioxus::html::geometry::PixelsRect>,
+                    >,
+            >,
+        > {
+            let rect = self.0;
+            Box::pin(async move {
+                Ok(dioxus::html::geometry::PixelsRect::new(
+                    dioxus::html::geometry::euclid::Point2D::new(rect.x, rect.y),
+                    dioxus::html::geometry::euclid::Size2D::new(rect.width, rect.height),
+                ))
+            })
+        }
+    }
+    fn mounted(rect: Rect) -> Rc<MountedData> {
+        Rc::new(MountedData::new(RectMount(rect)))
+    }
+
+    #[test]
+    fn registered_shared_anchors_preserve_descriptions_and_panel_drop_removes_only_own_token() {
+        let capture: OwnerCapture = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new(registered_owner_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let (controller, first, second, mut show) = capture.borrow().clone().unwrap();
+        assert_eq!(
+            first.describedby("external description"),
+            Some("external description registered-tooltip".into())
+        );
+        assert_eq!(
+            second.describedby("other"),
+            Some("other registered-tooltip".into())
+        );
+        dom.in_scope(ScopeId::ROOT, || show.set(false));
+        settle(&mut dom);
+        assert!(controller.model.borrow().panel.is_none());
+        assert_eq!(
+            first.describedby("external registered-tooltip description"),
+            Some("external description".into())
+        );
+        assert_eq!(second.describedby("other"), Some("other".into()));
+        dom.in_scope(ScopeId::ROOT, || show.set(true));
+        settle(&mut dom);
+        assert_eq!(
+            second.describedby("other"),
+            Some("other registered-tooltip".into())
+        );
+        drop(dom);
+        let model = controller.model.borrow();
+        assert!(!model.alive);
+        assert!(model.anchors.is_empty());
+        assert!(model.panel.is_none());
+    }
+
+    #[test]
+    fn mounted_measurements_switch_shared_anchors_and_removed_anchor_cannot_reopen() {
+        let capture: OwnerCapture = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new(registered_owner_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let (controller, first, second, _) = capture.borrow().clone().unwrap();
+        {
+            let mut model = controller.model.borrow_mut();
+            model.viewport = (400.0, 300.0);
+            model.anchors.get_mut(&first.token).unwrap().mount = Some(mounted(scene().anchor));
+            model.anchors.get_mut(&second.token).unwrap().mount = Some(mounted(Rect {
+                x: 200.0,
+                ..scene().anchor
+            }));
+            model.panel.as_mut().unwrap().mount = Some(mounted(Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 50.0,
+            }));
+        }
+        dom.in_scope(ScopeId::ROOT, || controller.enter(first.token));
+        settle(&mut dom);
+        assert_eq!(
+            controller.model.borrow().current_anchor(),
+            Some(first.token)
+        );
+        assert_eq!(
+            controller.model.borrow().coordinates,
+            position(&scene(), TooltipPlacement::Top)
+        );
+        controller.model.borrow_mut().coordinates = None;
+        dom.in_scope(ScopeId::ROOT, || controller.measure());
+        controller
+            .model
+            .borrow_mut()
+            .anchors
+            .get_mut(&first.token)
+            .unwrap()
+            .mount = Some(mounted(Rect {
+            x: 250.0,
+            ..scene().anchor
+        }));
+        settle(&mut dom);
+        assert!(
+            controller.model.borrow().coordinates.is_none(),
+            "old mounted result must not position a replacement anchor"
+        );
+        dom.in_scope(ScopeId::ROOT, || controller.measure());
+        settle(&mut dom);
+        assert_eq!(controller.model.borrow().coordinates.unwrap().x, 230.0);
+        dom.in_scope(ScopeId::ROOT, || controller.enter(second.token));
+        settle(&mut dom);
+        assert_eq!(
+            controller.model.borrow().current_anchor(),
+            Some(second.token)
+        );
+        assert_eq!(controller.model.borrow().coordinates.unwrap().x, 180.0);
+        controller.model.borrow_mut().remove_anchor(second.token);
+        assert!(controller.model.borrow().lifecycle.visible.is_none());
+        dom.in_scope(ScopeId::ROOT, || controller.enter(second.token));
+        settle(&mut dom);
+        assert!(controller.model.borrow().lifecycle.visible.is_none());
+        dom.in_scope(ScopeId::ROOT, || controller.enter(first.token));
+        settle(&mut dom);
+        controller.dismiss();
+        settle(&mut dom);
+        assert!(controller.model.borrow().lifecycle.visible.is_none());
+    }
+
+    #[test]
+    fn interactive_retention_invalidates_pending_close_and_panel_replacement_cancels_old_show() {
+        let capture: OwnerCapture = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new(registered_owner_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let (controller, first, _, mut show) = capture.borrow().clone().unwrap();
+        let generation = {
+            let mut model = controller.model.borrow_mut();
+            model.lifecycle.enter(first.token.to_string()).unwrap()
+        };
+        {
+            let mut model = controller.model.borrow_mut();
+            assert!(model.lifecycle.show(generation, first.token.to_string()));
+        }
+        let close = controller.model.borrow_mut().lifecycle.leave();
+        controller.retain();
+        controller.model.borrow_mut().lifecycle.hide(close);
+        assert_eq!(
+            controller.model.borrow().current_anchor(),
+            Some(first.token)
+        );
+        let old_panel = controller.model.borrow().panel.as_ref().unwrap().token;
+        dom.in_scope(ScopeId::ROOT, || show.set(false));
+        settle(&mut dom);
+        dom.in_scope(ScopeId::ROOT, || show.set(true));
+        settle(&mut dom);
+        assert_ne!(
+            controller.model.borrow().panel.as_ref().unwrap().token,
+            old_panel
+        );
+        assert!(
+            !controller
+                .model
+                .borrow_mut()
+                .lifecycle
+                .show(generation, first.token.to_string())
+        );
+        assert!(controller.model.borrow().lifecycle.visible.is_none());
     }
 
     fn scene() -> Metrics {

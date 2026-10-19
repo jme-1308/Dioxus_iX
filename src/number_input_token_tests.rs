@@ -240,7 +240,7 @@ fn number_field_forwards_native_constraints_slot_order_and_inline_or_tooltip_fee
     assert_eq!(attribute(native, "aria-describedby"), Some("rate-help"));
     assert_eq!(attribute(native, "aria-errormessage"), Some("rate-help"));
     assert_eq!(tooltip.matches("role=\"tooltip\"").count(), 1);
-    assert!(tooltip.contains("data-anchor-id=\"rate-input-wrap\""));
+    assert!(tooltip.contains("id=\"rate-input-wrap\""));
     assert_eq!(
         text_content(part(tooltip, "ix-text-field-bottom-text").1),
         "  Rate needed  "

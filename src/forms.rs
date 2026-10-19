@@ -145,13 +145,13 @@ fn render_text_field_feedback(feedback: FieldFeedback, id: Option<String>) -> El
 fn TextControlFeedback(
     feedback: Option<FieldFeedback>,
     id: String,
-    anchor_id: String,
+    tooltip: crate::TooltipController,
     show_text_as_tooltip: bool,
 ) -> Element {
     rsx! {
         if let Some(feedback) = feedback {
             if show_text_as_tooltip {
-                crate::TooltipFor { id, anchor_id, placement: crate::TooltipPlacement::Bottom, show_delay: 500,
+                crate::TooltipFor { id, controller: tooltip, placement: crate::TooltipPlacement::Bottom, show_delay: 500,
                     {render_text_field_feedback(feedback, None)}
                 }
             } else {
@@ -166,7 +166,7 @@ fn TextFieldPresentation(
     children: Element,
     label: Option<String>,
     control_id: String,
-    anchor_id: String,
+    tooltip: crate::TooltipController,
     feedback_id: String,
     required: bool,
     state: FieldState,
@@ -193,7 +193,7 @@ fn TextFieldPresentation(
             }
             div { class: "ix-text-field-slot", {children} }
             div { class: "ix-text-field-bottom",
-                if !show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: feedback_id.clone(), anchor_id: anchor_id.clone(), show_text_as_tooltip: false } }
+                if !show_text_as_tooltip { TextControlFeedback { feedback: feedback.clone(), id: feedback_id.clone(), tooltip: tooltip.clone(), show_text_as_tooltip: false } }
                 div { class: "ix-text-field-bottom-right",
                     if let Some(limit) = max_length.filter(|limit| *limit > 0) {
                         crate::Typography { format: crate::TypographyFormat::Body, text_color: crate::TypographyColor::Soft,
@@ -202,7 +202,7 @@ fn TextFieldPresentation(
                     }
                 }
             }
-            if show_text_as_tooltip { TextControlFeedback { feedback, id: feedback_id, anchor_id, show_text_as_tooltip: true } }
+            if show_text_as_tooltip { TextControlFeedback { feedback, id: feedback_id, tooltip, show_text_as_tooltip: true } }
         }
     }
 }
@@ -461,12 +461,18 @@ pub fn Input(
     );
     let has_feedback = feedback.is_some();
     let anchor_id = format!("{id}-input-wrap");
+    let tooltip = crate::use_tooltip(help_id.clone());
+    let tooltip_anchor = crate::use_tooltip_anchor(tooltip.clone(), anchor_id.clone());
+    let describedby = has_feedback.then(|| help_id.clone());
     rsx! {
         div { id: geometry_id, class: "ix-field ix-text-field-native ix-input-native {state.class()} {class}",
             "data-disabled": disabled.to_string(), "data-readonly": readonly.to_string(),
-            TextFieldPresentation { label, control_id: id.clone(), anchor_id: anchor_id.clone(), feedback_id: help_id.clone(),
+            TextFieldPresentation { label, control_id: id.clone(), tooltip: tooltip.clone(), feedback_id: help_id.clone(),
                 required, state, feedback, invalid_alert, show_text_as_tooltip, max_length, length,
                 div { id: anchor_id, class: "ix-input-wrap",
+                    onmounted: tooltip_anchor.onmounted, onresize: tooltip_anchor.onresize, onvisible: tooltip_anchor.onvisible,
+                    onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
+                    onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout, onkeydown: tooltip_anchor.onkeydown,
                     "data-padding-ready": padding.is_some().to_string(),
                     "data-padding-start": padding.map(|facts| facts.start.to_string()),
                     "data-padding-end": padding.map(|facts| facts.end.to_string()),
@@ -477,7 +483,7 @@ pub fn Input(
                     style: input_style,
                     "aria-label": aria_label,
                     "aria-invalid": (state == FieldState::Invalid).to_string(),
-                    "aria-describedby": has_feedback.then(|| help_id.clone()),
+                    "aria-describedby": describedby,
                     "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                     "data-ix-touched": lifecycle.touched.to_string(),
                     onmounted: move |event| mounted.call(event.data()),
@@ -619,23 +625,28 @@ pub fn Textarea(
         warning_text,
     );
     let has_feedback = feedback.is_some();
-    let anchor_id = id.clone();
+    let tooltip = crate::use_tooltip(help_id.clone());
+    let tooltip_anchor = crate::use_tooltip_anchor(tooltip.clone(), id.clone());
+    let describedby = has_feedback.then(|| help_id.clone());
     rsx! {
         div { class: "ix-field ix-text-field-native ix-textarea-native {state.class()} {class}",
             "data-disabled": disabled.to_string(), "data-readonly": readonly.to_string(),
-            TextFieldPresentation { label, control_id: id.clone(), anchor_id, feedback_id: help_id.clone(),
+            TextFieldPresentation { label, control_id: id.clone(), tooltip: tooltip.clone(), feedback_id: help_id.clone(),
                 required, state, feedback, invalid_alert, show_text_as_tooltip, max_length, length,
                 div { class: "ix-input-wrap",
             textarea { id, class: "ix-input ix-textarea", name, value, placeholder,
                 required, disabled, readonly, rows, cols, minlength: min_length, maxlength: max_length,
                 style: dimensions, "aria-label": aria_label, "aria-invalid": (state == FieldState::Invalid).to_string(),
-                "aria-describedby": has_feedback.then(|| help_id.clone()),
+                "aria-describedby": describedby,
                 "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                 "data-ix-touched": lifecycle.touched.to_string(),
-                onmounted: move |event| mounted.call(event.data()),
+                onmounted: move |event| { mounted.call(event.data()); tooltip_anchor.onmounted.call(event); },
+                onresize: tooltip_anchor.onresize, onvisible: tooltip_anchor.onvisible,
+                onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
+                onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout,
                 oninput: move |event| { onvaluechange.call(event.value()); observe.call(false); },
                 onfocus: move |event| { focus_state.call(true); focus_commit.call(()); onfocus.call(event); },
-                onkeydown,
+                onkeydown: move |event:KeyboardEvent| { onkeydown.call(event.clone()); tooltip_anchor.onkeydown.call(event); },
                 onblur: move |event| { focus_state.call(false); onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
             }
                 }
@@ -1340,6 +1351,9 @@ pub fn Slider(
         warning_text,
     );
     let feedback_present = feedback.is_some();
+    let tooltip = crate::use_tooltip(feedback_id.clone());
+    let tooltip_anchor = crate::use_tooltip_anchor(tooltip.clone(), anchor_id.clone());
+    let describedby = feedback_present.then(|| feedback_id.clone());
     let captions: Vec<_> = markers
         .iter()
         .filter(|marker| marker.value >= min && marker.value <= max && !marker.label.is_empty())
@@ -1351,10 +1365,13 @@ pub fn Slider(
             "data-disabled": disabled.to_string(),
             if show_value { output { class: "ix-slider-value-output", "for": id.clone(), "{value}" } }
             TextFieldPresentation { label: (!label.is_empty()).then_some(label.clone()), control_id: id.clone(),
-                anchor_id: anchor_id.clone(), feedback_id: feedback_id.clone(), required: false, state,
+                tooltip: tooltip.clone(), feedback_id: feedback_id.clone(), required: false, state,
                 feedback, invalid_alert, show_text_as_tooltip,
                 max_length: None, length: 0,
                 div { id: anchor_id, class: "ix-slider-container",
+                    onmounted: tooltip_anchor.onmounted, onresize: tooltip_anchor.onresize, onvisible: tooltip_anchor.onvisible,
+                    onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
+                    onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout, onkeydown: tooltip_anchor.onkeydown,
                     div { class: "ix-slider-control",
                         onmouseenter: move |_| hovered.set(true), onmouseleave: move |_| hovered.set(false),
                         div { class: "ix-slider-track",
@@ -1378,7 +1395,7 @@ pub fn Slider(
                             role: "slider", "aria-label": if label.is_empty() { "Slider".to_string() } else { label },
                             "aria-valuenow": value.to_string(), "aria-valuemin": min.to_string(), "aria-valuemax": max.to_string(),
                             "aria-invalid": (state == FieldState::Invalid).to_string(),
-                            "aria-describedby": feedback_present.then_some(feedback_id),
+                            "aria-describedby": describedby,
                             list: has_markers.then_some("markers"),
                             style: "--value:{fraction};--trace-reference:{reference};--trace-start:{start};--trace-end:{end}",
                             oninput: move |event| if !disabled { if let Ok(value) = event.value().parse::<f64>() { onvaluechange.call(bounded_slider_value(value, min, max)); } },
@@ -2615,6 +2632,9 @@ pub fn Select(
         info_text,
         warning_text,
     );
+    let tooltip = crate::use_tooltip(help_id.clone());
+    let tooltip_anchor = crate::use_tooltip_anchor(tooltip.clone(), control_id.clone());
+    let describedby = visual_feedback.is_some().then(|| help_id.clone());
     let focus_outline = focused() && active_index == usize::MAX;
     let has_clear = allow_clear && (!selected.is_empty() || !query_text.is_empty()) && !read_only;
     let layout_alive = alive.clone();
@@ -2742,13 +2762,16 @@ pub fn Select(
                     _ => {}
                 }
             },
-            TextFieldPresentation { label, control_id: id.clone(), anchor_id: control_id.clone(),
+            TextFieldPresentation { label, control_id: id.clone(), tooltip: tooltip.clone(),
                 feedback_id: help_id.clone(), required, state, invalid_alert,
                 feedback: if tooltip_available { None } else { visual_feedback.clone() },
                 show_text_as_tooltip: false, max_length: None, length: 0,
             div { id: control_id.clone(), class: "ix-select-control", "data-readonly": readonly.to_string(), "data-disabled": disabled.to_string(), "data-open": open().to_string(),
-                onmounted: move |event| { control_ref.set(Some(event.data())); control_revision += 1; },
-                onresize: move |_| { control_revision += 1; measure_layout.call(()); },
+                onmounted: move |event| { control_ref.set(Some(event.data())); control_revision += 1; tooltip_anchor.onmounted.call(event); },
+                onresize: move |event| { control_revision += 1; measure_layout.call(()); tooltip_anchor.onresize.call(event); },
+                onvisible: tooltip_anchor.onvisible,
+                onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
+                onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout, onkeydown: tooltip_anchor.onkeydown,
                 div { class: "ix-select-input-container",
                     div { class: "ix-select-values ix-select-chips",
                         onmounted: move |event| { chips_ref.set(Some(event.data())); measure_layout.call(()); },
@@ -2794,7 +2817,7 @@ pub fn Select(
                     "aria-autocomplete": "list",
                     "aria-controls": list_id.clone(), "aria-readonly": readonly.to_string(),
                     "aria-required": required.to_string(), "aria-invalid": (state == FieldState::Invalid).to_string(),
-                    "aria-describedby": help_id.clone(),
+                    "aria-describedby": describedby,
                     "aria-activedescendant": active_descendant,
                     onmounted: move |event| { let node = event.data(); *method_input.borrow_mut() = Some(node.clone()); trigger_ref.set(Some(node)); },
                     onclick: move |_| if !read_only { overflow_open.set(false); if !open() { active.set(usize::MAX); open.set(true); } },
@@ -2933,7 +2956,7 @@ pub fn Select(
                 }
             }
             if tooltip_available {
-                crate::TooltipFor { id: help_id.clone(), anchor_id: control_id.clone(),
+                crate::TooltipFor { id: help_id.clone(), controller: tooltip.clone(),
                     placement: crate::TooltipPlacement::Bottom, show_delay: 500,
                     class: "ix-select-feedback-tooltip {state.class()}",
                     onnativeerror: move |message: String| onnativeerror.call(crate::NativeSurfaceError::Rejected(message)),
@@ -3684,6 +3707,9 @@ mod tests {
     fn text_feedback_tooltips_describe_controls_keep_counters_and_render_state_icons_once() {
         let mut dom = VirtualDom::new(text_feedback_fixture);
         dom.rebuild_in_place();
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
         let html = dioxus_ssr::render(&dom);
         for id in ["input-feedback", "textarea-feedback"] {
             assert!(
@@ -3692,8 +3718,6 @@ mod tests {
             );
             assert!(html.contains(&format!("id=\"{id}-help\"")), "{html}");
         }
-        assert!(html.contains("data-anchor-id=\"input-feedback-input-wrap\""));
-        assert!(html.contains("data-anchor-id=\"textarea-feedback\""));
         assert_eq!(html.matches("role=\"tooltip\"").count(), 2);
         assert_eq!(html.matches("data-placement=\"bottom\"").count(), 2);
         assert_eq!(html.matches("Input error").count(), 1);
@@ -3735,6 +3759,77 @@ mod tests {
             1,
             "helper fallback has no state icon"
         );
+    }
+
+    fn changing_feedback_mode(config: Rc<std::cell::Cell<(bool, bool)>>) -> Element {
+        let (tooltip, feedback) = config.get();
+        rsx! {
+            Input {id:"mode-input",show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode input helper".to_string())}
+            Textarea {id:"mode-textarea",show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode textarea helper".to_string())}
+            Select {id:"mode-select",options:vec![SelectOption::new("a","A")],show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode select helper".to_string())}
+            Slider {show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode slider helper".to_string())}
+        }
+    }
+
+    #[test]
+    fn feedback_mode_and_message_changes_update_explicit_tooltip_descriptions() {
+        let config = Rc::new(std::cell::Cell::new((true, true)));
+        let mut dom = VirtualDom::new_with_props(changing_feedback_mode, config.clone());
+        dom.rebuild_in_place();
+        for (tooltip, feedback) in [(true, true), (false, true), (true, false), (true, true)] {
+            config.set((tooltip, feedback));
+            dom.mark_dirty(ScopeId::APP);
+            // Each panel attachment dirties its owning control. Drain the
+            // four independent post-render effects and their follow-up renders.
+            for _ in 0..6 {
+                dom.render_immediate_to_vec();
+            }
+            let html = dioxus_ssr::render(&dom);
+            assert_eq!(
+                html.matches("role=\"tooltip\"").count(),
+                if tooltip && feedback { 4 } else { 0 },
+                "{html}"
+            );
+            for name in ["input", "textarea", "select", "slider"] {
+                assert_eq!(
+                    html.matches(&format!("Mode {name} helper")).count(),
+                    usize::from(feedback),
+                    "{html}"
+                );
+            }
+            let controls = html
+                .split('<')
+                .filter_map(|part| part.split_once('>').map(|(tag, _)| tag))
+                .filter(|tag| {
+                    tag.starts_with("textarea ")
+                        || (tag.starts_with("input ")
+                            && (tag.contains("id=\"mode-input\"")
+                                || tag.contains("id=\"mode-select\"")
+                                || tag.contains("type=\"range\"")))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                controls.len(),
+                4,
+                "all four actual controls must be checked: {html}"
+            );
+            for tag in controls {
+                let description = tag
+                    .split_once("aria-describedby=\"")
+                    .map(|(_, rest)| rest.split('"').next().unwrap());
+                assert_eq!(
+                    description.is_some(),
+                    feedback,
+                    "tooltip={tooltip} feedback={feedback}: {tag}; {html}"
+                );
+                if let Some(id) = description {
+                    assert!(
+                        html.contains(&format!("id=\"{id}\"")),
+                        "description must reference current feedback: {html}"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn upload_policy_rejects_multiple_plain_files_but_allows_folder_contents() {
@@ -4266,6 +4361,9 @@ mod tests {
         }));
         let mut dom = VirtualDom::new_with_props(select_methods_fixture, config);
         dom.rebuild_in_place();
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
         let html = dioxus_ssr::render(&dom);
         assert!(html.contains("aria-describedby=\"method-fixture-help\""));
         assert!(html.contains("id=\"method-fixture-help\""));

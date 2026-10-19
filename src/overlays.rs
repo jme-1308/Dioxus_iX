@@ -126,11 +126,18 @@ pub fn Tooltip(
             MENU_ITEM_ID.fetch_add(1, Ordering::Relaxed)
         )
     });
+    let controller = crate::use_tooltip(id.clone());
+    let binding = crate::use_tooltip_anchor(controller.clone(), anchor_id.clone());
+    let describedby = binding.describedby("");
     rsx! {
         span { id: anchor_id.clone(), class: "ix-tooltip-anchor {class}",
+            "aria-describedby":describedby,
+            onmounted:binding.onmounted,onresize:binding.onresize,onvisible:binding.onvisible,
+            onmouseenter:binding.onmouseenter,onmouseleave:binding.onmouseleave,
+            onfocusin:binding.onfocusin,onfocusout:binding.onfocusout,onkeydown:binding.onkeydown,
             {children}
             crate::TooltipFor {
-                id, anchor_id: anchor_id.clone(), title, title_icon, placement, show_delay, hide_delay,
+                id, controller:controller.clone(), title, title_icon, placement, show_delay, hide_delay,
                 interactive, animation_frame, onnativeerror,
                 "{label}"
             }
