@@ -144,6 +144,8 @@ fn focus_fixture(fixture: FocusFixture) -> Element {
             popover_overlay_callbacks(popover, Rc::new(Cell::new(true))),
         )
     });
+    node.set_ownership(Vec::new(), true);
+    node.set_mounted();
     let mounted = node.clone();
     use_hook(move || popover.overlay.set(Some(mounted)));
     let cleanup = node.clone();
@@ -400,10 +402,35 @@ fn popover_custom_trigger_cleanup_preserves_newer_mount_and_cancels_removed_retu
     let calls = Rc::new(RefCell::new(Vec::new()));
     mount_focus(&fixture, "body", &calls);
     mounted_trigger(&dom, &fixture, "first-trigger", &calls);
+    let first_ownership = fixture
+        .0
+        .popover
+        .get()
+        .unwrap()
+        .trigger_ownership
+        .peek()
+        .clone();
     mounted_trigger(&dom, &fixture, "second-trigger", &calls);
+    let second_ownership = fixture
+        .0
+        .popover
+        .get()
+        .unwrap()
+        .trigger_ownership
+        .peek()
+        .clone();
+    assert!(first_ownership.is_some() && second_ownership.is_some());
+    assert!(
+        first_ownership != second_ownership,
+        "replacement trigger owns its lineage"
+    );
     dom.in_scope(ScopeId::ROOT, || fixture.0.first.get().unwrap().set(false));
     settle_focus(&mut dom);
     let (popover, generation) = present_focus(&dom, &fixture);
+    assert!(
+        *popover.trigger_ownership.peek() == second_ownership,
+        "removing an older trigger preserves its replacement's ownership"
+    );
     assert_eq!(popover.trigger_id.peek().as_deref(), Some("second-trigger"));
     dom.in_scope(ScopeId::ROOT, || {
         popover.apply_opening_focus(generation, &[candidate("body", 0, false)]);
@@ -414,4 +441,92 @@ fn popover_custom_trigger_cleanup_preserves_newer_mount_and_cancels_removed_retu
     assert!(calls.borrow().is_empty());
     assert!(popover.trigger_id.peek().is_none());
     assert!(popover.surface.invoker.peek().is_none());
+    assert!(popover.trigger_ownership.peek().is_none());
+}
+
+#[derive(Clone, Default)]
+struct ExternalOwnershipFixture(Rc<ExternalOwnershipState>);
+#[derive(Default)]
+struct ExternalOwnershipState {
+    parent: RefCell<Option<crate::overlay_runtime::NodeHandle>>,
+    nested: Cell<Option<Signal<bool>>>,
+    body: RefCell<Vec<crate::overlay_runtime::NodeHandle>>,
+}
+impl PartialEq for ExternalOwnershipFixture {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+#[component]
+fn ExternalOwnershipTrigger(popover: PopoverHandle) -> Element {
+    let _ = use_popover_trigger_mount(popover, "external-popover-trigger");
+    VNode::empty()
+}
+#[component]
+fn ExternalOwnershipScope(
+    node: Option<crate::overlay_runtime::NodeHandle>,
+    popover: PopoverHandle,
+) -> Element {
+    crate::overlay_runtime::use_overlay_scope(node);
+    rsx! { ExternalOwnershipTrigger {popover} }
+}
+#[component]
+fn ExternalOwnershipBody(fixture: ExternalOwnershipFixture) -> Element {
+    *fixture.0.body.borrow_mut() = crate::overlay_runtime::use_overlay_ancestors();
+    VNode::empty()
+}
+fn external_ownership_fixture(fixture: ExternalOwnershipFixture) -> Element {
+    let popover = use_popover();
+    let runtime = crate::overlay_runtime::use_overlay_runtime();
+    let parent = use_hook(move || {
+        runtime.register(
+            "external-header".into(),
+            1,
+            crate::overlay_registry::OverlayKind::Header,
+            crate::overlay_registry::CloseBehavior::Both,
+            crate::overlay_runtime::Callbacks {
+                read: Rc::new(|| Some(false)),
+                before: Rc::new(|_| true),
+                apply: Rc::new(|_| {}),
+                key: None,
+            },
+        )
+    });
+    parent.set_ownership(Vec::new(), true);
+    parent.set_mounted();
+    *fixture.0.parent.borrow_mut() = Some(parent.clone());
+    let cleanup = parent.clone();
+    use_drop(move || cleanup.unregister());
+    let nested = use_signal(|| true);
+    fixture.0.nested.set(Some(nested));
+    rsx! {
+        ExternalOwnershipScope {node:nested().then_some(parent),popover}
+        Popover {popover,label:"External trigger",ExternalOwnershipBody {fixture}}
+    }
+}
+#[test]
+fn externally_rendered_popover_body_inherits_current_trigger_ancestry() {
+    let fixture = ExternalOwnershipFixture::default();
+    let mut dom = VirtualDom::new_with_props(external_ownership_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    settle_focus(&mut dom);
+    let parent = fixture.0.parent.borrow().clone().unwrap();
+    let body = fixture.0.body.borrow().clone();
+    assert!(
+        body.len() == 2 && body[1] == parent,
+        "body retains its Popover and trigger-owned outer Header"
+    );
+    let popover = body[0].clone();
+    dom.in_scope(ScopeId::ROOT, || fixture.0.nested.get().unwrap().set(false));
+    settle_focus(&mut dom);
+    assert!(
+        *fixture.0.body.borrow() == [popover.clone()],
+        "moving the trigger into an inline group removes the outer Header"
+    );
+    dom.in_scope(ScopeId::ROOT, || fixture.0.nested.get().unwrap().set(true));
+    settle_focus(&mut dom);
+    assert!(
+        *fixture.0.body.borrow() == [popover, parent],
+        "the same retained body follows restored trigger ownership"
+    );
 }

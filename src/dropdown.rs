@@ -572,6 +572,7 @@ struct TriggerMount {
     node: Rc<MountedData>,
     blocked: Rc<Cell<bool>>,
     visibility: Option<TriggerVisibility>,
+    ancestors: Vec<NodeHandle>,
 }
 #[derive(Clone, Copy)]
 struct TriggerVisibility {
@@ -591,6 +592,7 @@ struct DropdownContext {
     actions: Rc<RefCell<ItemKeyboardActions>>,
     node: Rc<RefCell<Option<NodeHandle>>>,
     trigger: Rc<RefCell<Option<TriggerMount>>>,
+    ancestors: Rc<RefCell<Vec<NodeHandle>>>,
     focus_task: Rc<RefCell<Option<dioxus::core::Task>>>,
 }
 impl DropdownContext {
@@ -732,7 +734,9 @@ impl DropdownContext {
             node,
             blocked,
             visibility,
+            ancestors: self.ancestors.borrow().clone(),
         });
+        self.sync_ownership();
         if changed {
             self.notify();
         }
@@ -745,7 +749,40 @@ impl DropdownContext {
             .is_some_and(|current| Rc::ptr_eq(&current.node, node));
         if owns {
             self.trigger.borrow_mut().take();
+            self.sync_ownership();
             self.invalidate_focus();
+            self.notify();
+        }
+    }
+    fn sync_ownership(&self) {
+        let trigger = self.trigger.borrow().clone();
+        if let Some(node) = self.node.borrow().clone() {
+            let ready = trigger.is_some();
+            let ancestors = trigger
+                .map(|trigger| trigger.ancestors)
+                .unwrap_or_else(|| self.ancestors.borrow().clone());
+            node.set_ownership(ancestors, ready);
+        }
+    }
+    fn update_trigger_ancestors(&self, element: &Rc<MountedData>, ancestors: Vec<NodeHandle>) {
+        let changed = {
+            let mut trigger = self.trigger.borrow_mut();
+            if let Some(trigger) = trigger
+                .as_mut()
+                .filter(|trigger| Rc::ptr_eq(&trigger.node, element))
+            {
+                if trigger.ancestors == ancestors {
+                    false
+                } else {
+                    trigger.ancestors = ancestors;
+                    true
+                }
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.sync_ownership();
             self.notify();
         }
     }
@@ -1675,6 +1712,7 @@ pub fn use_dropdown() -> DropdownHandle {
         actions: use_hook(|| Rc::new(RefCell::new(BTreeMap::new()))),
         node: use_hook(|| Rc::new(RefCell::new(None))),
         trigger: use_hook(|| Rc::new(RefCell::new(None))),
+        ancestors: use_hook(|| Rc::new(RefCell::new(Vec::new()))),
         focus_task: use_hook(|| Rc::new(RefCell::new(None))),
     };
     let dropped = context.clone();
@@ -1847,6 +1885,14 @@ fn use_trigger_binding(
     in_dropdown_item: bool,
 ) -> DropdownTriggerBinding {
     let identity = context.as_ref().map(|context| context.id);
+    let ancestors = overlay_runtime::use_overlay_ancestors()
+        .into_iter()
+        .filter(|node| {
+            context
+                .as_ref()
+                .is_none_or(|context| node.id() != context.node_id())
+        })
+        .collect::<Vec<_>>();
     let focus_binding = use_item_host("native-opt-in");
     let blocked = use_hook(|| Rc::new(Cell::new(disabled)));
     blocked.set(disabled);
@@ -1866,6 +1912,9 @@ fn use_trigger_binding(
         .map(|(context, _)| context.clone());
     if let Some(context) = cancel_disabled {
         context.invalidate_focus();
+    }
+    if let Some((current, node)) = owned.borrow().as_ref() {
+        current.update_trigger_ancestors(node, ancestors.clone());
     }
     let cleanup = owned.clone();
     use_drop(move || {
@@ -1896,6 +1945,7 @@ fn use_trigger_binding(
             });
             focus_binding.mount(&target, node.clone());
             context.mount_trigger(node.clone(), blocked.clone());
+            context.update_trigger_ancestors(&node, ancestors.clone());
             *owned.borrow_mut() = Some((context.clone(), node));
         }
     });
@@ -2200,6 +2250,20 @@ fn DropdownSurface(
             node
         }
     });
+    let ancestors = overlay_runtime::use_overlay_ancestors();
+    *context.ancestors.borrow_mut() = ancestors.clone();
+    let body_ancestors = if external {
+        context
+            .trigger
+            .borrow()
+            .as_ref()
+            .map(|trigger| trigger.ancestors.clone())
+            .unwrap_or(ancestors)
+    } else {
+        ancestors
+    };
+    overlay_runtime::use_overlay_scope_with_ancestors(Some(node.clone()), body_ancestors);
+    context.sync_ownership();
     node.set_close_behavior(settings.behavior.into());
     node.set_trigger_visibility_check(!settings.suppress_trigger_visibility_check);
     use_context_provider(|| context.clone());
@@ -2339,7 +2403,7 @@ fn DropdownSurface(
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
         "data-ix-overlay-items-owner":items_owner,"data-ix-overlay-active-item":active_id,
         style:if external{format!("--ix-dropdown-area:{}",effective_placement.area())}else{format!("anchor-name:--ix-dropdown-anchor-{};--ix-dropdown-area:{}",context.id,effective_placement.area())},
-        onmounted:move |event|{mount_context.state.borrow_mut().mounted=true;trigger_binding.onmounted.call(event.clone());mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.set_navigation_mode(state.settings.mode.as_str());drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}mount_context.apply_trigger_visibility();},
+        onmounted:move |event|{mounted_node.set_mounted();mount_context.state.borrow_mut().mounted=true;trigger_binding.onmounted.call(event.clone());mounted_node.sync_open(*mount_context.open.peek());let pending=mount_context.state.borrow().focus_pending;if *mount_context.open.peek(){let state=mount_context.state.borrow();mounted_node.set_navigation_mode(state.settings.mode.as_str());drop(state);if let Some(last)=pending{mount_context.focus_edge_with_checked(last.last,last.allow_checked);}}mount_context.apply_trigger_visibility();},
         onclick:move |event:MouseEvent| {if !external {event.stop_propagation();if !blocked&&!click_context.state.borrow().blocked&&event.default_action_enabled(){let previous=*click_context.open.peek();click_context.request_from_trigger(!previous,Reason::Trigger,click_context.keyboard_mode());}}},
         onfocus:move |_|focused_in.set(true), onblur:move |_|focused_out.set(false),
         onkeydown:move |event:KeyboardEvent|{if !external&&trigger_focused.get(){direct_key(&key_context,event,true,None,false);}},

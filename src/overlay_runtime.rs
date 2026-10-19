@@ -110,6 +110,9 @@ pub(crate) struct Callbacks {
 struct Entry {
     generation: u64,
     revision: u64,
+    mounted: bool,
+    ownership_ready: bool,
+    ancestors: Vec<NodeHandle>,
     before_operation: Option<u64>,
     kind: OverlayKind,
     behavior: CloseBehavior,
@@ -259,7 +262,7 @@ impl Runtime {
             report
                 .nodes
                 .iter()
-                .find(|node| node.id == root && node.generation == generation && node.connected)
+                .find(|node| node.id == root && node.generation == generation)
         });
         let mut keys = Vec::with_capacity(members.len());
         if let Some(observed) = observed {
@@ -327,6 +330,52 @@ pub(crate) struct NodeHandle {
     id: String,
     generation: u64,
 }
+impl PartialEq for NodeHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.generation == other.generation
+            && Weak::ptr_eq(&self.runtime, &other.runtime)
+    }
+}
+impl Eq for NodeHandle {}
+
+#[derive(Clone, Copy)]
+struct OverlayScope(Signal<Vec<NodeHandle>>);
+
+/// Consume the parent once: a provider installed by this component must never
+/// become its own parent on subsequent renders.
+pub(crate) fn use_overlay_ancestors() -> Vec<NodeHandle> {
+    let parent = try_use_context::<OverlayScope>();
+    parent
+        .map(|scope| scope.0.read().clone())
+        .unwrap_or_default()
+}
+
+pub(crate) fn use_overlay_scope(node: Option<NodeHandle>) -> Vec<NodeHandle> {
+    let ancestors = use_overlay_ancestors();
+    use_overlay_scope_with_ancestors(node, ancestors.clone());
+    ancestors
+}
+
+/// Provide the effective authored lineage for a surface rendered elsewhere
+/// than its trigger. This hook deliberately consumes no lexical parent scope.
+pub(crate) fn use_overlay_scope_with_ancestors(
+    node: Option<NodeHandle>,
+    ancestors: Vec<NodeHandle>,
+) {
+    let mut scope = use_context_provider(|| OverlayScope(Signal::new(Vec::new())));
+    let mut lineage = Vec::new();
+    for current in node.into_iter().chain(ancestors) {
+        if current.is_registered() && !lineage.contains(&current) {
+            lineage.push(current);
+        }
+    }
+    let changed = *scope.0.peek() != lineage;
+    if changed {
+        scope.0.set(lineage);
+    }
+}
+
 impl RuntimeHandle {
     fn new() -> Self {
         Self(Rc::new(RefCell::new(Runtime {
@@ -1213,11 +1262,26 @@ impl RuntimeHandle {
             if !runtime.order.contains(&id) {
                 runtime.order.push(id.clone());
             }
+            let ownership = runtime
+                .nodes
+                .get(&id)
+                .filter(|entry| entry.generation == generation)
+                .map(|entry| {
+                    (
+                        entry.mounted,
+                        entry.ownership_ready,
+                        entry.ancestors.clone(),
+                    )
+                })
+                .unwrap_or((false, false, Vec::new()));
             runtime.nodes.insert(
                 id.clone(),
                 Entry {
                     generation,
                     revision,
+                    mounted: ownership.0,
+                    ownership_ready: ownership.1,
+                    ancestors: ownership.2,
                     before_operation: None,
                     kind,
                     behavior,
@@ -1234,11 +1298,21 @@ impl RuntimeHandle {
         }
         drop(runtime);
         self.join_node(&id);
+        self.publish_ownership();
         NodeHandle {
             runtime: Rc::downgrade(&self.0),
             id,
             generation,
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn node_handle(&self, id: &str) -> Option<NodeHandle> {
+        let generation = self.entry(id)?.generation;
+        Some(NodeHandle {
+            runtime: Rc::downgrade(&self.0),
+            id: id.into(),
+            generation,
+        })
     }
     fn domain(&self) -> Option<Domain> {
         self.0.borrow().domain.clone()
@@ -1301,6 +1375,49 @@ impl RuntimeHandle {
             domain.sync_open(id, generation, open);
         }
     }
+    /// Dioxus lifetimes and authored relationships are the only graph input.
+    /// Native observations are limited to read-only geometry/order/Tab facts.
+    fn publish_ownership(&self) {
+        let entries = self
+            .0
+            .borrow()
+            .nodes
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect::<Vec<_>>();
+        let facts = entries
+            .into_iter()
+            .map(|(id, entry)| {
+                let mut ancestors = Vec::new();
+                for ancestor in &entry.ancestors {
+                    let same_document = ancestor.runtime().is_some_and(|runtime| {
+                        let document = runtime.0.borrow().document.clone();
+                        let own_document = self.0.borrow().document.clone();
+                        document.is_empty() || own_document.is_empty() || document == own_document
+                    });
+                    if ancestor.id != id
+                        && ancestor.is_registered()
+                        && same_document
+                        && !ancestors.contains(&ancestor.id)
+                    {
+                        ancestors.push(ancestor.id.clone());
+                    }
+                }
+                NativeFact {
+                    id,
+                    generation: entry.generation,
+                    connected: entry.mounted,
+                    discovery_ready: entry.ownership_ready,
+                    assignment_ancestors: Some(ancestors.clone()),
+                    trigger_ancestors: ancestors,
+                }
+            })
+            .collect::<Vec<_>>();
+        self.0.borrow_mut().registry.observe(&facts);
+        if let Some(domain) = self.domain() {
+            domain.observe_owner(&self.owner_id(), &facts);
+        }
+    }
     fn attach_document(&self, document: &str) {
         if document.is_empty() || self.0.borrow().document == document {
             return;
@@ -1351,6 +1468,7 @@ impl RuntimeHandle {
         for id in ids {
             self.join_node(&id);
         }
+        self.publish_ownership();
         for (id, callback) in categories {
             if let Some(domain) = self.domain() {
                 domain.register_category(self.owner_id(), id, callback);
@@ -1995,6 +2113,8 @@ impl RuntimeHandle {
                 domain.unregister(id, generation);
             }
         }
+        drop(runtime);
+        self.publish_ownership();
     }
     fn start_bridge(&self) {
         if self.0.borrow().bridge.is_some() {
@@ -2147,43 +2267,6 @@ impl RuntimeHandle {
                 self.0.borrow_mut().registry.set_presence(id, open);
             }
         }
-        let facts = snapshots
-            .iter()
-            .map(|(id, entry)| {
-                let node = report.nodes.iter().find(|node| {
-                    node.id == *id && node.generation == entry.generation && node.connected
-                });
-                NativeFact {
-                    id: id.clone(),
-                    generation: entry.generation,
-                    connected: node.is_some(),
-                    discovery_ready: node.is_some_and(|node| node.discovery_ready),
-                    assignment_ancestors: node.and_then(|node| node.assignment_ancestors.clone()),
-                    trigger_ancestors: node
-                        .map_or_else(Vec::new, |node| node.trigger_ancestors.clone()),
-                }
-            })
-            .collect::<Vec<_>>();
-        self.0.borrow_mut().registry.observe(&facts);
-        if let Some(domain) = self.domain() {
-            if report.phase == "trap" || report.key == "Tab" {
-                let all = report
-                    .nodes
-                    .iter()
-                    .map(|node| NativeFact {
-                        id: node.id.clone(),
-                        generation: node.generation,
-                        connected: node.connected,
-                        discovery_ready: node.discovery_ready,
-                        assignment_ancestors: node.assignment_ancestors.clone(),
-                        trigger_ancestors: node.trigger_ancestors.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                domain.observe_all(&all);
-            } else {
-                domain.observe_owner(&report.owner, &facts);
-            }
-        }
         // Submenu anchor ancestry is a current DOM fact, independent of the
         // optional visibility observer. Suppressing visibility must not disable
         // the source's submenu placement override.
@@ -2191,9 +2274,10 @@ impl RuntimeHandle {
             let Some(in_dropdown_item) = node.anchor_in_dropdown_item else {
                 continue;
             };
-            let Some(entry) = self.entry(&node.id).filter(|entry| {
-                node.connected && node.generation == entry.generation && entry.kind.is_dropdown()
-            }) else {
+            let Some(entry) = self
+                .entry(&node.id)
+                .filter(|entry| node.generation == entry.generation && entry.kind.is_dropdown())
+            else {
                 continue;
             };
             if let Some(callback) = &entry.anchor_shape {
@@ -2230,7 +2314,6 @@ impl RuntimeHandle {
             let Some(entry) = self.entry(&node.id).filter(|entry| {
                 entry.kind == OverlayKind::Popover
                     && entry.generation == node.generation
-                    && node.connected
                     && node.trap_enabled
             }) else {
                 continue;
@@ -2272,10 +2355,7 @@ impl RuntimeHandle {
         KeyDecision::default()
     }
     fn reported_kind(&self, report: &Report, id: &str) -> Option<OverlayKind> {
-        let node = report
-            .nodes
-            .iter()
-            .find(|node| node.id == id && node.connected)?;
+        let node = report.nodes.iter().find(|node| node.id == id)?;
         self.entry(id)
             .filter(|entry| entry.generation == node.generation)
             .map(|entry| entry.kind)
@@ -2337,8 +2417,7 @@ impl RuntimeHandle {
             return KeyDecision::default();
         }
         let Some(owner) = report.nodes.iter().find(|node| {
-            node.connected
-                && node.on_trigger
+            node.on_trigger
                 && self.entry(&node.id).is_some_and(|entry| {
                     entry.generation == node.generation && entry.kind == OverlayKind::Header
                 })
@@ -2441,9 +2520,10 @@ impl RuntimeHandle {
         );
         root.and_then(|root| {
             let entry = self.entry(&root)?;
-            let node = report.nodes.iter().find(|node| {
-                node.id == root && node.generation == entry.generation && node.connected
-            })?;
+            let node = report
+                .nodes
+                .iter()
+                .find(|node| node.id == root && node.generation == entry.generation)?;
             if self.read_current(&root, &entry) != Some(true) {
                 return None;
             }
@@ -2604,6 +2684,59 @@ impl RuntimeHandle {
     }
 }
 impl NodeHandle {
+    pub(crate) fn set_ownership(&self, ancestors: Vec<NodeHandle>, ready: bool) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        let mut lineage = Vec::new();
+        for ancestor in ancestors {
+            if ancestor != *self && ancestor.is_registered() && !lineage.contains(&ancestor) {
+                lineage.push(ancestor);
+            }
+        }
+        let changed = {
+            let mut state = runtime.0.borrow_mut();
+            let Some(entry) = state
+                .nodes
+                .get_mut(&self.id)
+                .filter(|entry| entry.generation == self.generation)
+            else {
+                return;
+            };
+            if entry.ancestors == lineage && entry.ownership_ready == ready {
+                false
+            } else {
+                entry.ancestors = lineage;
+                entry.ownership_ready = ready;
+                true
+            }
+        };
+        if changed {
+            runtime.publish_ownership();
+        }
+    }
+    pub(crate) fn set_mounted(&self) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        let changed = {
+            let mut state = runtime.0.borrow_mut();
+            let Some(entry) = state
+                .nodes
+                .get_mut(&self.id)
+                .filter(|entry| entry.generation == self.generation)
+            else {
+                return;
+            };
+            let changed = !entry.mounted;
+            entry.mounted = true;
+            changed
+        };
+        if changed {
+            runtime.publish_ownership();
+        }
+    }
+
     /// A current Dioxus content surface owns its virtual click propagation.
     /// Keep browser defaults intact, including native input and form actions.
     pub(crate) fn dioxus_inside_click(&self, event: &MouseEvent) {
@@ -2651,9 +2784,10 @@ impl NodeHandle {
                 let state = runtime.0.borrow();
                 let observed = state.observation.as_ref();
                 let owner = observed.and_then(|report| {
-                    report.nodes.iter().find(|node| {
-                        node.id == self.id && node.generation == self.generation && node.connected
-                    })
+                    report
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == self.id && node.generation == self.generation)
                 });
                 let inventory = state.owned_inventory(navigation_id, navigation_entry.generation);
                 let focused = focused_target.or_else(|| {
@@ -3392,13 +3526,6 @@ enum DocumentAction {
 struct NodeFacts {
     id: String,
     generation: u64,
-    connected: bool,
-    #[serde(default)]
-    discovery_ready: bool,
-    #[serde(default)]
-    trigger_ancestors: Vec<String>,
-    #[serde(default)]
-    assignment_ancestors: Option<Vec<String>>,
     #[serde(default)]
     trigger_id: String,
     #[serde(default)]
@@ -3639,8 +3766,195 @@ mod tests {
                 key: None,
             },
         );
+        node.set_ownership(Vec::new(), true);
+        node.set_mounted();
         Model { open, veto, node }
     }
+    fn assign(runtime: &RuntimeHandle, id: &str, ancestors: &[&str], ready: bool) {
+        let handle = |id: &str| NodeHandle {
+            runtime: Rc::downgrade(&runtime.0),
+            id: id.into(),
+            generation: runtime.entry(id).unwrap().generation,
+        };
+        let node = handle(id);
+        node.set_ownership(ancestors.iter().map(|id| handle(id)).collect(), ready);
+        node.set_mounted();
+    }
+    #[test]
+    fn authored_ownership_ignores_native_graph_claims_and_guards_actual_lifetimes() {
+        let runtime = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let parent = model(&runtime, "owned-parent", OverlayKind::Dropdown, log.clone());
+        let child = model(&runtime, "owned-child", OverlayKind::Dropdown, log.clone());
+        child.node.set_ownership(
+            vec![parent.node.clone(), child.node.clone(), parent.node.clone()],
+            true,
+        );
+        assert_eq!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_parent("owned-child")
+                .as_deref(),
+            Some("owned-parent")
+        );
+        runtime.observe(&report(
+            &runtime,
+            1,
+            "observe",
+            serde_json::json!([
+                {"id":"owned-child","generation":1,"connected":false,"discovery_ready":false,
+                    "trigger_ancestors":["fabricated"],"assignment_ancestors":[]}
+            ]),
+        ));
+        runtime.observe(&report(&runtime, 2, "observe", serde_json::json!([])));
+        assert_eq!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_parent("owned-child")
+                .as_deref(),
+            Some("owned-parent")
+        );
+        let same = runtime.register(
+            "owned-child".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            runtime.entry("owned-child").unwrap().callbacks,
+        );
+        assert!(same == child.node);
+        assert_eq!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_parent("owned-child")
+                .as_deref(),
+            Some("owned-parent")
+        );
+        let replacement = runtime.register(
+            "owned-parent".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            runtime.entry("owned-parent").unwrap().callbacks,
+        );
+        replacement.set_ownership(Vec::new(), true);
+        replacement.set_mounted();
+        assert!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_parent("owned-child")
+                .is_none(),
+            "a same-ID replacement cannot inherit a stale parent handle"
+        );
+        parent.node.set_ownership(Vec::new(), true);
+        child.node.set_ownership(vec![replacement.clone()], true);
+        assert_eq!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_parent("owned-child")
+                .as_deref(),
+            Some("owned-parent")
+        );
+        let foreign = RuntimeHandle::new();
+        let copied = model(&foreign, "owned-parent", OverlayKind::Dropdown, log);
+        assert!(
+            copied.node != parent.node,
+            "runtime identity belongs to handle equality"
+        );
+        child.node.unregister();
+        assert!(
+            runtime
+                .0
+                .borrow()
+                .registry
+                .cached_children("owned-parent")
+                .is_empty()
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct ScopeFixture(Rc<ScopeFixtureState>);
+    #[derive(Default)]
+    struct ScopeFixtureState {
+        switch: Cell<Option<Signal<bool>>>,
+        seen: RefCell<Vec<String>>,
+    }
+    impl PartialEq for ScopeFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    #[component]
+    fn ScopeFixtureChild(state: ScopeFixture) -> Element {
+        let ancestors = use_overlay_scope(None);
+        *state.0.seen.borrow_mut() = ancestors.iter().map(|node| node.id.clone()).collect();
+        rsx! { div {} }
+    }
+    fn scope_fixture_root(state: ScopeFixture) -> Element {
+        let runtime = use_hook(RuntimeHandle::new);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let nodes = use_hook(move || {
+            (
+                model(&runtime, "scope-first", OverlayKind::Header, log.clone()).node,
+                model(&runtime, "scope-second", OverlayKind::Header, log).node,
+            )
+        });
+        let switch = use_signal(|| false);
+        state.0.switch.set(Some(switch));
+        use_overlay_scope(Some(if switch() { nodes.1 } else { nodes.0 }));
+        rsx! { ScopeFixtureChild { state } }
+    }
+    fn scope_override_fixture_root(state: ScopeFixture) -> Element {
+        let runtime = use_hook(RuntimeHandle::new);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let nodes = use_hook(move || {
+            (
+                model(&runtime, "scope-inner", OverlayKind::Popover, log.clone()).node,
+                model(&runtime, "scope-effective-parent", OverlayKind::Header, log).node,
+            )
+        });
+        let lexical = use_overlay_ancestors();
+        assert!(lexical.is_empty());
+        use_overlay_scope_with_ancestors(Some(nodes.0), vec![nodes.1.clone(), nodes.1]);
+        rsx! { ScopeFixtureChild { state } }
+    }
+    #[test]
+    fn explicit_surface_lineage_reaches_body_without_lexical_parent_discovery() {
+        let state = ScopeFixture::default();
+        let mut dom = VirtualDom::new_with_props(scope_override_fixture_root, state.clone());
+        dom.rebuild_in_place();
+        assert_eq!(
+            *state.0.seen.borrow(),
+            ["scope-inner", "scope-effective-parent"]
+        );
+    }
+    #[test]
+    fn reactive_overlay_scope_tracks_parent_updates_without_consuming_own_provider() {
+        let state = ScopeFixture::default();
+        let mut dom = VirtualDom::new_with_props(scope_fixture_root, state.clone());
+        dom.rebuild_in_place();
+        assert_eq!(*state.0.seen.borrow(), ["scope-first"]);
+        dom.in_runtime(|| state.0.switch.get().unwrap().set(true));
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert_eq!(*state.0.seen.borrow(), ["scope-second"]);
+        dom.in_runtime(|| state.0.switch.get().unwrap().set(false));
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert_eq!(*state.0.seen.borrow(), ["scope-first"]);
+    }
+
     fn report(
         runtime: &RuntimeHandle,
         sequence: u64,
@@ -3652,10 +3966,11 @@ mod tests {
         }))
         .unwrap()
     }
-    fn nodes(ancestors: &[&str]) -> serde_json::Value {
+    fn nodes(runtime: &RuntimeHandle, ancestors: &[&str]) -> serde_json::Value {
+        assign(runtime, "child", ancestors, true);
         serde_json::json!([
-            {"id":"header","generation":1,"connected":true,"discovery_ready":true},
-            {"id":"child","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":ancestors}
+            {"id":"header","generation":1},
+            {"id":"child","generation":1}
         ])
     }
 
@@ -3820,8 +4135,8 @@ mod tests {
         runtime.input(event(
             serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),
             "sequence":1,"kind":"observe",
-            "nodes":[{"id":"origin","generation":1,"connected":true,"discovery_ready":true},
-                {"id":"peer","generation":1,"connected":true,"discovery_ready":true}]}),
+            "nodes":[{"id":"origin","generation":1},
+                {"id":"peer","generation":1}]}),
         ));
         let outside = event(
             serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),
@@ -3837,7 +4152,12 @@ mod tests {
         let log = Rc::new(RefCell::new(Vec::new()));
         let header = model(&runtime, "header", OverlayKind::Header, log.clone());
         let child = model(&runtime, "child", OverlayKind::Dropdown, log.clone());
-        runtime.observe(&report(&runtime, 1, "observe", nodes(&["header"])));
+        runtime.observe(&report(
+            &runtime,
+            1,
+            "observe",
+            nodes(&runtime, &["header"]),
+        ));
         assert!(header.node.request(true, Reason::Trigger, false));
         assert!(child.node.request(true, Reason::Trigger, false));
         log.borrow_mut().clear();
@@ -3869,8 +4189,13 @@ mod tests {
         let log = Rc::new(RefCell::new(Vec::new()));
         let header = model(&runtime, "header", OverlayKind::Header, log.clone());
         let child = model(&runtime, "child", OverlayKind::Dropdown, log);
-        runtime.observe(&report(&runtime, 1, "observe", nodes(&[])));
-        runtime.observe(&report(&runtime, 2, "observe", nodes(&["header"])));
+        runtime.observe(&report(&runtime, 1, "observe", nodes(&runtime, &[])));
+        runtime.observe(&report(
+            &runtime,
+            2,
+            "observe",
+            nodes(&runtime, &["header"]),
+        ));
         assert!(header.node.request(true, Reason::Trigger, false));
         assert!(runtime.child_path("header", &["header".into()], &["child".into()]));
         assert!(!runtime.key_child_path("header", &["header".into()], &["child".into()], "Escape"));
@@ -3940,7 +4265,12 @@ mod tests {
         let log = Rc::new(RefCell::new(Vec::new()));
         let header = model(&runtime, "header", OverlayKind::Header, log.clone());
         let child = model(&runtime, "child", OverlayKind::Dropdown, log);
-        runtime.observe(&report(&runtime, 3, "observe", nodes(&["header"])));
+        runtime.observe(&report(
+            &runtime,
+            3,
+            "observe",
+            nodes(&runtime, &["header"]),
+        ));
         assert!(header.node.request(true, Reason::Trigger, false));
         assert!(child.node.request(true, Reason::Trigger, false));
         assert!(runtime.dismiss_root("child", Reason::Escape, true));
@@ -3954,14 +4284,14 @@ mod tests {
         let parent = model(&runtime, "late-parent", OverlayKind::Dropdown, log.clone());
         let child = model(&runtime, "late-child", OverlayKind::Dropdown, log);
         assert!(parent.node.request(true, Reason::Trigger, false));
+        child.node.set_ownership(vec![parent.node.clone()], false);
         let mut observed = report(
             &runtime,
             1,
             "observe",
             serde_json::json!([
-                {"id":"late-parent","generation":1,"connected":true,"discovery_ready":true},
-                {"id":"late-child","generation":1,"connected":true,"discovery_ready":false,
-                    "assignment_ancestors":["late-parent"],"trigger_ancestors":["late-parent"]}
+                {"id":"late-parent","generation":1},
+                {"id":"late-child","generation":1}
             ]),
         );
         runtime.observe(&observed);
@@ -3974,7 +4304,7 @@ mod tests {
                 .is_empty()
         );
         observed.sequence = 2;
-        observed.nodes[1].discovery_ready = true;
+        child.node.set_ownership(vec![parent.node.clone()], true);
         runtime.observe(&observed);
         assert_eq!(
             runtime.0.borrow().registry.cached_children("late-parent"),
@@ -4084,7 +4414,12 @@ mod tests {
                 key: None,
             },
         );
-        runtime.observe(&report(&runtime, 1, "observe", nodes(&["header"])));
+        runtime.observe(&report(
+            &runtime,
+            1,
+            "observe",
+            nodes(&runtime, &["header"]),
+        ));
         assert!(parent.node.request(true, Reason::Trigger, false));
         assert!(child.request(true, Reason::Trigger, false));
         log.borrow_mut().clear();
@@ -4207,7 +4542,7 @@ mod tests {
             1,
             "key",
             serde_json::json!([
-                {"id":"typed","generation":1,"connected":true,"on_trigger":true}
+                {"id":"typed","generation":1,"on_trigger":true}
             ]),
         );
         native.key = "Enter".into();
@@ -4309,7 +4644,7 @@ mod tests {
         other.registration_key = "other-owner".into();
         runtime.register_owned_item_description("other-owner", Some(("foreign".into(), 1)), other);
         runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":"owned-items","generation":1,"connected":true,"discovery_ready":true,
+            "nodes":[{"id":"owned-items","generation":1,
                 "item_order":["unknown-native-control","key-b","key-b","other-owner"],
                 "inventory":{"items_host":"untrusted","hosts":[{"item":"native","kind":"dropdown","target":"native","capture":"native"}],
                 "navigation_order":["native"],"query_order":["native"]}}]})));
@@ -4423,17 +4758,17 @@ mod tests {
         let _root = model(&first, "document-root", OverlayKind::Dropdown, log.clone());
         let _child = model(&first, "document-child", OverlayKind::Dropdown, log.clone());
         let _peer = model(&second, "document-peer", OverlayKind::Dropdown, log);
+        assign(&first, "document-child", &["document-root"], true);
         let document = "document snapshot and local cue broadcast";
         let raw = mixed_inventory_facts();
         describe_inventory(&first, "document-root", 1, &raw);
         describe_inventory(&second, "document-peer", 1, &raw);
         first.input(event(serde_json::json!({"owner":first.owner_id(),"sequence":1,"document":document,"kind":"observe",
-            "nodes":[{"id":"document-root","generation":1,"connected":true,"discovery_ready":true,
+            "nodes":[{"id":"document-root","generation":1,
                 "item_order":["key-a","key-b"]},
-                {"id":"document-child","generation":1,"connected":true,"discovery_ready":true,
-                    "assignment_ancestors":["document-root"],"trigger_ancestors":["document-root"]}]})));
+                {"id":"document-child","generation":1}]})));
         second.input(event(serde_json::json!({"owner":second.owner_id(),"sequence":1,"document":document,"kind":"observe",
-            "nodes":[{"id":"document-peer","generation":1,"connected":true,"discovery_ready":true,"item_order":["key-a","key-b"]}]})));
+            "nodes":[{"id":"document-peer","generation":1,"item_order":["key-a","key-b"]}]})));
         let snapshots = {
             let state = first.0.borrow();
             state.item_descriptions.clone()
@@ -4510,7 +4845,7 @@ mod tests {
         );
         let document = "document authentication";
         runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"document":document,"kind":"observe",
-            "nodes":[{"id":"document-auth","generation":1,"connected":true,"discovery_ready":true}]})));
+            "nodes":[{"id":"document-auth","generation":1}]})));
         let valid = document_value(
             &runtime,
             99,
@@ -4550,7 +4885,7 @@ mod tests {
         runtime.input(event(accepted));
         assert_eq!(runtime.document_keyboard_mode(), Some(true));
         runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":3,"document":"authorized next document","kind":"observe",
-            "nodes":[{"id":"document-auth","generation":1,"connected":true,"discovery_ready":true}]})));
+            "nodes":[{"id":"document-auth","generation":1}]})));
         runtime.input(event(document_value(
             &runtime,
             100,
@@ -4795,7 +5130,7 @@ mod tests {
         }
         let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
             "kind":"observe",
-            "nodes":[{"id":root,"generation":generation,"connected":true,"discovery_ready":true,
+            "nodes":[{"id":root,"generation":generation,
                 "mode":"active-descendant","inside":true,"on_trigger":true,
                 "item_order":order}]});
         assert!(!publication_dispatch(&dom, transport, "input", report));
@@ -4897,7 +5232,7 @@ mod tests {
         for (sequence, key) in [(1, "End"), (2, "ArrowUp")] {
             let input = event(
                 serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe",
-                "hosts":["mixed-root"],"nodes":[{"id":"mixed-root","generation":1,"connected":true,"discovery_ready":true,
+                "hosts":["mixed-root"],"nodes":[{"id":"mixed-root","generation":1,
                     "mode":"roving-tabindex","inside":true,"item_order":["key-a","key-b"]}]}),
             );
             runtime.input(input);
@@ -5089,7 +5424,7 @@ mod tests {
         dom.in_scope(fixture.0.owner.get().unwrap(), || {
             runtime.input(event(
                 serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id,"generation":1,"connected":true,"item_order":raw.hosts.iter().map(|host| host.registration_key.clone()).collect::<Vec<_>>()}]}),
+            "nodes":[{"id":node.id,"generation":1,"item_order":raw.hosts.iter().map(|host| host.registration_key.clone()).collect::<Vec<_>>()}]}),
             ))
         });
         let ids = [
@@ -5147,7 +5482,7 @@ mod tests {
         dom.in_scope(fixture.0.owner.get().unwrap(), || {
             runtime.input(event(
                 serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id,"generation":1,"connected":true,"item_order":raw.hosts.iter().map(|host| host.registration_key.clone()).collect::<Vec<_>>()}]}),
+            "nodes":[{"id":node.id,"generation":1,"item_order":raw.hosts.iter().map(|host| host.registration_key.clone()).collect::<Vec<_>>()}]}),
             ))
         });
         let captured = Rc::new(());
@@ -5224,7 +5559,7 @@ mod tests {
             1,
             "key",
             serde_json::json!([
-                {"id":"tab-report","generation":1,"connected":true,"inside":true,"on_trigger":true,
+                {"id":"tab-report","generation":1,"inside":true,"on_trigger":true,
                     "focusable_ids":["b-parent","custom","a-control"]}
             ]),
         );
@@ -5927,13 +6262,16 @@ mod tests {
             log.clone(),
         );
         let child = model(&runtime, "child-roving", OverlayKind::Dropdown, log.clone());
+        child.node.set_ownership(vec![parent.node.clone()], true);
         let raw = mixed_inventory_facts();
         for host in &raw.hosts {
             install_item_mock(&runtime, host, ItemMountMock::default());
         }
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
-            {"id":"parent-roving","generation":1,"connected":true,"discovery_ready":true,"item_order":["key-a","key-b"]},
-            {"id":"child-roving","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":["parent-roving"],"item_order":["key-a","key-b"]}]})));
+        runtime.input(event(
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
+            {"id":"parent-roving","generation":1,"item_order":["key-a","key-b"]},
+            {"id":"child-roving","generation":1,"item_order":["key-a","key-b"]}]}),
+        ));
         assert!(parent.node.request(true, Reason::Trigger, false));
         assert!(child.node.request(true, Reason::Trigger, false));
         assert_eq!(

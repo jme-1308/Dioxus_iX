@@ -5,6 +5,42 @@ use super::*;
 use dioxus::html::Modifiers;
 use std::cell::Cell;
 
+thread_local! {
+    static FIXTURE_RUNTIMES: RefCell<Vec<Weak<RefCell<Runtime>>>> = const { RefCell::new(Vec::new()) };
+}
+fn remember_fixture_runtime(runtime: &RuntimeHandle) {
+    FIXTURE_RUNTIMES.with(|runtimes| {
+        let mut runtimes = runtimes.borrow_mut();
+        runtimes.retain(|runtime| runtime.strong_count() > 0);
+        if !runtimes
+            .iter()
+            .any(|old| old.ptr_eq(&Rc::downgrade(&runtime.0)))
+        {
+            runtimes.push(Rc::downgrade(&runtime.0));
+        }
+    });
+}
+fn fixture_node(id: &str) -> NodeHandle {
+    FIXTURE_RUNTIMES
+        .with(|runtimes| {
+            runtimes.borrow().iter().rev().find_map(|weak| {
+                let runtime = RuntimeHandle(weak.upgrade()?);
+                let entry = runtime.entry(id)?;
+                Some(NodeHandle {
+                    runtime: Rc::downgrade(&runtime.0),
+                    id: id.into(),
+                    generation: entry.generation,
+                })
+            })
+        })
+        .unwrap_or_else(|| panic!("missing explicit Rust fixture registration {id}"))
+}
+fn set_fixture_ownership(id: &str, ancestors: &[&str]) {
+    let node = fixture_node(id);
+    node.set_ownership(ancestors.iter().map(|id| fixture_node(id)).collect(), true);
+    node.set_mounted();
+}
+
 #[derive(Clone, Copy)]
 struct OwnerToken(usize);
 
@@ -139,6 +175,8 @@ fn owner_root(fixture: Fixture) -> Element {
 fn build(fixture: &Fixture) -> VirtualDom {
     let mut dom = VirtualDom::new_with_props(owner_root, fixture.clone());
     dom.rebuild_in_place();
+    remember_fixture_runtime(&fixture.runtime());
+    set_fixture_ownership(fixture.node().id(), &[]);
     dom
 }
 
@@ -152,7 +190,7 @@ fn observe(dom: &VirtualDom, fixture: &Fixture, document: &str, sequence: u64, i
     let report: Report = serde_json::from_value(serde_json::json!({
         "owner": fixture.runtime().owner_id(),"document": document,"sequence": sequence,"kind":"observe",
         "nodes": ids.iter().map(|id| serde_json::json!({
-            "id": id,"generation":1,"connected":true,"discovery_ready":true
+            "id": id,"generation":1
         })).collect::<Vec<_>>()
     })).unwrap();
     dom.in_scope(fixture.scope(), || {
@@ -496,9 +534,9 @@ fn trap_node(
     ancestors: &[&str],
     candidates: &[(&str, &[&str], bool)],
 ) -> serde_json::Value {
+    set_fixture_ownership(id, ancestors);
     serde_json::json!({
-        "id":id,"generation":1,"connected":true,"discovery_ready":true,
-        "trigger_ancestors":ancestors,"trap_enabled":true,
+        "id":id,"generation":1,"trap_enabled":true,
         "tab_candidates":candidates.iter().map(|(target,hosts,active)| serde_json::json!({
             "target":target,"hosts":hosts,"active":active,"tab_index":0
         })).collect::<Vec<_>>()
@@ -769,6 +807,8 @@ fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizatio
             CloseBehavior::Both,
             callbacks,
         );
+        replacement.set_ownership(Vec::new(), true);
+        replacement.set_mounted();
         fixture.0.borrow_mut().node = Some(replacement);
     });
     settle_exit(&mut dom);
@@ -919,8 +959,8 @@ fn exit_report(fixture: &Fixture, document: &str, sequence: u64) -> serde_json::
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
         "kind":"key","phase":"capture","key":"Tab","hosts":[id],"triggers":[id],
         "tab_order":["before","trigger","after"],
-        "nodes":[{"id":id,"generation":fixture.node().generation(),"connected":true,
-            "discovery_ready":true,"mode":"roving-tabindex","trigger_id":"trigger",
+        "nodes":[{"id":id,"generation":fixture.node().generation(),
+            "mode":"roving-tabindex","trigger_id":"trigger",
             "inside":true,"on_trigger":true}]
     })
 }
@@ -929,7 +969,7 @@ fn exit_observe(dom: &VirtualDom, fixture: &Fixture, document: &str, sequence: u
     let value = serde_json::json!({
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
         "kind":"observe","nodes":[{"id":fixture.0.borrow().id,
-            "generation":fixture.node().generation(),"connected":true,"discovery_ready":true}]
+            "generation":fixture.node().generation()}]
     });
     assert!(deliver_trap(dom, fixture, value).default_action_enabled());
 }
@@ -1161,7 +1201,7 @@ fn mounted_dropdown_tab_reaches_registered_adjacent_control_inside_popover() {
     );
     let mut report = exit_report(&child, document, 1);
     report["kind"] = "observe".into();
-    report["nodes"][0]["trigger_ancestors"] = serde_json::json!([parent.node().id()]);
+    child.node().set_ownership(vec![parent.node()], true);
     report["nodes"].as_array_mut().unwrap().push(parent_node);
     deliver_trap(&child_dom, &child, report.clone());
     let mounted = register_exit_mount(&parent_dom, &parent, "after");
@@ -1272,16 +1312,26 @@ fn header_exit_nodes(
     nested: bool,
 ) -> Vec<serde_json::Value> {
     let parent_id = parent.0.borrow().id;
+    fixture.header.set_ownership(vec![parent.node()], true);
+    fixture.header.set_mounted();
+    fixture.child.node().set_ownership(
+        if nested {
+            vec![fixture.header.clone(), parent.node()]
+        } else {
+            vec![parent.node()]
+        },
+        true,
+    );
+    fixture.child.node().set_mounted();
     vec![
         serde_json::json!({
-            "id":fixture.child.0.borrow().id,"generation":1,"connected":true,
-            "discovery_ready":true,"trigger_ancestors":if nested {vec![fixture.header.id(),parent_id]} else {vec![parent_id]},
+            "id":fixture.child.0.borrow().id,"generation":1,
             "mode":"active-descendant","trigger_id":"header-child-trigger",
             "inside":true,"on_trigger":true,"tab_candidates":[]
         }),
         serde_json::json!({
-            "id":fixture.header.id(),"generation":1,"connected":true,"discovery_ready":true,
-            "trigger_ancestors":[parent_id],"trigger_id":"header-more",
+            "id":fixture.header.id(),"generation":1,
+            "trigger_id":"header-more",
             "header_controls":["header-more","header-menu"],"tab_candidates":[]
         }),
         trap_node(
@@ -1764,8 +1814,8 @@ fn anchor_visibility_rejects_invalid_closed_replaced_and_dropped_owners_and_hono
 
 fn anchor_shape_report(fixture: &Fixture, sequence: u64) -> serde_json::Value {
     serde_json::json!({"owner":fixture.runtime().owner_id(),"document":"current anchor shape document",
-        "sequence":sequence,"kind":"observe","nodes":[{"id":fixture.0.borrow().id,"generation":1,"connected":true,
-        "discovery_ready":true,"trigger_id":"geometry-trigger","anchor_id":"geometry-anchor"}]})
+        "sequence":sequence,"kind":"observe","nodes":[{"id":fixture.0.borrow().id,"generation":1,
+        "trigger_id":"geometry-trigger","anchor_id":"geometry-anchor"}]})
 }
 
 #[test]
@@ -1818,7 +1868,7 @@ fn current_anchor_shape_is_independent_of_visibility_suppression_and_rejects_sta
     );
     assert_eq!(geometries.get(), 0);
     assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
-    for (sequence, invalid) in [(3, "missing"), (4, "stale"), (5, "disconnected")] {
+    for (sequence, invalid) in [(3, "missing"), (4, "stale"), (5, "foreign-owner")] {
         let mut report = current.clone();
         report["sequence"] = sequence.into();
         match invalid {
@@ -1829,7 +1879,7 @@ fn current_anchor_shape_is_independent_of_visibility_suppression_and_rejects_sta
                     .remove("anchor_in_dropdown_item");
             }
             "stale" => report["nodes"][0]["generation"] = 2.into(),
-            "disconnected" => report["nodes"][0]["connected"] = false.into(),
+            "foreign-owner" => report["owner"] = "wrong-owner".into(),
             _ => unreachable!(),
         }
         assert!(deliver_trap(&dom, &fixture, report).default_action_enabled());
@@ -1873,12 +1923,16 @@ fn current_anchor_shape_is_independent_of_visibility_suppression_and_rejects_sta
 }
 
 fn anchor_focus_nodes(nodes: &[(&Fixture, &[&str])]) -> Vec<serde_json::Value> {
-    nodes.iter().map(|(fixture, ancestors)| {
-        let id = fixture.0.borrow().id;
-        serde_json::json!({"id":id,"generation":fixture.node().generation(),"connected":true,
-            "discovery_ready":true,"trigger_ancestors":ancestors,"trigger_id":format!("{id}-trigger"),
+    nodes
+        .iter()
+        .map(|(fixture, ancestors)| {
+            let id = fixture.0.borrow().id;
+            set_fixture_ownership(id, ancestors);
+            serde_json::json!({"id":id,"generation":fixture.node().generation(),
+            "trigger_id":format!("{id}-trigger"),
             "mode":"roving-tabindex","on_trigger":true})
-    }).collect()
+        })
+        .collect()
 }
 
 fn anchor_focus_report(
@@ -2280,11 +2334,15 @@ fn linked_roving_trigger_owns_tab_before_enclosing_active_descendant_host() {
     });
     let document = "linked roving trigger root host document";
     attach(&dom, &child, document);
+    root.set_ownership(Vec::new(), true);
+    root.set_mounted();
+    child.node().set_ownership(vec![root.clone()], true);
+    child.node().set_mounted();
     let nodes = serde_json::json!([
-        {"id":root.id(),"generation":1,"connected":true,"discovery_ready":true,
+        {"id":root.id(),"generation":1,
          "mode":"active-descendant","trigger_id":"linked-root-trigger","inside":true},
-        {"id":child.node().id(),"generation":1,"connected":true,"discovery_ready":true,
-         "trigger_ancestors":[root.id()],"mode":"roving-tabindex",
+        {"id":child.node().id(),"generation":1,
+         "mode":"roving-tabindex",
          "trigger_id":"linked-child-trigger","on_trigger":true}
     ]);
     deliver_trap(
@@ -2442,10 +2500,16 @@ fn standalone_trigger_others_cascade_consumes_veto_retained_latches_then_restore
         );
         (root, grand)
     });
+    root.set_ownership(Vec::new(), true);
+    root.set_mounted();
+    child.node().set_ownership(vec![root.clone()], true);
+    child.node().set_mounted();
+    grand.set_ownership(vec![child.node(), root.clone()], true);
+    grand.set_mounted();
     let nodes = serde_json::json!([
-        {"id":root.id(),"generation":1,"connected":true,"discovery_ready":true},
-        {"id":child.node().id(),"generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":[root.id()],"mode":"active-descendant","on_trigger":true},
-        {"id":grand.id(),"generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":[child.node().id(),root.id()]}
+        {"id":root.id(),"generation":1},
+        {"id":child.node().id(),"generation":1,"mode":"active-descendant","on_trigger":true},
+        {"id":grand.id(),"generation":1}
     ]);
     deliver_trap(
         &dom,
@@ -2586,8 +2650,8 @@ fn trigger_others_captures_exclusions_but_cascades_current_reentrant_parent_and_
         if !change.open && !once.replace(true) {
             passed_node.set_close_behavior(CloseBehavior::Both);
             later_node.set_close_behavior(CloseBehavior::Inside);
-            let mut relocated = nodes.clone();
-            relocated[0]["trigger_ancestors"] = serde_json::json!(["others-mut-new-parent"]);
+            active_node.set_ownership(vec![fixture_node("others-mut-new-parent")], true);
+            let relocated = nodes.clone();
             active_node
                 .with_owner(|| {
                     let active_runtime = RuntimeHandle(active_runtime.upgrade().unwrap());
@@ -2636,6 +2700,8 @@ fn trigger_others_captures_exclusions_but_cascades_current_reentrant_parent_and_
                     key: None,
                 },
             );
+            node.set_ownership(Vec::new(), true);
+            node.set_mounted();
             *dynamic_node.borrow_mut() = Some(node);
             assert_owner(&owner, scope, 754);
         }
@@ -2738,6 +2804,8 @@ fn trigger_others_skips_dropped_owner_and_visits_replacement_at_new_connection_p
                         CloseBehavior::Both,
                         callbacks,
                     );
+                    node.set_ownership(Vec::new(), true);
+                    node.set_mounted();
                     replacement_slot.upgrade().unwrap().borrow_mut().node = Some(node);
                 })
                 .unwrap();
@@ -2798,7 +2866,7 @@ fn trigger_others_preserves_current_ancestors_and_closes_former_parent_sibling_a
         (&dom_live, &live),
         (&dom_middle, &middle),
     ];
-    let mut nodes = anchor_focus_nodes(&[
+    let nodes = anchor_focus_nodes(&[
         (&old, &[]),
         (&active, &["others-old-parent"]),
         (&sibling, &["others-old-parent"]),
@@ -2820,7 +2888,9 @@ fn trigger_others_preserves_current_ancestors_and_closes_former_parent_sibling_a
         domain.cached_children(active.node().id()),
         [descendant.node().id()]
     );
-    nodes[1]["trigger_ancestors"] = serde_json::json!([middle.node().id(), live.node().id()]);
+    active
+        .node()
+        .set_ownership(vec![middle.node(), live.node()], true);
     deliver_trap(
         &dom_active,
         &active,

@@ -438,6 +438,15 @@ impl Registry {
 
     fn prune_node_references(&mut self, id: &str) {
         self.presentation_order.retain(|candidate| candidate != id);
+        // An ID is not a lifetime. A different owner may still retain its old
+        // facts when this parent is removed or replaced; require an explicit
+        // fresh relationship instead of adopting the replacement automatically.
+        for node in self.nodes.values_mut() {
+            node.trigger_ancestors.retain(|ancestor| ancestor != id);
+            if let Some(ancestors) = &mut node.assignment_ancestors {
+                ancestors.retain(|ancestor| ancestor != id);
+            }
+        }
     }
 }
 
@@ -540,6 +549,8 @@ mod tests {
         reg.observe(&[fact("parent", 1, &[], true)]);
         assert_eq!(reg.cached_parent("child"), None);
         reg.observe(&[fact("parent", 2, &[], true)]);
+        assert_eq!(reg.cached_parent("child"), None);
+        reg.observe(&[fact("child", 2, &["parent"], true)]);
         assert_eq!(reg.cached_parent("child").as_deref(), Some("parent"));
     }
 

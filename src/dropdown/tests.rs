@@ -499,51 +499,6 @@ fn unrelated_trigger_target(h: &Harness) -> (Rc<Cell<bool>>, Rc<RefCell<Vec<Chan
     (open, seen)
 }
 
-fn observe_rendered_hierarchy(h: &Harness) {
-    fn collect(
-        context: &DropdownContext,
-        ancestors: Vec<String>,
-        nodes: &mut Vec<serde_json::Value>,
-    ) {
-        let node = context.node.borrow().clone().unwrap();
-        if nodes
-            .iter()
-            .any(|existing| existing["id"].as_str() == Some(node.id()))
-        {
-            return;
-        }
-        nodes.push(serde_json::json!({"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,"trigger_ancestors":ancestors}));
-        let mut child_ancestors = vec![node.id().to_string()];
-        child_ancestors.extend(ancestors);
-        let children = context
-            .entries
-            .borrow()
-            .values()
-            .filter_map(|entry| entry.submenu)
-            .collect::<Vec<_>>();
-        for child in children {
-            collect(&child.context(), child_ancestors.clone(), nodes);
-        }
-    }
-    let context = h.context();
-    let runtime = context.node.borrow().as_ref().unwrap().runtime().unwrap();
-    let mut nodes = Vec::new();
-    collect(&context, Vec::new(), &mut nodes);
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
-    dispatch(
-        &h.dom,
-        "input",
-        transport,
-        serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":nodes})
-            .to_string(),
-    );
-}
-
 #[test]
 fn dioxus_keys_keep_navigation_after_read_only_order_observation() {
     let _guard = crate::test_event_converter_guard();
@@ -571,8 +526,14 @@ fn dioxus_keys_keep_navigation_after_read_only_order_observation() {
             .values()
             .map(|entry| h.attrs[&h.target(&entry.label).raw()]["data-ix-item-key"].clone())
             .collect::<Vec<_>>();
-        dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,"item_order":order}]}).to_string());
+        dispatch(
+            &h.dom,
+            "input",
+            transport,
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
+            "nodes":[{"id":node.id(),"generation":node.generation(),"item_order":order}]})
+            .to_string(),
+        );
         assert!(h.key("Menu", Key::End).0);
         assert_eq!(selected_label(&context).unwrap(), "Explicit");
         assert!(h.key("Alpha", Key::Home).0);
@@ -588,7 +549,8 @@ fn dioxus_submenu_open_veto_keeps_navigation_with_the_visible_owner() {
         deep_veto: true,
         ..Fixture::default()
     });
-    observe_rendered_hierarchy(&h);
+    // This workflow chooses the linked row as the controller's one current trigger.
+    mount_trigger_mock(&mut h, "Linked");
     h.key("Menu", Key::ArrowDown);
     h.key("Menu", Key::ArrowRight);
     let root = h.context();
@@ -1122,24 +1084,8 @@ fn dropdown_linked_clicks_toggle_only_their_child_and_selection_closes_current_t
     let mut h = Harness::new();
     let root = h.context();
     let child = h.config.borrow().linked.get().unwrap();
-    // Supply read-only current ancestry for this renderer without a DOM observer.
-    let root_node = root.node.borrow().clone().unwrap();
-    let child_node = child.context().node.borrow().clone().unwrap();
-    let runtime = root_node.runtime().unwrap();
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
-    dispatch(&h.dom, "input", transport, serde_json::json!({
-        "owner":runtime.owner_id(),"sequence":1,"kind":"observe",
-        "nodes":[
-            {"id":root_node.id(),"generation":root_node.generation(),"connected":true,"discovery_ready":true},
-            {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,"trigger_ancestors":[root_node.id()]}
-        ]
-    }).to_string());
-    h.settle();
+    // This workflow chooses the linked row as the controller's one current trigger.
+    mount_trigger_mock(&mut h, "Linked");
     h.click("Menu");
     let result = h.click("Linked");
     assert_eq!(
@@ -1321,8 +1267,14 @@ fn registered_inventory_key_from(
         .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
-    dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"open":true,"discovery_ready":true,"item_order":order}]}).to_string());
+    dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe",
+        "nodes":[{"id":node.id(),"generation":node.generation(),"open":true,"item_order":order}]})
+        .to_string(),
+    );
     h.dom.in_runtime(|| {
         let event = key_event(key, Modifiers::empty());
         let on_trigger = mode == DropdownNavigationMode::ActiveDescendant && focused.is_none();
@@ -1588,6 +1540,8 @@ fn mounted_navigation_cues_render_classes_root_aria_and_survive_props_without_in
 fn linked_open_cue_and_typed_trigger_aria_follow_current_rust_submenu_state() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::new();
+    // This workflow chooses the linked row as the controller's one current trigger.
+    mount_trigger_mock(&mut h, "Linked");
     h.click("Menu");
     h.click("Linked");
     let child = h.config.borrow().linked.get().unwrap();
@@ -1608,7 +1562,7 @@ fn linked_open_cue_and_typed_trigger_aria_follow_current_rust_submenu_state() {
         transport,
         serde_json::json!({
             "owner":runtime.owner_id(),"document":document,"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
+            "nodes":[{"id":node.id(),"generation":node.generation(),
                 "item_order":[host.registration_key]}]
         })
         .to_string(),
@@ -1717,7 +1671,6 @@ fn rapid_navigation_commits_the_latest_mounted_target_without_foreign_commands()
 fn dropdown_actual_keyboard_flags_distinguish_active_descendant_and_roving() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::new();
-    observe_rendered_hierarchy(&h);
     let context = h.context();
     let result = h.key("Menu", Key::ArrowDown);
     assert!(result.0);
@@ -1918,7 +1871,7 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
             .collect::<Vec<_>>();
         let before = h.config.borrow().requests.clone();
         let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[{
-            "id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
+            "id":node.id(),"generation":node.generation(),
             "open":true,"focus_count":3,"focused_index":index,"focusable_ids":focusable_ids,"item_order":order
         }]});
         dispatch(&h.dom, "input", transport, report.to_string());
@@ -2073,9 +2026,9 @@ fn dropdown_linked_activation_keys_present_and_forward_without_click_or_key_canc
             focus_checked: true,
             ..Default::default()
         });
+        mount_trigger_mock(&mut h, "Linked");
         let parent = h.context();
         let child = h.config.borrow().linked.get().unwrap();
-        observe_rendered_hierarchy(&h);
         h.key("Menu", Key::ArrowDown);
         let active = selected_entry(&parent).unwrap();
         assert_eq!(parent.entries.borrow()[&active].label, "Linked");
@@ -2131,9 +2084,9 @@ fn dropdown_linked_activation_keys_present_and_forward_without_click_or_key_canc
         linked_veto: true,
         ..Default::default()
     });
+    mount_trigger_mock(&mut h, "Linked");
     let parent = h.context();
     let child = h.config.borrow().linked.get().unwrap();
-    observe_rendered_hierarchy(&h);
     h.key("Menu", Key::ArrowDown);
     let result = h.key("Menu", Key::ArrowRight);
     assert!(!result.0);
@@ -2392,10 +2345,16 @@ fn shared_modality_cleanup_and_open_active_descendant_mode_change_focus_the_moun
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
     let document = format!("trigger-focus-test-{}", runtime.owner_id());
-    dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"document":document,"sequence":1,
+    dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({"owner":runtime.owner_id(),"document":document,"sequence":1,
         "kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
-            "item_order":[]}]}).to_string());
+        "nodes":[{"id":node.id(),"generation":node.generation(),
+            "item_order":[]}]})
+        .to_string(),
+    );
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
         "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
     assert!(
@@ -3099,13 +3058,14 @@ fn registered_native_control_keeps_ad_editing_defaults_while_escape_and_roving_s
     assert!(!*context.open.peek());
 }
 #[test]
-fn two_linked_rows_open_their_current_controllers_after_parent_is_already_open() {
+fn two_linked_rows_open_current_controllers_without_native_hierarchy_snapshots() {
     let _guard = crate::test_event_converter_guard();
     let mut h = Harness::new();
+    // This workflow chooses the linked row as the controller's one current trigger.
+    mount_trigger_mock(&mut h, "Linked");
     h.click("Menu");
     let parent = h.context();
     let parent_node = parent.node.borrow().clone().unwrap();
-    let runtime = parent_node.runtime().unwrap();
     let linked = h.config.borrow().linked.get().unwrap();
     let explicit = parent
         .entries
@@ -3116,39 +3076,6 @@ fn two_linked_rows_open_their_current_controllers_after_parent_is_already_open()
         .submenu
         .unwrap();
     let inventory = parent_node.inventory().unwrap();
-    let order = inventory
-        .hosts
-        .iter()
-        .map(|host| host.registration_key.clone())
-        .collect::<Vec<_>>();
-    let mut nodes = vec![
-        serde_json::json!({"id":parent_node.id(),"generation":parent_node.generation(),
-        "connected":true,"discovery_ready":true,"item_order":order}),
-    ];
-    for handle in [linked, explicit] {
-        let child = handle.context();
-        let node = child.node.borrow().clone().unwrap();
-        nodes.push(
-            serde_json::json!({"id":node.id(),"generation":node.generation(),"connected":true,
-            "discovery_ready":true,"trigger_ancestors":[parent_node.id()]}),
-        );
-    }
-    let transport = h
-        .attrs
-        .iter()
-        .find(|(_, attributes)| {
-            attributes.get("data-ix-overlay-transport") == Some(&runtime.owner_id())
-        })
-        .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-        .unwrap();
-    dispatch(
-        &h.dom,
-        "input",
-        transport,
-        serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":nodes})
-            .to_string(),
-    );
-    h.settle();
     for handle in [linked, explicit] {
         let child_id = handle.context().node_id();
         let host = inventory
@@ -3190,6 +3117,8 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
         focus_checked: true,
         ..Default::default()
     });
+    // This workflow chooses the linked row as the controller's one current trigger.
+    mount_trigger_mock(&mut h, "Linked");
     let parent = h.context();
     let child = h.config.borrow().linked.get().unwrap().context();
     assert!(!parent.state.borrow().external && child.state.borrow().external);
@@ -3209,10 +3138,10 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
-        {"id":parent_node.id(),"generation":parent_node.generation(),"connected":true,"discovery_ready":true,
+        {"id":parent_node.id(),"generation":parent_node.generation(),
             "mode":"active-descendant","item_order":parent_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()},
-        {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,
-            "mode":"active-descendant","trigger_ancestors":[parent_node.id()],"item_order":child_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()}
+        {"id":child_node.id(),"generation":child_node.generation(),
+            "mode":"active-descendant","item_order":child_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()}
     ]}).to_string());
     let trigger = parent_facts
         .hosts
@@ -3301,7 +3230,7 @@ fn external_ad_item_keys_navigate_current_mounts_and_return_to_parent() {
     native_facts.hosts[0].kind = ItemKind::NativeOptIn;
     register_inventory(&child, &native_facts);
     dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"kind":"observe","nodes":[
-        {"id":child_node.id(),"generation":child_node.generation(),"connected":true,"discovery_ready":true,
+        {"id":child_node.id(),"generation":child_node.generation(),
             "item_order":native_facts.hosts.iter().map(|host|host.registration_key.clone()).collect::<Vec<_>>()}
     ]}).to_string());
     h.dom.in_runtime(|| {

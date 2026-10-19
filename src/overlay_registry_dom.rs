@@ -20,47 +20,12 @@ let alive=true,sequence=0,lastSignature='',documentEvents=null;
 // Mounted focus registration uses Rust-authored IDs; unidentified DOM controls
 // have no programmatic focus fallback and need no native identity registry.
 function nativeId(el){return el instanceof HTMLElement?el.id:'';}
-// Registry reachability is separate from source-selected light-DOM queries.
-// Scan a subtree only at discovery/mutation boundaries, never for every query.
-const registryScopes=new Set([document]);
-function registryElements(selector){
-  const result=[];
-  for(const scope of registryScopes)if(scope===document||scope.host.isConnected)result.push(...scope.querySelectorAll(selector));
-  return result;
-}
-function registryElement(id){
-  for(const scope of registryScopes){
-    if(scope!==document&&!scope.host.isConnected)continue;
-    const element=scope.getElementById(id);if(element instanceof HTMLElement)return element;
-  }
-  return null;
-}
-function discoverRegistryScopes(node){
-  if(!(node instanceof Element||node instanceof Document||node instanceof ShadowRoot))return;
-  const add=scope=>{
-    if(registryScopes.has(scope))return;
-    registryScopes.add(scope);observeRegistryScope(scope);
-    scope.addEventListener('slotchange',reportObserve,{signal});
-    discoverRegistryScopes(scope);
-  };
-  if(node instanceof Element&&node.shadowRoot)add(node.shadowRoot);
-  const containing=node.getRootNode();
-  if(containing instanceof ShadowRoot&&containing.host.isConnected)add(containing);
-  for(const element of node.querySelectorAll('*'))if(element.shadowRoot)add(element.shadowRoot);
-}
+// Dioxus owns overlay lifetimes and relationships. These document lookups
+// supply only remaining native order/geometry/presentation facts for its marked
+// light-DOM surfaces. Foreign shadow-tree discovery is unsupported.
 function transport(){
-  let fallback=null,owned=null;
-  for(const n of registryElements('input[data-ix-overlay-transport]')){
-    if(!(n instanceof HTMLInputElement)||!n.isConnected||n.getAttribute('data-ix-overlay-transport')!==owner)continue;
-    // A root-owned transport remains on the renderer's real delegation path,
-    // including when assigned light items are currently outside that path.
-    if(n.closest('[data-ix-overlay-root]')){
-      if(n.getRootNode() instanceof ShadowRoot)return n;
-      owned||=n;
-    }
-    fallback||=n;
-  }
-  return owned||fallback;
+  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input instanceof HTMLInputElement&&input.isConnected&&input.getAttribute('data-ix-overlay-transport')===owner)return input;
+  return null;
 }
 function deepActive(){
   let a=document.activeElement;
@@ -88,31 +53,23 @@ function isActiveHost(n){
   return n.getAttribute('data-header-popup-host')===(hr?.getAttribute('data-small')==='true'?'small':'large');
 }
 function findHost(id){
-  for(const n of registryElements('[data-ix-overlay-host]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-host')===id&&isActiveHost(n))return n;
+  for(const n of document.querySelectorAll('[data-ix-overlay-host]'))if(n instanceof HTMLElement&&n.isConnected&&n.getAttribute('data-ix-overlay-host')===id&&isActiveHost(n))return n;
   return null;
 }
 function findItemsHost(root,id){
-  const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?registryElement(configured):null;
+  const configured=root.getAttribute('data-ix-overlay-items-host-id'),element=configured?document.getElementById(configured):null;
   return element instanceof HTMLElement&&element.isConnected?element:findHost(root.getAttribute('data-ix-overlay-items-owner')||id);
 }
 // Trigger metadata and anchor style are rendered by the owning Dioxus
 // component. This lookup observes current markers, including cross-owner
 // controls; an ID alone never installs behavior or supplies a fallback.
 function findTrigger(id){
-  for(const element of registryElements('[data-ix-overlay-trigger]'))if(element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-trigger')===id)return element;
+  for(const element of document.querySelectorAll('[data-ix-overlay-trigger]'))if(element instanceof HTMLElement&&element.isConnected&&element.getAttribute('data-ix-overlay-trigger')===id)return element;
   return null;
 }
 function findAnchor(root){
   const id=root?.getAttribute('data-ix-overlay-anchor-id'),el=id?document.getElementById(id):null;
   return el instanceof HTMLElement&&el.isConnected?el:null;
-}
-function triggerAncestors(trigger,selfId){
-  const out=[];
-  for(let c=stepParent(trigger);c;c=stepParent(c))if(c instanceof HTMLElement&&isActiveHost(c)){
-    const hid=c.getAttribute('data-ix-overlay-host');
-    if(hid&&hid!==selfId&&!out.includes(hid))out.push(hid);
-  }
-  return out;
 }
 function nearestHost(n){for(let c=n;c;c=stepParent(c))if(c instanceof HTMLElement&&isActiveHost(c))return c;return null;}
 function isHiddenOrInert(n){
@@ -196,23 +153,16 @@ function headerControls(root){
     .filter(el=>el instanceof HTMLElement&&el.closest('header.ix-application-header')===header).map(nativeId);
 }
 function collectFacts(kind,event,phase=''){
-  for(const site of event?.composedPath?.()||[])if(site instanceof ShadowRoot&&!registryScopes.has(site))discoverRegistryScopes(site);
   const active=deepActive(),path=event?.composedPath?.()||[];
   const target=path[0] instanceof HTMLElement?path[0]:(event?.target instanceof HTMLElement?event.target:null);
   const hosts=pathIds(path,'data-ix-overlay-host',isActiveHost),triggers=pathIds(path,'data-ix-overlay-trigger');
   const nodes=[],anchors=[];
-  for(const root of registryElements('[data-ix-overlay-root]')){
+  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
     if(!id||(event?.key!=='Tab'&&ro!==owner))continue;
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
-    const declared_ready=root.getAttribute('data-ix-overlay-ready')!=='false';
-    const open=root.hasAttribute('data-ix-overlay-open')?root.getAttribute('data-ix-overlay-open')==='true':root.getAttribute('data-open')==='true';
     const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id),anchor=findAnchor(root),focusables=hostFocusables(itemsHost);
-    // Dioxus renders trigger metadata before MountedEvent notifications.
-    // Current marked-control presence, not a later mounted-handle render,
-    // admits Dropdown ancestry. An ID-only control never supplies this marker.
-    const discovery_ready=declared_ready&&(!root.hasAttribute('data-ix-dropdown-focus-owned')||!!trigger);
     if(anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node)))anchors.push(id);
     const focused_index=findFocusedIndex(active,focusables);
     const on_trigger=!!trigger&&(event?target===trigger:active===trigger);
@@ -221,10 +171,8 @@ function collectFacts(kind,event,phase=''){
     // Tab handlers consume these facts without a native key transport.
     const tab_candidates=root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[];
     nodes.push({
-      id,owner:ro||'',generation,connected:root.isConnected,discovery_ready,open,mode:root.getAttribute('data-ix-overlay-mode')||'',trigger_id:nativeId(trigger),
+      id,owner:ro||'',generation,trigger_id:nativeId(trigger),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
-      trigger_ancestors:trigger||anchor?triggerAncestors(trigger||anchor,id):[],
-      assignment_ancestors:trigger?triggerAncestors(trigger,id):[],
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       item_order:registeredItemOrder(itemsHost),trigger_on_path:!!trigger&&path.includes(trigger),
       // Pinned MountedData can focus a registered handle, but cannot enumerate
@@ -263,7 +211,7 @@ function send(report,event){
 }
 
 function syncNativeSurfaces(){
-  for(const root of registryElements('[data-ix-overlay-root]')){
+  for(const root of document.querySelectorAll('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const ro=root.getAttribute('data-ix-overlay-owner'),id=root.getAttribute('data-ix-overlay-root')||'';
     if(!id||ro!==owner)continue;
@@ -287,7 +235,7 @@ function syncNativeSurfaces(){
 function reportObserve(){
   if(!alive)return;
   if(!transport())return;
-  for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
+  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.setAttribute('data-ix-overlay-native','true');
   syncNativeSurfaces();
   const report=collectFacts('observe',null);
   const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,document_tab_candidates:report.document_tab_candidates});
@@ -309,7 +257,7 @@ function sendDocumentEvent(action,event,deliverySequence){
     document_event.hosts=pathIds(path,'data-ix-overlay-host',isActiveHost);
     document_event.triggers=pathIds(path,'data-ix-overlay-trigger');
     document_event.anchors=[];
-    for(const root of registryElements('[data-ix-overlay-root][data-ix-overlay-anchor-id]')){
+    for(const root of document.querySelectorAll('[data-ix-overlay-root][data-ix-overlay-anchor-id]')){
       if(!(root instanceof HTMLElement)||!root.isConnected)continue;
       const id=root.getAttribute('data-ix-overlay-root'),anchor=findAnchor(root);
       if(id&&anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node))&&!document_event.anchors.includes(id))document_event.anchors.push(id);
@@ -349,33 +297,17 @@ function unsubscribeDocumentEvents(){
 document.addEventListener('keydown',e=>{if(e.key==='Tab')send(collectFacts('key',e,'capture'),e);},{capture:true,signal});
 document.addEventListener('keydown',e=>{if(e.key==='Tab')send(collectFacts('key',e,'trap'),e);},{signal});
 document.addEventListener('focusin',reportObserve,{signal});
-// Generic overlay discovery/dismissal still observes current focus until its
-// R02 event migration. Typed item cues are owned by Dioxus focus/blur handlers.
+// Remaining generic Tab facts observe current focus. Typed item cues are
+// owned by Dioxus focus/blur handlers.
 document.addEventListener('focusout',()=>{queueMicrotask(()=>{if(alive)reportObserve();});},{passive:true,signal});
-const observer=new MutationObserver(changes=>{
-  // Shared read-only discovery remains a separate later R02 boundary.
-  if(changes.some(change=>change.type==='childList')){
-    for(const change of changes)if(change.type==='childList'){
-      for(const node of [...change.addedNodes,...change.removedNodes])discoverRegistryScopes(node);
-    }
-    // Stop observing detached consumer trees; reattachment is discovered from
-    // its real insertion or event path, with no retained closed-root access.
-    if(Array.from(registryScopes).some(scope=>scope!==document&&!scope.host.isConnected)){
-      observer.disconnect();
-      for(const scope of Array.from(registryScopes)){
-        if(scope!==document&&!scope.host.isConnected){scope.removeEventListener('slotchange',reportObserve);registryScopes.delete(scope);}
-        else observeRegistryScope(scope);
-      }
-    }
-  }
-  reportObserve();
-});
-function observeRegistryScope(scope){observer.observe(scope===document?document.documentElement:scope,{subtree:true,childList:true,attributes:true,attributeFilter:[
+// Remaining native facts track order, focus candidates and presentation;
+// this observer never enrolls roots or changes ownership/lifecycle in Rust.
+const observer=new MutationObserver(reportObserve);
+observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
-  'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-ready','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','hidden','disabled','tabindex','inert','class'
-  ,'data-ix-item-key','data-ix-overlay-items-host-id','aria-activedescendant','data-ix-overlay-active-item','slot','name'
-]});}
-observeRegistryScope(document);discoverRegistryScopes(document);
+  'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','hidden','disabled','tabindex','inert','class',
+  'data-ix-item-key','data-ix-overlay-items-host-id','aria-activedescendant','data-ix-overlay-active-item'
+]});
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
 try{
   reportObserve();
@@ -384,8 +316,7 @@ try{
 }finally{
   alive=false;listeners.abort();observer.disconnect();
   unsubscribeDocumentEvents();
-  for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
-  registryScopes.clear();
+  for(const input of document.querySelectorAll('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');
 }
 "#;

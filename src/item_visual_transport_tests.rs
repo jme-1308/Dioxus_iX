@@ -69,6 +69,8 @@ fn owner(runtime: &RuntimeHandle, generation: u64) -> Owner {
             })),
         },
     );
+    node.set_ownership(Vec::new(), true);
+    node.set_mounted();
     Owner {
         node,
         reads,
@@ -107,7 +109,7 @@ fn report(
         .collect::<Vec<_>>();
     serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":kind,
         "phase":"bubble","key":"ArrowDown","hosts":["cue-root"],"triggers":["cue-root"],
-        "nodes":[{"id":"cue-root","generation":generation,"connected":true,"discovery_ready":true,
+        "nodes":[{"id":"cue-root","generation":generation,
             "mode":"active-descendant","inside":true,"on_trigger":true,
             "item_order":order}]})
 }

@@ -2960,6 +2960,8 @@ pub fn MenuCategory(
             node
         }
     });
+    overlay_node.set_ownership(crate::overlay_runtime::use_overlay_ancestors(), true);
+    let mounted_overlay = overlay_node.clone();
     let overlay_sync = overlay_node.clone();
     use_effect(move || overlay_sync.sync_open(flyout() == Some(id)));
     let overlay_cleanup = overlay_node.clone();
@@ -3087,6 +3089,7 @@ pub fn MenuCategory(
     let popup_enter = category.clone();
     rsx! {
         div { id:host_id.clone(),class:host_class,hidden,style:host_style,
+            onmounted:move |_|mounted_overlay.set_mounted(),
             onpointerenter:move |event|pointer_enter.pointer_enter(&event.pointer_type()),
             onpointerleave:move |event|pointer_leave.pointer_leave(&event.pointer_type()),
             onpointerdown:move |_|pointer_down.pointer_down(),
@@ -3165,6 +3168,7 @@ fn MenuCategoryContent(children: Element, parent: usize, category: CategoryNavig
         .clone()
         .expect("Category overlay registered before children");
     context.nested = Some(category);
+    crate::overlay_runtime::use_overlay_scope(Some(inventory_owner.clone()));
     use_context_provider(|| crate::dropdown::ItemInventoryOwner(inventory_owner));
     use_context_provider(|| context);
     rsx! {{children}}

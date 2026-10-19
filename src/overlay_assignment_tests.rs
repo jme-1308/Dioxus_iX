@@ -1,4 +1,4 @@
-//! Assignment discovery through real runtime form input, not native DOM proof.
+//! Explicit Rust ownership and mounted lifetimes; native reports cannot enroll graph members.
 use super::*;
 use std::cell::Cell;
 
@@ -37,9 +37,8 @@ fn report(
     serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,
         "document":document,"kind":"observe","nodes":nodes})
 }
-fn observed(id: &str, generation: u64, ancestors: &[&str]) -> serde_json::Value {
-    serde_json::json!({"id":id,"generation":generation,"connected":true,
-        "discovery_ready":true,"trigger_ancestors":ancestors,"assignment_ancestors":ancestors})
+fn observed(id: &str, generation: u64, _ancestors: &[&str]) -> serde_json::Value {
+    serde_json::json!({"id":id,"generation":generation})
 }
 
 struct Registered {
@@ -74,6 +73,8 @@ fn register(runtime: &RuntimeHandle, id: &str, generation: u64) -> Registered {
             key: None,
         },
     );
+    node.set_ownership(Vec::new(), true);
+    node.set_mounted();
     Registered {
         node,
         open,
@@ -87,6 +88,7 @@ fn current_ancestry_binds_nested_lifetimes_without_requesting_visibility() {
     let runtime = RuntimeHandle::new();
     let root = register(&runtime, "root", 1);
     let child = register(&runtime, "child", 1);
+    child.node.set_ownership(vec![root.node.clone()], true);
     let facts = [observed("root", 1, &[]), observed("child", 1, &["root"])];
     input(&runtime, report(&runtime, 1, "", &facts));
     assert_eq!(
@@ -133,6 +135,7 @@ fn current_ancestry_rejects_retired_generation_and_rebinds_the_live_registration
     let runtime = RuntimeHandle::new();
     let root = register(&runtime, "root", 1);
     let old = register(&runtime, "child", 1);
+    old.node.set_ownership(vec![root.node.clone()], true);
     input(
         &runtime,
         report(
@@ -147,6 +150,7 @@ fn current_ancestry_rejects_retired_generation_and_rebinds_the_live_registration
         ["child"]
     );
     let current = register(&runtime, "child", 2);
+    old.node.set_ownership(vec![root.node.clone()], true);
     input(
         &runtime,
         report(
@@ -165,6 +169,7 @@ fn current_ancestry_rejects_retired_generation_and_rebinds_the_live_registration
             .is_empty()
     );
     assert!(!old.node.request(true, Reason::Trigger, false));
+    current.node.set_ownership(vec![root.node.clone()], true);
     input(
         &runtime,
         report(
@@ -193,6 +198,7 @@ fn current_ancestry_coordinates_foreign_owner_children_in_the_same_document() {
     let document = format!("current-ancestry-domain-{}", parents.owner_id());
     let root = register(&parents, "root", 1);
     let child = register(&children, "child", 1);
+    child.node.set_ownership(vec![root.node.clone()], true);
     input(
         &parents,
         report(&parents, 1, &document, &[observed("root", 1, &[])]),
@@ -225,5 +231,58 @@ fn current_ancestry_coordinates_foreign_owner_children_in_the_same_document() {
     assert!(
         domain.cached_children("root").is_empty(),
         "unmounted children leave the next current snapshot"
+    );
+}
+
+#[test]
+fn native_graph_fields_cannot_enroll_disconnect_or_reparent_rust_owned_lifetimes() {
+    let runtime = RuntimeHandle::new();
+    let root = register(&runtime, "root", 1);
+    let child = register(&runtime, "child", 1);
+    child.node.set_ownership(vec![root.node.clone()], true);
+    let callbacks = runtime.entry("root").unwrap().callbacks;
+    let waiting = runtime.register(
+        "waiting".into(),
+        1,
+        OverlayKind::Dropdown,
+        CloseBehavior::Both,
+        callbacks,
+    );
+    waiting.set_ownership(vec![root.node.clone()], true);
+    input(
+        &runtime,
+        report(
+            &runtime,
+            1,
+            "",
+            &[
+                serde_json::json!({"id":"root","generation":1,"connected":false,"discovery_ready":false}),
+                serde_json::json!({"id":"child","generation":1,"connected":false,"discovery_ready":false,"trigger_ancestors":[]}),
+                serde_json::json!({"id":"waiting","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":["root"]}),
+            ],
+        ),
+    );
+    assert_eq!(
+        runtime.0.borrow().registry.cached_children("root"),
+        ["child"]
+    );
+    waiting.set_mounted();
+    assert_eq!(
+        runtime.0.borrow().registry.cached_children("root"),
+        ["child", "waiting"]
+    );
+    child.node.set_ownership(Vec::new(), true);
+    assert_eq!(
+        runtime.0.borrow().registry.cached_children("root"),
+        ["waiting"]
+    );
+    waiting.unregister();
+    assert!(
+        runtime
+            .0
+            .borrow()
+            .registry
+            .cached_children("root")
+            .is_empty()
     );
 }

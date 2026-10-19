@@ -853,6 +853,7 @@ pub struct PopoverHandle {
     focus_trigger: Signal<Option<crate::overlay_runtime::MountedFocusTarget>>,
     trigger_id: Signal<Option<String>>,
     overlay: Signal<Option<crate::overlay_runtime::NodeHandle>>,
+    trigger_ownership: Signal<Option<(u64, Vec<crate::overlay_runtime::NodeHandle>)>>,
 }
 
 // A caller can drop its show future while the Popover itself remains mounted.
@@ -896,6 +897,7 @@ pub fn use_popover() -> PopoverHandle {
         focus_trigger: use_signal(|| None),
         trigger_id: use_signal(|| None),
         overlay: use_signal(|| None),
+        trigger_ownership: use_signal(|| None),
     }
 }
 
@@ -1270,9 +1272,27 @@ pub fn use_popover_trigger_mount(
 ) -> EventHandler<MountedEvent> {
     let binding = crate::dropdown::use_item_host("native-opt-in");
     let id = id.into();
+    let ancestors = crate::overlay_runtime::use_overlay_ancestors();
+    let ownership = use_hook(|| DIALOG_ID.fetch_add(1, Ordering::Relaxed) as u64);
+    let mut trigger_ownership = popover.trigger_ownership;
+    let current = trigger_ownership.peek().clone();
+    if current
+        .as_ref()
+        .is_none_or(|(token, _)| *token == ownership)
+        && current.as_ref() != Some(&(ownership, ancestors.clone()))
+    {
+        trigger_ownership.set(Some((ownership, ancestors.clone())));
+    }
     let mounted = use_hook(|| Rc::new(std::cell::RefCell::new(None::<Rc<MountedData>>)));
     let cleanup = mounted.clone();
     use_drop(move || {
+        if trigger_ownership.try_peek().is_ok_and(|current| {
+            current
+                .as_ref()
+                .is_some_and(|(token, _)| *token == ownership)
+        }) {
+            trigger_ownership.set(None);
+        }
         if let Some(own) = cleanup.borrow_mut().take()
             && popover.surface.invoker.try_peek().is_ok_and(|current| {
                 current
@@ -1310,6 +1330,9 @@ pub fn use_popover_trigger_mount(
             .surface
             .remember_invoker(binding.runtime.capture_registered_focus(&id));
         popover.trigger_id.set(Some(id.clone()));
+        if trigger_ownership.peek().as_ref() != Some(&(ownership, ancestors.clone())) {
+            trigger_ownership.set(Some((ownership, ancestors.clone())));
+        }
     })
 }
 
@@ -1441,7 +1464,17 @@ pub fn Popover(
         let node = node.clone();
         move || overlay_slot.set(Some(node))
     });
+    let surface_ancestors = crate::overlay_runtime::use_overlay_ancestors();
+    let ancestors = popover
+        .trigger_ownership
+        .read()
+        .as_ref()
+        .map(|(_, ancestors)| ancestors.clone())
+        .unwrap_or(surface_ancestors);
+    node.set_ownership(ancestors.clone(), true);
+    crate::overlay_runtime::use_overlay_scope_with_ancestors(Some(node.clone()), ancestors);
     node.set_close_behavior(close_behavior);
+    let mounted_node = node.clone();
     let sync = node.clone();
     use_effect(move || sync.sync_open((popover.surface.open)()));
     let cleanup = node.clone();
@@ -1493,7 +1526,10 @@ pub fn Popover(
                 "popover": "manual",
                 "data-placement": placement.as_str(), "data-spike": has_spike.to_string(),
                 style: "position-anchor:--{id};position-area:{placement.as_str()}",
-                onmounted: move |event| popover.surface.mounted(*popover.surface.generation.peek(), event.data()),
+                onmounted: move |event| {
+                    mounted_node.set_mounted();
+                    popover.surface.mounted(*popover.surface.generation.peek(), event.data());
+                },
                 ontoggle: move |_| { let instance=*popover.surface.generation.peek(); spawn(async move {
                     let Some(visible) = popover.surface.native_visibility(instance).await else { return; };
                     let mut surface = popover.surface; let previous = *popover.reported_open.peek();
@@ -1711,6 +1747,8 @@ mod tests {
                 popover_overlay_callbacks(controller, Rc::new(std::cell::Cell::new(true))),
             )
         });
+        node.set_ownership(Vec::new(), true);
+        node.set_mounted();
         let registered = node.clone();
         use_hook(move || controller.overlay.set(Some(registered)));
         use_drop(move || node.unregister());
@@ -1792,6 +1830,8 @@ mod tests {
                 popover_overlay_callbacks(popover, Rc::new(std::cell::Cell::new(true))),
             )
         });
+        node.set_ownership(Vec::new(), true);
+        node.set_mounted();
         *capture.borrow_mut() = Some((popover, node));
         VNode::empty()
     }

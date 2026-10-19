@@ -15,7 +15,7 @@ fn cue_runtime(h: &mut MenuHarness, category: &CategoryNavigation) -> RuntimeHan
         .unwrap();
     menu_dispatch(&h.dom,"input",transport,serde_json::json!({
         "owner":owner,"document":format!("menu-cue-test-{owner}"),"sequence":1,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true}]}).to_string());
+        "nodes":[{"id":node.id(),"generation":node.generation()}]}).to_string());
     menu_dispatch(
         &h.dom,
         "input",

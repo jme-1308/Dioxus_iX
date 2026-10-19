@@ -395,13 +395,14 @@ impl Domain {
         }
     }
 
-    /// A complete snapshot of one owner's nodes. Missing foreign nodes are not
+    /// Rust-authored lifecycle and ownership facts for one owner. Missing foreign nodes are not
     /// disconnections. Facts cannot change another owner's partition.
     pub(crate) fn observe_owner(&self, owner: &str, facts: &[NativeFact]) {
         self.observe_partition(Some(owner), facts);
     }
 
-    /// A complete native document snapshot, including all renderer owners.
+    /// Pure graph-model snapshot used only by focused tests.
+    #[cfg(test)]
     pub(crate) fn observe_all(&self, facts: &[NativeFact]) {
         self.observe_partition(None, facts);
     }
@@ -938,6 +939,61 @@ mod tests {
             reason: Reason::Outside,
             restore_focus: false,
         }
+    }
+
+    #[test]
+    fn replacing_foreign_parent_requires_a_fresh_child_owner_relationship() {
+        let domain = Domain::join("explicit cross-owner parent lifetime");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let _parent = model(
+            &domain,
+            "owner-a",
+            "parent",
+            OverlayKind::Dropdown,
+            log.clone(),
+        );
+        let _child = model(&domain, "owner-b", "child", OverlayKind::Dropdown, log);
+        domain.observe_owner("owner-a", &[fact("parent", &[])]);
+        domain.observe_owner("owner-b", &[fact("child", &["parent"])]);
+        assert_eq!(domain.cached_parent("child").as_deref(), Some("parent"));
+        let callbacks = domain.0.borrow().entries["parent"].callbacks.clone();
+        domain.register(
+            "owner-a".into(),
+            "parent".into(),
+            2,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks.clone(),
+        );
+        let mut replacement = fact("parent", &[]);
+        replacement.generation = 2;
+        domain.observe_owner("owner-a", &[replacement]);
+        assert_eq!(
+            domain.cached_parent("child"),
+            None,
+            "publishing only the parent owner's replacement cannot revive an old child relationship"
+        );
+        domain.observe_owner("owner-b", &[fact("child", &["parent"])]);
+        assert_eq!(domain.cached_parent("child").as_deref(), Some("parent"));
+        domain.unregister("parent", 2);
+        domain.register(
+            "owner-a".into(),
+            "parent".into(),
+            3,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            callbacks,
+        );
+        let mut remounted = fact("parent", &[]);
+        remounted.generation = 3;
+        domain.observe_owner("owner-a", &[remounted]);
+        assert_eq!(
+            domain.cached_parent("child"),
+            None,
+            "unregister and same-ID remount also require a fresh child-owner relationship"
+        );
+        domain.observe_owner("owner-b", &[fact("child", &["parent"])]);
+        assert_eq!(domain.cached_parent("child").as_deref(), Some("parent"));
     }
 
     #[test]

@@ -65,6 +65,8 @@ fn fixture_root(fixture: Fixture) -> Element {
                 key: None,
             },
         );
+        node.set_ownership(Vec::new(), true);
+        node.set_mounted();
         let reset = state.clone();
         node.set_submenu_access(
             handle,
@@ -89,8 +91,7 @@ fn fixture() -> (VirtualDom, Fixture, RuntimeHandle, NodeHandle) {
 }
 
 fn native_node() -> serde_json::Value {
-    serde_json::json!({"id":"configured","generation":1,"connected":true,
-        "discovery_ready":true})
+    serde_json::json!({"id":"configured","generation":1})
 }
 fn send(runtime: &RuntimeHandle, value: serde_json::Value) -> FormEvent {
     let event = form(value);
@@ -218,6 +219,8 @@ fn return_fixture_kind(disabled: bool, registered: bool, kind: ItemKind) -> Retu
             },
         )
     });
+    child.set_ownership(vec![parent.clone()], true);
+    child.set_mounted();
     let mut host: HostFacts = serde_json::from_value(serde_json::json!({
         "item":"return-trigger-key", "kind":"dropdown", "target":"return-trigger",
         "capture":"return-trigger-key", "registration_key":"return-trigger-key",
@@ -243,8 +246,8 @@ fn return_fixture_kind(disabled: bool, registered: bool, kind: ItemKind) -> Retu
     send(
         &runtime,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
-            {"id":"configured","generation":1,"connected":true,"discovery_ready":true},
-            {"id":"nested-return","generation":1,"connected":true,"discovery_ready":true,"trigger_ancestors":["configured"]}
+            {"id":"configured","generation":1},
+            {"id":"nested-return","generation":1}
         ]}),
     );
     assert!(parent.request(true, Reason::Trigger, false));

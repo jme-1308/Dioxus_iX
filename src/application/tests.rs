@@ -1000,7 +1000,7 @@ impl MenuHarness {
             .unwrap();
         menu_dispatch(&self.dom,"input",transport,serde_json::json!({
             "owner":owner,"document":format!("category-fixture-{owner}"),"sequence":1,"kind":"observe",
-            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true}]}).to_string());
+            "nodes":[{"id":node.id(),"generation":node.generation()}]}).to_string());
         menu_dispatch(&self.dom, "input", transport, serde_json::json!({
             "owner": owner, "document": format!("category-fixture-{owner}"),
             "sequence": 2, "kind":"document", "document_event":{"sequence":1,"action":"input",
@@ -3018,7 +3018,7 @@ impl AppSwitchHarness {
         (0..4).map(|index| {
                 let class = format!("header-test-peer-{index}");
                 let attrs = self.attrs.values().find(|attrs| attrs.get("class").is_some_and(|value| value.split_whitespace().any(|value| value == class))).expect("rendered actual peer root");
-                serde_json::json!({"id":attrs["data-ix-overlay-root"],"generation":attrs["data-ix-overlay-generation"].parse::<u64>().unwrap(),"connected":true,"discovery_ready":true,"trigger_ancestors":[]})
+                serde_json::json!({"id":attrs["data-ix-overlay-root"],"generation":attrs["data-ix-overlay-generation"].parse::<u64>().unwrap()})
             }).collect()
     }
     fn header_peer_observe(&self, sequence: u64, child: bool) -> String {
@@ -3027,10 +3027,19 @@ impl AppSwitchHarness {
         let header = self.header_root_attrs()["id"].clone();
         let mut nodes = self.header_peer_nodes();
         let first = nodes[0]["id"].as_str().unwrap().to_string();
-        if child {
-            nodes[0]["trigger_ancestors"] = serde_json::json!([header]);
-        }
-        nodes.push(serde_json::json!({"id":header,"generation":self.header_rendered_root_attribute("data-ix-overlay-generation").parse::<u64>().unwrap(),"connected":true,"discovery_ready":true}));
+        let first_node = runtime.node_handle(&first).unwrap();
+        let header_node = runtime.node_handle(&header).unwrap();
+        first_node.set_ownership(
+            if child {
+                vec![header_node.clone()]
+            } else {
+                Vec::new()
+            },
+            true,
+        );
+        first_node.set_mounted();
+        header_node.set_mounted();
+        nodes.push(serde_json::json!({"id":header,"generation":self.header_rendered_root_attribute("data-ix-overlay-generation").parse::<u64>().unwrap()}));
         menu_dispatch(&self.dom,"input",self.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"observe","nodes":nodes}).to_string());
         first
     }
@@ -3720,15 +3729,8 @@ fn actual_nested_dropdown_clicks_do_not_toggle_the_header_surface() {
         })
         .expect("actual nested Dropdown root");
     let target = dioxus::core::ElementId::from_raw(*id);
-    let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
-    let header = h.header_root_attrs()["id"].clone();
-    let child = &h.attrs[&target.raw()];
-    // This renderer supplies the current read-only ancestry that DOM observation
-    // reports in the application. The child remains a separate controller.
-    menu_dispatch(&h.dom,"input",h.overlay_input.unwrap(),serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[
-        {"id":header,"generation":h.header_rendered_root_attribute("data-ix-overlay-generation").parse::<u64>().unwrap(),"connected":true,"discovery_ready":true},
-        {"id":child["data-ix-overlay-root"],"generation":child["data-ix-overlay-generation"].parse::<u64>().unwrap(),"connected":true,"discovery_ready":true,"trigger_ancestors":[header]}
-    ]}).to_string());
+    // Actual Dioxus scope providers establish this nested relationship.
+    // No native hierarchy snapshot is supplied by this renderer.
     assert_eq!(h.header_more_click(false), (false, false));
     h.settle();
     for open in [true, false] {

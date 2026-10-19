@@ -655,6 +655,11 @@ pub(crate) fn HeaderLayout(
         )
     };
     *node_slot.borrow_mut() = Some(node.clone());
+    node.set_ownership(overlay_runtime::use_overlay_ancestors(), discovery_ready);
+    let mounted_node = node.clone();
+    let secondary_scope = small.then(|| node.clone());
+    let default_scope = small.then(|| node.clone());
+    let overflow_scope = Some(node.clone());
 
     let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     // Slot projection preserves presence and current logical relationships. A
@@ -754,6 +759,7 @@ pub(crate) fn HeaderLayout(
             "data-small":small.to_string(),"data-open":open.to_string(),"data-top-layer":enable_top_layer.to_string(),
             "data-generation":generation,
             onmounted:move |_| {
+                mounted_node.set_mounted();
                 let mut model = mount_model.borrow_mut();
                 if !model.alive || model.mounted { return; }
                 model.mounted = true;
@@ -772,15 +778,15 @@ pub(crate) fn HeaderLayout(
                 role:if small {Some("presentation")} else {None},
                 popover:if small&&enable_top_layer {Some("manual")} else {None},
                 onclick:move |event|small_background.background_click(true,event),
-                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onclick:move |event|secondary_click.group_click(0,event),{secondary}}
-                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onclick:move |event|default_click.group_click(1,event),{default_content}}
+                div {class:"ix-header-slot-group ix-header-slot-secondary","data-header-group":"secondary","data-populated":presence[0].to_string(),onclick:move |event|secondary_click.group_click(0,event),HeaderOwnershipScope {node:secondary_scope,{secondary}}}
+                div {class:"ix-header-slot-group ix-header-slot-default","data-header-group":"default","data-populated":presence[1].to_string(),"data-separator":(small&&presence[0]&&presence[1]).to_string(),onclick:move |event|default_click.group_click(1,event),HeaderOwnershipScope {node:default_scope,{default_content}}}
                 dialog {id:large_id.clone(),class:"ix-header-popup-host ix-header-popup-large",
                     "data-ix-overlay-host":(!small).then_some(owner.clone()),
                     "data-header-popup-host":"large","data-active":(!small).to_string(),"data-open":(!small&&open).to_string(),
                     role:if !small {Some("presentation")} else {None},
                     popover:if !small&&enable_top_layer {Some("manual")} else {None},
                     onclick:move |event|large_background.background_click(false,event),
-                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onclick:move |event|overflow_click.group_click(2,event),{overflow}}
+                    div {class:"ix-header-slot-group ix-header-slot-overflow","data-header-group":"overflow","data-populated":presence[2].to_string(),"data-separator":(small&&presence[2]&&(presence[0]||presence[1])).to_string(),onclick:move |event|overflow_click.group_click(2,event),HeaderOwnershipScope {node:overflow_scope,{overflow}}}
                 }
             }
             button {id:more_id,r#type:"button",class:"ix-app-icon-button ix-header-more-button",
@@ -802,6 +808,14 @@ pub(crate) fn HeaderLayout(
             div {class:"ix-header-avatar-slot","data-header-group":"avatar",{avatar}}
         }
     }
+}
+
+// Scope-only component: responsive ownership changes without new DOM wrappers
+// or relocating consumer content and its mounted element handles.
+#[component]
+fn HeaderOwnershipScope(node: Option<NodeHandle>, children: Element) -> Element {
+    overlay_runtime::use_overlay_scope(node);
+    rsx! {{children}}
 }
 
 pub(crate) const STYLES: &str = r"
@@ -868,6 +882,8 @@ mod tests {
                 key: None,
             },
         );
+        node.set_ownership(Vec::new(), true);
+        node.set_mounted();
         let revision = use_signal(|| 0);
         *fixture.0.borrow_mut() = Some(Controller {
             model,
@@ -876,6 +892,60 @@ mod tests {
         });
         rsx! { div {} }
     }
+    #[derive(Clone, Default)]
+    struct OwnershipFixture(Rc<OwnershipState>);
+    #[derive(Default)]
+    struct OwnershipState {
+        small: std::cell::Cell<Option<Signal<bool>>>,
+        groups: RefCell<std::collections::BTreeMap<String, Vec<NodeHandle>>>,
+    }
+    impl PartialEq for OwnershipFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    #[component]
+    fn OwnershipProbe(group: String, fixture: OwnershipFixture) -> Element {
+        let ancestors = overlay_runtime::use_overlay_ancestors();
+        fixture.0.groups.borrow_mut().insert(group, ancestors);
+        VNode::empty()
+    }
+    fn ownership_fixture(fixture: OwnershipFixture) -> Element {
+        let small = use_signal(|| false);
+        fixture.0.small.set(Some(small));
+        rsx! {
+            HeaderLayout {
+                small: small(), discovery_ready: true, more_label: "More",
+                secondary: rsx! { OwnershipProbe {group:"secondary",fixture:fixture.clone()} },
+                default_content: rsx! { OwnershipProbe {group:"default",fixture:fixture.clone()} },
+                overflow: rsx! { OwnershipProbe {group:"overflow",fixture:fixture.clone()} },
+                avatar: rsx! { OwnershipProbe {group:"avatar",fixture} }
+            }
+        }
+    }
+    #[test]
+    fn responsive_header_ownership_changes_without_relocating_slot_components() {
+        let fixture = OwnershipFixture::default();
+        let mut dom = VirtualDom::new_with_props(ownership_fixture, fixture.clone());
+        dom.rebuild_in_place();
+        let header = fixture.0.groups.borrow()["overflow"][0].clone();
+        for group in ["secondary", "default", "avatar"] {
+            assert!(fixture.0.groups.borrow()[group].is_empty());
+        }
+        dom.in_scope(ScopeId::ROOT, || fixture.0.small.get().unwrap().set(true));
+        settle_focus(&mut dom);
+        for group in ["secondary", "default", "overflow"] {
+            assert!(fixture.0.groups.borrow()[group] == [header.clone()]);
+        }
+        assert!(fixture.0.groups.borrow()["avatar"].is_empty());
+        dom.in_scope(ScopeId::ROOT, || fixture.0.small.get().unwrap().set(false));
+        settle_focus(&mut dom);
+        for group in ["secondary", "default", "avatar"] {
+            assert!(fixture.0.groups.borrow()[group].is_empty());
+        }
+        assert!(fixture.0.groups.borrow()["overflow"] == [header]);
+    }
+
     #[derive(Clone)]
     struct FocusMount {
         id: String,
@@ -1400,7 +1470,7 @@ mod tests {
         dom.in_scope(ScopeId::ROOT, || {
             let read = peer.clone();
             let apply = peer.clone();
-            controller.node.runtime().unwrap().register(
+            let peer_node = controller.node.runtime().unwrap().register(
                 "click-peer".into(),
                 1,
                 OverlayKind::Dropdown,
@@ -1412,6 +1482,8 @@ mod tests {
                     key: None,
                 },
             );
+            peer_node.set_ownership(Vec::new(), true);
+            peer_node.set_mounted();
         });
         let event = click();
         dom.in_runtime(|| controller.more_click(event.clone()));
