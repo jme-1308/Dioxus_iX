@@ -136,7 +136,10 @@ function reportObserve(records=[],focusChanged=false,focusoutMove=null,focusRequ
   records=Array.from(records).concat(pending);
   const active=deepActive(),moved=movedRegisteredFocus(records,active);
   if(moved)movedSequence++;
-  const explicitBlur=focusoutMove!==null&&!moved&&focusoutMove===movedSequence;
+  // A deferred focusout may follow focusin on another control. Keep that
+  // current registration; only default focus can represent an explicit blur.
+  const activeDefault=!active||active===document.body||active===document.documentElement||active.matches('[data-ix-overlay-host]');
+  const explicitBlur=activeDefault&&focusoutMove!==null&&!moved&&focusoutMove===movedSequence;
   if(explicitBlur||!document.hasFocus())lastFocus=null;
   else if(active&&active!==document.body&&active!==document.documentElement&&!active.matches('[data-ix-overlay-host]'))lastFocus=registeredFocus(active);
   else if(lastFocus&&!document.getElementById(lastFocus.focus_id)?.isConnected)lastFocus=null;
