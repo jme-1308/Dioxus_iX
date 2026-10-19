@@ -40,7 +40,9 @@ pub fn GenericFocusPreview() -> Element {
     let centered = use_popover();
     let custom_trigger = use_popover_trigger_binding(custom, "r0228-custom-popover-trigger");
     let field_mount = use_focus_mount("r0211-popover-field");
+    let action_mount = use_focus_mount("r0211-content-action");
     let mut note = use_signal(|| "Pump P-101".to_string());
+    let mut priority = use_signal(|| false);
     let header_note = use_signal(|| "Station A".to_string());
     let mut veto = use_signal(|| false);
     let mut header_veto = use_signal(|| false);
@@ -113,10 +115,20 @@ pub fn GenericFocusPreview() -> Element {
                                 if event.key()==Key::Escape && event.modifiers().contains(Modifiers::SHIFT) {
                                     event.prevent_default();
                                 }
+                                if event.key()==Key::F7 {
+                                    event.prevent_default();
+                                    event.stop_propagation();
+                                    priority.toggle();
+                                }
                             }
                         }
                         div { class:"generic-focus-controls",
-                            Button { id:"r0211-content-action", onclick:move |_|actions.set(actions()+1), "Apply equipment name" }
+                            button { id:"r0211-content-action", r#type:"button",
+                                class:"ix-button ix-button-standard ix-button-tokenized ix-button-primary ix-align-center",
+                                tabindex:if priority(){1}else{0}, onmounted:action_mount,
+                                onclick:move |_|actions.set(actions()+1),
+                                span { class:"ix-button-content", "Apply equipment name" }
+                            }
                             Button { id:"r0211-veto", variant:ButtonVariant::Secondary, onclick:move |_|veto.toggle(),
                                 if veto(){"Allow panel close"}else{"Veto panel close"} }
                         }
@@ -234,6 +246,12 @@ byId('r0211-popover-close').focus();if(!key(active(),'Tab').defaultPrevented)thr
 await wait('Popover forward wrap',()=>active()===byId('r0211-header-action'));
 if(!key(active(),'Tab',true).defaultPrevented)throw new Error('Popover reverse boundary not trapped');
 await wait('Popover reverse wrap',()=>active()===byId('r0211-popover-close'));
+field.focus();key(field,'F7');await wait('positive Tab priority enabled',()=>byId('r0211-content-action').tabIndex===1);
+byId('r0211-popover-close').focus();if(!key(active(),'Tab').defaultPrevented)throw new Error('Positive Tab forward boundary not trapped');
+await wait('positive Tab forward wrap',()=>active()===byId('r0211-content-action'));
+if(!key(active(),'Tab',true).defaultPrevented)throw new Error('Positive Tab reverse boundary not trapped');
+await wait('positive Tab reverse wrap',()=>active()===byId('r0211-popover-close'));
+field.focus();key(field,'F7');await wait('positive Tab priority reset',()=>byId('r0211-content-action').tabIndex===0);
 key(active(),'Escape');await wait('Popover Escape return',()=>closePanel()&&active()===trigger());
 await wait('close completion',()=>byId('r0211-state').dataset.changes==='[true, false]');
 trigger().click();await wait('Popover explicit reopen',()=>isOpen(panel())&&active()===field);
@@ -338,5 +356,5 @@ for(const topLayer of [false,true]){
   await checkGeometry('restored layout');
   key(headerField,'Escape');await wait('geometry Header close return',()=>header().dataset.open==='false'&&active()===more());
 }
-return {ok:true,popover:{contentFirst:true,typing:true,boundaries:2,interiorDefault:true,escape:true,explicit:true,veto:true,outsidePreserved:true},hover:{nonStealing:true,returned:true},customAnchor:true,unanchoredCentered:true,header:{home:true,end:true,boundaries:2,interiorDefault:true,escape:true,veto:true,responsiveValue:headerField.value,inline:true,geometry}};
+return {ok:true,popover:{contentFirst:true,typing:true,boundaries:2,positiveTabOrder:true,interiorDefault:true,escape:true,explicit:true,veto:true,outsidePreserved:true},hover:{nonStealing:true,returned:true},customAnchor:true,unanchoredCentered:true,header:{home:true,end:true,boundaries:2,interiorDefault:true,escape:true,veto:true,responsiveValue:headerField.value,inline:true,geometry}};
 "#;

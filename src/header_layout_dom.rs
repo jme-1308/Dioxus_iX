@@ -31,22 +31,25 @@ function presented(node){
   const style=getComputedStyle(node);
   return style.display!=='none'&&style.visibility!=='hidden'&&style.visibility!=='collapse';
 }
-function visible(node){return presented(node)&&node.tabIndex>=0;}
-function focusGroup(node){
-  if(node===more())return 4;
+function focusGroup(node,trigger){
+  if(node===trigger)return 4;
   const index=groups.findIndex(group=>group&&contains(group,node));
   return index<0?null:index;
 }
-function focusables(host,tabOrder=true){return host?Array.from(host.querySelectorAll(focusableSelector)).filter(tabOrder?visible:presented):[];}
 function facts(kind){
-  const host=activeHost(),items=focusables(host),active=deepActive(),index=items.indexOf(active);
+  const host=activeHost(),active=deepActive(),trigger=more();
+  // MountedData cannot enumerate presented descendants or identify the actual
+  // active element. One read-only scan supplies these facts; Rust derives all
+  // popup membership/count/index and programmatic-focus policy projections.
+  const controls=Array.from(root.querySelectorAll(focusableSelector)).filter(presented).map(node=>({
+    id:node.id,tab_index:node.tabIndex,active:node===active,
+    group:focusGroup(node,trigger),in_popup:!!host&&contains(host,node)
+  }));
   return {
-    owner,generation:Number(generation()),sequence:++sequence,connected:root.isConnected,kind,
-    presence:groups.map(group=>!!group&&group.children.length>0),focus_count:items.length,
-    focusable_ids:items.map(node=>node.id),presented_ids:focusables(root,false).map(node=>node.id),
-    focused_control:active?.id&&focusGroup(active)!==null?{id:active.id,group:focusGroup(active)}:null,
+    owner,generation:Number(generation()),sequence:++sequence,kind,
+    presence:groups.map(group=>!!group&&group.children.length>0),controls,
     active_default:active===document.body||active===document.documentElement,
-    focused_index:index<0?null:index,viewport_width:document.documentElement.clientWidth
+    viewport_width:document.documentElement.clientWidth
   };
 }
 function send(report){
@@ -56,10 +59,9 @@ function send(report){
 }
 function reportPresence(){
   const report=facts('presence');
-  const signature=JSON.stringify({generation:report.generation,connected:report.connected,
+  const signature=JSON.stringify({generation:report.generation,
     small:root.getAttribute('data-small'),open:root.getAttribute('data-open'),top:root.getAttribute('data-top-layer'),
-    presence:report.presence,focus_count:report.focus_count,focused_index:report.focused_index,viewport_width:report.viewport_width,
-    focusable_ids:report.focusable_ids,presented_ids:report.presented_ids,focused_control:report.focused_control,active_default:report.active_default});
+    presence:report.presence,controls:report.controls,viewport_width:report.viewport_width,active_default:report.active_default});
   if(signature!==lastReport){lastReport=signature;send(report);}
 }
 // Dioxus mounted handles own geometry. The pinned MountedData API has no

@@ -84,15 +84,6 @@ function isHiddenOrInert(n){
   return false;
 }
 function visibleFocusable(n){return n instanceof HTMLElement&&n.tabIndex>=0&&!isHiddenOrInert(n);}
-function sortByTabOrder(els){
-  return els.map((el,i)=>({i,el})).sort((a,b)=>{
-    const ao=a.el.tabIndex>0?a.el.tabIndex:Number.MAX_SAFE_INTEGER,bo=b.el.tabIndex>0?b.el.tabIndex:Number.MAX_SAFE_INTEGER;
-    return ao-bo||a.i-b.i;
-  }).map(x=>x.el);
-}
-function hostFocusables(host){
-  return host?sortByTabOrder(Array.from(host.querySelectorAll(focusableSelector)).filter(el=>el instanceof HTMLElement&&visibleFocusable(el)&&nearestHost(el)===host)):[];
-}
 function hostAncestors(element){
   const result=[];
   for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&isActiveHost(n)){
@@ -103,23 +94,6 @@ function hostAncestors(element){
 function nearestPopover(element){
   for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.getAttribute('data-ix-overlay-native-surface')==='popover')return n;
   return null;
-}
-function popoverTabFacts(panel,active){
-  // Pinned dioxus-html 0.8 alpha MountedData has focus/scroll methods but no
-  // document tab-order enumeration. Observe candidates only; Dropdown exits
-  // execute through registered mounted handles in Rust, with no JS fallback.
-  if(!panel)return [];
-  const raw=Array.from(panel.querySelectorAll(focusableSelector)).filter(element=>{
-    if(!(element instanceof HTMLElement)||element.matches('[tabindex^="-"],[hidden],[disabled],:disabled')||nearestPopover(element)!==panel)return false;
-    for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&n.inert)return false;
-    const style=getComputedStyle(element);if(style.visibility==='hidden'||style.visibility==='collapse')return false;
-    if(typeof element.checkVisibility==='function')return element.checkVisibility();
-    for(let n=element;n;n=stepParent(n))if(n instanceof Element&&getComputedStyle(n).display==='none')return false;
-    return element.getClientRects().length>0;
-  });
-  let activeIndex=raw.indexOf(active);
-  if(activeIndex===-1)activeIndex=raw.findIndex(element=>active&&composedContains(element,active));
-  return raw.map((element,index)=>({target:nativeId(element),tab_index:element.tabIndex,hosts:hostAncestors(element),active:index===activeIndex}));
 }
 // Pinned MountedData exposes mounted focus/measurement, but no child or
 // document-position enumeration. This primary adapter reports only Rust-rendered
@@ -135,12 +109,16 @@ function pathIds(path,attr,pred){
   }
   return out;
 }
-function documentTabCandidates(){
-  if(!document.body)return [];
-  const raw=Array.from(document.body.querySelectorAll(focusableSelector)).filter(el=>{
-    return el instanceof HTMLElement&&visibleFocusable(el);
-  });
-  return raw.map(el=>({target:nativeId(el),tab_index:el.tabIndex,hosts:hostAncestors(el),active:false}));
+// MountedData has no descendant/document enumeration, current-active query or
+// computed visibility. One document-order scan supplies those native facts;
+// Rust derives host/Popover projections, active selection and Tab ordering.
+function focusCandidates(active){
+  return document.body?Array.from(document.body.querySelectorAll(focusableSelector))
+    .filter(visibleFocusable).map(element=>({
+      target:nativeId(element),tab_index:element.tabIndex,hosts:hostAncestors(element),
+      nearest_host:nativeId(nearestHost(element)),popover:nativeId(nearestPopover(element)),
+      exact_active:element===active,contains_active:!!active&&composedContains(element,active)
+    })):[];
 }
 function headerControls(root){
   const header=root.closest('header.ix-application-header');if(!header)return [];
@@ -180,23 +158,20 @@ function collectFacts(){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const id=root.getAttribute('data-ix-overlay-root')||'';if(!id)continue;
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
-    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id),anchor=findAnchor(root),focusables=hostFocusables(itemsHost);
+    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id),anchor=findAnchor(root);
     nodes.push({
       id,generation,trigger_id:nativeId(trigger),
       anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       header_controls:isHeaderPopupHost(host)?headerControls(root):[],
       item_order:registeredItemOrder(itemsHost),
-      // MountedData cannot enumerate document Tab order. Rust owns the direct
-      // key handler and executes focus only through registered mounted handles.
-      focusable_ids:focusables.map(nativeId).filter(Boolean),
-      tab_candidates:root.getAttribute('data-ix-overlay-native-surface')==='popover'?popoverTabFacts(host,active):[]
+      items_host:nativeId(itemsHost),
+      popover_host:root.getAttribute('data-ix-overlay-native-surface')==='popover'?nativeId(host):''
     });
   }
-  const document_tab_candidates=documentTabCandidates();
   return {
     owner,document:nativeDocument.identity,sequence:++sequence,kind:'observe',active_id:nativeId(active),
     active_default:!active||active===document.body||active===document.documentElement||active.matches('[data-ix-overlay-host]'),
-    nodes,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),
+    nodes,focus_candidates:focusCandidates(active),
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
@@ -220,7 +195,7 @@ function reportObserve(records=[],focusChanged=false,focusoutMove=null){
   const report=collectFacts();
   report.focus_changed=focusChanged||explicitBlur;
   if(moved)report.moved_focus=moved;
-  const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,active_default:report.active_default,document_tab_candidates:report.document_tab_candidates});
+  const sig=JSON.stringify({nodes:report.nodes,active_id:report.active_id,active_default:report.active_default,focus_candidates:report.focus_candidates});
   if(moved||report.focus_changed||sig!==lastSignature){lastSignature=sig;send(report);}
   if(!documentEvents)documentEvents=subscribeDocumentEvents();
 }

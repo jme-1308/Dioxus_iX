@@ -2286,6 +2286,9 @@ impl RuntimeHandle {
             }
             runtime.sequence = report.sequence;
         }
+        let mut projected = report.clone();
+        projected.project_focus();
+        let report = &projected;
         self.attach_document(&report.document);
         {
             let mut runtime = self.0.borrow_mut();
@@ -2369,23 +2372,8 @@ impl RuntimeHandle {
             .collect()
     }
     fn source_document_order(&self, report: &Report) -> Vec<String> {
-        let Some(candidates) = &report.document_tab_candidates else {
-            // Compatibility for pre-native reports and focused transport tests.
-            let controls = report
-                .nodes
-                .iter()
-                .filter(|node| self.reported_kind(report, &node.id) == Some(OverlayKind::Header))
-                .flat_map(|node| node.header_controls.iter())
-                .collect::<Vec<_>>();
-            return report
-                .tab_order
-                .iter()
-                .filter(|target| !controls.contains(target))
-                .cloned()
-                .collect();
-        };
         let candidates = self
-            .source_tab_candidates(report, candidates)
+            .source_tab_candidates(report, &report.document_candidates)
             .into_iter()
             .filter(|candidate| {
                 !candidate.hosts.iter().any(|host| {
@@ -2546,15 +2534,8 @@ impl RuntimeHandle {
                 .or_else(|| self.domain()?.focus_target(&target))?;
             let mut popovers = Vec::new();
             for candidate in report
-                .document_tab_candidates
+                .focus_candidates
                 .iter()
-                .flatten()
-                .chain(
-                    report
-                        .nodes
-                        .iter()
-                        .flat_map(|node| node.tab_candidates.iter()),
-                )
                 .filter(|candidate| candidate.target == target)
             {
                 for host in &candidate.hosts {
@@ -3468,13 +3449,38 @@ struct Report {
     #[serde(default)]
     nodes: Vec<NodeFacts>,
     #[serde(default)]
-    tab_order: Vec<String>,
-    #[serde(default)]
-    document_tab_candidates: Option<Vec<crate::popover_focus::TabCandidate>>,
+    focus_candidates: Vec<crate::popover_focus::NativeFocusCandidate>,
+    #[serde(skip)]
+    document_candidates: Vec<crate::popover_focus::TabCandidate>,
     #[serde(default)]
     active_hosts: Vec<String>,
     #[serde(default)]
     active_popover: String,
+}
+impl Report {
+    fn project_focus(&mut self) {
+        use crate::popover_focus::{project_tab_candidates, tab_order_targets};
+        self.document_candidates = project_tab_candidates(&self.focus_candidates, |_| true);
+        for node in &mut self.nodes {
+            // Physical host IDs distinguish responsive Header surfaces and a
+            // Dropdown's forwarded items host from its logical Rust owner.
+            // Missing native IDs never group unrelated/unidentified elements.
+            let host_candidates = project_tab_candidates(&self.focus_candidates, |candidate| {
+                !node.items_host.is_empty()
+                    && candidate.nearest_host == node.items_host
+                    && candidate.target != node.items_host
+            });
+            node.focusable_ids = tab_order_targets(&host_candidates)
+                .into_iter()
+                .filter(|target| !target.is_empty())
+                .collect();
+            node.tab_candidates = project_tab_candidates(&self.focus_candidates, |candidate| {
+                !node.popover_host.is_empty()
+                    && candidate.popover == node.popover_host
+                    && candidate.target != node.popover_host
+            });
+        }
+    }
 }
 #[derive(Clone, Deserialize)]
 struct MovedFocus {
@@ -3530,8 +3536,12 @@ struct NodeFacts {
     #[serde(default)]
     item_order: Vec<String>,
     #[serde(default)]
-    focusable_ids: Vec<String>,
+    items_host: String,
     #[serde(default)]
+    popover_host: String,
+    #[serde(skip)]
+    focusable_ids: Vec<String>,
+    #[serde(skip)]
     tab_candidates: Vec<crate::popover_focus::TabCandidate>,
 }
 
@@ -5521,7 +5531,45 @@ mod tests {
     }
 
     #[test]
-    fn key_facts_preserve_existing_native_focusable_candidate_order() {
+    fn focus_projection_uses_physical_partitions_without_grouping_missing_host_ids() {
+        let mut report: Report = serde_json::from_value(serde_json::json!({
+            "owner":"fixture","sequence":1,"kind":"observe",
+            "nodes":[
+                {"id":"outer","generation":1,"items_host":"outer-host","popover_host":"outer-host"},
+                {"id":"inner","generation":1,"items_host":"inner-host","popover_host":"inner-host"},
+                {"id":"missing","generation":1}
+            ],
+            "focus_candidates":[
+                {"target":"outer-host","tab_index":0,"nearest_host":"outer-host","popover":"outer-host"},
+                {"target":"outer-zero","tab_index":0,"nearest_host":"outer-host","popover":"outer-host","contains_active":true},
+                {"target":"inner-control","tab_index":0,"nearest_host":"inner-host","popover":"inner-host","exact_active":true},
+                {"target":"outer-positive","tab_index":2,"nearest_host":"outer-host","popover":"outer-host"},
+                {"target":"unrelated","tab_index":0}
+            ]
+        })).unwrap();
+        report.project_focus();
+        assert_eq!(
+            report.nodes[0].focusable_ids,
+            ["outer-positive", "outer-zero"]
+        );
+        assert_eq!(report.nodes[1].focusable_ids, ["inner-control"]);
+        assert!(report.nodes[2].focusable_ids.is_empty());
+        assert!(report.nodes[2].tab_candidates.is_empty());
+        assert!(report.nodes[0].tab_candidates[0].active);
+        assert!(report.nodes[1].tab_candidates[0].active);
+        assert_eq!(
+            report
+                .document_candidates
+                .iter()
+                .filter(|candidate| candidate.active)
+                .count(),
+            1
+        );
+        assert!(report.document_candidates[2].active);
+    }
+
+    #[test]
+    fn key_facts_derive_positive_tabindex_order_from_native_candidates() {
         let runtime = RuntimeHandle::new();
         let root = model(
             &runtime,
@@ -5548,11 +5596,16 @@ mod tests {
             1,
             "key",
             serde_json::json!([
-                {"id":"tab-report","generation":1,"inside":true,"on_trigger":true,
-                    "focusable_ids":["b-parent","custom","a-control"]}
+                {"id":"tab-report","generation":1,"items_host":"tab-report-host"}
             ]),
         );
         report.kind = "observe".into();
+        report.focus_candidates = serde_json::from_value(serde_json::json!([
+            {"target":"a-control","tab_index":0,"nearest_host":"tab-report-host"},
+            {"target":"b-parent","tab_index":1,"nearest_host":"tab-report-host"},
+            {"target":"custom","tab_index":2,"nearest_host":"tab-report-host"}
+        ]))
+        .unwrap();
         runtime.observe(&report);
         let keyboard = typed_keyboard("Tab", Modifiers::SHIFT);
         let facts = root

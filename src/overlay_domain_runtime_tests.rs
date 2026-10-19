@@ -530,17 +530,75 @@ fn build_popover_fixture(fixture: &Fixture) -> VirtualDom {
     dom
 }
 
+fn fixture_focus_candidate(target: &str, hosts: &[&str], active: bool) -> serde_json::Value {
+    let nearest = |popover_only| {
+        hosts
+            .iter()
+            .filter_map(|id| {
+                let node = fixture_node(id);
+                let entry = node.runtime()?.entry(id)?;
+                (!popover_only || entry.kind == OverlayKind::Popover)
+                    .then_some((entry.ancestors.len(), *id))
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, id)| format!("{id}-host"))
+            .unwrap_or_default()
+    };
+    serde_json::json!({
+        "target":target,"hosts":hosts,"tab_index":0,
+        "nearest_host":nearest(false),"popover":nearest(true),
+        "exact_active":active,"contains_active":active
+    })
+}
+
+// A node descriptor groups each fixture's document-order candidates for authoring.
+// Only the canonical single document array reaches the real transport handler.
+fn collect_fixture_focus_candidates(report: &mut serde_json::Value) {
+    if report["kind"] == "document" {
+        return;
+    }
+    let mut candidates = report["focus_candidates"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(nodes) = report
+        .get_mut("nodes")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for node in nodes {
+            if let Some(serde_json::Value::Array(owned)) =
+                node.as_object_mut().unwrap().remove("focus_candidates")
+            {
+                for candidate in owned {
+                    if let Some(existing) = candidates
+                        .iter_mut()
+                        .find(|old| old["target"] == candidate["target"])
+                    {
+                        *existing = candidate;
+                    } else {
+                        candidates.push(candidate);
+                    }
+                }
+            }
+        }
+    }
+    report["focus_candidates"] = candidates.into();
+}
+
 fn trap_node(
     id: &str,
     ancestors: &[&str],
     candidates: &[(&str, &[&str], bool)],
 ) -> serde_json::Value {
     set_fixture_ownership(id, ancestors);
+    let is_popover =
+        fixture_node(id).runtime().unwrap().entry(id).unwrap().kind == OverlayKind::Popover;
     serde_json::json!({
-        "id":id,"generation":1,
-        "tab_candidates":candidates.iter().map(|(target,hosts,active)| serde_json::json!({
-            "target":target,"hosts":hosts,"active":active,"tab_index":0
-        })).collect::<Vec<_>>()
+        "id":id,"generation":1,"items_host":format!("{id}-host"),
+        "popover_host":if is_popover {format!("{id}-host")} else {String::new()},
+        "focus_candidates":candidates.iter().map(|(target,hosts,active)|
+            fixture_focus_candidate(target,hosts,*active)
+        ).collect::<Vec<_>>()
     })
 }
 
@@ -550,12 +608,14 @@ fn trap_report(
     sequence: u64,
     nodes: Vec<serde_json::Value>,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut report = serde_json::json!({
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
         "kind":"key","key":"Tab","shift":true,
         "active_hosts":[fixture.0.borrow().id],"active_popover":fixture.0.borrow().id,
         "nodes":nodes
-    })
+    });
+    collect_fixture_focus_candidates(&mut report);
+    report
 }
 struct DomainKey(String, Modifiers);
 impl dioxus::html::ModifiersInteraction for DomainKey {
@@ -595,7 +655,8 @@ impl dioxus::html::HasKeyboardData for DomainKey {
         self
     }
 }
-fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value) -> FormEvent {
+fn deliver_trap(dom: &VirtualDom, fixture: &Fixture, mut report: serde_json::Value) -> FormEvent {
+    collect_fixture_focus_candidates(&mut report);
     let event = trap_form(report.clone());
     let runtime = fixture.runtime();
     let node = fixture.node();
@@ -706,8 +767,10 @@ fn dioxus_popover_tab_preserves_interior_empty_prevented_and_focuses_registered_
     );
 
     let mut interior = trap_report(&fixture, document, 3, vec![node()]);
-    interior["nodes"][0]["tab_candidates"][0]["active"] = false.into();
-    interior["nodes"][0]["tab_candidates"][1]["active"] = true.into();
+    interior["focus_candidates"][0]["exact_active"] = false.into();
+    interior["focus_candidates"][0]["contains_active"] = false.into();
+    interior["focus_candidates"][1]["exact_active"] = true.into();
+    interior["focus_candidates"][1]["contains_active"] = true.into();
     assert!(deliver_trap(&dom, &fixture, interior).default_action_enabled());
     let empty = trap_report(
         &fixture,
@@ -838,7 +901,6 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
             &[],
             &[
                 ("parent-first", &["trap-parent"], true),
-                ("nested-dropdown", &["trap-parent", "trap-child"], false),
                 ("parent-last", &["trap-parent"], false),
             ],
         )
@@ -891,10 +953,10 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
         "focused topmost Dropdown defers parent trap"
     );
     let mut trigger_focus = trap_report(&parent, document, 4, vec![parent_node(), child_node()]);
-    trigger_focus["nodes"][0]["tab_candidates"] = serde_json::json!([
-        {"target":"parent-first","tab_index":0,"hosts":["trap-parent"],"active":false},
-        {"target":"parent-last","tab_index":0,"hosts":["trap-parent"],"active":true},
-        {"target":"nested-dropdown","tab_index":0,"hosts":["trap-parent","trap-child"],"active":false}
+    trigger_focus["focus_candidates"] = serde_json::json!([
+        fixture_focus_candidate("parent-first", &["trap-parent"], false),
+        fixture_focus_candidate("parent-last", &["trap-parent"], true),
+        fixture_focus_candidate("nested-dropdown", &["trap-parent", "trap-child"], false)
     ]);
     trigger_focus["shift"] = false.into();
     assert!(
@@ -955,7 +1017,11 @@ fn exit_report(fixture: &Fixture, document: &str, sequence: u64) -> serde_json::
     serde_json::json!({
         "owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,
         "kind":"key","key":"Tab","hosts":[id],"triggers":[id],
-        "tab_order":["before","trigger","after"],
+        "focus_candidates":[
+            fixture_focus_candidate("before", &[], false),
+            fixture_focus_candidate("trigger", &[], true),
+            fixture_focus_candidate("after", &[], false)
+        ],
         "nodes":[{"id":id,"generation":fixture.node().generation(),
             "mode":"roving-tabindex","trigger_id":"trigger",
             "inside":true,"on_trigger":true}]
@@ -1324,12 +1390,12 @@ fn header_exit_nodes(
         serde_json::json!({
             "id":fixture.child.0.borrow().id,"generation":1,
             "mode":"active-descendant","trigger_id":"header-child-trigger",
-            "inside":true,"on_trigger":true,"tab_candidates":[]
+            "inside":true,"on_trigger":true,"items_host":format!("{}-host",fixture.child.node().id())
         }),
         serde_json::json!({
             "id":fixture.header.id(),"generation":1,
             "trigger_id":"header-more",
-            "header_controls":["header-more","header-menu"],"tab_candidates":[]
+            "header_controls":["header-more","header-menu"],"items_host":format!("{}-host",fixture.header.id())
         }),
         trap_node(
             parent_id,
@@ -1568,12 +1634,12 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
     });
     let parent_id = parent.0.borrow().id;
     let mut nodes = header_exit_nodes(&fixture, &parent, true);
-    nodes.last_mut().unwrap()["tab_candidates"] = serde_json::json!([
-        {"target":"header-menu","hosts":[parent_id],"tab_index":0,"active":false},
-        {"target":"parent-before","hosts":[parent_id],"tab_index":0,"active":false},
-        {"target":"parent-after","hosts":[parent_id],"tab_index":0,"active":false},
-        {"target":"header-overflow","hosts":[fixture.header.id(),parent_id],"tab_index":0,"active":true},
-        {"target":"header-more","hosts":[parent_id],"tab_index":0,"active":false}
+    nodes.last_mut().unwrap()["focus_candidates"] = serde_json::json!([
+        fixture_focus_candidate("header-menu", &[parent_id], false),
+        fixture_focus_candidate("parent-before", &[parent_id], false),
+        fixture_focus_candidate("parent-after", &[parent_id], false),
+        fixture_focus_candidate("header-overflow", &[fixture.header.id(), parent_id], true),
+        fixture_focus_candidate("header-more", &[parent_id], false)
     ]);
     let mounted = register_exit_mount(&dom_parent, &parent, "parent-before");
     let mut report = trap_report(&parent, "header focus owner document", 2, nodes);
@@ -1586,10 +1652,10 @@ fn header_focus_owner_defers_parent_trap_and_excludes_overflow_across_vdom_owner
     assert_eq!(parent.runtime().pending_item_focus_count(), 0);
     report["sequence"] = 3.into();
     report["active_hosts"] = serde_json::json!([parent_id]);
-    report["nodes"].as_array_mut().unwrap().last_mut().unwrap()["tab_candidates"][2]["active"] =
-        true.into();
-    report["nodes"].as_array_mut().unwrap().last_mut().unwrap()["tab_candidates"][3]["active"] =
-        false.into();
+    report["focus_candidates"][2]["exact_active"] = true.into();
+    report["focus_candidates"][2]["contains_active"] = true.into();
+    report["focus_candidates"][3]["exact_active"] = false.into();
+    report["focus_candidates"][3]["contains_active"] = false.into();
     assert!(
         !deliver_trap(&dom_parent, &parent, report).default_action_enabled(),
         "parent last wraps with open Header host excluded"

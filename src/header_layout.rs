@@ -18,24 +18,25 @@ struct FocusedControl {
     group: u8,
 }
 
+// One native presented-element observation; policy projections stay in Rust.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+struct PresentedControl {
+    id: String,
+    tab_index: i32,
+    active: bool,
+    group: Option<u8>,
+    in_popup: bool,
+}
+
 #[derive(Deserialize)]
 struct Report {
     owner: String,
     generation: u64,
     sequence: u64,
-    connected: bool,
     kind: String,
     presence: [bool; 4],
     #[serde(default)]
-    focus_count: usize,
-    #[serde(default)]
-    focused_index: Option<usize>,
-    #[serde(default)]
-    focused_control: Option<FocusedControl>,
-    #[serde(default)]
-    focusable_ids: Vec<String>,
-    #[serde(default)]
-    presented_ids: Vec<String>,
+    controls: Vec<PresentedControl>,
     #[serde(default)]
     active_default: bool,
     #[serde(default)]
@@ -78,14 +79,10 @@ struct Model {
     open: bool,
     presence: [bool; 4],
     focus: String,
-    focused_control: Option<FocusedControl>,
+    controls: Vec<PresentedControl>,
     preserve: Option<FocusedControl>,
     preserve_target: Option<overlay_runtime::MountedFocusTarget>,
-    focusable_ids: Vec<String>,
-    presented_ids: Vec<String>,
     active_default: bool,
-    focus_count: usize,
-    focused_index: Option<usize>,
     changed: Option<EventHandler<bool>>,
     viewport_width: f64,
     more_mount: Option<Rc<MountedData>>,
@@ -109,14 +106,10 @@ impl Model {
             open: false,
             presence: [false; 4],
             focus: "none".into(),
-            focused_control: None,
+            controls: Vec::new(),
             preserve: None,
             preserve_target: None,
-            focusable_ids: Vec::new(),
-            presented_ids: Vec::new(),
             active_default: false,
-            focus_count: 0,
-            focused_index: None,
             changed: None,
             viewport_width: 0.0,
             more_mount: None,
@@ -124,6 +117,29 @@ impl Model {
             position: None,
             layout_epoch: 0,
         }
+    }
+    fn popup_controls(&self) -> impl Iterator<Item = &PresentedControl> {
+        self.controls
+            .iter()
+            .filter(|control| control.in_popup && control.tab_index >= 0)
+    }
+    fn popup_ids(&self) -> Vec<String> {
+        self.popup_controls()
+            .map(|control| control.id.clone())
+            .collect()
+    }
+    fn focused_control(&self) -> Option<FocusedControl> {
+        let control = self.controls.iter().find(|control| control.active)?;
+        if control.id.is_empty() {
+            return None;
+        }
+        Some(FocusedControl {
+            id: control.id.clone(),
+            group: control.group?,
+        })
+    }
+    fn presented(&self, id: &str) -> bool {
+        !id.is_empty() && self.controls.iter().any(|control| control.id == id)
     }
     fn invalidate_layout(&mut self) {
         self.layout_epoch = self.layout_epoch.wrapping_add(1);
@@ -192,6 +208,7 @@ impl Model {
         if self.small == small && self.top_layer == top_layer {
             return false;
         }
+        let focused = self.focused_control();
         // Responsive slot movement retains the same overflow Dropdown and
         // current children. A top-layer configuration change still closes it.
         let layer_changed = self.top_layer != top_layer;
@@ -204,18 +221,14 @@ impl Model {
         self.generation = self.generation.wrapping_add(1);
         self.invalidate_layout();
         self.sequence = 0;
-        self.focus_count = 0;
-        self.focused_index = None;
-        self.focusable_ids.clear();
-        self.presented_ids.clear();
+        self.controls.clear();
         let capture = (!layer_changed && self.alive && self.mounted)
-            .then(|| self.focused_control.clone())
+            .then_some(focused)
             .flatten()
             .filter(|capture| self.group_presented(capture.group));
         if let Some(capture) = capture {
             self.preserve_focus(capture);
         } else {
-            self.focused_control = None;
             self.focus("none".into());
         }
         closed
@@ -223,7 +236,6 @@ impl Model {
     fn accepts(&self, report: &Report) -> bool {
         self.alive
             && self.mounted
-            && report.connected
             && report.owner == self.owner
             && report.generation == self.generation
             && report.sequence > self.sequence
@@ -236,7 +248,7 @@ impl Model {
         self.invalidate_layout();
         self.more_mount = None;
         self.popup_mounts = [None, None];
-        self.focused_control = None;
+        self.controls.clear();
         self.focus("none".into());
     }
 }
@@ -520,7 +532,7 @@ impl Controller {
             let model = self.model.borrow();
             (
                 model.owner.clone(),
-                model.focusable_ids.clone(),
+                model.popup_ids(),
                 model.preserve.clone(),
                 model.preserve_target.clone(),
             )
@@ -532,9 +544,9 @@ impl Controller {
                 let valid = preserve.is_some_and(|capture| {
                     model.sequence > 0
                         && model.group_presented(capture.group)
-                        && model.presented_ids.contains(&capture.id)
+                        && model.presented(&capture.id)
                         && (model.active_default
-                            || model.focused_control.as_ref() == Some(&capture))
+                            || model.focused_control().as_ref() == Some(&capture))
                 });
                 valid
                     .then_some(preserve_target)
@@ -543,6 +555,7 @@ impl Controller {
             }
             _ => focus_ids(choice, &ids)
                 .into_iter()
+                .filter(|id| !id.is_empty())
                 .find_map(|id| self.node.capture_registered_focus(id)),
         }
     }
@@ -586,7 +599,8 @@ impl Controller {
             let awaiting_presentation = {
                 let model = self.model.borrow();
                 choice == "preserve" && model.sequence == 0
-                    || matches!(choice.as_str(), "first" | "last") && model.focusable_ids.is_empty()
+                    || matches!(choice.as_str(), "first" | "last")
+                        && model.popup_controls().next().is_none()
             };
             if !awaiting_presentation {
                 self.model.borrow_mut().focus("none".into());
@@ -618,8 +632,8 @@ impl Controller {
                     shift: event.modifiers().contains(Modifiers::SHIFT),
                     alt: event.modifiers().contains(Modifiers::ALT),
                     default_prevented: !event.default_action_enabled(),
-                    focus_count: model.focus_count,
-                    focused_index: model.focused_index,
+                    focus_count: model.popup_controls().count(),
+                    focused_index: model.popup_controls().position(|control| control.active),
                     more,
                     inside: host_small.is_some(),
                 },
@@ -696,12 +710,8 @@ impl Controller {
             }
             model.sequence = report.sequence;
             model.presence = report.presence;
-            model.focused_control = report.focused_control;
-            model.focusable_ids = report.focusable_ids;
-            model.presented_ids = report.presented_ids;
+            model.controls = report.controls;
             model.active_default = report.active_default;
-            model.focus_count = report.focus_count;
-            model.focused_index = report.focused_index;
             if report.kind == "layout" || model.viewport_width != report.viewport_width {
                 model.layout_epoch = model.layout_epoch.wrapping_add(1);
             }
@@ -782,7 +792,12 @@ pub(crate) fn HeaderLayout(
                         let changed = model.open != change.open;
                         model.open = change.open;
                         if changed {
-                            model.focusable_ids.clear();
+                            // Invalidate only traversal candidates. Retain the
+                            // last observed active/group facts for a responsive
+                            // handoff before the next presentation observation.
+                            for control in &mut model.controls {
+                                control.in_popup = false;
+                            }
                             model.invalidate_layout();
                         }
                         model.apply_focus(change.restore_focus);
@@ -822,11 +837,7 @@ pub(crate) fn HeaderLayout(
     };
     let preserve_target = mode_changed
         .then(|| {
-            let id = model
-                .borrow()
-                .focused_control
-                .as_ref()
-                .map(|control| control.id.clone());
+            let id = model.borrow().focused_control().map(|control| control.id);
             id.and_then(|id| node.capture_registered_focus(&id))
         })
         .flatten();
@@ -1210,11 +1221,10 @@ mod tests {
             calls.borrow().is_empty(),
             "opening waits for visible candidate facts"
         );
-        controller.model.borrow_mut().focusable_ids = vec![
-            "unregistered".into(),
-            "registered-field".into(),
-            "registered-action".into(),
-        ];
+        controller.model.borrow_mut().controls = controls(
+            &["", "unregistered", "registered-field", "registered-action"],
+            None,
+        );
         dom.in_runtime(|| controller.dispatch_focus());
         settle_focus(&mut dom);
         controller.model.borrow_mut().focus("last".into());
@@ -1244,7 +1254,7 @@ mod tests {
         {
             let mut model = controller.model.borrow_mut();
             model.open = true;
-            model.focusable_ids = vec!["unregistered".into(), "registered-action".into()];
+            model.controls = controls(&["unregistered", "registered-action"], None);
         }
         let mut fact = key_input(&controller.model.borrow());
         fact.key = "Tab".into();
@@ -1284,11 +1294,11 @@ mod tests {
             let mut model = controller.model.borrow_mut();
             model.open = true;
             model.small = false;
-            model.focused_control = Some(capture(1));
+            model.controls = vec![control("registered-field", 1, 0, true, false)];
             assert!(!model.sync_mode(true, false));
             model.preserve_target = Some(captured.clone());
             model.sequence = 1;
-            model.presented_ids = vec!["registered-field".into()];
+            model.controls = vec![control("registered-field", 1, 0, true, true)];
         }
         dom.in_runtime(|| controller.dispatch_focus());
         settle_focus(&mut dom);
@@ -1311,7 +1321,9 @@ mod tests {
             let mut model = controller.model.borrow_mut();
             model.preserve_focus(capture(1));
             model.preserve_target = Some(current);
-            model.focused_control = None;
+            for control in &mut model.controls {
+                control.active = false;
+            }
             model.active_default = false;
         }
         dom.in_runtime(|| controller.dispatch_focus());
@@ -1330,7 +1342,7 @@ mod tests {
             model.preserve_focus(capture(1));
             model.preserve_target = Some(current);
             model.active_default = true;
-            model.presented_ids.clear();
+            model.controls.clear();
         }
         dom.in_runtime(|| controller.dispatch_focus());
         settle_focus(&mut dom);
@@ -1345,19 +1357,95 @@ mod tests {
         assert_eq!(calls.borrow().len(), 1);
     }
 
+    fn control(
+        id: &str,
+        group: u8,
+        tab_index: i32,
+        active: bool,
+        in_popup: bool,
+    ) -> PresentedControl {
+        PresentedControl {
+            id: id.into(),
+            group: Some(group),
+            tab_index,
+            active,
+            in_popup,
+        }
+    }
+    fn controls(ids: &[&str], active: Option<usize>) -> Vec<PresentedControl> {
+        ids.iter()
+            .enumerate()
+            .map(|(index, id)| control(id, 2, 0, active == Some(index), true))
+            .collect()
+    }
+    #[test]
+    fn canonical_controls_derive_dom_order_boundaries_and_current_focus() {
+        let mut model = Model::new(true, false);
+        model.controls = vec![
+            control("more", 4, 0, false, false),
+            control("", 2, 0, false, true),
+            control("field", 2, 0, false, true),
+            control("positive", 2, 3, true, true),
+            control("negative", 1, -1, false, true),
+        ];
+        assert_eq!(
+            model.popup_ids(),
+            ["", "field", "positive"],
+            "Header keeps its existing DOM-order policy"
+        );
+        assert_eq!(
+            model.popup_controls().count(),
+            3,
+            "unidentified controls retain their boundary position"
+        );
+        assert_eq!(
+            model.popup_controls().position(|control| control.active),
+            Some(2)
+        );
+        assert_eq!(
+            model.focused_control(),
+            Some(FocusedControl {
+                id: "positive".into(),
+                group: 2
+            })
+        );
+        assert!(
+            model.presented("negative"),
+            "negative tabindex can still preserve a current mounted control"
+        );
+        assert!(
+            !model.presented(""),
+            "an unidentified control is never a registered destination"
+        );
+        for (index, control) in model.controls.iter_mut().enumerate() {
+            control.active = index == 4;
+        }
+        assert_eq!(
+            model.popup_controls().position(|control| control.active),
+            None
+        );
+        assert_eq!(
+            model.focused_control(),
+            Some(FocusedControl {
+                id: "negative".into(),
+                group: 1
+            })
+        );
+        for (index, control) in model.controls.iter_mut().enumerate() {
+            control.active = index == 1;
+        }
+        assert!(model.focused_control().is_none());
+    }
     fn report(model: &Model, kind: &str) -> Report {
         Report {
             owner: model.owner.clone(),
             generation: model.generation,
             sequence: model.sequence + 1,
-            connected: true,
             kind: kind.into(),
             presence: [true; 4],
-            focus_count: 6,
-            focused_index: Some(0),
-            focused_control: None,
-            focusable_ids: (0..6).map(|index| format!("control-{index}")).collect(),
-            presented_ids: Vec::new(),
+            controls: (0..6)
+                .map(|index| control(&format!("control-{index}"), 2, 0, index == 0, true))
+                .collect(),
             active_default: false,
             viewport_width: 1000.0,
         }
@@ -1596,7 +1684,7 @@ mod tests {
         model.mounted = true;
         model.open = true;
         model.presence = [true; 4];
-        model.focused_control = Some(capture(group));
+        model.controls = vec![control("registered-field", group, 0, true, false)];
         assert!(!model.sync_mode(true, true));
         model
     }
@@ -1625,7 +1713,7 @@ mod tests {
 
         let mut closed = Model::new(false, true);
         closed.mounted = true;
-        closed.focused_control = Some(capture(1));
+        closed.controls = vec![control("registered-field", 1, 0, true, false)];
         assert!(!closed.sync_mode(true, true));
         assert_eq!(closed.focus, "none", "hidden Small content is not revived");
         assert!(closed.preserve.is_none());
@@ -1738,9 +1826,7 @@ mod tests {
         }
         {
             let mut model = controller.model.borrow_mut();
-            model.focusable_ids = vec!["first-field".into(), "last-action".into()];
-            model.focus_count = 2;
-            model.focused_index = Some(0);
+            model.controls = controls(&["first-field", "last-action"], Some(0));
         }
         let down = key_event(Key::ArrowDown, false);
         dom.in_runtime(|| controller.key(down.clone(), true, None));
@@ -1758,7 +1844,15 @@ mod tests {
         let interior = key_event(Key::Tab, false);
         dom.in_runtime(|| controller.key(interior.clone(), false, Some(true)));
         assert!(interior.default_action_enabled() && interior.propagates());
-        controller.model.borrow_mut().focused_index = Some(1);
+        for (index, control) in controller
+            .model
+            .borrow_mut()
+            .controls
+            .iter_mut()
+            .enumerate()
+        {
+            control.active = index == 1;
+        }
         let boundary = key_event(Key::Tab, false);
         dom.in_runtime(|| controller.key(boundary.clone(), false, Some(true)));
         settle_focus(&mut dom);

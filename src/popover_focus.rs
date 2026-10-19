@@ -44,10 +44,57 @@ pub(crate) fn opening_target(candidates: &[FocusCandidate], hover_mode: bool) ->
         .map(|(_, candidate)| candidate.target.clone())
 }
 
-/// Native document-order facts for a Tab trap. `active` includes the source's
-/// resolved native/custom-control descendant equivalence; priority selection is
-/// performed after excluded hosts are removed, without opening's header rule.
+/// Canonical native facts in document order. These describe eligible controls,
+/// physical partitions and active containment; Rust owns all projections.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct NativeFocusCandidate {
+    pub(crate) target: String,
+    pub(crate) tab_index: i32,
+    #[serde(default)]
+    pub(crate) hosts: Vec<String>,
+    #[serde(default)]
+    pub(crate) nearest_host: String,
+    #[serde(default)]
+    pub(crate) popover: String,
+    #[serde(default)]
+    pub(crate) exact_active: bool,
+    #[serde(default)]
+    pub(crate) contains_active: bool,
+}
+
+/// Project a native partition before choosing its active candidate. An exact
+/// active control wins over an earlier focusable ancestor containing it.
+pub(crate) fn project_tab_candidates(
+    candidates: &[NativeFocusCandidate],
+    include: impl Fn(&NativeFocusCandidate) -> bool,
+) -> Vec<TabCandidate> {
+    let included = candidates
+        .iter()
+        .filter(|candidate| include(candidate))
+        .collect::<Vec<_>>();
+    let active = included
+        .iter()
+        .position(|candidate| candidate.exact_active)
+        .or_else(|| {
+            included
+                .iter()
+                .position(|candidate| candidate.contains_active)
+        });
+    included
+        .into_iter()
+        .enumerate()
+        .map(|(index, candidate)| TabCandidate {
+            target: candidate.target.clone(),
+            tab_index: candidate.tab_index,
+            hosts: candidate.hosts.clone(),
+            active: active == Some(index),
+        })
+        .collect()
+}
+
+/// Rust-derived candidates for a Tab trap. Exclusions are applied before
+/// positive-index ordering; opening's separate header preference does not apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabCandidate {
     pub(crate) target: String,
     pub(crate) tab_index: i32,
@@ -106,7 +153,7 @@ pub(crate) fn tab_boundary_target(
     } else {
         None
     }?;
-    Some(target.1.target.clone())
+    (!target.1.target.is_empty()).then(|| target.1.target.clone())
 }
 
 /// Dropdown exit asks the immediate Popover parent for its trigger's adjacent
@@ -143,7 +190,7 @@ pub(crate) fn tab_adjacent_target(
     } else {
         (index + 1) % ordered.len()
     };
-    Some(ordered[next].1.target.clone())
+    (!ordered[next].1.target.is_empty()).then(|| ordered[next].1.target.clone())
 }
 
 #[cfg(test)]
@@ -234,6 +281,35 @@ mod tests {
             hosts: hosts.iter().map(|host| (*host).into()).collect(),
             active,
         }
+    }
+
+    #[test]
+    fn native_projection_selects_exact_active_after_partitioning() {
+        let raw: Vec<NativeFocusCandidate> = serde_json::from_value(serde_json::json!([
+            {"target":"outer-ancestor","tab_index":0,"popover":"outer","contains_active":true},
+            {"target":"inner-ancestor","tab_index":0,"popover":"inner","contains_active":true},
+            {"target":"active-control","tab_index":0,"popover":"inner","exact_active":true,"contains_active":true}
+        ])).unwrap();
+        let inner = project_tab_candidates(&raw, |candidate| candidate.popover == "inner");
+        assert!(!inner[0].active);
+        assert!(inner[1].active);
+        // A nested exact match must not suppress its outer partition's
+        // containing control when that inner candidate is excluded by scope.
+        let outer = project_tab_candidates(&raw, |candidate| candidate.popover == "outer");
+        assert!(outer[0].active);
+    }
+
+    #[test]
+    fn unidentified_boundary_candidates_keep_native_default() {
+        let candidates = [
+            tab_candidate("", 1, &[], false),
+            tab_candidate("registered", 0, &[], true),
+        ];
+        assert_eq!(tab_boundary_target(&candidates, &[], false), None);
+        assert_eq!(
+            tab_adjacent_target(&candidates, &[], "registered", false),
+            None
+        );
     }
 
     #[test]

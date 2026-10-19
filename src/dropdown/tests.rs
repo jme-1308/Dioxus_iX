@@ -1870,10 +1870,15 @@ fn typed_tab_wraps_registered_controls_and_preserves_native_defaults() {
             .map(|host| host.registration_key.clone())
             .collect::<Vec<_>>();
         let before = h.config.borrow().requests.clone();
-        let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","nodes":[{
-            "id":node.id(),"generation":node.generation(),
-            "open":true,"focus_count":3,"focused_index":index,"focusable_ids":focusable_ids,"item_order":order
-        }]});
+        let report = serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe",
+            "focus_candidates":focusable_ids.iter().enumerate().map(|(candidate, target)| serde_json::json!({
+                "target":target,"tab_index":0,"hosts":[node.id()],"nearest_host":"mixed-items-host",
+                "popover":"","exact_active":inside && candidate == index,"contains_active":inside && candidate == index
+            })).collect::<Vec<_>>(),
+            "nodes":[{
+                "id":node.id(),"generation":node.generation(),"items_host":"mixed-items-host","item_order":order
+            }]
+        });
         dispatch(&h.dom, "input", transport, report.to_string());
         let revision_before = *context.revision.peek();
         let prevented = h.dom.in_runtime(|| {
