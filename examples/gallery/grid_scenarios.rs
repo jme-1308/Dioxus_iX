@@ -79,6 +79,7 @@ pub fn GridExamples() -> Element {
     status.filterable = true;
     let hardware = DataGridColumn::new("hwVersion", "HW version");
     rsx! {
+    crate::grid_worklist::GridWorklistExample {}
     GridEditingExample {}
     section { class: "grid-scale-example",
         h2 { "Equipment fleet" }

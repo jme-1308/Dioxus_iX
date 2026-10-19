@@ -28,6 +28,8 @@ mod filter_keyboard_review;
 mod filter_layout_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
+#[path = "dioxus_first_probe/grid_worklist_review.rs"]
+mod grid_worklist_review;
 #[path = "dioxus_first_probe/header_choice_review.rs"]
 mod header_choice_review;
 #[path = "dioxus_first_probe/header_group_review.rs"]
@@ -155,6 +157,9 @@ fn Preview() -> Element {
     }
     if scope == "?tooltip" {
         return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
+    }
+    if scope == "?gridworklist" {
+        return rsx! { grid_worklist_review::GridWorklistPreview {} };
     }
     if scope == "?chipworkflows" {
         return rsx! { chip_workflows_review::ChipWorkflowsPreview {} };

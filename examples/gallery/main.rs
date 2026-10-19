@@ -31,6 +31,7 @@ mod filter_state_review;
 mod form_scenarios;
 mod forms;
 mod grid_scenarios;
+mod grid_worklist;
 mod group_review;
 mod header_layout_review;
 mod header_nested_review;
@@ -215,6 +216,7 @@ fn Gallery() -> Element {
         style { {tree::STYLES} }
         style { {toast_review::STYLES} }
         style { {grid_scenarios::STYLES} }
+        style { {grid_worklist::STYLES} }
         IxTheme {
             scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
             density: if compact { Density::Compact } else { Density::Normal },
