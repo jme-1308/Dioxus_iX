@@ -4,6 +4,7 @@ use crate::header_control_scope::{HeaderControlGroup, HeaderControls};
 use crate::overlay_registry::{CloseBehavior, OverlayKind};
 use crate::overlay_runtime::{
     self, Callbacks, Change, FocusObservation, KeyDecision, KeyFacts, NodeHandle, Reason,
+    SurfaceObservation,
 };
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -466,6 +467,25 @@ impl Controller {
             self.notify();
         }
     }
+    fn pointer_input(&self) {
+        let changed = {
+            let mut model = self.model.borrow_mut();
+            if !model.alive || !model.mounted {
+                return;
+            }
+            let changed = model.focus != "none"
+                || model.preserve.is_some()
+                || model.preserve_target.is_some();
+            model.focus("none".into());
+            changed
+        };
+        // The shared primary input adapter reports mousedown/touchstart. Exact
+        // pointerdown chronology is not needed to cancel an obsolete focus job.
+        self.node.cancel_registered_focus();
+        if changed {
+            self.notify();
+        }
+    }
     fn measure_layout(&self) {
         let Some((more, popup, viewport, epoch, generation, small)) = ({
             let mut model = self.model.borrow_mut();
@@ -762,7 +782,7 @@ impl Controller {
         let Ok(report) = serde_json::from_str::<Report>(&event.value()) else {
             return;
         };
-        if !matches!(report.kind.as_str(), "pointer" | "layout") {
+        if report.kind != "layout" {
             return;
         }
         {
@@ -771,18 +791,10 @@ impl Controller {
                 return;
             }
             model.sequence = report.sequence;
-            if report.kind == "layout" || model.viewport_width != report.viewport_width {
-                model.layout_epoch = model.layout_epoch.wrapping_add(1);
-            }
+            model.layout_epoch = model.layout_epoch.wrapping_add(1);
             if report.viewport_width.is_finite() && report.viewport_width > 0.0 {
                 model.viewport_width = report.viewport_width;
             }
-            if report.kind == "pointer" {
-                model.focus("none".into());
-            }
-        }
-        if report.kind == "pointer" {
-            self.node.cancel_registered_focus();
         }
         self.dispatch_focus();
         self.notify();
@@ -969,8 +981,11 @@ pub(crate) fn HeaderLayout(
     let observer_controls = controls.clone();
     controller
         .node
-        .set_focus_observer(Rc::new(move |observation| {
-            observer_controller.observe_focus(observation, &observer_controls.groups());
+        .set_surface_observer(Rc::new(move |observation| match observation {
+            SurfaceObservation::Focus(focus) => {
+                observer_controller.observe_focus(focus, &observer_controls.groups());
+            }
+            SurfaceObservation::Pointer => observer_controller.pointer_input(),
         }));
     let focus_controller = controller.clone();
     let focus_controls = controls.clone();
@@ -1295,6 +1310,62 @@ mod tests {
         for _ in 0..4 {
             dom.render_immediate_to_vec();
         }
+    }
+
+    #[test]
+    fn shared_pointer_cancels_pending_header_focus_without_repeated_renders() {
+        let fixture = FocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(registered_header, fixture.clone());
+        dom.rebuild_in_place();
+        let controller = fixture.0.borrow().clone().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        install_focus(&dom, &controller, "registered-field", &calls);
+        {
+            let mut model = controller.model.borrow_mut();
+            model.open = true;
+            model.controls = controls(&["registered-field"], None);
+            model.focus("first".into());
+        }
+        dom.in_runtime(|| controller.dispatch_focus());
+        let runtime = controller.node.runtime().unwrap();
+        assert_eq!(runtime.pending_item_focus_count(), 1);
+        {
+            let target = controller
+                .node
+                .capture_registered_focus("registered-field")
+                .unwrap();
+            let mut model = controller.model.borrow_mut();
+            model.preserve_focus(FocusedControl {
+                id: "registered-field".into(),
+                group: 0,
+            });
+            model.preserve_target = Some(target);
+        }
+        let revision = *controller.revision.peek();
+        dom.in_runtime(|| controller.pointer_input());
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+        {
+            let model = controller.model.borrow();
+            assert_eq!(model.focus, "none");
+            assert!(model.preserve.is_none() && model.preserve_target.is_none());
+            assert!(model.open, "pointer input alone never closes the surface");
+        }
+        assert_eq!(*controller.revision.peek(), revision + 1);
+        dom.in_runtime(|| controller.pointer_input());
+        assert_eq!(
+            *controller.revision.peek(),
+            revision + 1,
+            "ordinary pointer input does not request a render without pending Header intent"
+        );
+        settle_focus(&mut dom);
+        assert!(
+            calls.borrow().is_empty(),
+            "the canceled job cannot steal native pointer focus"
+        );
+        assert!(
+            fixture.2.borrow().is_empty(),
+            "no synthetic close request or veto bypass"
+        );
     }
 
     #[test]

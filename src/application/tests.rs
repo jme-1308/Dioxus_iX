@@ -2227,6 +2227,14 @@ fn HeaderFormControls(revision: usize) -> Element {
         crate::Input {id:format!("header-form-input-{revision}"),value:"Input value"}
         crate::Textarea {id:format!("header-form-textarea-{revision}"),value:"Textarea value"}
         crate::Select {id:format!("header-form-select-{revision}"),options:vec![crate::SelectOption::new("a","Alpha")]}
+        crate::Checkbox {id:format!("header-form-checkbox-{revision}"),label:"Confirm inspection",name:format!("header-checkbox-mirror-{revision}"),required:true}
+        crate::Radio {id:format!("header-form-radio-{revision}"),label:"Primary schedule",name:format!("header-radio-{revision}"),value:"primary",checked:true}
+        crate::Toggle {id:format!("header-form-toggle-{revision}"),label:"Remote monitoring",name:format!("header-toggle-mirror-{revision}"),required:true}
+        crate::Checkbox {id:format!("header-form-disabled-checkbox-{revision}"),label:"Unavailable confirmation",disabled:true}
+        crate::Radio {id:format!("header-form-disabled-radio-{revision}"),label:"Unavailable schedule",name:format!("header-disabled-radio-{revision}"),value:"disabled",disabled:true}
+        crate::Toggle {id:format!("header-form-disabled-toggle-{revision}"),label:"Unavailable monitoring",disabled:true}
+        crate::RadioGroup {name:format!("header-form-radio-group-{revision}"),label:"Inspection route",value:"group-a",
+            options:vec![crate::SelectOption::new("group-a","Route A"),crate::SelectOption::new("group-b","Route B")]}
     }
 }
 #[derive(Clone, Default)]
@@ -4334,6 +4342,129 @@ fn header_standard_fields_register_their_native_controls_and_invalidate_replaced
     );
     assert!(
         captured
+            .iter()
+            .zip(&retained)
+            .all(|(target, node)| target.matches_node(node))
+    );
+}
+
+fn rendered_control_tag(harness: &AppSwitchHarness, id: &str) -> String {
+    let html = harness.html();
+    let marker = format!(" id=\"{id}\"");
+    let position = html.find(&marker).expect("rendered registered control ID");
+    let start = html[..position].rfind('<').unwrap();
+    let end = position + html[position..].find('>').unwrap();
+    html[start..end].to_string()
+}
+
+#[test]
+fn header_choice_controls_register_actual_native_targets_and_expire_on_replacement() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = AppSwitchHarness::configured(None, false, |state| state.slot_form_controls = true);
+    h.settle();
+    let runtime = h.settings.borrow().overlay_runtime.clone().unwrap();
+    let ids = [
+        "header-form-checkbox-0",
+        "header-form-radio-0",
+        "header-form-toggle-0",
+    ];
+    let captures: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            runtime
+                .capture_registered_focus(id)
+                .expect("mounted interactive choice control")
+        })
+        .collect();
+    let retained: Vec<_> = captures
+        .iter()
+        .map(|target| target.live_node().unwrap())
+        .collect();
+    assert!(rendered_control_tag(&h, ids[0]).starts_with("<button "));
+    assert!(rendered_control_tag(&h, ids[0]).contains("role=\"checkbox\""));
+    assert!(rendered_control_tag(&h, ids[1]).starts_with("<input "));
+    assert!(rendered_control_tag(&h, ids[1]).contains("type=\"radio\""));
+    assert!(rendered_control_tag(&h, ids[2]).starts_with("<button "));
+    assert!(rendered_control_tag(&h, ids[2]).contains("role=\"switch\""));
+    for kind in ["checkbox", "radio", "toggle"] {
+        let id = format!("header-form-disabled-{kind}-0");
+        let tag = rendered_control_tag(&h, &id);
+        assert!(
+            tag.contains(" disabled"),
+            "disabled eligibility stays on the registered native control"
+        );
+    }
+    let html = h.html();
+    for mirror in ["header-checkbox-mirror-0", "header-toggle-mirror-0"] {
+        let marker = format!("name=\"{mirror}\"");
+        let position = html.find(&marker).unwrap();
+        let start = html[..position].rfind('<').unwrap();
+        let end = position + html[position..].find('>').unwrap();
+        let tag = &html[start..end];
+        assert!(
+            tag.starts_with("<input ")
+                && tag.contains("ix-check-native")
+                && tag.contains("aria-hidden=\"true\"")
+        );
+        assert!(
+            !tag.contains(" id="),
+            "submission mirror does not take the public focus ID"
+        );
+    }
+    // RadioGroup composes the same native Radio component. Its generated ID
+    // must register without requiring explicit IDs for every option.
+    let group_ids: Vec<String> = html
+        .split("<input ")
+        .skip(1)
+        .map(|tail| tail.split('>').next().unwrap())
+        .filter(|tag| tag.contains("name=\"header-form-radio-group-0\""))
+        .map(|tag| {
+            tag.split_once("id=\"")
+                .unwrap()
+                .1
+                .split('"')
+                .next()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(group_ids.len(), 2);
+    let group_captures: Vec<_> = group_ids
+        .iter()
+        .map(|id| {
+            runtime
+                .capture_registered_focus(id)
+                .expect("RadioGroup native option registration")
+        })
+        .collect();
+    h.settings.borrow_mut().slot_form_revision = 1;
+    h.update();
+    for (id, target) in ids.iter().zip(&captures) {
+        assert!(runtime.capture_registered_focus(id).is_none());
+        assert!(target.live_node().is_none());
+    }
+    assert!(
+        group_captures
+            .iter()
+            .all(|target| target.live_node().is_none())
+    );
+    let replacements: Vec<_> = [
+        "header-form-checkbox-1",
+        "header-form-radio-1",
+        "header-form-toggle-1",
+    ]
+    .iter()
+    .map(|id| runtime.capture_registered_focus(id).unwrap())
+    .collect();
+    h.settings.borrow_mut().slot_form_controls = false;
+    h.update();
+    assert!(
+        replacements
+            .iter()
+            .all(|target| target.live_node().is_none())
+    );
+    assert!(
+        captures
             .iter()
             .zip(&retained)
             .all(|(target, node)| target.matches_node(node))

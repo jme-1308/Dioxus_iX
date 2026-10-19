@@ -76,7 +76,14 @@ pub(crate) struct FocusObservation {
     pub(crate) active_id: String,
     pub(crate) active_default: bool,
 }
-type FocusObserver = Rc<dyn Fn(FocusObservation)>;
+/// Surface notifications reuse the canonical observation and shared document
+/// input adapters. Pointer invalidation has no independent native transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SurfaceObservation {
+    Focus(FocusObservation),
+    Pointer,
+}
+type SurfaceObserver = Rc<dyn Fn(SurfaceObservation)>;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub(crate) struct AnchorRect {
@@ -128,7 +135,7 @@ struct Entry {
     trigger_visibility_check: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
     anchor_shape: Option<Rc<dyn Fn(bool)>>,
-    focus_observer: Option<FocusObserver>,
+    surface_observer: Option<SurfaceObserver>,
     submenu: Option<SubmenuAccess>,
     navigation_mode: Option<String>,
     suppress_trigger_restore: bool,
@@ -1438,7 +1445,7 @@ impl RuntimeHandle {
                     trigger_visibility_check: kind.is_dropdown(),
                     anchor_intersection: None,
                     anchor_shape: None,
-                    focus_observer: None,
+                    surface_observer: None,
                     submenu: None,
                     navigation_mode,
                     suppress_trigger_restore,
@@ -1522,7 +1529,10 @@ impl RuntimeHandle {
                 }),
             },
         );
-        if let Some(open) = self.read_current(id, &entry) {
+        if let Some(open) = self
+            .with_owner(id, generation, || self.read_current(id, &entry))
+            .flatten()
+        {
             domain.sync_open(id, generation, open);
         }
     }
@@ -2300,6 +2310,9 @@ impl RuntimeHandle {
                 if matches!(input_kind.as_str(), "mousedown" | "touchstart") {
                     self.0.borrow_mut().keyboard = false;
                     self.clear_item_visual();
+                    // Each renderer owner receives the current shared event,
+                    // even when another owner admitted its document sequence.
+                    self.notify_surfaces(SurfaceObservation::Pointer, None);
                 } else if let Some(keyboard) = domain.keyboard_mode() {
                     self.0.borrow_mut().keyboard = keyboard;
                 }
@@ -2396,28 +2409,46 @@ impl RuntimeHandle {
             }
         }
         self.repair_moved_item_focus(report);
-        let focus = FocusObservation::from(report);
-        for (id, snapshot) in snapshots {
-            if !report
-                .nodes
+        self.notify_surfaces(
+            SurfaceObservation::Focus(FocusObservation::from(report)),
+            Some(report),
+        );
+        KeyDecision::default()
+    }
+    fn notify_surfaces(&self, observation: SurfaceObservation, report: Option<&Report>) {
+        let surfaces = {
+            let runtime = self.0.borrow();
+            runtime
+                .order
                 .iter()
-                .any(|node| node.id == id && node.generation == snapshot.generation)
-            {
+                .filter_map(|id| {
+                    let entry = runtime.nodes.get(id)?;
+                    entry.surface_observer.as_ref()?;
+                    Some((id.clone(), entry.generation))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, generation) in surfaces {
+            if report.is_some_and(|report| {
+                !report
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == id && node.generation == generation)
+            }) {
                 continue;
             }
-            // Delivery may remove or replace a later owner. Re-read its live
-            // callback rather than invoking a retained snapshot after teardown.
-            self.with_owner(&id, snapshot.generation, || {
+            // An earlier callback may remove or replace a later surface.
+            // Re-read its mounted generation/callback outside Runtime borrows.
+            self.with_owner(&id, generation, || {
                 if let Some(observer) = self
                     .entry(&id)
-                    .filter(|entry| entry.mounted)
-                    .and_then(|entry| entry.focus_observer)
+                    .filter(|entry| entry.mounted && entry.generation == generation)
+                    .and_then(|entry| entry.surface_observer)
                 {
-                    observer(focus.clone());
+                    observer(observation.clone());
                 }
             });
         }
-        KeyDecision::default()
     }
     fn reported_kind(&self, report: &Report, id: &str) -> Option<OverlayKind> {
         let node = report.nodes.iter().find(|node| node.id == id)?;
@@ -3285,16 +3316,16 @@ impl NodeHandle {
             entry.anchor_shape = Some(handler);
         }
     }
-    /// Reuse canonical native facts in this surface's Dioxus scope. Installing
-    /// the callback during render does not synchronously deliver observations.
-    pub(crate) fn set_focus_observer(&self, observer: FocusObserver) {
+    /// Reuse canonical focus facts and shared mouse/touch input in this surface's
+    /// Dioxus scope. Installation never synchronously delivers during render.
+    pub(crate) fn set_surface_observer(&self, observer: SurfaceObserver) {
         let Some(runtime) = self.runtime() else {
             return;
         };
         if let Some(entry) = runtime.0.borrow_mut().nodes.get_mut(&self.id)
             && entry.generation == self.generation
         {
-            entry.focus_observer = Some(observer);
+            entry.surface_observer = Some(observer);
         }
     }
     #[cfg(test)]
@@ -3797,7 +3828,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_focus_observation_runs_in_the_live_surface_scope() {
+    fn shared_surface_observation_runs_in_the_live_scope_and_rejects_stale_delivery() {
         let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
         let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
         dom.rebuild_in_place();
@@ -3806,7 +3837,7 @@ mod tests {
         let owner = fixture.0.owner.get().unwrap();
         let seen = Rc::new(RefCell::new(Vec::new()));
         let delivered = seen.clone();
-        node.set_focus_observer(Rc::new(move |focus| {
+        node.set_surface_observer(Rc::new(move |focus| {
             assert_eq!(current_scope_id(), owner);
             assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
             delivered.borrow_mut().push(focus);
@@ -3822,6 +3853,7 @@ mod tests {
             "observe",
             serde_json::json!([{"id":node.id(),"generation":node.generation()}]),
         );
+        observation.document = "scoped surface shared observations".into();
         observation.active_id = "registered-field".into();
         observation.focus_candidates = serde_json::from_value(serde_json::json!([
             {"target":"registered-field","tab_index":0,"exact_active":true}
@@ -3833,18 +3865,52 @@ mod tests {
             assert_eq!(current_scope_id(), caller);
         });
         assert_eq!(seen.borrow().len(), 1);
-        assert_eq!(seen.borrow()[0].active_id, "registered-field");
-        assert_eq!(seen.borrow()[0].candidates.len(), 1);
-        assert_eq!(
-            node.current_focus_observation().as_ref(),
-            Some(&seen.borrow()[0])
-        );
+        let SurfaceObservation::Focus(focus) = seen.borrow()[0].clone() else {
+            panic!("canonical observation supplies focus facts");
+        };
+        assert_eq!(focus.active_id, "registered-field");
+        assert_eq!(focus.candidates.len(), 1);
+        assert_eq!(node.current_focus_observation().as_ref(), Some(&focus));
         runtime.observe(&observation);
         assert_eq!(seen.borrow().len(), 1, "stale observations are rejected");
+        let mut pointer: Report = serde_json::from_value(document_value(
+            &runtime,
+            2,
+            &observation.document,
+            serde_json::json!({"sequence":1,"action":"input","input_kind":"mousedown"}),
+        ))
+        .unwrap();
+        dom.in_scope(caller, || {
+            runtime.observe(&pointer);
+            assert_eq!(current_scope_id(), caller);
+        });
+        assert_eq!(seen.borrow().as_slice()[1], SurfaceObservation::Pointer);
+        runtime.observe(&pointer);
+        assert_eq!(
+            seen.borrow().len(),
+            2,
+            "duplicate local delivery is rejected"
+        );
+        pointer.sequence = 3;
+        pointer.document_event = Some(
+            serde_json::from_value(serde_json::json!({
+                "sequence":2,"action":"input","input_kind":"touchstart"
+            }))
+            .unwrap(),
+        );
+        dom.in_scope(caller, || runtime.observe(&pointer));
+        assert_eq!(seen.borrow().as_slice()[2], SurfaceObservation::Pointer);
         dom.in_scope(owner, || node.unregister());
-        observation.sequence = 2;
+        observation.sequence = 4;
         runtime.observe(&observation);
-        assert_eq!(seen.borrow().len(), 1, "removed owners receive no callback");
+        pointer.sequence = 5;
+        pointer.document_event.as_mut().unwrap().sequence = 3;
+        runtime.observe(&pointer);
+        assert_eq!(
+            seen.borrow().len(),
+            3,
+            "removed owners receive neither callback"
+        );
         assert!(node.current_focus_observation().is_none());
     }
 
@@ -5043,9 +5109,32 @@ mod tests {
         let first = RuntimeHandle::new();
         let second = RuntimeHandle::new();
         let log = Rc::new(RefCell::new(Vec::new()));
-        let _root = model(&first, "document-root", OverlayKind::Dropdown, log.clone());
+        let root = model(&first, "document-root", OverlayKind::Dropdown, log.clone());
         let _child = model(&first, "document-child", OverlayKind::Dropdown, log.clone());
-        let _peer = model(&second, "document-peer", OverlayKind::Dropdown, log);
+        let peer = model(&second, "document-peer", OverlayKind::Dropdown, log.clone());
+        let removed = model(&first, "document-removed-surface", OverlayKind::Header, log);
+        let pointers = Rc::new(RefCell::new(Vec::new()));
+        let first_pointers = pointers.clone();
+        let removed_node = removed.node.clone();
+        root.node.set_surface_observer(Rc::new(move |observation| {
+            if observation == SurfaceObservation::Pointer {
+                first_pointers.borrow_mut().push("first");
+                removed_node.unregister();
+            }
+        }));
+        removed.node.set_surface_observer(Rc::new(|observation| {
+            assert_ne!(
+                observation,
+                SurfaceObservation::Pointer,
+                "an earlier observer removed this surface before its turn"
+            );
+        }));
+        let second_pointers = pointers.clone();
+        peer.node.set_surface_observer(Rc::new(move |observation| {
+            if observation == SurfaceObservation::Pointer {
+                second_pointers.borrow_mut().push("second");
+            }
+        }));
         assign(&first, "document-child", &["document-root"], true);
         let document = "document snapshot and local cue broadcast";
         let raw = mixed_inventory_facts();
@@ -5084,6 +5173,11 @@ mod tests {
             assert_eq!(runtime.item_visual_key(), None);
             assert!(!runtime.keyboard_mode() && !runtime.0.borrow().keyboard);
         }
+        assert_eq!(
+            *pointers.borrow(),
+            ["first", "second"],
+            "each current owner receives the same admitted document pointer input"
+        );
         first.input(event(document_value(
             &first,
             4,
@@ -5103,6 +5197,11 @@ mod tests {
             first.item_visual_key().as_deref(),
             Some("key-a"),
             "older input cannot clear a newer cue"
+        );
+        assert_eq!(
+            *pointers.borrow(),
+            ["first", "second"],
+            "stale shared input does not notify surface observers"
         );
         let state = first.0.borrow();
         assert_eq!(

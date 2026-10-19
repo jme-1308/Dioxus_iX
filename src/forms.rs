@@ -678,6 +678,10 @@ pub fn Textarea(
 pub fn Checkbox(
     #[props(default)] checked: bool,
     #[props(default)] label: String,
+    /// Stable ID of the native interactive control, not its form mirror.
+    /// Keep the ID stable for this mounted component scope.
+    #[props(default)]
+    id: Option<String>,
     #[props(default)] name: Option<String>,
     #[props(default = "on".to_string())] value: String,
     #[props(default)] disabled: bool,
@@ -690,6 +694,8 @@ pub fn Checkbox(
     #[props(default)] oncheckedchange: EventHandler<bool>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
 ) -> Element {
+    let id = field_id(id);
+    let header_focus_mount = use_header_focus_mount(id.clone());
     let mut button = use_signal(|| None::<Rc<MountedData>>);
     let mut attempted = use_signal(|| false);
     let invalid = invalid || state == FieldState::Invalid || (attempted() && required && !checked);
@@ -710,12 +716,12 @@ pub fn Checkbox(
                     spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } });
                 },
             }
-            button { class: "ix-check ix-checkbox {state.class()}", r#type: "button", role: "checkbox", disabled,
+            button { id, class: "ix-check ix-checkbox {state.class()}", r#type: "button", role: "checkbox", disabled,
                 "data-mixed": indeterminate.to_string(), "data-checked": checked.to_string(),
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
                 "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
                 "aria-disabled": disabled.to_string(), aria_label,
-                onmounted: move |event| button.set(Some(event.data())), onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = header_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
                 span { class: "ix-checkbox-button", "aria-hidden": "true",
                     span { class: "ix-check-shape",
                         svg { view_box: "0 0 18 18", width: "18", height: "18", fill: "none",
@@ -851,6 +857,10 @@ pub fn CheckboxGroup(
 pub fn Radio(
     value: String,
     #[props(default)] label: String,
+    /// Stable ID of the native interactive control, not its form mirror.
+    /// Keep the ID stable for this mounted component scope.
+    #[props(default)]
+    id: Option<String>,
     #[props(default)] name: Option<String>,
     #[props(default)] checked: bool,
     #[props(default)] disabled: bool,
@@ -861,6 +871,8 @@ pub fn Radio(
     #[props(default)] oncheckedchange: EventHandler<bool>,
     #[props(default)] onvaluechange: EventHandler<String>,
 ) -> Element {
+    let id = field_id(id);
+    let header_focus_mount = use_header_focus_mount(id.clone());
     crate::form_control::use_custom_field_state(crate::form_control::control_validation(
         state, &class,
     ));
@@ -870,7 +882,8 @@ pub fn Radio(
         label { class: "ix-check ix-radio ix-radio-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-disabled": disabled.to_string(),
             "data-label-less": label.is_empty().to_string(),
-            input { r#type: "radio", name, value, checked, disabled, required,
+            input { id, r#type: "radio", name, value, checked, disabled, required,
+                onmounted: move |event| { if let Some(mount) = header_focus_mount { mount.call(event); } },
                 "aria-label": accessible_label,
                 "aria-invalid": (state == FieldState::Invalid).to_string(),
                 // Radio change fires only when becoming checked. FormData::checked
@@ -978,6 +991,10 @@ pub fn RadioGroup(
 #[component]
 pub fn Toggle(
     #[props(default)] checked: bool,
+    /// Stable ID of the native interactive control, not its form mirror.
+    /// Keep the ID stable for this mounted component scope.
+    #[props(default)]
+    id: Option<String>,
     #[props(default)] name: Option<String>,
     #[props(default = "on".to_string())] value: String,
     #[props(default)] disabled: bool,
@@ -995,6 +1012,8 @@ pub fn Toggle(
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] oncheckedchange: EventHandler<bool>,
 ) -> Element {
+    let id = field_id(id);
+    let header_focus_mount = use_header_focus_mount(id.clone());
     let mut button = use_signal(|| None::<Rc<MountedData>>);
     let mut attempted = use_signal(|| false);
     let text = if indeterminate {
@@ -1027,12 +1046,12 @@ pub fn Toggle(
                     spawn(async move { if let Some(node) = node { let _ = node.set_focus(true).await; } });
                 },
             }
-            button { class: "ix-toggle ix-toggle-control {state.class()} {class}", r#type: "button", role: "switch", disabled,
+            button { id, class: "ix-toggle ix-toggle-control {state.class()} {class}", r#type: "button", role: "switch", disabled,
                 "data-mixed": indeterminate.to_string(), "data-checked": checked.to_string(),
                 "aria-label": accessible_label, "aria-labelledby": aria_labelledby, "aria-disabled": disabled.to_string(),
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
                 "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
-                onmounted: move |event| button.set(Some(event.data())), onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = header_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
                 span { class: "ix-toggle-wrapper",
                     span { class: if checked { if indeterminate { "ix-toggle-switch checked indeterminate" } else { "ix-toggle-switch checked" } } else if indeterminate { "ix-toggle-switch indeterminate" } else { "ix-toggle-switch" },
                         "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(), "aria-hidden": "true",

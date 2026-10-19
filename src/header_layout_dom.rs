@@ -1,5 +1,6 @@
 //! Primary viewport/global invalidation adapter for Header mounted geometry.
-//! Pinned MountedData has no viewport-width or global scroll/pointer subscription.
+//! Pinned MountedData has no viewport-width query and Document has no typed
+//! global scroll/resize subscriptions. Shared overlay input owns pointer facts.
 //! Dioxus owns slot presence, lifecycle, control groups and measurements; the shared
 //! overlay observation supplies eligible focus facts. No local DOM enumeration.
 
@@ -15,9 +16,6 @@ function report(kind){
     sequence:++sequence,kind,viewport_width:document.documentElement.clientWidth});
   transport.dispatchEvent(new Event('input',{bubbles:true,cancelable:false}));
 }
-document.addEventListener('pointerdown',event=>{
-  if(root.getAttribute('data-open')==='true'||event.composedPath().includes(root))report('pointer');
-},{capture:true,signal});
 window.addEventListener('resize',()=>report('layout'),{passive:true,signal});
 window.addEventListener('scroll',()=>report('layout'),{capture:true,passive:true,signal});
 root.dataset.headerLayoutNative='true';
