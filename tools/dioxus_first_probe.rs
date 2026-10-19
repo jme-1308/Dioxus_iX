@@ -48,6 +48,8 @@ mod select_method_review;
 mod tab_exit_review;
 #[path = "dioxus_first_probe/text_control_method_review.rs"]
 mod text_control_method_review;
+#[path = "dioxus_first_probe/toast_lifetime_review.rs"]
+mod toast_lifetime_review;
 #[path = "dioxus_first_probe/tooltip_mounted_review.rs"]
 mod tooltip_mounted_review;
 #[path = "dioxus_first_probe/transport_lifetime_review.rs"]
@@ -180,6 +182,9 @@ fn Preview() -> Element {
     }
     if scope == "?treeactions" {
         return rsx! { tree_actions_review::TreeActionsPreview {} };
+    }
+    if scope == "?toastlifetime" {
+        return rsx! { toast_lifetime_review::ToastLifetimePreview {} };
     }
     if scope == "?applicationfocus" {
         return rsx! { application_focus_review::ApplicationFocusPreview {} };

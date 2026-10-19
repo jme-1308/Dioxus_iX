@@ -58,6 +58,7 @@ mod spinner_review;
 mod tabs_review;
 mod text_commit_review;
 mod theme_review;
+mod toast_review;
 mod toggle_button_review;
 mod toggle_review;
 mod tree;
@@ -206,6 +207,7 @@ fn Gallery() -> Element {
         style { {datetime::STYLES} }
         style { {dialogs::STYLES} }
         style { {tree::STYLES} }
+        style { {toast_review::STYLES} }
         style { {grid_scenarios::STYLES} }
         IxTheme {
             scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
@@ -363,7 +365,6 @@ fn follow_gallery_link(
 #[component]
 fn FeedbackExamples() -> Element {
     let mut selected = use_signal(|| "Nothing selected".to_string());
-    let mut show_toast = use_signal(|| false);
     let mut reset = use_signal(|| 0);
     rsx! {
         section { class: "demo-section", h2 { "Message bar" }
@@ -394,16 +395,7 @@ fn FeedbackExamples() -> Element {
             Tooltip { id: "review-tooltip", label: "Additional information", Button { variant: ButtonVariant::Secondary, aria_describedby: "review-tooltip", "Hover or focus" } }
             TooltipReviewExamples {}
         }
-        section { class: "demo-section", h2 { "Toast" }
-            Button { onclick: move |_| show_toast.set(true), "Show toast" }
-            if show_toast() {
-                div { class: "review-toast",
-                    Toast { title: "Configuration saved", message_type: MessageType::Success, onclose: move |_| show_toast.set(false),
-                        "This demonstration notification stays visible until dismissed."
-                    }
-                }
-            }
-        }
+        toast_review::ToastLifetimeExample {}
     }
 }
 
@@ -518,7 +510,6 @@ html,body { margin:0;min-height:100%; }
 .demo-stack { display:flex;flex-direction:column;gap:16px;max-width:760px; }
 .demo-label { min-width:130px;font-size:14px;color:var(--ix-color-text-secondary); }
 .demo-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:24px; }
-.review-toast { position:fixed;right:24px;bottom:24px;z-index:50;max-width:calc(100vw - 48px); }
 .review-tooltip-clip{height:64px;max-width:320px;overflow:hidden;padding:8px;margin-block:16px;border:1px solid var(--ix-color-border)}.review-tooltip-trigger{display:inline-flex;max-width:100%}
 .review-icons { display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:1px;background:var(--ix-color-border);border:1px solid var(--ix-color-border);margin-top:24px; }
 .review-icon-item { display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:116px;background:var(--ix-color-surface-1);padding:12px;min-width:0;text-align:center; }
