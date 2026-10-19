@@ -3188,31 +3188,9 @@ async fn prepare_upload(
     }
 }
 
-// Synchronous native picker activation preserves the originating user gesture.
-// All file processing, transfer state and callbacks stay in Rust.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const UPLOAD_PICKER_BRIDGE: &str = r#"
-const id = await dioxus.recv();
-const root = document.getElementById(id);
-if (!root) return null;
-root.__ixUploadCleanup?.();
-const events = new AbortController();
-let disposed = false;
-function cleanup() {
-  if (disposed) return;
-  disposed = true; events.abort(); removal.disconnect(); delete root.__ixUploadCleanup;
-}
-const removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
-root.__ixUploadCleanup = cleanup;
-root.addEventListener('click', event => {
-  const button = event.target instanceof Element ? event.target.closest('button.ix-upload-button') : null;
-  const input = root.querySelector('input.ix-upload-browser');
-  if (button && root.contains(button) && !button.disabled && input instanceof HTMLInputElement && !input.disabled) input.click();
-}, {signal:events.signal});
-removal.observe(document.documentElement, {childList:true,subtree:true});
-return null;
-"#;
-
+// The real file input owns picker activation on web and desktop. The pinned
+// desktop interpreter's native.ts handles actual file-input clicks itself,
+// including accept/directory/multiple/name. No click or input-reset bridge is needed.
 /// File/folder picker and drop target. `FileData` keeps content reads portable.
 /// Folder inputs use the host's directory-picker support; `onentrieschanged`
 /// retains browser relative paths and expands native desktop folder selections.
@@ -3244,28 +3222,39 @@ pub fn Upload(
     let mut failure = use_signal(|| None::<UploadError>);
     let mut drag_depth = use_signal(|| 0_usize);
     let generation = use_hook(|| Rc::new(std::cell::Cell::new(0_u64)));
+    let alive = use_hook(|| Rc::new(std::cell::Cell::new(true)));
+    let focused = use_hook(|| Rc::new(std::cell::Cell::new(false)));
+    let restore_focus = use_hook(|| Rc::new(std::cell::Cell::new(None::<(u64, u64)>)));
+    let mut picker_revision = use_signal(|| 0_u64);
     let current_generation = generation.clone();
+    let blocked_focus = restore_focus.clone();
     let blocked = disabled || busy;
     use_effect(use_reactive!(|blocked| {
         if blocked {
             current_generation.set(current_generation.get().wrapping_add(1));
+            blocked_focus.set(None);
             processing.set(false);
             drag_depth.set(0);
         }
     }));
+    let choose_generation = generation.clone();
+    let choose_alive = alive.clone();
     let choose = use_callback(move |files: Vec<FileData>| {
-        if blocked {
+        // A canceled native picker (including desktop's empty change delivery)
+        // leaves selection, errors and controlled transfer state unchanged.
+        if blocked || files.is_empty() || !choose_alive.get() {
             return;
         }
         failure.set(None);
         drag_depth.set(0);
         processing.set(true);
-        let sequence = generation.get().wrapping_add(1);
-        generation.set(sequence);
-        let generation = generation.clone();
+        let sequence = choose_generation.get().wrapping_add(1);
+        choose_generation.set(sequence);
+        let generation = choose_generation.clone();
+        let alive = choose_alive.clone();
         spawn(async move {
             let result = prepare_upload(files, multiple, directory_upload).await;
-            if generation.get() != sequence {
+            if !alive.get() || generation.get() != sequence {
                 return;
             }
             processing.set(false);
@@ -3283,20 +3272,66 @@ pub fn Upload(
     });
     let reset_id = field_id(None);
     let root_id = format!("{reset_id}-upload");
-    let mounted_id = root_id.clone();
-    let cleanup_id = root_id.clone();
+    let cleanup_alive = alive.clone();
+    let cleanup_generation = generation.clone();
+    let cleanup_focus = restore_focus.clone();
     use_drop(move || {
-        #[cfg(any(feature = "web", feature = "desktop"))]
-        {
-            let id = serde_json::to_string(&cleanup_id).expect("string serialization");
-            let _ = dioxus::document::eval(&format!(
-                "document.getElementById({id})?.__ixUploadCleanup?.();"
-            ));
-        }
-        #[cfg(not(any(feature = "web", feature = "desktop")))]
-        let _ = cleanup_id;
+        cleanup_alive.set(false);
+        cleanup_generation.set(cleanup_generation.get().wrapping_add(1));
+        cleanup_focus.set(None);
     });
-    let change_id = reset_id.clone();
+    let input_focus = focused.clone();
+    let input_blur = focused.clone();
+    let blur_restore = restore_focus.clone();
+    let change_focus = focused.clone();
+    let change_restore = restore_focus.clone();
+    let change_generation = generation.clone();
+    let change_alive = alive.clone();
+    let input_change = use_callback(move |event: FormEvent| {
+        if blocked || !change_alive.get() {
+            return;
+        }
+        let files = event.files();
+        if files.is_empty() {
+            return;
+        }
+        // Retain portable file handles before replacing just the native input.
+        // A fresh framework key permits another selection of the same file.
+        choose.call(files);
+        let revision = picker_revision.peek().wrapping_add(1);
+        change_restore.set(
+            change_focus
+                .get()
+                .then_some((revision, change_generation.get())),
+        );
+        picker_revision.set(revision);
+    });
+    let mounted_focus = focused.clone();
+    let mounted_restore = restore_focus.clone();
+    let mounted_generation = generation.clone();
+    let mounted_alive = alive.clone();
+    let picker_mount = use_callback(move |event: MountedEvent| {
+        let Some((revision, selection)) = mounted_restore.take() else {
+            return;
+        };
+        if blocked
+            || !mounted_alive.get()
+            || !mounted_focus.get()
+            || revision != *picker_revision.peek()
+            || selection != mounted_generation.get()
+        {
+            return;
+        }
+        let node = event.data();
+        let alive = mounted_alive.clone();
+        let focused = mounted_focus.clone();
+        let generation = mounted_generation.clone();
+        spawn(async move {
+            if alive.get() && focused.get() && generation.get() == selection {
+                let _ = node.set_focus(true).await;
+            }
+        });
+    });
     let button_text = button_text.unwrap_or_else(|| {
         if directory_upload {
             "Upload folder…"
@@ -3353,15 +3388,6 @@ pub fn Upload(
             "aria-busy": (busy || processing()).to_string(), "aria-disabled": blocked.to_string(),
             "data-disabled": disabled.to_string(), "data-state": state_name,
             "data-multiline": multiline.to_string(), "data-error": failure().is_some().to_string(),
-            onmounted: move |_| {
-                #[cfg(any(feature = "web", feature = "desktop"))]
-                {
-                    let id = mounted_id.clone();
-                    spawn(async move { let task = crate::dom_query::eval(UPLOAD_PICKER_BRIDGE); let _ = task.send(id); let _ = task.await; });
-                }
-                #[cfg(not(any(feature = "web", feature = "desktop")))]
-                let _ = &mounted_id;
-            },
             div { class: "ix-upload-area", "data-disabled": disabled.to_string(), "data-checking": busy.to_string(),
                 "data-file-over": (drag_depth() > 0).to_string(), "data-multiline": multiline.to_string(),
                 ondragenter: move |event: DragEvent| { if !blocked { event.prevent_default(); drag_depth += 1; } },
@@ -3379,23 +3405,22 @@ pub fn Upload(
                     span { class: "ix-upload-text", "{text}" }
                 }
                 div { class: "ix-upload-actions",
-            input { id: reset_id, class: "ix-upload-browser", r#type: "file", name, accept, multiple: multiple || directory_upload, disabled: blocked, tabindex: "-1", "aria-label": aria_label, "aria-disabled": blocked.to_string(),
-                "webkitdirectory": directory_upload.then_some("true"), "directory": directory_upload.then_some("true"),
-                onchange: move |event| {
-                    if blocked { return; }
-                    choose.call(event.files());
-                    // Reset only the native input, after Dioxus has retained the FileData
-                    // handles, so choosing the same filename again still emits change.
-                    let id = change_id.clone(); spawn(async move {
-                        let task = crate::dom_query::eval("const id=await dioxus.recv(); const node=document.getElementById(id); if(node instanceof HTMLInputElement)node.value=''; return null;");
-                        let _ = task.send(id); let _ = task.await;
-                    });
-                },
-            }
-                span { class: "ix-upload-button-host", "data-disabled": blocked.to_string(),
-                    crate::Button { variant: crate::ButtonVariant::Secondary, disabled: blocked,
-                        class: "ix-upload-button", "{button_text}" }
-                }
+                    label { class: "ix-upload-button-host", r#for: reset_id.clone(), "data-disabled": blocked.to_string(),
+                        // A keyed root VNode replaces the physical native control,
+                        // while the surrounding label/button presentation stays put.
+                        {rsx! { input { key: "{picker_revision()}", id: reset_id.clone(), class: "ix-upload-browser", r#type: "file",
+                            name, accept, multiple: multiple || directory_upload, disabled: blocked,
+                            "aria-label": aria_label, "aria-disabled": blocked.to_string(),
+                            "webkitdirectory": directory_upload.then_some("true"), "directory": directory_upload.then_some("true"),
+                            onmounted:picker_mount, onchange:input_change,
+                            onfocus:move |_|input_focus.set(true),
+                            onblur:move |_|{input_blur.set(false);blur_restore.set(None);},
+                        } }}
+                        span { class: "ix-upload-button ix-button ix-button-tokenized ix-button-standard ix-button-secondary ix-align-center",
+                            "aria-hidden":"true", "aria-disabled":blocked.to_string(),
+                            span { class:"ix-button-content", "{button_text}" }
+                        }
+                    }
                 }
             }
             if let Some(error) = failure() { span { class: "ix-upload-error", role: "alert", "{error}" } }

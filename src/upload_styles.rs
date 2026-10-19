@@ -93,15 +93,19 @@ pub(crate) const STYLES: &str = r#"
   color: var(--ix-upload-text--color--disabled);
 }
 .ix-theme .ix-upload.ix-upload-visual .ix-upload-browser {
-  border: 0;
-  clip: rect(0 0 0 0);
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  padding: 0;
   position: absolute;
-  width: 1px;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  cursor: inherit;
 }
+
+.ix-theme .ix-upload.ix-upload-visual .ix-upload-browser::file-selector-button { cursor: inherit; }
 .ix-theme .ix-upload.ix-upload-visual .ix-upload-state { display: flex; align-items: center; }
 .ix-theme .ix-upload.ix-upload-visual .ix-upload-state > .ix-upload-status-icon {
   block-size: var(--ix-upload-icon--icon-size);
@@ -155,6 +159,7 @@ pub(crate) const STYLES: &str = r#"
   --ix-button-icon-right--margin-left: var(--si-sys-sizing-spacing-x-20, var(--_ix-upload-spacing-20));
   --ix-button--min-width: var(--si-sys-sizing-size-120, var(--_ix-upload-button-min-width));
   display: inline-block;
+  position: relative;
   height: var(--ix-button--height);
   min-width: var(--ix-button--min-width);
   margin-inline-start: var(--ix-upload-file-upload-area--margin-inline-start);
@@ -178,8 +183,25 @@ pub(crate) const STYLES: &str = r#"
   white-space: normal;
   vertical-align: baseline;
 }
+.ix-theme .ix-upload.ix-upload-visual .ix-upload-button {
+  pointer-events: none;
+}
 .ix-theme .ix-upload.ix-upload-visual .ix-upload-button .ix-button-content {
   min-width: auto;
+}
+.ix-theme .ix-upload.ix-upload-visual .ix-upload-browser:focus-visible + .ix-upload-button {
+  outline: var(--ix-button--outline-width--focus) solid var(--ix-button--outline-color--focus);
+  outline-offset: var(--ix-button--focus--outline-offset);
+}
+.ix-theme .ix-upload.ix-upload-visual .ix-upload-browser:not(:disabled):hover + .ix-upload-button {
+  border-color: var(--ix-button-secondary--border-color--hover);
+  background-color: var(--ix-button-secondary--background--hover);
+  color: var(--ix-button-secondary--color--hover);
+}
+.ix-theme .ix-upload.ix-upload-visual .ix-upload-browser:not(:disabled):active + .ix-upload-button {
+  border-color: var(--ix-button-secondary--border-color--active);
+  background-color: var(--ix-button-secondary--background--active);
+  color: var(--ix-button-secondary--color--active);
 }
 .ix-theme .ix-upload.ix-upload-visual[aria-disabled=true] .ix-upload-button-host { cursor: default; pointer-events: none; }
 .ix-theme .ix-upload.ix-upload-visual[data-error=true] { height: auto; }

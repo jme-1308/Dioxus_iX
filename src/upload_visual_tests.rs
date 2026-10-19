@@ -98,7 +98,7 @@ fn render_fixture(component: fn() -> Element) -> String {
 }
 
 #[test]
-fn upload_layers_contain_a_real_secondary_button_and_named_native_file_input() {
+fn upload_layers_use_one_native_file_control_with_secondary_button_presentation() {
     let html = render_fixture(|| {
         rsx! {
             div { class: "files", Upload { name: "attachments", accept: ".txt" } }
@@ -158,7 +158,10 @@ fn upload_layers_contain_a_real_secondary_button_and_named_native_file_input() {
         let input = native_input(actions_body);
         assert_eq!(attribute(input, "type"), Some("file"));
         assert_eq!(attribute(input, "name"), name);
-        assert_eq!(attribute(input, "tabindex"), Some("-1"));
+        assert!(
+            !has_attribute(input, "tabindex"),
+            "the actual file input is the sole native Tab stop"
+        );
         assert_eq!(attribute(input, "aria-label"), Some(accessible));
         assert_eq!(has_attribute(input, "multiple"), multiple);
         assert!(!has_attribute(input, "disabled"));
@@ -168,9 +171,11 @@ fn upload_layers_contain_a_real_secondary_button_and_named_native_file_input() {
             assert_eq!(attribute(input, "accept"), Some(".txt"));
         }
         let (host, host_body) = part(actions_body, "ix-upload-button-host");
-        assert!(host.starts_with("<span "));
+        assert!(host.starts_with("<label "));
+        assert_eq!(attribute(host, "for"), attribute(input, "id"));
         let (button, contents) = part(host_body, "ix-upload-button");
-        assert!(button.starts_with("<button "));
+        assert!(button.starts_with("<span "));
+        assert_eq!(attribute(button, "aria-hidden"), Some("true"));
         for class in [
             "ix-button",
             "ix-button-tokenized",
@@ -179,7 +184,12 @@ fn upload_layers_contain_a_real_secondary_button_and_named_native_file_input() {
         ] {
             assert!(classes(button).contains(&class));
         }
-        assert_eq!(attribute(button, "type"), Some("button"));
+        assert!(!has_attribute(button, "tabindex"));
+        assert_eq!(actions_body.matches("<input ").count(), 1);
+        assert!(
+            !actions_body.contains("<button"),
+            "presentation cannot add a second keyboard control"
+        );
         assert!(!has_attribute(button, "disabled"));
         assert_eq!(
             text_content(part(contents, "ix-button-content").1),
@@ -221,7 +231,7 @@ fn upload_disabled_text_takes_precedence_and_keeps_the_blocked_button_mounted() 
         );
         assert!(has_attribute(native_input(body), "disabled"));
         let (button, button_body) = part(body, "ix-upload-button");
-        assert!(has_attribute(button, "disabled"));
+        assert_eq!(attribute(button, "aria-disabled"), Some("true"));
         assert_eq!(text_content(button_body), "Upload file…");
     }
 }
@@ -245,7 +255,10 @@ fn upload_source_state_texts_pair_with_the_actual_md_spinner_and_error_success_g
         let (_, body) = part(&html, case);
         assert_eq!(text_content(part(body, "ix-upload-text").1), text);
         let (button, _) = part(body, "ix-upload-button");
-        assert_eq!(has_attribute(button, "disabled"), glyph.is_none());
+        assert_eq!(
+            attribute(button, "aria-disabled"),
+            Some(if glyph.is_none() { "true" } else { "false" })
+        );
         assert_eq!(
             has_attribute(native_input(body), "disabled"),
             glyph.is_none()
@@ -347,8 +360,12 @@ fn upload_retained_external_props_update_native_constraints_and_presentation_wit
         );
         let (button, contents) = part(&html, "ix-upload-button");
         assert_eq!(
-            has_attribute(button, "disabled"),
-            current == 1 || current == 2
+            attribute(button, "aria-disabled"),
+            Some(if current == 1 || current == 2 {
+                "true"
+            } else {
+                "false"
+            })
         );
         assert_eq!(
             text_content(contents),

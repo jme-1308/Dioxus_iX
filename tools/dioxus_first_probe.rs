@@ -22,6 +22,8 @@ mod modal_focus_review;
 mod tab_exit_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
 mod trigger_review;
+#[path = "dioxus_first_probe/upload_interaction_review.rs"]
+mod upload_interaction_review;
 #[path = "dioxus_first_probe/visibility_review.rs"]
 mod visibility_review;
 
@@ -88,6 +90,9 @@ fn Preview() -> Element {
     }
     if scope == "?opening" {
         return rsx! { descendant_review::DescendantPreview {} };
+    }
+    if scope == "?upload" {
+        return rsx! { upload_interaction_review::UploadInteractionPreview {} };
     }
     if scope == "?triggers" {
         return rsx! { trigger_review::TriggerPreview {} };
