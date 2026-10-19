@@ -148,34 +148,45 @@ fn attach(dom: &VirtualDom, fixture: &Fixture, document: &str) {
     });
 }
 
-fn observe(
-    dom: &VirtualDom,
-    fixture: &Fixture,
-    document: &str,
-    sequence: u64,
-    window_sequence: u64,
-    prevented: bool,
-    ids: &[&str],
-) {
+fn observe(dom: &VirtualDom, fixture: &Fixture, document: &str, sequence: u64, ids: &[&str]) {
     let report: Report = serde_json::from_value(serde_json::json!({
-        "owner": fixture.runtime().owner_id(),
-        "document": document,
-        "sequence": sequence,
-        "window_sequence": window_sequence,
-        "kind": if window_sequence == 0 { "observe" } else { "key" },
-        "phase": if window_sequence == 0 { "" } else { "window" },
-        "key": "Escape",
-        "default_prevented": prevented,
-        "hosts": [],
-        "triggers": [],
+        "owner": fixture.runtime().owner_id(),"document": document,"sequence": sequence,"kind":"observe",
         "nodes": ids.iter().map(|id| serde_json::json!({
-            "id": id, "generation": 1, "connected": true, "discovery_ready": true
+            "id": id,"generation":1,"connected":true,"discovery_ready":true
         })).collect::<Vec<_>>()
-    }))
-    .unwrap();
+    })).unwrap();
     dom.in_scope(fixture.scope(), || {
         let before = dioxus::core::Runtime::current();
         fixture.runtime().observe(&report);
+        assert!(Rc::ptr_eq(&before, &dioxus::core::Runtime::current()));
+        assert_eq!(consume_context::<OwnerToken>().0, fixture.0.borrow().token);
+    });
+}
+
+fn document_report(
+    fixture: &Fixture,
+    document: &str,
+    sequence: u64,
+    delivery: u64,
+    action: &str,
+) -> serde_json::Value {
+    serde_json::json!({"owner":fixture.runtime().owner_id(),"document":document,"sequence":sequence,"kind":"document",
+        "document_event":{"sequence":delivery,"action":action}})
+}
+
+fn document_input(dom: &VirtualDom, fixture: &Fixture, report: serde_json::Value, prevented: bool) {
+    let event = trap_form(report);
+    if prevented {
+        event.prevent_default();
+    }
+    dom.in_scope(fixture.scope(), || {
+        let before = dioxus::core::Runtime::current();
+        fixture.runtime().input(event.clone());
+        assert_eq!(
+            event.default_action_enabled(),
+            !prevented,
+            "document input preserves original defaults"
+        );
         assert!(Rc::ptr_eq(&before, &dioxus::core::Runtime::current()));
         assert_eq!(consume_context::<OwnerToken>().0, fixture.0.borrow().token);
     });
@@ -256,8 +267,6 @@ fn independent_vdom_callbacks_restore_owner_runtime_scope_and_context() {
         &a,
         "owner-runtime-native-document",
         1,
-        0,
-        false,
         &["owner-runtime-a"],
     );
     observe(
@@ -265,8 +274,6 @@ fn independent_vdom_callbacks_restore_owner_runtime_scope_and_context() {
         &b,
         "owner-runtime-native-document",
         1,
-        0,
-        false,
         &["owner-runtime-b"],
     );
     present(&dom_a, &a);
@@ -294,7 +301,7 @@ fn independent_vdom_callbacks_restore_owner_runtime_scope_and_context() {
 }
 
 #[test]
-fn window_escape_deduplicates_across_real_roots_ignores_prevention_and_retains_veto() {
+fn minimal_document_escape_deduplicates_across_real_roots_and_retains_veto() {
     let a = Fixture::new("window-root-a", 301);
     let b = Fixture::new("window-root-b", 302);
     let c = Fixture::new("window-other-document", 303);
@@ -306,31 +313,20 @@ fn window_escape_deduplicates_across_real_roots_ignores_prevention_and_retains_v
     attach(&dom_a, &a, document);
     attach(&dom_b, &b, document);
     attach(&dom_c, &c, separate);
-    observe(&dom_a, &a, document, 1, 0, false, &["window-root-a"]);
-    observe(&dom_b, &b, document, 1, 0, false, &["window-root-b"]);
-    observe(
-        &dom_c,
-        &c,
-        separate,
-        1,
-        0,
-        false,
-        &["window-other-document"],
-    );
+    observe(&dom_a, &a, document, 1, &["window-root-a"]);
+    observe(&dom_b, &b, document, 1, &["window-root-b"]);
+    observe(&dom_c, &c, separate, 1, &["window-other-document"]);
     present(&dom_a, &a);
     present(&dom_b, &b);
     present(&dom_c, &c);
     a.0.borrow().veto.set(true);
-    // Both original Window listeners receive this event, but one document
-    // claim closes only the selected B, irrespective of the outside target.
-    observe(
+    // One minimal document event closes the selected owner. A duplicated
+    // transport delivery cannot dismiss the next owner.
+    document_input(
         &dom_a,
         &a,
-        document,
-        2,
-        1,
+        document_report(&a, document, 2, 1, "escape"),
         false,
-        &["window-root-a", "window-root-b"],
     );
     assert!(a.open() && !b.open() && c.open());
     assert!(a.0.borrow().calls.is_empty());
@@ -338,28 +334,22 @@ fn window_escape_deduplicates_across_real_roots_ignores_prevention_and_retains_v
         b.0.borrow().calls,
         [("before".into(), false), ("apply".into(), false)]
     );
-    observe(
+    document_input(
         &dom_b,
         &b,
-        document,
-        2,
-        1,
+        document_report(&b, document, 2, 1, "escape"),
         false,
-        &["window-root-a", "window-root-b"],
     );
     assert!(
         a.0.borrow().calls.is_empty(),
-        "second owner cannot dismiss the next overlay for one Window event"
+        "second owner cannot dismiss the next overlay for one document event"
     );
-    // A real default-prevented Window delivery still attempts selected A.
-    observe(
+    // Global Escape is independent of an original event default cancellation.
+    document_input(
         &dom_b,
         &b,
-        document,
-        3,
-        2,
+        document_report(&b, document, 3, 2, "escape"),
         true,
-        &["window-root-a", "window-root-b"],
     );
     assert!(a.open() && !b.open() && c.open());
     assert_eq!(a.0.borrow().calls, [("before".into(), false)]);
@@ -381,6 +371,77 @@ fn window_escape_deduplicates_across_real_roots_ignores_prevention_and_retains_v
     assert_eq!(domain.topmost().as_deref(), Some("window-root-a"));
     assert!(b.node().runtime().is_none());
     assert!(a.open() && c.open());
+}
+
+#[test]
+fn minimal_document_outside_preserves_current_hierarchy_and_enters_foreign_owners() {
+    let root = Fixture::new("document-outside-root", 304);
+    let child = Fixture::new("document-outside-child", 305);
+    let dom_root = build(&root);
+    let dom_child = build(&child);
+    let document = "minimal outside shared document";
+    let nodes = anchor_focus_nodes(&[(&root, &[]), (&child, &["document-outside-root"])]);
+    prepare_anchor_focus(
+        &[(&dom_root, &root), (&dom_child, &child)],
+        document,
+        &nodes,
+    );
+    let domain = root.runtime().domain().unwrap();
+    let mut protected = document_report(&root, document, 3, 2, "outside");
+    protected["document_event"]["hosts"] = serde_json::json!([child.node().id()]);
+    document_input(&dom_root, &root, protected, false);
+    assert!(
+        root.open() && child.open(),
+        "an inside child protects its current ancestors"
+    );
+    assert_eq!(
+        root.runtime()
+            .0
+            .borrow()
+            .observation
+            .as_ref()
+            .unwrap()
+            .sequence,
+        1
+    );
+    assert_eq!(
+        domain.cached_parent(child.node().id()).as_deref(),
+        Some(root.node().id())
+    );
+    child.0.borrow().veto.set(true);
+    document_input(
+        &dom_root,
+        &root,
+        document_report(&root, document, 4, 3, "outside"),
+        true,
+    );
+    assert!(
+        !root.open() && child.open(),
+        "outside dismissal enters the child's owner and honors veto"
+    );
+    assert_eq!(
+        domain.cached_parent(child.node().id()).as_deref(),
+        Some(root.node().id())
+    );
+    assert_eq!(
+        child
+            .runtime()
+            .0
+            .borrow()
+            .observation
+            .as_ref()
+            .unwrap()
+            .sequence,
+        1
+    );
+    child.0.borrow().veto.set(false);
+    document_input(
+        &dom_child,
+        &child,
+        document_report(&child, document, 2, 4, "outside"),
+        false,
+    );
+    assert!(!child.open());
 }
 
 // Document-trap reports exercise the actual form-input/query handlers below.
@@ -570,15 +631,7 @@ fn document_trap_handler_preserves_interior_empty_prevented_and_focuses_register
     let mut dom = build_popover_fixture(&fixture);
     let document = "document trap handler policy";
     attach(&dom, &fixture, document);
-    observe(
-        &dom,
-        &fixture,
-        document,
-        1,
-        0,
-        false,
-        &["document-trap-policy"],
-    );
+    observe(&dom, &fixture, document, 1, &["document-trap-policy"]);
     present(&dom, &fixture);
     let node = || {
         trap_node(
@@ -667,15 +720,7 @@ fn document_trap_handler_rejects_closed_reopened_and_replaced_focus_authorizatio
     let mut dom = build_popover_fixture(&fixture);
     let document = "document trap stale authorization";
     attach(&dom, &fixture, document);
-    observe(
-        &dom,
-        &fixture,
-        document,
-        1,
-        0,
-        false,
-        &["document-trap-stale"],
-    );
+    observe(&dom, &fixture, document, 1, &["document-trap-stale"]);
     present(&dom, &fixture);
     let mounted = register_exit_mount(&dom, &fixture, "last");
     let report = |sequence| {
@@ -746,16 +791,8 @@ fn document_trap_cross_root_deferral_exclusions_and_dropped_topmost() {
     let document = "cross-root document traps";
     attach(&dom_parent, &parent, document);
     attach(&dom_child, &child, document);
-    observe(
-        &dom_parent,
-        &parent,
-        document,
-        1,
-        0,
-        false,
-        &["trap-parent"],
-    );
-    observe(&dom_child, &child, document, 1, 0, false, &["trap-child"]);
+    observe(&dom_parent, &parent, document, 1, &["trap-parent"]);
+    observe(&dom_child, &child, document, 1, &["trap-child"]);
     present(&dom_parent, &parent);
     present(&dom_child, &child);
     let parent_node = || {
@@ -1292,15 +1329,7 @@ fn prepare_header_exit(
 ) -> u64 {
     attach(dom_parent, parent, document);
     attach(dom_child, &fixture.child, document);
-    observe(
-        dom_parent,
-        parent,
-        document,
-        1,
-        0,
-        false,
-        &[parent.0.borrow().id],
-    );
+    observe(dom_parent, parent, document, 1, &[parent.0.borrow().id]);
     observe_header_exit(
         dom_child,
         fixture,
@@ -1883,9 +1912,9 @@ fn prepare_anchor_focus(
         fixture.0.borrow_mut().applied.clear();
     }
     let (dom, fixture) = owners[0];
-    let mut mode = anchor_focus_report(fixture, document, 2, "modality", nodes);
-    mode["input_kind"] = "keydown".into();
-    mode["key"] = "Tab".into();
+    let mut mode = document_report(fixture, document, 2, 1, "input");
+    mode["document_event"]["input_kind"] = "keydown".into();
+    mode["document_event"]["key"] = "Tab".into();
     deliver_trap(dom, fixture, mode);
 }
 
@@ -2118,8 +2147,8 @@ fn suppression_stops_at_closed_logical_intermediate_and_pointer_hide_consumes_re
         trigger_suppressed(&root),
         "same-registration domain metadata rejoin retains latch"
     );
-    let mut pointer = anchor_focus_report(&root, document, 3, "modality", &nodes);
-    pointer["input_kind"] = "mousedown".into();
+    let mut pointer = document_report(&root, document, 3, 2, "input");
+    pointer["document_event"]["input_kind"] = "mousedown".into();
     deliver_trap(&dom_root, &root, pointer);
     root.0.borrow().veto.set(false);
     negative_anchor_focus(&dom_root, &root, document, 4, &nodes);
@@ -2128,9 +2157,9 @@ fn suppression_stops_at_closed_logical_intermediate_and_pointer_hide_consumes_re
     dom_root.in_scope(root.scope(), || {
         assert!(root.node().request(true, Reason::Trigger, false))
     });
-    let mut keyboard = anchor_focus_report(&root, document, 5, "modality", &nodes);
-    keyboard["input_kind"] = "keydown".into();
-    keyboard["key"] = "Tab".into();
+    let mut keyboard = document_report(&root, document, 5, 3, "input");
+    keyboard["document_event"]["input_kind"] = "keydown".into();
+    keyboard["document_event"]["key"] = "Tab".into();
     deliver_trap(&dom_root, &root, keyboard);
     negative_anchor_focus(&dom_root, &root, document, 6, &nodes);
     assert!(root.0.borrow().applied.last().unwrap().restore_focus);
@@ -2152,7 +2181,6 @@ fn ordinary_negative_cleanup_reads_modality_after_child_before_callbacks() {
     let runtime = child.runtime();
     let before = runtime.entry("anchor-mode-child").unwrap().callbacks.before;
     let weak = Rc::downgrade(&runtime.0);
-    let reentrant_nodes = nodes.clone();
     runtime
         .0
         .borrow_mut()
@@ -2166,7 +2194,7 @@ fn ordinary_negative_cleanup_reads_modality_after_child_before_callbacks() {
             let runtime = RuntimeHandle(weak.upgrade().unwrap());
             runtime.input(trap_form(
                 serde_json::json!({"owner":runtime.owner_id(),"document":document,
-                "sequence":2,"kind":"modality","input_kind":"mousedown","nodes":reentrant_nodes}),
+                "sequence":2,"kind":"document","document_event":{"sequence":2,"action":"input","input_kind":"mousedown"}}),
             ));
         }
         allowed
@@ -2923,8 +2951,8 @@ fn trigger_others_orders_owner_callbacks_and_policies_after_veto_or_closed_origi
     let active = &fixtures[0];
     let active_dom = &doms[0];
     let runtime = active.runtime();
-    let mut pointer = anchor_focus_report(active, document, 2, "modality", &nodes);
-    pointer["input_kind"] = "mousedown".into();
+    let mut pointer = document_report(active, document, 2, 1, "input");
+    pointer["document_event"]["input_kind"] = "mousedown".into();
     deliver_trap(active_dom, active, pointer);
     active.0.borrow().veto.set(true);
     fixtures[1].0.borrow().veto.set(true);

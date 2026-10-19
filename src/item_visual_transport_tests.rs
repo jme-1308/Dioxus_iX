@@ -131,10 +131,11 @@ fn observe(runtime: &RuntimeHandle, sequence: u64, generation: u64, hosts: &[Hos
     assert_eq!(runtime.document_keyboard_mode(), Some(true));
 }
 fn keyboard(runtime: &RuntimeHandle, sequence: u64) {
+    runtime.attach_document(&format!("{}-focus-test", runtime.owner_id()));
     runtime.input(event(
         serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,
         "document":format!("{}-focus-test",runtime.owner_id()),
-        "kind":"modality","input_kind":"keydown","key":"Tab"}),
+        "kind":"document","document_event":{"sequence":sequence,"action":"input","input_kind":"keydown","key":"Tab"}}),
     ));
     assert!(runtime.keyboard_mode());
 }
@@ -243,7 +244,8 @@ fn registered_focus_before_inventory_sets_parts_and_late_blur_preserves_newer_cu
     assert!(!runtime.item_visual_matches(&wrong_target));
     runtime.input(event(
         serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
-        "kind":"modality","input_kind":"mousedown"}),
+        "document":format!("{}-focus-test",runtime.owner_id()),
+        "kind":"document","document_event":{"sequence":2,"action":"input","input_kind":"mousedown"}}),
     ));
     runtime.focus_registered_item("a", true, None);
     assert_eq!(

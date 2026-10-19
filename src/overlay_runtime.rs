@@ -1912,7 +1912,77 @@ impl RuntimeHandle {
     pub(crate) fn pending_completions(&self) -> usize {
         self.0.borrow().completions.len()
     }
+    fn observe_document(&self, report: &Report) -> KeyDecision {
+        let Some(event) = report.document_event.as_ref().filter(|event| event.valid()) else {
+            return KeyDecision::default();
+        };
+        let domain = {
+            let state = self.0.borrow();
+            if report.owner != state.owner
+                || report.sequence <= state.sequence
+                || report.document.is_empty()
+                || report.document != state.document
+            {
+                return KeyDecision::default();
+            }
+            let Some(domain) = state.domain.clone() else {
+                return KeyDecision::default();
+            };
+            domain
+        };
+        let admitted = domain.accept_event(event.sequence);
+        if !admitted && !domain.is_current_event(event.sequence) {
+            return KeyDecision::default();
+        }
+        {
+            let mut state = self.0.borrow_mut();
+            state.sequence = report.sequence;
+            state.ack = Ack {
+                sequence: report.sequence,
+                ..Ack::default()
+            };
+        }
+        match &event.action {
+            DocumentAction::Input { input_kind, key } => {
+                if admitted {
+                    domain.observe_input(input_kind, key);
+                }
+                if matches!(input_kind.as_str(), "mousedown" | "touchstart") {
+                    self.0.borrow_mut().keyboard = false;
+                    self.clear_item_visual();
+                } else if let Some(keyboard) = domain.keyboard_mode() {
+                    self.0.borrow_mut().keyboard = keyboard;
+                }
+            }
+            DocumentAction::Outside {
+                hosts,
+                triggers,
+                anchors,
+            } if admitted => {
+                let mut inside = hosts.clone();
+                inside.extend(anchors.iter().cloned());
+                domain.outside(&inside, triggers);
+            }
+            DocumentAction::Escape if admitted => {
+                domain.escape();
+            }
+            _ => {}
+        }
+        KeyDecision::default()
+    }
     fn observe(&self, report: &Report) -> KeyDecision {
+        if report.kind == "document" {
+            // Minimal global input is not a DOM observation and cannot attach a
+            // document, disconnect nodes or replace any retained inventory.
+            return self.observe_document(report);
+        }
+        if report.kind != "observe"
+            && !(report.kind == "key"
+                && report.key == "Tab"
+                && matches!(report.phase.as_str(), "capture" | "trap"))
+        {
+            return KeyDecision::default();
+        }
         {
             let mut runtime = self.0.borrow_mut();
             if report.owner != runtime.owner || report.sequence <= runtime.sequence {
@@ -2019,7 +2089,7 @@ impl RuntimeHandle {
             .collect::<Vec<_>>();
         self.0.borrow_mut().registry.observe(&facts);
         if let Some(domain) = self.domain() {
-            if matches!(report.phase.as_str(), "window" | "trap") || report.key == "Tab" {
+            if report.phase == "trap" || report.key == "Tab" {
                 let all = report
                     .nodes
                     .iter()
@@ -2035,14 +2105,6 @@ impl RuntimeHandle {
                 domain.observe_all(&all);
             } else {
                 domain.observe_owner(&report.owner, &facts);
-            }
-        }
-        if report.kind == "modality" {
-            if let Some(domain) = self.domain() {
-                domain.observe_input(&report.input_kind, &report.key);
-            }
-            if matches!(report.input_kind.as_str(), "mousedown" | "touchstart") {
-                self.clear_item_visual();
             }
         }
         // Submenu anchor ancestry is a current DOM fact, independent of the
@@ -2065,35 +2127,10 @@ impl RuntimeHandle {
                 });
             }
         }
-        let decision = if report.phase == "window" {
-            if let Some(domain) = self
-                .domain()
-                .filter(|domain| domain.accept_event(report.window_sequence))
-            {
-                domain.refresh();
-                match report.kind.as_str() {
-                    "key" if report.key == "Escape" => {
-                        domain.escape();
-                    }
-                    "click" => {
-                        let mut hosts = report.hosts.clone();
-                        hosts.extend(report.anchors.iter().cloned());
-                        domain.outside(&hosts, &report.triggers);
-                    }
-                    _ => {}
-                }
-            }
-            KeyDecision::default()
-        } else {
-            match report.kind.as_str() {
-                "pointer" => {
-                    self.0.borrow_mut().keyboard = false;
-                    KeyDecision::default()
-                }
-                "key" if report.phase == "trap" => self.popover_tab(report),
-                "key" => self.key(report),
-                _ => KeyDecision::default(),
-            }
+        let decision = match report.kind.as_str() {
+            "key" if report.phase == "trap" => self.popover_tab(report),
+            "key" => self.key(report),
+            _ => KeyDecision::default(),
         };
         let mut runtime = self.0.borrow_mut();
         if runtime.sequence == report.sequence {
@@ -3269,11 +3306,7 @@ struct Report {
     #[serde(default)]
     document: String,
     #[serde(default)]
-    input_kind: String,
-    #[serde(default)]
-    window_sequence: u64,
-    #[serde(default)]
-    anchors: Vec<String>,
+    document_event: Option<DocumentEvent>,
     #[serde(default)]
     phase: String,
     #[serde(default)]
@@ -3304,6 +3337,41 @@ struct Report {
     active_hosts: Vec<String>,
     #[serde(default)]
     active_popover: String,
+}
+#[derive(Clone, Deserialize)]
+struct DocumentEvent {
+    sequence: u64,
+    #[serde(flatten)]
+    action: DocumentAction,
+}
+impl DocumentEvent {
+    fn valid(&self) -> bool {
+        self.sequence != 0
+            && match &self.action {
+                DocumentAction::Input { input_kind, .. } => {
+                    matches!(input_kind.as_str(), "keydown" | "mousedown" | "touchstart")
+                }
+                _ => true,
+            }
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+enum DocumentAction {
+    Outside {
+        #[serde(default)]
+        hosts: Vec<String>,
+        #[serde(default)]
+        triggers: Vec<String>,
+        #[serde(default)]
+        anchors: Vec<String>,
+    },
+    Escape,
+    Input {
+        input_kind: String,
+        #[serde(default)]
+        key: String,
+    },
 }
 #[derive(Clone, Deserialize)]
 struct NodeFacts {
@@ -3744,11 +3812,15 @@ mod tests {
         origin.node.dioxus_inside_click(&click);
         assert!(click.default_action_enabled() && !click.propagates());
         assert!(origin.open.get() && peer.open.get());
-        let outside = event(
+        runtime.input(event(
             serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),
-            "sequence":1,"window_sequence":1,"kind":"click","phase":"window","hosts":["origin"],
+            "sequence":1,"kind":"observe",
             "nodes":[{"id":"origin","generation":1,"connected":true,"discovery_ready":true},
                 {"id":"peer","generation":1,"connected":true,"discovery_ready":true}]}),
+        ));
+        let outside = event(
+            serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),
+            "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"outside","hosts":["origin"]}}),
         );
         runtime.input(outside);
         assert!(origin.open.get() && !peer.open.get());
@@ -4203,6 +4275,169 @@ mod tests {
                 {"item":"actual-b","kind":"menu","target":"b","capture":"actual-b","registration_key":"key-b","tabindex_attribute":"4"}
             ],"navigation_order":["actual-a","actual-b"],"query_order":["actual-a","actual-b"]})).unwrap()
     }
+    fn document_value(
+        runtime: &RuntimeHandle,
+        sequence: u64,
+        document: &str,
+        payload: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"document":document,
+            "kind":"document","document_event":payload})
+    }
+    #[test]
+    fn document_input_keeps_snapshots_and_clears_each_broadcast_owners_cue() {
+        let first = RuntimeHandle::new();
+        let second = RuntimeHandle::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let _root = model(&first, "document-root", OverlayKind::Dropdown, log.clone());
+        let _child = model(&first, "document-child", OverlayKind::Dropdown, log.clone());
+        let _peer = model(&second, "document-peer", OverlayKind::Dropdown, log);
+        let document = "document snapshot and local cue broadcast";
+        let raw = mixed_inventory_facts();
+        first.input(event(serde_json::json!({"owner":first.owner_id(),"sequence":1,"document":document,"kind":"observe",
+            "nodes":[{"id":"document-root","generation":1,"connected":true,"discovery_ready":true,
+                "root_capture":"root-token","trigger_capture":"trigger-token","inventory":raw},
+                {"id":"document-child","generation":1,"connected":true,"discovery_ready":true,
+                    "assignment_ancestors":["document-root"],"trigger_ancestors":["document-root"]}]})));
+        second.input(event(serde_json::json!({"owner":second.owner_id(),"sequence":1,"document":document,"kind":"observe",
+            "nodes":[{"id":"document-peer","generation":1,"connected":true,"discovery_ready":true,"inventory":raw}]})));
+        let snapshots = {
+            let state = first.0.borrow();
+            (
+                state.inventories.clone(),
+                state.submenu_own.clone(),
+                state.item_root_captures.clone(),
+            )
+        };
+        for runtime in [&first, &second] {
+            install_item_mock(runtime, &raw.hosts[0], ItemMountMock::default());
+            runtime.input(event(document_value(
+                runtime,
+                2,
+                document,
+                serde_json::json!({
+                "sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}),
+            )));
+            runtime.focus_registered_item("key-a", true, None);
+            assert_eq!(runtime.item_visual_key().as_deref(), Some("key-a"));
+        }
+        for runtime in [&first, &second] {
+            runtime.input(event(document_value(
+                runtime,
+                3,
+                document,
+                serde_json::json!({
+                "sequence":2,"action":"input","input_kind":"mousedown"}),
+            )));
+            assert_eq!(runtime.item_visual_key(), None);
+            assert!(!runtime.keyboard_mode() && !runtime.0.borrow().keyboard);
+        }
+        first.input(event(document_value(
+            &first,
+            4,
+            document,
+            serde_json::json!({
+            "sequence":3,"action":"input","input_kind":"keydown","key":"Tab"}),
+        )));
+        first.focus_registered_item("key-a", true, None);
+        first.input(event(document_value(
+            &first,
+            99,
+            document,
+            serde_json::json!({
+            "sequence":2,"action":"input","input_kind":"touchstart"}),
+        )));
+        assert_eq!(
+            first.item_visual_key().as_deref(),
+            Some("key-a"),
+            "older input cannot clear a newer cue"
+        );
+        let state = first.0.borrow();
+        assert_eq!(
+            state.sequence, 4,
+            "stale shared IDs do not consume the owner watermark"
+        );
+        assert_eq!(state.observation.as_ref().unwrap().sequence, 1);
+        assert_eq!(
+            snapshots,
+            (
+                state.inventories.clone(),
+                state.submenu_own.clone(),
+                state.item_root_captures.clone()
+            )
+        );
+        drop(state);
+        assert_eq!(
+            first
+                .domain()
+                .unwrap()
+                .cached_parent("document-child")
+                .as_deref(),
+            Some("document-root")
+        );
+    }
+
+    #[test]
+    fn document_auth_and_schema_rejection_cannot_consume_or_handoff_observations() {
+        let runtime = RuntimeHandle::new();
+        let _root = model(
+            &runtime,
+            "document-auth",
+            OverlayKind::Dropdown,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        let document = "document authentication";
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"document":document,"kind":"observe",
+            "nodes":[{"id":"document-auth","generation":1,"connected":true,"discovery_ready":true,"root_capture":"auth-root"}]})));
+        let valid = document_value(
+            &runtime,
+            99,
+            document,
+            serde_json::json!({
+            "sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}),
+        );
+        let mut wrong_owner = valid.clone();
+        wrong_owner["owner"] = "foreign-owner".into();
+        let mut wrong_document = valid.clone();
+        wrong_document["document"] = "another-document".into();
+        let mut zero = valid.clone();
+        zero["document_event"]["sequence"] = 0.into();
+        let mut invalid_action = valid.clone();
+        invalid_action["document_event"]["action"] = "unsupported".into();
+        let mut invalid_input = valid.clone();
+        invalid_input["document_event"]["input_kind"] = "scroll".into();
+        let mut stale_owner = valid.clone();
+        stale_owner["sequence"] = 1.into();
+        for rejected in [
+            wrong_owner,
+            wrong_document,
+            zero,
+            invalid_action,
+            invalid_input,
+            stale_owner,
+        ] {
+            runtime.input(event(rejected));
+            let state = runtime.0.borrow();
+            assert_eq!(state.sequence, 1);
+            assert_eq!(state.document, document);
+            assert_eq!(state.observation.as_ref().unwrap().sequence, 1);
+            assert_eq!(state.item_root_captures["document-auth"].1, "auth-root");
+        }
+        let mut accepted = valid;
+        accepted["sequence"] = 2.into();
+        runtime.input(event(accepted));
+        assert_eq!(runtime.document_keyboard_mode(), Some(true));
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":3,"document":"authorized next document","kind":"observe",
+            "nodes":[{"id":"document-auth","generation":1,"connected":true,"discovery_ready":true}]})));
+        runtime.input(event(document_value(
+            &runtime,
+            100,
+            document,
+            serde_json::json!({"sequence":100,"action":"escape"}),
+        )));
+        assert_eq!(runtime.0.borrow().sequence, 3);
+        assert_eq!(runtime.0.borrow().document, "authorized next document");
+    }
     #[derive(Clone, Default)]
     struct PublicationFixture {
         runtime: Rc<RefCell<Option<RuntimeHandle>>>,
@@ -4564,8 +4799,12 @@ mod tests {
         let raw = mixed_inventory_facts();
         let host = &raw.hosts[0];
         runtime.register_item_cue(host.registration_key.clone(), host.kind);
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
-            "document":"mixed-visual-runtime-test","kind":"modality","input_kind":"keydown","key":"Tab"})));
+        runtime.attach_document("mixed-visual-runtime-test");
+        runtime.input(event(
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
+            "document":"mixed-visual-runtime-test","kind":"document",
+            "document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}),
+        ));
         runtime.focus_registered_item(&host.registration_key, true, None);
         assert_eq!(
             runtime.item_visual_key(),
@@ -4586,7 +4825,8 @@ mod tests {
         assert_eq!(runtime.item_visual_key(), None);
         runtime.input(event(
             serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
-            "kind":"modality","input_kind":"mousedown"}),
+            "document":"mixed-visual-runtime-test","kind":"document",
+            "document_event":{"sequence":2,"action":"input","input_kind":"mousedown"}}),
         ));
         runtime.focus_registered_item(&host.registration_key, true, None);
         assert_eq!(runtime.item_visual_key(), None);

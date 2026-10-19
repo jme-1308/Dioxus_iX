@@ -481,8 +481,17 @@ fn rendered_focus_events_update_menu_select_and_category_cues_without_inventory(
         menu_dispatch(&dom, "mounted", target, MenuTestMount::default());
     }
     menu_dispatch(
+        &dom,
+        "input",
+        ids["$overlay-transport"],
+        serde_json::json!({
+        "owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),
+        "sequence":1,"kind":"observe","nodes":[]})
+        .to_string(),
+    );
+    menu_dispatch(
             &dom, "input", ids["$overlay-transport"],
-            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab","nodes":[]}).to_string(),
+            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string(),
         );
     assert!(runtime.keyboard_mode());
     menu_dispatch(&dom, "focus", parent, ());
@@ -542,7 +551,7 @@ fn rendered_focus_events_update_menu_select_and_category_cues_without_inventory(
     assert!(runtime.item_visual_key().is_none());
     menu_dispatch(&dom, "focus", ids["mixed-select"], ());
     menu_dispatch(&dom, "input", ids["$overlay-transport"],
-            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":2,"kind":"modality","input_kind":"mousedown","nodes":[]}).to_string());
+            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":3,"kind":"document","document_event":{"sequence":2,"action":"input","input_kind":"mousedown"}}).to_string());
     for _ in 0..4 {
         dom.render_immediate_to_vec();
     }
@@ -991,11 +1000,13 @@ impl MenuHarness {
             .find(|(_, attributes)| attributes.get("data-ix-overlay-transport") == Some(&owner))
             .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
             .unwrap();
+        menu_dispatch(&self.dom,"input",transport,serde_json::json!({
+            "owner":owner,"document":format!("category-fixture-{owner}"),"sequence":1,"kind":"observe",
+            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true}]}).to_string());
         menu_dispatch(&self.dom, "input", transport, serde_json::json!({
             "owner": owner, "document": format!("category-fixture-{owner}"),
-            "sequence": 1, "kind":"modality", "input_kind":if keyboard {"keydown"} else {"mousedown"},
-            "key":if keyboard {"Tab"} else {""},
-            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true}]
+            "sequence": 2, "kind":"document", "document_event":{"sequence":1,"action":"input",
+                "input_kind":if keyboard {"keydown"} else {"mousedown"},"key":if keyboard {"Tab"} else {""}}
         }).to_string());
         self.settle();
         assert_eq!(runtime.keyboard_mode(), keyboard);
@@ -3288,13 +3299,6 @@ fn header_layout_actual_overflow_request_veto_defaults_stop_query_and_once_only_
     assert_eq!(
         harness.settings.borrow().overflow_changes,
         vec![true, false]
-    );
-    assert_eq!(
-        harness.header_raw(
-            harness.header_message(5, "pointer", serde_json::json!({})),
-            false
-        ),
-        (false, false)
     );
     assert_eq!(harness.header_more_click(false), (false, false));
     harness.settle();

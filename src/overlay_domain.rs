@@ -55,10 +55,9 @@ struct State {
     order: Vec<String>,
     presentation: Vec<String>,
     incarnation: u64,
-    // IDs are assigned on first Window delivery, not at capture. A resumed
-    // outer event reaching Window after an inner event therefore gets a later
-    // ID. The outer event already claimed before a nested Rust callback keeps
-    // its earlier ID, so a duplicate after that callback is safely rejected.
+    // The shared native listener assigns one ID per document action. Input
+    // broadcasts reuse it for every renderer; global policy claims it once.
+    // Older actions cannot overwrite a later admitted input state.
     sequence: u64,
     keyboard: Option<bool>,
     categories: BTreeMap<usize, CategoryEntry>,
@@ -433,10 +432,9 @@ impl Domain {
         state.registry.observe(&observed);
     }
 
-    /// One shared Window-event claim. Owner-local transport sequences are not
-    /// valid here. IDs must be assigned monotonically at first Window delivery
-    /// and every recipient must supply the same native event identity. Capture
-    /// IDs would incorrectly discard a resumed outer event after nested input.
+    /// Admit a shared document delivery once. These monotonically increasing
+    /// IDs are independent of each owner's transport sequence; input broadcasts
+    /// intentionally deliver the same ID to several renderer owners.
     pub(crate) fn accept_event(&self, sequence: u64) -> bool {
         let mut state = self.0.borrow_mut();
         if sequence == 0 || sequence <= state.sequence {
@@ -446,9 +444,14 @@ impl Domain {
         true
     }
 
-    /// Reduce only raw inputs that reached native document bubble. Prevention
-    /// does not filter this source detector; stopped inputs are never delivered
-    /// to it. Neither condition can be inferred from an isolated input string.
+    /// The current broadcast may still need to clear another owner's local
+    /// pointer cue. Older deliveries must not overwrite newer input state.
+    pub(crate) fn is_current_event(&self, sequence: u64) -> bool {
+        sequence != 0 && self.0.borrow().sequence == sequence
+    }
+
+    /// Reduce admitted document input or a directly owned Dioxus key. Browser
+    /// default prevention does not alter the input-mode decision.
     pub(crate) fn observe_input(&self, kind: &str, key: &str) {
         let keyboard = match kind {
             "keydown"
@@ -1156,19 +1159,26 @@ mod tests {
     }
 
     #[test]
-    fn one_native_window_event_is_accepted_once_across_owners() {
+    fn one_document_delivery_is_accepted_once_across_owners() {
         let first = Domain::join("event document");
         let second = Domain::join("event document");
         let foreign = Domain::join("event foreign document");
         assert!(!first.accept_event(0));
         assert!(first.accept_event(7));
         assert!(!second.accept_event(7));
+        assert!(
+            second.is_current_event(7),
+            "the same input broadcast can reach another local cue"
+        );
         assert!(!second.accept_event(6));
+        assert!(!second.is_current_event(6));
         assert!(second.accept_event(8));
         assert!(
             !first.accept_event(7),
-            "outer duplicate after nested delivery stays rejected"
+            "an older delivery cannot overwrite the newer document event"
         );
+        assert!(!first.is_current_event(7));
+        assert!(first.is_current_event(8));
         assert!(foreign.accept_event(7));
     }
 

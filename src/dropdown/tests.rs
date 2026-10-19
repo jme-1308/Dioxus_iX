@@ -1367,16 +1367,17 @@ fn direct_item_focus_and_blur_render_owned_aria_before_native_inventory() {
         .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
+    let document = format!("direct-focus-{}", runtime.owner_id());
     dispatch(
         &h.dom,
         "input",
         transport,
-        serde_json::json!({
-            "owner":runtime.owner_id(),"document":format!("direct-focus-{}",runtime.owner_id()),
-            "sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab","nodes":[]
-        })
+        serde_json::json!({"owner":runtime.owner_id(),"document":document,
+        "sequence":1,"kind":"observe","nodes":[]})
         .to_string(),
     );
+    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
+        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
     dispatch(&h.dom, "focus", h.target("Alpha"), ());
     h.settle();
     assert_eq!(h.config.borrow().item_focus_events, 1);
@@ -1475,12 +1476,14 @@ fn linked_open_cue_and_typed_trigger_aria_follow_current_rust_submenu_state() {
         .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
+    let document = format!("rendered-linked-cue-{}", runtime.owner_id());
     dispatch(&h.dom,"input",transport,serde_json::json!({
-        "owner":runtime.owner_id(),"document":format!("rendered-linked-cue-{}",runtime.owner_id()),
-        "sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab",
+        "owner":runtime.owner_id(),"document":document,"sequence":1,"kind":"observe",
         "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,
             "inventory":{"items_host":"rendered-child-items","hosts":[host],"navigation_order":[host.item],"query_order":[host.item]}}]
     }).to_string());
+    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
+        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
     assert!(
         runtime.keyboard_mode(),
         "the observed document enables keyboard focus cues"
@@ -2253,10 +2256,13 @@ fn shared_modality_cleanup_and_open_active_descendant_mode_change_focus_the_moun
         .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
-    dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"document":format!("trigger-focus-test-{}", runtime.owner_id()),"sequence":1,
-        "kind":"modality","input_kind":"keydown","key":"Tab",
+    let document = format!("trigger-focus-test-{}", runtime.owner_id());
+    dispatch(&h.dom, "input", transport, serde_json::json!({"owner":runtime.owner_id(),"document":document,"sequence":1,
+        "kind":"observe",
         "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true,"discovery_ready":true,
             "root_capture":"mounted-trigger-root","trigger_capture":"mounted-trigger-control"}]}).to_string());
+    dispatch(&h.dom,"input",transport,serde_json::json!({"owner":runtime.owner_id(),"document":document,
+        "sequence":2,"kind":"document","document_event":{"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}}).to_string());
     assert!(
         runtime.keyboard_mode(),
         "ordinary cleanup reads document modality, so the fixture must attach its document"

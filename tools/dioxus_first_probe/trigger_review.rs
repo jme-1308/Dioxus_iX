@@ -107,7 +107,11 @@ menu().focus();key('Home');await wait('mode setup',()=>document.activeElement===
 byId('r02-custom-mode').click();await wait('live AD trigger focus',()=>surface().getAttribute('data-ix-overlay-mode')==='active-descendant'&&document.activeElement===byId('r02-custom-trigger'));
 key('Escape');await wait('AD close',()=>surface().getAttribute('data-ix-overlay-open')==='false');
 byId('r02-custom-trigger').click();await wait('outside setup',()=>surface().getAttribute('data-ix-overlay-open')==='true');
-byId('r02-outside-trigger').focus();byId('r02-outside-trigger').click();await wait('outside focus preserved',()=>surface().getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-outside-trigger'));
+byId('r02-outside-trigger').focus();byId('r02-outside-trigger').click();
+const outsideMessage=Array.from(document.querySelectorAll('input[data-ix-overlay-transport]')).map(input=>{try{return JSON.parse(input.value);}catch{return null;}}).find(value=>value?.kind==='document'&&value.document_event?.action==='outside');
+if(!outsideMessage||outsideMessage.nodes!==undefined||outsideMessage.document_tab_candidates!==undefined||!outsideMessage.document_event.sequence)throw new Error('outside click did not use the minimal document message');
+if(!document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.events?.receivers?.size)throw new Error('shared document event subscription missing');
+await wait('outside focus preserved',()=>surface().getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r02-outside-trigger'));
 byId('r02-custom-trigger').click();await wait('native checkbox setup',()=>surface().getAttribute('data-ix-overlay-open')==='true');
 byId('r0223-native-check').click();await wait('native checkbox default survives inside dismissal',()=>byId('r0223-native-check').checked&&surface().getAttribute('data-ix-overlay-open')==='false');
 byId('r02-custom-trigger').click();await wait('programmatic return setup',()=>surface().getAttribute('data-ix-overlay-open')==='true');
@@ -132,5 +136,5 @@ key('End');await wait('late linked row focus',()=>document.activeElement===byId(
 key('ArrowRight');await wait('late submenu opens',()=>document.querySelector('.r0222-late-child').getAttribute('data-ix-overlay-open')==='true'&&document.activeElement===byId('r0222-late-first'));
 key('ArrowLeft');await wait('late submenu returns to current parent',()=>document.querySelector('.r0222-late-child').getAttribute('data-ix-overlay-open')==='false'&&document.activeElement===byId('r0222-late-trigger'));
 key('Escape');await wait('parent return',()=>parent.getAttribute('aria-expanded')==='false'&&document.activeElement===parent);
-return {ok:true,customEscape:true,liveMode:true,outsidePreserved:true,explicitReturn:true,replacement:true,remount:true,libraryEscape:true,linkedArrowLeft:true,distinctLinkedTargets:true,lateChildAfterParentOpen:true,nativeCheckboxDefault:true};
+return {ok:true,customEscape:true,liveMode:true,outsidePreserved:true,explicitReturn:true,replacement:true,remount:true,libraryEscape:true,linkedArrowLeft:true,distinctLinkedTargets:true,lateChildAfterParentOpen:true,nativeCheckboxDefault:true,minimalOutsideMessage:true,sharedDocumentEventHub:true};
 "#;

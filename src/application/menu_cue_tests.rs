@@ -13,6 +13,9 @@ fn cue_runtime(h: &mut MenuHarness, category: &CategoryNavigation) -> RuntimeHan
         .find(|(_, attributes)| attributes.get("data-ix-overlay-transport") == Some(&owner))
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
+    menu_dispatch(&h.dom,"input",transport,serde_json::json!({
+        "owner":owner,"document":format!("menu-cue-test-{owner}"),"sequence":1,"kind":"observe",
+        "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true}]}).to_string());
     menu_dispatch(
         &h.dom,
         "input",
@@ -20,11 +23,9 @@ fn cue_runtime(h: &mut MenuHarness, category: &CategoryNavigation) -> RuntimeHan
         serde_json::json!({
             "owner": owner,
             "document": format!("menu-cue-test-{owner}"),
-            "sequence": 1,
-            "kind": "modality",
-            "input_kind": "keydown",
-            "key": "Tab",
-            "nodes": [{"id": node.id(), "generation": node.generation(), "connected": true}]
+            "sequence": 2,
+            "kind": "document",
+            "document_event": {"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"}
         })
         .to_string(),
     );
