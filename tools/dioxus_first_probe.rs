@@ -18,6 +18,8 @@ mod generic_focus_review;
 mod menu_focus_review;
 #[path = "dioxus_first_probe/modal_focus_review.rs"]
 mod modal_focus_review;
+#[path = "dioxus_first_probe/select_method_review.rs"]
+mod select_method_review;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
 mod tab_exit_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
@@ -93,6 +95,9 @@ fn Preview() -> Element {
     }
     if scope == "?upload" {
         return rsx! { upload_interaction_review::UploadInteractionPreview {} };
+    }
+    if scope == "?selectmethods" {
+        return rsx! { select_method_review::SelectMethodPreview {} };
     }
     if scope == "?triggers" {
         return rsx! { trigger_review::TriggerPreview {} };

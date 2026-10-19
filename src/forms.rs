@@ -1483,6 +1483,7 @@ struct SelectMethodBinding {
     has_value: bool,
     touched: Rc<std::cell::Cell<bool>>,
     alive: Rc<std::cell::Cell<bool>>,
+    focused: Signal<bool>,
     input: Rc<std::cell::RefCell<Option<Rc<MountedData>>>>,
 }
 
@@ -1492,10 +1493,12 @@ struct SelectMethodBinding {
 pub struct SelectNativeInput {
     id: String,
     alive: Rc<std::cell::Cell<bool>>,
+    focused: Signal<bool>,
     node: Rc<MountedData>,
 }
 impl SelectNativeInput {
-    /// DOM id suitable for an accessible association or consumer-owned DOM bridge.
+    /// DOM id for accessible labels and associations. Use [`Self::focus`] to
+    /// focus this registered mounted input directly.
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -1503,41 +1506,18 @@ impl SelectNativeInput {
         if !self.alive.get() {
             return Err(SelectMethodError::NotMounted);
         }
-        if let Err(error) = self.node.set_focus(true).await {
-            if !self.alive.get() {
-                return Err(SelectMethodError::NotMounted);
-            }
-            // Desktop alpha.2 can focus successfully but fail to decode the
-            // native query's null result as bool. Confirm the actual DOM state
-            // through the acknowledged query channel before retrying focus.
-            #[cfg(any(feature = "web", feature = "desktop"))]
-            {
-                let task = crate::dom_query::eval(
-                    r#"
-                    const id = await dioxus.recv();
-                    const input = document.getElementById(id);
-                    if (!(input instanceof HTMLInputElement) || !input.isConnected) return false;
-                    if (document.activeElement !== input) input.focus();
-                    return document.activeElement === input;
-                "#,
-                );
-                task.send(&self.id)
-                    .map_err(|failure| SelectMethodError::Dom(failure.to_string()))?;
-                let focused = task.join::<bool>().await;
-                if !self.alive.get() {
-                    return Err(SelectMethodError::NotMounted);
-                }
-                let focused =
-                    focused.map_err(|failure| SelectMethodError::Dom(failure.to_string()))?;
-                if !focused {
-                    return Err(SelectMethodError::Dom(error.to_string()));
-                }
-            }
-            #[cfg(not(any(feature = "web", feature = "desktop")))]
-            return Err(SelectMethodError::Dom(error.to_string()));
-        }
+        let result = self.node.set_focus(true).await;
         if !self.alive.get() {
             return Err(SelectMethodError::NotMounted);
+        }
+        if let Err(error) = result {
+            // Pinned desktop alpha.2 queries setFocus as bool, but its native
+            // interpreter returns void. The typed focus/blur handlers already
+            // maintain this state; only current confirmed focus can normalize
+            // that operation error. No second focus command or DOM query runs.
+            if !self.focused.try_peek().is_ok_and(|focused| *focused) {
+                return Err(SelectMethodError::Dom(error.to_string()));
+            }
         }
         Ok(())
     }
@@ -1604,6 +1584,7 @@ impl SelectController {
         Ok(SelectNativeInput {
             id: binding.id,
             alive: binding.alive,
+            focused: binding.focused,
             node,
         })
     }
@@ -2439,6 +2420,7 @@ pub fn Select(
                 has_value: !selected.is_empty(),
                 touched: touched.clone(),
                 alive: alive.clone(),
+                focused,
                 input: method_input.clone(),
             },
         );
@@ -4082,11 +4064,15 @@ mod tests {
 
     #[test]
     fn select_native_input_descriptor_focuses_its_mount_and_stops_after_unmount() {
+        let mut dom = VirtualDom::new(|| rsx! { div {} });
+        dom.rebuild_in_place();
+        let focused = dom.in_scope(ScopeId::ROOT, || Signal::new(false));
         let count = Rc::new(std::cell::Cell::new(0));
         let alive = Rc::new(std::cell::Cell::new(true));
         let input = SelectNativeInput {
             id: "choice".into(),
             alive: alive.clone(),
+            focused,
             node: Rc::new(MountedData::new(SelectFocusMount(count.clone()))),
         };
         assert_eq!(input.id(), "choice");
@@ -4102,11 +4088,11 @@ mod tests {
             1,
             "stale descriptor must not focus a new mount"
         );
-        #[cfg(not(any(feature = "web", feature = "desktop")))]
         {
             let unsupported = SelectNativeInput {
                 id: "unsupported".into(),
                 alive: Rc::new(std::cell::Cell::new(true)),
+                focused,
                 node: Rc::new(MountedData::new(())),
             };
             assert!(matches!(
@@ -4114,6 +4100,120 @@ mod tests {
                 Err(SelectMethodError::Dom(_))
             ));
         }
+    }
+    struct SelectFocusResponseMount {
+        attempts: Rc<std::cell::Cell<usize>>,
+        focused: Signal<bool>,
+        confirms: Rc<std::cell::Cell<bool>>,
+        release: Rc<std::cell::Cell<bool>>,
+    }
+    impl dioxus::html::RenderedElementBacking for SelectFocusResponseMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            let attempts = self.attempts.clone();
+            let confirms = self.confirms.clone();
+            let release = self.release.clone();
+            let mut focused = self.focused;
+            Box::pin(async move {
+                attempts.set(attempts.get() + 1);
+                std::future::poll_fn(|_| {
+                    if release.get() {
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                // Simulate the existing typed onfocus confirmation before a
+                // renderer command reports its failed response decoding.
+                if confirms.get() {
+                    focused.set(true);
+                }
+                Err(dioxus::html::MountedError::OperationFailed(Box::new(
+                    std::io::Error::other("focus response unavailable"),
+                )))
+            })
+        }
+    }
+    #[test]
+    fn select_focus_normalizes_only_current_confirmation_and_still_attempts_each_call() {
+        let mut dom = VirtualDom::new(|| rsx! { div {} });
+        dom.rebuild_in_place();
+        let mut focused = dom.in_scope(ScopeId::ROOT, || Signal::new(false));
+        let attempts = Rc::new(std::cell::Cell::new(0));
+        let confirms = Rc::new(std::cell::Cell::new(true));
+        let input = SelectNativeInput {
+            id: "confirmed-choice".into(),
+            alive: Rc::new(std::cell::Cell::new(true)),
+            focused,
+            node: Rc::new(MountedData::new(SelectFocusResponseMount {
+                attempts: attempts.clone(),
+                focused,
+                confirms: confirms.clone(),
+                release: Rc::new(std::cell::Cell::new(true)),
+            })),
+        };
+        for expected in [1, 2] {
+            assert_eq!(
+                dom.in_scope(ScopeId::ROOT, || ready_select_method(input.focus())),
+                Ok(())
+            );
+            assert_eq!(
+                attempts.get(),
+                expected,
+                "even an already focused input makes exactly one framework attempt"
+            );
+        }
+        dom.in_scope(ScopeId::ROOT, || focused.set(false));
+        confirms.set(false);
+        assert!(
+            matches!(
+                dom.in_scope(ScopeId::ROOT, || ready_select_method(input.focus())),
+                Err(SelectMethodError::Dom(_))
+            ),
+            "blurred or unconfirmed focus must preserve the renderer error"
+        );
+        assert_eq!(attempts.get(), 3);
+    }
+    #[test]
+    fn select_focus_rejects_unmount_while_the_single_mounted_attempt_is_pending() {
+        let mut dom = VirtualDom::new(|| rsx! { div {} });
+        dom.rebuild_in_place();
+        let focused = dom.in_scope(ScopeId::ROOT, || Signal::new(false));
+        let alive = Rc::new(std::cell::Cell::new(true));
+        let attempts = Rc::new(std::cell::Cell::new(0));
+        let release = Rc::new(std::cell::Cell::new(false));
+        let input = SelectNativeInput {
+            id: "pending-choice".into(),
+            alive: alive.clone(),
+            focused,
+            node: Rc::new(MountedData::new(SelectFocusResponseMount {
+                attempts: attempts.clone(),
+                focused,
+                confirms: Rc::new(std::cell::Cell::new(true)),
+                release: release.clone(),
+            })),
+        };
+        let mut operation = Box::pin(input.focus());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            dom.in_scope(ScopeId::ROOT, || operation.as_mut().poll(&mut context))
+                .is_pending()
+        );
+        alive.set(false);
+        release.set(true);
+        assert_eq!(
+            dom.in_scope(ScopeId::ROOT, || operation.as_mut().poll(&mut context)),
+            std::task::Poll::Ready(Err(SelectMethodError::NotMounted))
+        );
+        assert_eq!(attempts.get(), 1);
     }
     #[test]
     fn select_tooltip_exposes_active_feedback_as_the_combobox_description() {
