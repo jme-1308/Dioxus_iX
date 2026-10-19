@@ -2062,7 +2062,6 @@ if(!directory.sameNodeById(root,owner)||directory.categories(owner,id)[0]!==cate
 if(expected && (category.dataset.open!=='true'||JSON.stringify(categoryTuples(root,category))!==JSON.stringify(expected)))return false;
 if(!(node instanceof HTMLElement)||!node.isConnected||(target===null?categoryParent(category):category.querySelector('[data-menu-category-child="'+target+'"]'))!==node)return false;
 node.focus();
-for(const report of document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.focusReaders?.values()??[])report(node);
 return document.activeElement===node;
 } finally { directory.release(lease); }
 "#
@@ -2096,7 +2095,6 @@ await new Promise(requestAnimationFrame);
 if (!directory.sameNodeById(root,owner) || root.dataset.menuFocusGeneration!==generation || JSON.stringify(menuTuples(root))!==JSON.stringify(expected)) return false;
 if (!(target instanceof HTMLElement) || !target.isConnected || root.querySelector('[data-menu-control="'+id+'"]')!==target || target.closest('[data-menu-root]')!==root) return false;
 target.focus();
-for(const report of document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.focusReaders?.values()??[])report(target.closest('[data-ix-item-kind]')??target);
 return document.activeElement===target;
 } finally { directory.release(lease); }
 "#
@@ -2182,7 +2180,6 @@ function handleCategoryKey(event,category) {
       if(send('category-return',event,facts)) {
         if(target?.isConnected&&categoryParent(category)===target&&categoryBelongs(root,category)){
           target.focus();
-          for(const report of document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.focusReaders?.values()??[])report(target);
         }
       }
       if(send('category-default',event,facts))event.preventDefault();
@@ -3358,6 +3355,8 @@ pub fn MenuItem(
     #[props(default)] tooltip_text: Option<String>,
     #[props(default = true)] close_on_select: bool,
     #[props(default)] onclick: EventHandler<MouseEvent>,
+    #[props(default)] onfocus: EventHandler<FocusEvent>,
+    #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
     let item_host = crate::dropdown::use_item_host("menu");
@@ -3470,13 +3469,25 @@ pub fn MenuItem(
             });
         }
     };
-    let onfocus = move |_| {
+    let focus_host = item_host.clone();
+    let blur_host = item_host.clone();
+    let oncontrolfocus = move |event: FocusEvent| {
+        if generic {
+            focus_host.focus(!disabled, None);
+        }
         if let Some(context) = &focus_context {
             context.focused.set(Some(id));
             if let Some(roving) = &context.roving {
                 roving.focus(Some(context.prefix.first().copied().unwrap_or(id)));
             }
         }
+        onfocus.call(event);
+    };
+    let oncontrolblur = move |event| {
+        if generic {
+            blur_host.blur();
+        }
+        onblur.call(event);
     };
     let dropdown_key = item_host.clone();
     let onkey = move |event: KeyboardEvent| {
@@ -3537,7 +3548,7 @@ pub fn MenuItem(
                 "aria-disabled": disabled.to_string(), tabindex: roving_tabindex.unwrap_or(if disabled{-1}else{tabindex}), "data-home": home.to_string(),"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-control":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,"aria-posinset":position.map(|value|value.to_string()),"aria-setsize":size.map(|value|value.to_string()),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
                 "data-ix-item-control":generic.then_some(""),
-                onmounted: onmount, onfocus:onfocus,onkeydown:onkey, onclick: onactivate,
+                onmounted: onmount, onfocus:oncontrolfocus,onblur:oncontrolblur,onkeydown:onkey, onclick: onactivate,
                 ..control_attributes,
                 {content}
             }
@@ -3546,7 +3557,7 @@ pub fn MenuItem(
                 "aria-current": if active { Some("page") } else { None }, "data-home": home.to_string(),
                 "data-menu-category-child":nested_id,"data-menu-category-owner":nested_owner,"data-menu-category":nested_category,"data-menu-category-disabled":nested.as_ref().map(|_|disabled.to_string()),
                 "data-ix-item-control":generic.then_some(""),
-                onmounted: onmount, onfocus:onfocus,onkeydown:onkey, onclick: onactivate,
+                onmounted: onmount, onfocus:oncontrolfocus,onblur:oncontrolblur,onkeydown:onkey, onclick: onactivate,
                 ..control_attributes,
                 {content}
             }
@@ -3613,6 +3624,8 @@ pub fn MenuCategory(
     #[props(default)] disable_tooltip: bool,
     #[props(default)] hidden: bool,
     #[props(default)] style: String,
+    #[props(default)] onfocus: EventHandler<FocusEvent>,
+    #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
     let item_host = crate::dropdown::use_item_host("category");
@@ -3877,6 +3890,8 @@ pub fn MenuCategory(
     let child_roving = root_roving.clone();
     let popup_key = category.clone();
     let popup_roving = root_roving.clone();
+    let focus_host = item_host.clone();
+    let blur_host = item_host.clone();
     let mounted_host = item_host.clone();
     let dropdown_parent_key = item_host.clone();
     let mounted_id = host_id.clone();
@@ -3908,7 +3923,12 @@ pub fn MenuCategory(
                     if let Some(roving)=&mount_roving {roving.mount(id,event.data());}
                     if let Some(context)=&mount_context {let mut order=context.prefix.clone();order.push(id);context.entries.borrow_mut().push(NavigationEntry{id,node:event.data(),enabled:Rc::new(Cell::new(true)),order});}
                 },
-                onfocus:move |_|if let Some(context)=&focus_context {context.focused.set(Some(id));if let Some(roving)=&context.roving {roving.focus(Some(context.prefix.first().copied().unwrap_or(id)));}},
+                onfocus:move |event|{
+                    focus_host.focus(true,Some(crate::dropdown_inventory::HostPartKind::CategoryParent));
+                    if let Some(context)=&focus_context {context.focused.set(Some(id));if let Some(roving)=&context.roving {roving.focus(Some(context.prefix.first().copied().unwrap_or(id)));}}
+                    onfocus.call(event);
+                },
+                onblur:move |event|{blur_host.blur();onblur.call(event);},
                 onkeydown:move |event:KeyboardEvent|{
                     if dropdown_parent_key.navigation_key(event.clone()){return;}
                     if let Some(roving)=&key_roving {roving.origin(MenuOrigin::Item(id));}
@@ -4874,13 +4894,15 @@ mod tests {
         let data: Rc<dyn std::any::Any> =
             Rc::new(dioxus::html::PlatformEventData::new(Box::new(payload)));
         // Native focus and mounted notifications do not bubble.
-        let event = Event::new(data, !matches!(name, "focus" | "mounted"));
+        let event = Event::new(data, !matches!(name, "focus" | "blur" | "mounted"));
         dom.runtime().handle_event(name, event.clone(), id);
         (!event.default_action_enabled(), event.propagates())
     }
     #[derive(Clone, Default)]
     struct GenericMenuItemCapture {
         calls: Rc<Cell<usize>>,
+        focus_calls: Rc<Cell<usize>>,
+        blur_calls: Rc<Cell<usize>>,
         navigation: Rc<RefCell<Option<NavigationContext>>>,
         category: Rc<RefCell<Option<CategoryNavigation>>>,
     }
@@ -4888,7 +4910,11 @@ mod tests {
     fn GenericMenuItemConsumer() -> Element {
         let capture = use_context::<GenericMenuItemCapture>();
         *capture.navigation.borrow_mut() = try_consume_context::<NavigationContext>();
+        let focused = capture.focus_calls.clone();
+        let blurred = capture.blur_calls.clone();
         rsx! {MenuItem {id:"mixed-menu-consumer",label:"Mixed consumer",close_on_select:false,
+            onfocus:move |_|focused.set(focused.get()+1),
+            onblur:move |_|blurred.set(blurred.get()+1),
             onclick:move |_|capture.calls.set(capture.calls.get()+1)
         }}
     }
@@ -4908,6 +4934,7 @@ mod tests {
             MenuItem {id:"ordinary-menu-item",label:"Ordinary item",close_on_select:false}
             crate::Dropdown {label:"Mixed source hosts",
                 GenericMenuItemConsumer {}
+                crate::SelectItem {id:"mixed-select",value:"Mixed option"}
                 MenuItem {id:"property-menu-item",label:"Disabled property",disabled:true,tabindex:"-1",style:"color: red",close_on_select:false}
                 MenuCategory {id:"consumer-category",label:"Mixed category",style:"color: blue",GenericMenuCategoryChild {}}
             }
@@ -4945,6 +4972,13 @@ mod tests {
                     ..
                 } if name == "data-ix-overlay-transport" => {
                     ids.insert("$overlay-transport".to_string(), current);
+                }
+                dioxus::core::Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(value),
+                    ..
+                } if name == "class" && value.contains("ix-select-item-option") => {
+                    ids.insert("$select-option".to_string(), current);
                 }
                 _ => {}
             }
@@ -4985,7 +5019,7 @@ mod tests {
         assert!(ordinary.starts_with("<button ") && !ordinary.contains("data-ix-item-kind"));
     }
     #[test]
-    fn rendered_generic_menu_and_category_parent_cues_follow_the_current_rust_signal() {
+    fn rendered_focus_events_update_menu_select_and_category_cues_without_inventory() {
         let _guard = crate::test_event_converter_guard();
         dioxus::html::set_event_converter(Box::new(MenuTestConverter));
         let capture = GenericMenuItemCapture::default();
@@ -4999,78 +5033,89 @@ mod tests {
             .unwrap()
             .runtime()
             .unwrap();
-        let html = dioxus_ssr::render(&dom);
-        let host = |id: &str,
-                    kind: &str,
-                    parts: serde_json::Value|
-         -> crate::dropdown_inventory::HostFacts {
-            let tag = item_opening_tag(&html, id);
-            let key = tag
-                .split("data-ix-item-key=\"")
-                .nth(1)
-                .unwrap()
-                .split('"')
-                .next()
-                .unwrap();
-            serde_json::from_value(serde_json::json!({
-                "item":format!("rendered-{id}"),"capture":format!("rendered-{id}"),"kind":kind,
-                "target":id,"registration_key":key,"source_focusable":true,"parts":parts
-            }))
+        let parent = *ids
+            .iter()
+            .find(|(id, _)| id.starts_with("ix-menu-category-parent-"))
             .unwrap()
-        };
-        let category_host = host(
-            "consumer-category",
-            "category",
-            serde_json::json!([
-                {"kind":"category-parent","capture":"rendered-category-parent","source_focusable":true}
-            ]),
-        );
-        let menu_host = host("mixed-menu-consumer", "menu", serde_json::json!([]));
+            .1;
+        for target in [
+            parent,
+            ids["mixed-menu-consumer-control"],
+            ids["mixed-select"],
+        ] {
+            menu_dispatch(&dom, "mounted", target, MenuTestMount::default());
+        }
         menu_dispatch(
-            &dom,
-            "input",
-            ids["$overlay-transport"],
-            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-category-cue-{}",runtime.owner_id()),"sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab","nodes":[]}).to_string(),
+            &dom, "input", ids["$overlay-transport"],
+            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab","nodes":[]}).to_string(),
         );
-        assert!(
-            runtime.keyboard_mode(),
-            "the observed document enables keyboard focus cues"
-        );
-        dom.in_runtime(|| runtime.mark_item_visual(&category_host));
+        assert!(runtime.keyboard_mode());
+        menu_dispatch(&dom, "focus", parent, ());
         for _ in 0..4 {
             dom.render_immediate_to_vec();
         }
         let html = dioxus_ssr::render(&dom);
         let outer = item_opening_tag(&html, "consumer-category");
         assert!(!outer.contains("ix-focused") && !outer.contains("data-active"));
-        let parent = html
+        let parent_tag = html
             .split('>')
             .find(|tag| tag.contains("data-ix-item-part=\"category-parent\""))
             .unwrap();
-        assert!(parent.contains("ix-focused") && parent.contains("data-active=\"true\""));
+        assert!(parent_tag.contains("ix-focused") && parent_tag.contains("data-active=\"true\""));
         assert!(
             runtime.item_visual_key().is_none(),
-            "Category highlights its parent without making the outer host an AD item"
+            "Category selects its parent part only"
         );
-        dom.in_runtime(|| runtime.mark_item_visual(&menu_host));
+
+        menu_dispatch(&dom, "focus", ids["mixed-menu-consumer-control"], ());
+        menu_dispatch(&dom, "blur", parent, ());
         for _ in 0..4 {
             dom.render_immediate_to_vec();
         }
         let html = dioxus_ssr::render(&dom);
-        let menu = item_opening_tag(&html, "mixed-menu-consumer");
-        assert!(menu.contains("ix-focused") && menu.contains("data-active=\"true\""));
-        let parent = html
+        assert!(item_opening_tag(&html, "mixed-menu-consumer").contains("ix-focused"));
+        let parent_tag = html
             .split('>')
             .find(|tag| tag.contains("data-ix-item-part=\"category-parent\""))
             .unwrap();
-        assert!(!parent.contains("ix-focused") && parent.contains("data-active=\"false\""));
-        dom.in_runtime(|| runtime.clear_item_visual());
+        assert!(!parent_tag.contains("ix-focused"));
+        assert_eq!(
+            capture.focus_calls.get(),
+            1,
+            "consumer focus fires once on the physical control"
+        );
+        menu_dispatch(&dom, "blur", ids["mixed-menu-consumer-control"], ());
+        assert!(runtime.item_visual_key().is_none());
+        assert_eq!(capture.blur_calls.get(), 1);
+
+        menu_dispatch(&dom, "focus", ids["mixed-select"], ());
         for _ in 0..4 {
             dom.render_immediate_to_vec();
         }
+        assert!(item_opening_tag(&dioxus_ssr::render(&dom), "mixed-select").contains("ix-focused"));
+        menu_dispatch(&dom, "focus", ids["$select-option"], ());
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        let html = dioxus_ssr::render(&dom);
+        let option = html
+            .split('>')
+            .find(|tag| tag.contains("data-ix-item-part=\"select-option\""))
+            .unwrap();
+        assert!(option.contains("ix-focused") && option.contains("data-active=\"true\""));
+        menu_dispatch(&dom, "blur", ids["$select-option"], ());
+        assert!(runtime.item_visual_key().is_none());
+        menu_dispatch(&dom, "focus", ids["mixed-select"], ());
+        menu_dispatch(&dom, "input", ids["$overlay-transport"],
+            serde_json::json!({"owner":runtime.owner_id(),"document":format!("rendered-focus-cue-{}",runtime.owner_id()),"sequence":2,"kind":"modality","input_kind":"mousedown","nodes":[]}).to_string());
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+        assert!(runtime.item_visual_key().is_none());
+        menu_dispatch(&dom, "focus", ids["mixed-select"], ());
         assert!(
-            item_opening_tag(&dioxus_ssr::render(&dom), "mixed-menu-consumer")
-                .contains("data-active=\"false\"")
+            runtime.item_visual_key().is_none(),
+            "pointer focus does not paint a keyboard cue"
         );
     }
     #[test]

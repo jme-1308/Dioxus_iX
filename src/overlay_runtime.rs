@@ -1,6 +1,8 @@
 //! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
 //! facts and executes an acknowledged default/stop/activation or focus intent.
-use crate::dropdown_inventory::{HostFacts, HostPartKind, InventoryFacts, ItemKind, ItemRef};
+use crate::dropdown_inventory::{
+    HostFacts, HostPartFacts, HostPartKind, InventoryFacts, ItemKind, ItemRef,
+};
 use crate::overlay_completion::CompletionQueue;
 use crate::overlay_domain::{Domain, DomainCallbacks};
 use crate::overlay_registry::{CloseBehavior, NativeFact, OverlayKind, Registry};
@@ -189,7 +191,7 @@ struct Runtime {
     item_visual_target: Option<String>,
     item_visual_known: bool,
     item_visual_host: Option<HostFacts>,
-    item_cue_hosts: crate::item_visual::CueHosts,
+    item_kinds: BTreeMap<String, ItemKind>,
     item_root_captures: BTreeMap<String, (u64, String, String)>,
     item_visual_signal: Option<Signal<Option<String>>>,
     bridge: Option<dioxus::document::Eval>,
@@ -201,6 +203,7 @@ struct Runtime {
 struct ItemMount {
     target: String,
     focus_id: String,
+    owner: Option<(String, u64)>,
     node: Rc<MountedData>,
     renderer: Option<Weak<dioxus::core::Runtime>>,
 }
@@ -325,7 +328,7 @@ impl RuntimeHandle {
             item_visual_target: None,
             item_visual_known: false,
             item_visual_host: None,
-            item_cue_hosts: Default::default(),
+            item_kinds: BTreeMap::new(),
             item_root_captures: BTreeMap::new(),
             item_visual_signal: dioxus::core::Runtime::try_current()
                 .map(|_| Signal::new_in_scope(None, ScopeId::ROOT)),
@@ -372,9 +375,40 @@ impl RuntimeHandle {
         let _ = self.item_visual_key();
         self.0.borrow().item_visual_target.clone()
     }
-    pub(crate) fn register_item_cue(&self, key: String, kind: ItemKind) {
-        self.0.borrow_mut().item_cue_hosts.register(key, kind);
+    pub(crate) fn item_visual_known(&self) -> bool {
+        let _ = self.item_visual_key();
+        self.0.borrow().item_visual_known
     }
+    /// Explicit Rust composition supplies membership before native inventory.
+    /// A sibling or replacement owner cannot claim the selected control.
+    pub(crate) fn item_visual_owned_by(&self, root: &str, generation: u64) -> bool {
+        let _ = self.item_visual_key();
+        let state = self.0.borrow();
+        let Some(host) = state.item_visual_host.as_ref() else {
+            return false;
+        };
+        state.item_visual_target.as_ref() == Some(&host.target)
+            && Self::registered_item_live(&state, host)
+            && state
+                .nodes
+                .get(root)
+                .is_some_and(|entry| entry.generation == generation)
+            && state
+                .item_mounts
+                .get(&host.registration_key)
+                .is_some_and(|mount| {
+                    mount
+                        .owner
+                        .as_ref()
+                        .is_some_and(|(id, version)| id == root && *version == generation)
+                })
+    }
+    pub(crate) fn register_item_cue(&self, key: String, kind: ItemKind) {
+        if !key.is_empty() {
+            self.0.borrow_mut().item_kinds.entry(key).or_insert(kind);
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn register_item_mount(&self, key: &str, target: &str, node: Rc<MountedData>) {
         self.register_item_control_mount(key, target, target, node);
     }
@@ -402,6 +436,7 @@ impl RuntimeHandle {
             .or_else(|| self.domain()?.focus_target(id))
             .filter(|target| target.live_node().is_some())
     }
+    #[cfg(test)]
     pub(crate) fn register_item_control_mount(
         &self,
         key: &str,
@@ -409,9 +444,22 @@ impl RuntimeHandle {
         focus_id: &str,
         node: Rc<MountedData>,
     ) {
+        self.register_owned_item_control_mount(key, target, focus_id, node, None);
+    }
+    pub(crate) fn register_owned_item_control_mount(
+        &self,
+        key: &str,
+        target: &str,
+        focus_id: &str,
+        node: Rc<MountedData>,
+        owner: Option<(String, u64)>,
+    ) {
         let renderer = dioxus::core::Runtime::try_current().map(|owner| Rc::downgrade(&owner));
         let changed = self.0.borrow().item_mounts.get(key).is_some_and(|old| {
-            old.target != target || old.focus_id != focus_id || !Rc::ptr_eq(&old.node, &node)
+            old.target != target
+                || old.focus_id != focus_id
+                || old.owner != owner
+                || !Rc::ptr_eq(&old.node, &node)
         });
         if changed {
             self.cancel_item_key(key);
@@ -421,6 +469,7 @@ impl RuntimeHandle {
             ItemMount {
                 target: target.into(),
                 focus_id: focus_id.into(),
+                owner,
                 node,
                 renderer,
             },
@@ -430,7 +479,7 @@ impl RuntimeHandle {
         self.cancel_item_key(key);
         let mut state = self.0.borrow_mut();
         state.item_mounts.remove(key);
-        state.item_cue_hosts.unregister(key);
+        state.item_kinds.remove(key);
     }
     fn cancel_item_key(&self, key: &str) {
         let selected = self
@@ -752,11 +801,115 @@ impl RuntimeHandle {
     pub(crate) fn item_visual_matches(&self, host: &HostFacts) -> bool {
         let state = self.0.borrow();
         state.item_visual_host.as_ref().is_some_and(|current| {
-            current.capture == host.capture
-                && current.registration_key == host.registration_key
+            current.registration_key == host.registration_key
                 && current.kind == host.kind
+                && current.target == host.target
                 && state.item_visual_target.as_ref() == Some(&host.target)
+                && Self::registered_item_live(&state, host)
         })
+    }
+    fn registered_item_live(state: &Runtime, host: &HostFacts) -> bool {
+        state.item_kinds.get(&host.registration_key) == Some(&host.kind)
+            && state
+                .item_mounts
+                .get(&host.registration_key)
+                .is_some_and(|mount| {
+                    mount.target == host.target
+                        && mount
+                            .renderer
+                            .as_ref()
+                            .is_none_or(|renderer| renderer.upgrade().is_some())
+                })
+    }
+    /// Physical Dioxus focus is authoritative for a registered mounted item.
+    /// Native inventory can supply useful facts, but no capture receipt is needed.
+    pub(crate) fn focus_registered_item(
+        &self,
+        key: &str,
+        source_focusable: bool,
+        part: Option<HostPartKind>,
+    ) {
+        let host = {
+            let state = self.0.borrow();
+            let Some(kind) = state.item_kinds.get(key).copied() else {
+                return;
+            };
+            let Some(mount) = state.item_mounts.get(key) else {
+                return;
+            };
+            if mount
+                .renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.upgrade().is_none())
+            {
+                return;
+            }
+            if !matches!(
+                (kind, part),
+                (
+                    ItemKind::Dropdown
+                        | ItemKind::Menu
+                        | ItemKind::Select
+                        | ItemKind::Category
+                        | ItemKind::NativeOptIn,
+                    None
+                ) | (ItemKind::Select, Some(HostPartKind::SelectOption))
+                    | (ItemKind::Category, Some(HostPartKind::CategoryParent))
+            ) {
+                return;
+            }
+            let mut host = state
+                .inventories
+                .values()
+                .flat_map(|(_, inventory)| &inventory.hosts)
+                .find(|host| {
+                    host.registration_key == key && host.kind == kind && host.target == mount.target
+                })
+                .cloned()
+                .unwrap_or_else(|| HostFacts {
+                    root_path: Vec::new(),
+                    item: ItemRef(key.into()),
+                    kind,
+                    target: mount.target.clone(),
+                    capture: String::new(),
+                    registration_key: key.into(),
+                    source_focusable,
+                    disabled_attribute: false,
+                    hidden_attribute: false,
+                    tabindex_attribute: None,
+                    checked_attribute: false,
+                    visible_focus: false,
+                    roving_opt_in: false,
+                    linked_trigger: None,
+                    parts: Vec::new(),
+                });
+            host.source_focusable = source_focusable && kind != ItemKind::Category;
+            if kind == ItemKind::Category {
+                host.parts = if part == Some(HostPartKind::CategoryParent) {
+                    vec![HostPartFacts {
+                        kind: HostPartKind::CategoryParent,
+                        capture: mount.focus_id.clone(),
+                        source_focusable,
+                    }]
+                } else {
+                    Vec::new()
+                };
+            }
+            host
+        };
+        self.mark_item_visual(&host);
+    }
+    /// A late blur of the previous control cannot erase a newer selection.
+    pub(crate) fn blur_registered_item(&self, key: &str) {
+        let selected = self
+            .0
+            .borrow()
+            .item_visual_host
+            .as_ref()
+            .is_some_and(|host| host.registration_key == key);
+        if selected {
+            self.clear_item_visual();
+        }
     }
     fn set_item_visual(
         &self,
@@ -790,20 +943,18 @@ impl RuntimeHandle {
         self.set_item_visual(None, None, None);
     }
     pub(crate) fn mark_item_visual(&self, host: &HostFacts) {
-        if !self.keyboard_mode() {
+        if !self.keyboard_mode() || !Self::registered_item_live(&self.0.borrow(), host) {
             return;
         }
         // Source focusItem projects Category into its private parent; that
         // parent's marker never makes the outer Category an AD active host.
-        let key = (host.source_focusable && host.kind != ItemKind::Category).then(|| {
-            if host.registration_key.is_empty() {
-                host.capture.clone()
-            } else {
-                host.registration_key.clone()
-            }
-        });
+        let key = (host.source_focusable
+            && matches!(
+                host.kind,
+                ItemKind::Dropdown | ItemKind::Select | ItemKind::Menu
+            ))
+        .then(|| host.registration_key.clone());
         let target = key.as_ref().map(|_| host.target.clone());
-        self.0.borrow_mut().item_cue_hosts.observe(host);
         self.set_item_visual(key, target, Some(host.clone()));
     }
     fn mounted_item_key(state: &Runtime, host: &HostFacts) -> Option<String> {
@@ -1090,7 +1241,6 @@ impl RuntimeHandle {
                 state.submenu_own.clear();
 
                 state.inventories.clear();
-                state.item_cue_hosts.reset_captures();
                 state.item_root_captures.clear();
                 state.item_visual_host = None;
                 state.item_visual = None;
@@ -1903,9 +2053,6 @@ impl RuntimeHandle {
                         captures.2 = node.trigger_capture.clone();
                     }
                     if let Some(inventory) = &node.inventory {
-                        for host in &inventory.hosts {
-                            runtime.item_cue_hosts.observe(host);
-                        }
                         runtime
                             .inventories
                             .insert(node.id.clone(), (node.generation, inventory.clone()));
@@ -2023,17 +2170,6 @@ impl RuntimeHandle {
                 domain.observe_input(&report.input_kind, &report.key);
             }
             if matches!(report.input_kind.as_str(), "mousedown" | "touchstart") {
-                self.clear_item_visual();
-            }
-        }
-        if report.kind == "item-focusin" {
-            let host = report
-                .item_focus_host
-                .as_ref()
-                .filter(|host| self.0.borrow_mut().item_cue_hosts.observe(host));
-            if let Some(host) = host {
-                self.mark_item_visual(host);
-            } else if self.keyboard_mode() {
                 self.clear_item_visual();
             }
         }
@@ -2883,21 +3019,6 @@ impl RuntimeHandle {
         if query.owner != self.owner_id() {
             return;
         }
-        if let Some(observation) = query.item_focus_observation {
-            let projected = self.0.borrow_mut().item_cue_hosts.focus_host(&observation);
-            let Ok(host) = projected else {
-                return;
-            };
-            if self.keyboard_mode()
-                && let Some(host) = host
-            {
-                self.mark_item_visual(&host);
-            } else {
-                self.clear_item_visual();
-            }
-            event.prevent_default();
-            return;
-        }
         if let Some(capture) = query.capture_retained {
             let state = self.0.borrow();
             let retained = state.submenu_marks.contains_key(&capture)
@@ -3610,8 +3731,6 @@ struct Report {
     sequence: u64,
     kind: String,
     #[serde(default)]
-    item_focus_host: Option<HostFacts>,
-    #[serde(default)]
     document: String,
     #[serde(default)]
     input_kind: String,
@@ -3746,8 +3865,6 @@ struct Query {
     sequence: u64,
     #[serde(default)]
     capture_retained: Option<String>,
-    #[serde(default)]
-    item_focus_observation: Option<crate::item_visual::FocusObservation>,
     #[serde(default)]
     activate_target: Option<String>,
     #[serde(default)]
@@ -4801,53 +4918,37 @@ mod tests {
     }
 
     #[test]
-    fn item_visual_marks_only_on_keyboard_focus_delivery_and_never_infers_category_outer_marker() {
+    fn registered_focus_uses_typed_live_control_and_keyboard_modality() {
         let runtime = RuntimeHandle::new();
-        let root = model(
-            &runtime,
-            "visual-root",
-            OverlayKind::Dropdown,
-            Rc::new(RefCell::new(Vec::new())),
-        );
-        let mut raw = mixed_inventory_facts();
-        raw.hosts[1].visible_focus = true;
-        for host in &raw.hosts {
-            runtime.register_item_cue(host.registration_key.clone(), host.kind);
-        }
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"document":"mixed-visual-runtime-test","kind":"observe",
-            "nodes":[{"id":"visual-root","generation":1,"connected":true,"inventory":raw}]})));
+        let raw = mixed_inventory_facts();
+        let host = &raw.hosts[0];
+        runtime.register_item_cue(host.registration_key.clone(), host.kind);
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
+            "document":"mixed-visual-runtime-test","kind":"modality","input_kind":"keydown","key":"Tab"})));
+        runtime.focus_registered_item(&host.registration_key, true, None);
         assert_eq!(
             runtime.item_visual_key(),
             None,
-            "ordinary observation cannot invent a focus notification"
+            "kind registration without a mounted control cannot focus"
         );
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":2,"document":"mixed-visual-runtime-test","kind":"modality","input_kind":"keydown","key":"Tab"})));
-        assert!(runtime.keyboard_mode());
-        let host = raw.hosts[0].clone();
-        root.open.set(true);
-        runtime.input(event(
-            serde_json::json!({"owner":runtime.owner_id(),"sequence":3,
-            "document":"mixed-visual-runtime-test","kind":"item-focusin","item_focus_host":host}),
-        ));
+        install_item_mock(&runtime, host, ItemMountMock::default());
+        runtime.focus_registered_item(&host.registration_key, true, None);
         assert_eq!(runtime.item_visual_key().as_deref(), Some("key-a"));
-        let mut category = host.clone();
-        category.kind = ItemKind::Category;
-        category.registration_key = "outer-category".into();
-        runtime.mark_item_visual(&category);
+        let mut copy = host.clone();
+        copy.capture = "another-native-capture".into();
+        assert!(runtime.item_visual_matches(&copy));
+        // Reusing a typed registration cannot silently change its kind.
+        runtime.register_item_cue(host.registration_key.clone(), ItemKind::Select);
+        copy.kind = ItemKind::Select;
+        assert!(!runtime.item_visual_matches(&copy));
+        runtime.focus_registered_item(&host.registration_key, false, None);
         assert_eq!(runtime.item_visual_key(), None);
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":4,"document":"mixed-visual-runtime-test","kind":"item-focusin","item_focus_host":raw.hosts[1]})));
-        assert_eq!(runtime.item_visual_key().as_deref(), Some("key-b"));
-        let mut disabled_property = raw.hosts[1].clone();
-        disabled_property.source_focusable = false;
-        runtime.mark_item_visual(&disabled_property);
+        runtime.input(event(
+            serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
+            "kind":"modality","input_kind":"mousedown"}),
+        ));
+        runtime.focus_registered_item(&host.registration_key, true, None);
         assert_eq!(runtime.item_visual_key(), None);
-        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"sequence":5,"document":"mixed-visual-runtime-test","kind":"modality","input_kind":"mousedown"})));
-        runtime.mark_item_visual(&host);
-        assert_eq!(
-            runtime.item_visual_key(),
-            None,
-            "pointer mode may not create a visible-focus marker"
-        );
     }
 
     #[derive(Clone, Default)]

@@ -19,6 +19,8 @@ pub fn SelectItem(
     #[props(default)] selected: bool,
     #[props(default)] disabled: bool,
     #[props(default)] onclick: EventHandler<MouseEvent>,
+    #[props(default)] onfocus: EventHandler<FocusEvent>,
+    #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] onitemclick: EventHandler<String>,
     #[props(default)] onvaluechange: EventHandler<(String, String)>,
     #[props(default)] onlabelchange: EventHandler<(Option<String>, Option<String>)>,
@@ -28,6 +30,10 @@ pub fn SelectItem(
     let host_id = item_host_id(&attributes, &binding.host_id);
     let mounted_host = binding.clone();
     let dropdown_key = binding.clone();
+    let focus_host = binding.clone();
+    let blur_host = binding.clone();
+    let focus_option = binding.clone();
+    let blur_option = binding.clone();
     let mounted_id = host_id.clone();
     let active = binding.active();
     let option_active = binding.runtime.part_active(
@@ -91,6 +97,8 @@ pub fn SelectItem(
             "data-ix-reflect-checked": checked_attribute,
             tabindex: roving_tabindex,
             onmounted: move |event| mounted_host.mount(&mounted_id,event.data()),
+            onfocus: move |event| { focus_host.focus(true,None); onfocus.call(event); },
+            onblur: move |event| { blur_host.blur(); onblur.call(event); },
             onclick: move |event| onclick.call(event),
             onkeydown: move |event: KeyboardEvent| { dropdown_key.navigation_key(event); },
             ..attributes,
@@ -102,6 +110,8 @@ pub fn SelectItem(
                 "data-active": option_active.to_string(),
                 "data-ix-reflect-checked": serde_json::to_string(&selected.then_some("")).unwrap_or_default(),
                 "data-ix-item-part": "select-option", "data-ix-descendant-kind": "dropdown", "data-ix-item-focusable": "false",
+                onfocus: move |_| focus_option.focus(true,Some(crate::dropdown_inventory::HostPartKind::SelectOption)),
+                onblur: move |_| blur_option.blur(),
                 onclick: move |_| { if !disabled { onitemclick.call(inner_value.clone()); } },
                 onkeydown: move |event: KeyboardEvent| {
                     if !disabled && (event.key() == Key::Enter || event.key() == Key::Character(" ".into())) {

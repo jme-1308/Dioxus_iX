@@ -1,6 +1,6 @@
-//! Rust cue state driven by admitted native observations and mounted focus.
+//! Registered Dioxus focus events and mounted-focus cue lifetimes.
 use super::*;
-use crate::dropdown_inventory::{HostPartFacts, HostPartKind, ItemRef};
+use crate::dropdown_inventory::{HostPartKind, ItemRef};
 use std::cell::Cell;
 
 struct RawForm(String);
@@ -28,11 +28,6 @@ fn event(value: serde_json::Value) -> FormEvent {
         Rc::new(dioxus::html::FormData::new(RawForm(value.to_string()))),
         true,
     )
-}
-fn query(runtime: &RuntimeHandle, value: serde_json::Value) -> bool {
-    let original = event(value);
-    runtime.query(original.clone());
-    !original.default_action_enabled()
 }
 
 struct Owner {
@@ -124,48 +119,58 @@ fn observe(runtime: &RuntimeHandle, sequence: u64, generation: u64, hosts: &[Hos
         "actual admitted key establishes modality"
     );
 }
-fn focusin(runtime: &RuntimeHandle, sequence: u64, hosts: &[HostFacts], focused: &HostFacts) {
-    let mut value = report(runtime, sequence, 1, "item-focusin", hosts);
-    value["item_focus_host"] = serde_json::to_value(focused).unwrap();
-    runtime.input(event(value));
+fn keyboard(runtime: &RuntimeHandle, sequence: u64) {
+    runtime.input(event(
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,
+        "document":format!("{}-focus-test",runtime.owner_id()),
+        "kind":"modality","input_kind":"keydown","key":"Tab"}),
+    ));
+    assert!(runtime.keyboard_mode());
 }
 #[test]
-fn current_host_and_part_cues_are_repeatable_without_consuming_focus_work() {
+fn registered_focus_before_inventory_sets_parts_and_late_blur_preserves_newer_cue() {
     let runtime = RuntimeHandle::new();
     let mut dom = VirtualDom::new(|| rsx! { div {} });
     dom.rebuild_in_place();
     let owner = dom.runtime().in_scope(ScopeId::ROOT, || owner(&runtime, 1));
-    // The option need not have a native ID/capture: its cue belongs to Select.
+    let sibling = dom.runtime().in_scope(ScopeId::ROOT, || {
+        runtime.register(
+            "sibling-root".into(),
+            1,
+            OverlayKind::Dropdown,
+            CloseBehavior::Both,
+            Callbacks {
+                read: Rc::new(|| Some(true)),
+                before: Rc::new(|_| true),
+                apply: Rc::new(|_| {}),
+                key: None,
+            },
+        )
+    });
+    keyboard(&runtime, 1);
     let a = host("a", "actual-a", ItemKind::Select);
     let b = host("b", "actual-b", ItemKind::Menu);
-    let mut category = host("category", "actual-category", ItemKind::Category);
-    category.source_focusable = false;
-    category.parts.push(HostPartFacts {
-        kind: HostPartKind::CategoryParent,
-        capture: "actual-category-parent".into(),
-        source_focusable: true,
-    });
-    let hosts = [a.clone(), b.clone(), category.clone()];
-    for host in &hosts {
+    let category = host("category", "actual-category", ItemKind::Category);
+    for host in [&a, &b, &category] {
         runtime.register_item_cue(host.registration_key.clone(), host.kind);
-        runtime.register_item_mount(
+        runtime.register_owned_item_control_mount(
             &host.registration_key,
             &host.target,
+            &host.target,
             Rc::new(MountedData::new(())),
+            Some((owner.node.id.clone(), owner.node.generation)),
         );
     }
-    observe(&runtime, 1, 1, &hosts);
-    assert_eq!(runtime.item_visual_key(), None);
-    let observation = |owner: String, path: Vec<String>| {
-        serde_json::json!({
-            "owner":owner,"sequence":0,
-            "item_focus_observation":{"hosts":hosts,"path":path}
-        })
-    };
-    assert!(query(
-        &runtime,
-        observation(runtime.owner_id(), vec![a.capture.clone()])
-    ));
+    assert!(runtime.0.borrow().inventories.is_empty());
+    runtime.focus_registered_item("a", true, Some(HostPartKind::SelectOption));
+    assert_eq!(runtime.item_visual_key().as_deref(), Some("a"));
+    assert!(
+        runtime.item_visual_matches(&a),
+        "native capture equality is not cue authority"
+    );
+    assert!(runtime.item_visual_owned_by(owner.node.id(), owner.node.generation()));
+    assert!(!runtime.item_visual_owned_by(sibling.id(), sibling.generation()));
+    assert!(!runtime.item_visual_owned_by(owner.node.id(), owner.node.generation() + 1));
     let delivered = Rc::new(Cell::new(0));
     let completion = delivered.clone();
     assert!(
@@ -189,58 +194,52 @@ fn current_host_and_part_cues_are_repeatable_without_consuming_focus_work() {
         assert!(runtime.part_active("a", HostPartKind::SelectOption));
         assert!(!runtime.part_active("b", HostPartKind::SelectOption));
         assert!(!runtime.part_active("category", HostPartKind::CategoryParent));
-        assert!(!runtime.part_active("a", HostPartKind::CategoryParent));
     }
-    assert_eq!(
-        owner.reads.get(),
-        reads,
-        "cue reads do not invoke application callbacks"
-    );
+    assert_eq!(owner.reads.get(), reads);
     assert_eq!(owner.callbacks.get(), callbacks);
     assert_eq!(runtime.pending_completions(), frames);
     assert_eq!(runtime.pending_item_focus_count(), jobs);
     assert_eq!(delivered.get(), 0);
-    assert!(!query(
-        &runtime,
-        observation(
-            "foreign-runtime".into(),
-            vec![category.parts[0].capture.clone()]
-        )
-    ));
-    assert!(!query(
-        &runtime,
-        observation(runtime.owner_id(), vec!["copied-object".into()])
-    ));
-    assert_eq!(runtime.item_visual_key().as_deref(), Some("a"));
-    assert!(query(
-        &runtime,
-        observation(
-            runtime.owner_id(),
-            vec![category.parts[0].capture.clone(), category.capture.clone()]
-        )
-    ));
+    runtime.focus_registered_item("b", true, None);
+    runtime.blur_registered_item("a");
+    assert_eq!(runtime.item_visual_key().as_deref(), Some("b"));
+    runtime.focus_registered_item("category", true, Some(HostPartKind::CategoryParent));
+    runtime.blur_registered_item("b");
     assert_eq!(
         runtime.item_visual_key(),
         None,
-        "Category outer host is not an AD active item"
+        "Category outer never becomes an AD host"
     );
     assert_eq!(runtime.item_visual_target(), None);
     assert!(runtime.part_active("category", HostPartKind::CategoryParent));
-    assert!(!runtime.part_active("a", HostPartKind::SelectOption));
-    // An ineligible parent cannot retain a cue after the next observation.
-    let mut ineligible = category.clone();
-    ineligible.parts[0].source_focusable = false;
-    assert!(query(
-        &runtime,
-        serde_json::json!({"owner":runtime.owner_id(),"sequence":0,
-        "item_focus_observation":{"hosts":[ineligible],"path":[category.parts[0].capture]}})
-    ));
+    assert!(
+        !runtime.item_visual_owned_by(owner.node.id(), owner.node.generation()),
+        "Category parent does not create root active-descendant ARIA"
+    );
+    runtime.blur_registered_item("category");
     assert!(!runtime.part_active("category", HostPartKind::CategoryParent));
-    focusin(&runtime, 4, &hosts, &a);
-    let mut pointer_clear = report(&runtime, 5, 1, "modality", &hosts);
-    pointer_clear["input_kind"] = "mousedown".into();
-    runtime.input(event(pointer_clear));
-    assert_eq!(runtime.item_visual_key(), None);
+    runtime.focus_registered_item("category", false, Some(HostPartKind::CategoryParent));
+    assert!(!runtime.part_active("category", HostPartKind::CategoryParent));
+    runtime.focus_registered_item("a", true, None);
+    runtime.focus_registered_item("unregistered", true, None);
+    runtime.blur_registered_item("unregistered");
+    assert_eq!(runtime.item_visual_key().as_deref(), Some("a"));
+    let mut wrong_kind = a.clone();
+    wrong_kind.kind = ItemKind::Dropdown;
+    assert!(!runtime.item_visual_matches(&wrong_kind));
+    let mut wrong_target = a.clone();
+    wrong_target.target = "copied-public-target".into();
+    assert!(!runtime.item_visual_matches(&wrong_target));
+    runtime.input(event(
+        serde_json::json!({"owner":runtime.owner_id(),"sequence":2,
+        "kind":"modality","input_kind":"mousedown"}),
+    ));
+    runtime.focus_registered_item("a", true, None);
+    assert_eq!(
+        runtime.item_visual_key(),
+        None,
+        "pointer focus does not recreate a keyboard cue"
+    );
     assert!(!runtime.part_active("a", HostPartKind::SelectOption));
 }
 
@@ -256,7 +255,7 @@ fn mounted_focus_attempt_publishes_cues_after_await_and_unmount_cancels_the_next
     let mock = super::tests::ItemMountMock::default();
     mock.pending.set(true);
     super::tests::install_item_mock(&runtime, &a, mock.clone());
-    runtime.register_item_cue(b.registration_key.clone(), b.kind);
+    super::tests::install_item_mock(&runtime, &b, super::tests::ItemMountMock::default());
     observe(&runtime, 1, 1, &hosts);
     let callbacks = Rc::new(Cell::new(0));
     let count = callbacks.clone();
@@ -272,7 +271,7 @@ fn mounted_focus_attempt_publishes_cues_after_await_and_unmount_cancels_the_next
         runtime.0.borrow().item_visual_host.is_none(),
         "focus permission alone does not publish a cue"
     );
-    focusin(&runtime, 2, &hosts, &b);
+    runtime.focus_registered_item(&b.registration_key, true, None);
     assert_eq!(runtime.item_visual_key().as_deref(), Some("b"));
     mock.pending.set(false);
     mock.waker.borrow_mut().take().unwrap().wake();
@@ -296,35 +295,46 @@ fn unmounted_or_replaced_registered_control_does_not_inherit_the_current_cue() {
     let runtime = RuntimeHandle::new();
     let mut dom = VirtualDom::new(|| rsx! { div {} });
     dom.rebuild_in_place();
-    let _owner = dom.runtime().in_scope(ScopeId::ROOT, || owner(&runtime, 1));
+    let owner = dom.runtime().in_scope(ScopeId::ROOT, || owner(&runtime, 1));
     let select = host("select", "actual-select", ItemKind::Select);
     runtime.register_item_cue(select.registration_key.clone(), select.kind);
-    runtime.register_item_mount(
+    runtime.register_owned_item_control_mount(
         &select.registration_key,
         &select.target,
+        &select.target,
         Rc::new(MountedData::new(())),
+        Some((owner.node.id.clone(), owner.node.generation)),
     );
     observe(&runtime, 1, 1, std::slice::from_ref(&select));
-    focusin(&runtime, 2, std::slice::from_ref(&select), &select);
+    runtime.focus_registered_item(&select.registration_key, true, None);
     assert!(runtime.part_active("select", HostPartKind::SelectOption));
-    runtime.register_item_mount(
+    assert!(runtime.item_visual_owned_by(owner.node.id(), owner.node.generation()));
+    runtime.register_owned_item_control_mount(
         &select.registration_key,
         &select.target,
+        &select.target,
         Rc::new(MountedData::new(())),
+        Some((owner.node.id.clone(), owner.node.generation)),
     );
     assert_eq!(runtime.item_visual_key(), None);
+    assert!(!runtime.item_visual_owned_by(owner.node.id(), owner.node.generation()));
     assert!(!runtime.part_active("select", HostPartKind::SelectOption));
-    focusin(&runtime, 3, std::slice::from_ref(&select), &select);
+    runtime.focus_registered_item(&select.registration_key, true, None);
     assert!(runtime.part_active("select", HostPartKind::SelectOption));
+    assert!(runtime.item_visual_owned_by(owner.node.id(), owner.node.generation()));
     runtime.unregister_item_cue(&select.registration_key);
+    runtime.focus_registered_item(&select.registration_key, true, None);
     assert_eq!(runtime.item_visual_key(), None);
+    assert!(!runtime.item_visual_owned_by(owner.node.id(), owner.node.generation()));
     assert_eq!(runtime.item_visual_target(), None);
     assert!(!runtime.part_active("select", HostPartKind::SelectOption));
     runtime.register_item_cue(select.registration_key.clone(), select.kind);
-    runtime.register_item_mount(
+    runtime.register_owned_item_control_mount(
         &select.registration_key,
         &select.target,
+        &select.target,
         Rc::new(MountedData::new(())),
+        Some((owner.node.id.clone(), owner.node.generation)),
     );
     assert_eq!(
         runtime.item_visual_key(),

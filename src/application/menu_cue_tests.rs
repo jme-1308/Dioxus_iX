@@ -54,8 +54,13 @@ fn mark_rendered_child(h: &MenuHarness, runtime: &RuntimeHandle, label: &str) ->
     }))
     .unwrap();
     runtime.register_item_cue(host.registration_key.clone(), ItemKind::Menu);
-    h.dom
-        .in_scope(ScopeId::ROOT, || runtime.mark_item_visual(&host));
+    h.dom.in_scope(ScopeId::ROOT, || {
+        runtime.register_item_mount(
+            &host.registration_key, &host.target,
+            Rc::new(MountedData::new(MenuTestMount::default())),
+        );
+        runtime.mark_item_visual(&host);
+    });
     assert!(runtime.item_visual_matches(&host));
     assert_eq!(
         runtime.item_visual_key(),

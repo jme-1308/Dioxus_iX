@@ -243,9 +243,7 @@ try { jobs = JSON.parse(category.getAttribute('data-menu-category-return-jobs') 
 catch { return false; }
 if (typeof job !== 'string' || !Array.isArray(jobs) || !jobs.includes(job)) return false;
 target.focus();
-// Source returns through the Category host's patched focus(), even though this
-// renderer executes that host's delegated private control directly.
-for(const report of document[Symbol.for('dioxus-ix.document-native-domain.v1')]?.focusReaders?.values()??[])report(category);
+// The physical control reports focus through its Dioxus handler.
 return document.activeElement === target;
 } finally { directory.release(lease); }
 "#

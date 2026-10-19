@@ -33,11 +33,29 @@ pub(crate) struct ItemHostBinding {
 }
 impl ItemHostBinding {
     pub(crate) fn mount(&self, target: &str, node: Rc<MountedData>) {
-        self.runtime.register_item_mount(&self.key, target, node);
+        self.mount_control(target, target, node);
     }
     pub(crate) fn mount_control(&self, target: &str, focus_id: &str, node: Rc<MountedData>) {
+        let owner = self.context.as_ref().and_then(|context| {
+            context
+                .node
+                .borrow()
+                .as_ref()
+                .map(|node| (node.id().to_string(), node.generation()))
+        });
         self.runtime
-            .register_item_control_mount(&self.key, target, focus_id, node);
+            .register_owned_item_control_mount(&self.key, target, focus_id, node, owner);
+    }
+    pub(crate) fn focus(
+        &self,
+        source_focusable: bool,
+        part: Option<crate::dropdown_inventory::HostPartKind>,
+    ) {
+        self.runtime
+            .focus_registered_item(&self.key, source_focusable, part);
+    }
+    pub(crate) fn blur(&self) {
+        self.runtime.blur_registered_item(&self.key);
     }
     pub(crate) fn active(&self) -> bool {
         self.runtime.item_visual_key().as_deref() == Some(self.key.as_str())
@@ -511,17 +529,29 @@ impl DropdownContext {
             // the cue signal now so that the later first cue updates its ARIA.
             let visual_target = runtime.item_visual_target();
             if let Some(facts) = node.inventory() {
-                visual_target?;
-                let inventory = Inventory::new(InventoryMode::ActiveDescendant, facts);
-                return inventory
-                    .query_hosts()
-                    .into_iter()
-                    .find(|host| {
-                        runtime.item_visual_matches(host)
-                            && host.kind != ItemKind::Category
-                            && host.source_focusable
-                    })
-                    .map(|host| host.target);
+                let target = visual_target.as_ref()?;
+                if facts.hosts.iter().any(|host| &host.target == target) {
+                    let inventory = Inventory::new(InventoryMode::ActiveDescendant, facts);
+                    return inventory
+                        .query_hosts()
+                        .into_iter()
+                        .find(|host| {
+                            runtime.item_visual_matches(host)
+                                && host.kind != ItemKind::Category
+                                && host.source_focusable
+                        })
+                        .map(|host| host.target);
+                }
+            }
+            // A mounted Dioxus control can focus before discovery, or before
+            // an existing inventory includes it. Its explicit owner supplies
+            // membership without attributing the cue to sibling Dropdowns.
+            if visual_target.is_some() {
+                return visual_target
+                    .filter(|_| runtime.item_visual_owned_by(node.id(), node.generation()));
+            }
+            if runtime.item_visual_known() {
+                return None;
             }
         }
         owner
@@ -2079,6 +2109,8 @@ pub fn DropdownItem(
     #[props(default)] keep_open: bool,
     #[props(default)] dropdown: Option<DropdownHandle>,
     #[props(default)] onclick: Option<EventHandler<MouseEvent>>,
+    #[props(default)] onfocus: EventHandler<FocusEvent>,
+    #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] onitemclick: EventHandler<DropdownItemClickEvent>,
     #[props(default)] children: Option<Element>,
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
@@ -2125,11 +2157,12 @@ pub fn DropdownItem(
     let owner = context.as_ref().map(|context| context.node_id());
     let source_active = host_binding.active();
     let active = source_active
-        || context.as_ref().is_some_and(|context| {
-            let _ = (context.revision)();
-            let state = context.state.borrow();
-            !state.native && state.active == Some(id)
-        });
+        || !host_binding.runtime.item_visual_known()
+            && context.as_ref().is_some_and(|context| {
+                let _ = (context.revision)();
+                let state = context.state.borrow();
+                !state.native && state.active == Some(id)
+            });
     let trigger_marker = linked.as_ref().map(DropdownContext::node_id);
     let linked_open = linked
         .as_ref()
@@ -2141,6 +2174,9 @@ pub fn DropdownItem(
     let linked_mount = use_trigger_mount(linked.clone(), blocked, Some(host_id.clone()));
     let key_context = context.clone();
     let navigation_host = host_binding.clone();
+    let focus_host = host_binding.clone();
+    let blur_host = host_binding.clone();
+    let focus_context = context.clone();
     let click_label = label.clone();
     let key_label = label.clone();
     let tabindex = host_binding.tabindex();
@@ -2198,6 +2234,17 @@ pub fn DropdownItem(
         "aria-checked":(checked||checkable).then_some(checked.to_string()),
         onmounted:move |event|{mounted_host.mount(&mounted_id,event.data());if let Some(context)=&mount_context{if let Some(entry)=context.entries.borrow_mut().get_mut(&id){entry.mounted=Some(event.data());}}
             linked_mount.call(event);},
+        // FocusData has no target/relatedTarget. Direct focus/blur avoid
+        // a nested item's event repainting its ancestor host.
+        onfocus:move |event|{
+            if let Some(context)=&focus_context {
+                let changed=context.state.borrow().active!=Some(id);
+                context.state.borrow_mut().active=Some(id);
+                if changed {context.notify();}
+            }
+            focus_host.focus(!blocked,None);onfocus.call(event);
+        },
+        onblur:move |event|{blur_host.blur();onblur.call(event);},
         onclick:move |event:MouseEvent| {
             if disabled||dropdown.and_then(DropdownHandle::try_context).is_some_and(|child|child.state.borrow().blocked){event.prevent_default();return;}
             onitemclick.call(DropdownItemClickEvent {label:click_label.clone(),prevented:Rc::new(Cell::new(false))});
@@ -2461,7 +2508,7 @@ mod tests {
     ) -> (bool, bool) {
         let data: Rc<dyn std::any::Any> =
             Rc::new(dioxus::html::PlatformEventData::new(Box::new(payload)));
-        let event = Event::new(data, name != "mounted");
+        let event = Event::new(data, !matches!(name, "focus" | "blur" | "mounted"));
         dom.runtime().handle_event(name, event.clone(), id);
         (!event.default_action_enabled(), event.propagates())
     }
@@ -2496,6 +2543,8 @@ mod tests {
         item_veto: bool,
         standalone_requests: usize,
         standalone_mouse: usize,
+        item_focus_events: usize,
+        item_blur_events: usize,
         pending_drop: Option<Rc<Cell<bool>>>,
         pending_started: Rc<Cell<bool>>,
         native_clicks: usize,
@@ -2534,6 +2583,8 @@ mod tests {
                 item_veto: false,
                 standalone_requests: 0,
                 standalone_mouse: 0,
+                item_focus_events: 0,
+                item_blur_events: 0,
                 pending_drop: None,
                 pending_started: Rc::new(Cell::new(false)),
                 native_clicks: 0,
@@ -2583,6 +2634,8 @@ mod tests {
         let changed = config.clone();
         let item = config.clone();
         let click = config.clone();
+        let focused = config.clone();
+        let blurred = config.clone();
         let standalone_item = config.clone();
         let standalone_mouse = config.clone();
         let linked_before = config.clone();
@@ -2593,7 +2646,7 @@ mod tests {
                 onbeforechange:move |event:DropdownChangeEvent|{let veto={let mut state=before.borrow_mut();state.requests.push((event.open,event.previous));if event.open{state.veto_open}else{state.veto_close}};if veto{event.prevent_default();}},
                 onchange:move |open:bool|{let (close,capture)={let mut state=changed.borrow_mut();state.changed.push(open);(state.close_after_open&&open,state.context.clone())};let context=capture.borrow().clone();if let Some(context)=context{changed.borrow_mut().deliveries.push((settings.listener_revision,open,*context.open.peek()));if close{context.request(false,Reason::Trigger,false);}}},
                 Stateful {config:config.clone()}
-                DropdownItem {label:"Alpha",id:settings.alpha_id.clone(),onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|click.borrow_mut().native_clicks+=1}
+                DropdownItem {label:"Alpha",id:settings.alpha_id.clone(),onfocus:move |_|focused.borrow_mut().item_focus_events+=1,onblur:move |_|blurred.borrow_mut().item_blur_events+=1,onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|click.borrow_mut().native_clicks+=1}
                 DropdownItem {label:"Disabled",disabled:true}
                 DropdownItem {label:"Linked",dropdown:linked,checked:true}
                 DropdownSubmenu {label:"Explicit",DropdownItem {label:"Persistent nested"}}
@@ -3464,6 +3517,115 @@ mod tests {
         html.split('>')
             .find(|tag| tag.contains(&format!(" id=\"{id}\"")))
             .unwrap_or_else(|| panic!("missing cue target {id}"))
+    }
+
+    #[test]
+    fn direct_roving_item_focus_preserves_keyboard_position_before_inventory() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            mode: DropdownNavigationMode::RovingTabindex,
+            ..Fixture::default()
+        });
+        h.key("Menu", Key::ArrowDown);
+        let context = h.context();
+        let entry = |label: &str| {
+            context
+                .entries
+                .borrow()
+                .iter()
+                .find(|(_, entry)| entry.label == label)
+                .map(|(id, _)| *id)
+                .unwrap()
+        };
+        assert!(
+            context
+                .node
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .inventory()
+                .is_none()
+        );
+        assert_eq!(context.state.borrow().active, Some(entry("Alpha")));
+        dispatch(&h.dom, "focus", h.target("Alpha"), ());
+        h.settle();
+        h.key("Alpha", Key::ArrowDown);
+        assert_eq!(
+            context.state.borrow().active,
+            Some(entry("Linked")),
+            "Down continues after the focused item and skips Disabled"
+        );
+    }
+
+    #[test]
+    fn direct_item_focus_and_blur_render_owned_aria_before_native_inventory() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::with_settings(Fixture {
+            alpha_id: Some("direct-focus-alpha".into()),
+            ..Fixture::default()
+        });
+        h.click("Menu");
+        let context = h.context();
+        let node = context.node.borrow().as_ref().unwrap().clone();
+        let runtime = node.runtime().unwrap();
+        let sibling = h.config.borrow().linked.get().unwrap();
+        h.dom.in_runtime(|| sibling.open());
+        h.settle();
+        assert!(node.inventory().is_none());
+        let transport = h
+            .attrs
+            .iter()
+            .find(|(_, attrs)| attrs.get("data-ix-overlay-transport") == Some(&runtime.owner_id()))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap();
+        dispatch(
+            &h.dom,
+            "input",
+            transport,
+            serde_json::json!({
+                "owner":runtime.owner_id(),"document":format!("direct-focus-{}",runtime.owner_id()),
+                "sequence":1,"kind":"modality","input_kind":"keydown","key":"Tab","nodes":[]
+            })
+            .to_string(),
+        );
+        dispatch(&h.dom, "focus", h.target("Alpha"), ());
+        h.settle();
+        assert_eq!(h.config.borrow().item_focus_events, 1);
+        let html = h.html();
+        assert!(cue_tag(&html, "direct-focus-alpha").contains("ix-focused"));
+        assert!(
+            cue_tag(&html, &context.trigger_id())
+                .contains("aria-activedescendant=\"direct-focus-alpha\"")
+        );
+        assert_eq!(
+            sibling.active_descendant(),
+            None,
+            "an open sibling cannot claim this item"
+        );
+        assert!(!cue_tag(&html, &sibling.context().trigger_id()).contains("aria-activedescendant"));
+        dispatch(&h.dom, "blur", h.target("Alpha"), ());
+        h.settle();
+        assert_eq!(h.config.borrow().item_blur_events, 1);
+        assert!(runtime.item_visual_key().is_none());
+        assert!(!cue_tag(&h.html(), "direct-focus-alpha").contains("ix-focused"));
+        assert!(!cue_tag(&h.html(), &context.trigger_id()).contains("aria-activedescendant"));
+        assert_eq!(
+            context.state.borrow().active,
+            context
+                .entries
+                .borrow()
+                .iter()
+                .find(|(_, entry)| entry.label == "Alpha")
+                .map(|(id, _)| *id),
+            "blur clears the cue while retaining the keyboard position"
+        );
+        dispatch(&h.dom, "focus", h.target("Alpha"), ());
+        h.config.borrow_mut().visible = false;
+        h.update();
+        assert!(
+            runtime.item_visual_key().is_none(),
+            "unmount releases the focused registration"
+        );
     }
 
     #[test]

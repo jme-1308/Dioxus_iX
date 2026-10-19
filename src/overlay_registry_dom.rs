@@ -17,7 +17,6 @@ const documentSlot=Symbol.for('dioxus-ix.document-native-domain.v1');
 const nativeDocument=document[documentSlot]||(document[documentSlot]={identity:owner,eventSequence:0,eventIds:new WeakMap()});
 nativeDocument.inventoryReaders||=new Map();
 nativeDocument.triggerReaders||=new Map();
-nativeDocument.focusReaders||=new Map();
 function windowSequence(event){if(!event)return 0;let id=nativeDocument.eventIds.get(event);if(!id){id=++nativeDocument.eventSequence;nativeDocument.eventIds.set(event,id);}return id;}
 const focusableSelector='a[href],area[href],audio,button,input:not([type="hidden"]),select,textarea,iframe,object,embed,video,[tabindex],[contenteditable],ix-dropdown-item,ix-select-item';
 let alive=true,sequence=0,lastSignature='';
@@ -447,12 +446,7 @@ function collectFacts(kind,event,phase=''){
     default_prevented:!!event?.defaultPrevented,
     target_id:nativeId(target),active_id:nativeId(active),
     hosts,triggers,enclosing_triggers,anchors,nodes,click_sites,active_categories,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
-    active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||'',
-    item_focus_host:kind==='item-focusin'?(()=>{
-      const hosts=path.filter(element=>element instanceof HTMLElement&&element.matches(itemSelector));
-      const element=hosts.find(element=>element.getAttribute('data-ix-item-focusable')==='true'||element.classList.contains('ix-focusable'))||hosts[0];
-      return element?itemHostFacts(element):null;
-    })():null
+    active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
 function send(report,event){
@@ -488,43 +482,6 @@ function send(report,event){
   pruneItemCaptures();
 }
 
-// The source's global focus patch reports its exact attempted target after
-// native focus, including a no-op. Document listeners instead see the retargeted
-// target. Project only renderer-owned control/part boundaries into source hosts.
-function itemFocusStart(target,documentEvent){
-  if(!(target instanceof HTMLElement))return null;
-  const control=target.closest('[data-ix-item-control]');
-  if(control){
-    const host=control.closest('[data-ix-item-kind]');
-    if(host){
-      if(control.getAttribute('data-ix-item-part')==='category-parent')return documentEvent?host:control;
-      return host;
-    }
-  }
-  return target;
-}
-function reportItemFocus(target,documentEvent=false){
-  if(!alive)return;
-  const start=itemFocusStart(target,documentEvent);if(!start)return;
-  const path=[],hosts=[];
-  // Pinned getComposedPath jumps directly to an actual shadow host; it never
-  // flattens assigned slots or substitutes the deepest active element.
-  for(let node=start;node instanceof Element;){
-    if(node instanceof HTMLElement){
-      const part=node.hasAttribute('data-ix-item-part')?node:null;
-      const host=node.matches(itemSelector)?node:part?.closest(itemSelector);
-      if(host?.getAttribute('data-ix-item-runtime')===owner){
-        const binding=captureItem(node);if(binding)path.push(binding.capture);
-        if(!hosts.some(facts=>facts.registration_key===host.getAttribute('data-ix-item-key')))hosts.push(itemHostFacts(host));
-      }
-    }
-    const root=node.getRootNode();node=root instanceof ShadowRoot?root.host:node.parentElement;
-  }
-  const input=transport();if(!input)return;
-  input.value=JSON.stringify({owner,sequence:0,item_focus_observation:{path,hosts}});
-  input.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
-}
-nativeDocument.focusReaders.set(owner,reportItemFocus);
 function syncNativeSurfaces(){
   for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
@@ -647,9 +604,10 @@ document.addEventListener('click',e=>send(collectFacts('click',e,'bubble'),e),{s
 window.addEventListener('keydown',e=>send(collectFacts('key',e,'window'),e),{signal});
 window.addEventListener('click',e=>send(collectFacts('click',e,'window'),e),{signal});
 document.addEventListener('pointerdown',e=>send(collectFacts('pointer',e),e),{capture:true,signal});
-document.addEventListener('focusin',event=>reportItemFocus(event.target,true),{capture:true,signal});
 document.addEventListener('focusin',reportObserve,{signal});
-document.addEventListener('focusout',event=>{reportItemFocus(event.target,true);queueMicrotask(()=>{if(alive)reportObserve();});},{passive:true,signal});
+// Generic overlay discovery/dismissal still observes current focus until its
+// R02 event migration. Typed item cues are owned by Dioxus focus/blur handlers.
+document.addEventListener('focusout',()=>{queueMicrotask(()=>{if(alive)reportObserve();});},{passive:true,signal});
 const observer=new MutationObserver(changes=>{
   // Each outstanding source ID wait observes real child-list changes. Resolve
   // all retained attempts in their admission order, never only the latest ID.
@@ -698,7 +656,6 @@ try{
   itemCaptureNodes.clear();
   itemInventoryLeases.clear();if(nativeDocument.inventoryReaders.get(owner)===inventoryReader)nativeDocument.inventoryReaders.delete(owner);
   if(nativeDocument.triggerReaders.get(owner)===triggerReader)nativeDocument.triggerReaders.delete(owner);
-  if(nativeDocument.focusReaders.get(owner)===reportItemFocus)nativeDocument.focusReaders.delete(owner);
   for(const input of registryElements('input[data-ix-overlay-transport]'))if(input.getAttribute('data-ix-overlay-transport')===owner)input.removeAttribute('data-ix-overlay-native');
   registryScopes.clear();
   if(document.documentElement.getAttribute('data-ix-overlay-registry-native')===owner)document.documentElement.removeAttribute('data-ix-overlay-registry-native');

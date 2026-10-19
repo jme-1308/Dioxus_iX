@@ -20,6 +20,8 @@ pub fn CuePreview() -> Element {
     let mut revision = use_signal(|| 1_usize);
     let mut select_visible = use_signal(|| true);
     let mut actions = use_signal(|| 0_usize);
+    let mut outside_note = use_signal(|| "Independent equipment note".to_string());
+    let outside_mount = use_focus_mount("r0214-outside-field");
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     rsx! {
@@ -65,6 +67,11 @@ pub fn CuePreview() -> Element {
                     Button { id:"r0213-toggle-select", variant:ButtonVariant::Secondary, onclick:move |_|select_visible.toggle(),
                         if select_visible(){"Remove Select row"}else{"Restore Select row"} }
                 }
+                label { r#for:"r0214-outside-field", "Independent note" }
+                input { id:"r0214-outside-field", class:"cue-review-field", value:outside_note(), onmounted:outside_mount,
+                    oninput:move |event|outside_note.set(event.value()) }
+                p { "Move focus between an open menu and this note. Keyboard focus shows a row cue; pointer focus keeps the normal pointer appearance." }
+                output { id:"r0214-outside-state", "Note: {outside_note()}" }
                 output { id:"r0213-state", "data-mode":if roving(){"roving"}else{"ad"}, "data-revision":revision(),
                     "data-select-visible":select_visible().to_string(),
                     "Mode: {roving():?}; revision: {revision()}; inspections: {actions()}" }
@@ -92,10 +99,12 @@ pub fn CuePreview() -> Element {
     }
 }
 
-const STYLES: &str = "body{margin:0}.cue-review{min-height:100vh;box-sizing:border-box;padding:24px}.cue-review>h1{font-size:28px;margin:0 0 16px}.cue-review p{max-width:65ch;line-height:1.5}.cue-review section{max-width:900px;margin:28px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.cue-review h2{font-size:20px}.cue-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:16px 0}.cue-review output{display:block;margin-top:12px}.r0213-mixed [role=menu],.r0213-child [role=menu]{min-width:270px;max-width:calc(100vw - 40px)}@media(max-width:600px){.cue-review{padding:16px}}";
+const STYLES: &str = "body{margin:0}.cue-review{min-height:100vh;box-sizing:border-box;padding:24px}.cue-review>h1{font-size:28px;margin:0 0 16px}.cue-review p{max-width:65ch;line-height:1.5}.cue-review section{max-width:900px;margin:28px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.cue-review h2{font-size:20px}.cue-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:16px 0}.cue-review output{display:block;margin-top:12px}.cue-review label{display:block;margin:20px 0 8px}.cue-review-field{box-sizing:border-box;min-height:32px;width:280px;max-width:100%;padding:4px 8px;background:var(--ix-color-component-1);color:inherit;border:1px solid var(--ix-color-border);font:inherit}.cue-review-field:focus-visible{outline:2px solid var(--ix-color-primary);outline-offset:2px}.r0213-mixed [role=menu],.r0213-child [role=menu]{min-width:270px;max-width:calc(100vw - 40px)}@media(max-width:600px){.cue-review{padding:16px}}";
 
 // Synthetic interactions only: cue classes, data-active and ARIA are never
-// written by this driver. Actual browser keyboard input is checked by the lead.
+// written by this driver. Direct focus/blur exercise real Dioxus focus events;
+// synthetic Tab only checks prevention, not native traversal. The lead checks
+// physical browser keyboard and pointer input.
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const NATIVE_CUE_CHECK: &str = r#"
 await dioxus.recv();
@@ -110,6 +119,20 @@ await wait('mixed cue trigger mounted',()=>trigger()&&root()?.getAttribute('data
 for(const roving of [false,true]){
  trigger().scrollIntoView({block:'center'});trigger().focus();key(trigger(),'Home');
  await wait('first rendered cue '+roving,()=>root().getAttribute('data-ix-overlay-open')==='true'&&active()===byId('r0213-first')&&cue(byId('r0213-first'))&&agreement('r0213-first',roving));
+ const outside=byId('r0214-outside-field'),select=()=>byId('r0213-select'),option=()=>select().querySelector('[data-ix-item-part="select-option"]'),menu=()=>byId('r0213-menu-control'),parentControl=()=>byId('r0213-category').querySelector('[data-ix-item-part="category-parent"]');
+ byId('r0213-first').blur();await wait('direct blur clears current item',()=>inactive(byId('r0213-first'))&&agreement(null,roving));
+ key(outside,'Shift');select().focus();
+ await wait('direct Select focus reaches Dioxus',()=>active()===select()&&cue(select())&&cue(option())&&agreement('r0213-select',roving));
+ menu().focus();await wait('newer Menu focus survives previous Select blur',()=>active()===menu()&&cue(byId('r0213-menu'))&&inactive(select())&&inactive(option())&&agreement('r0213-menu',roving));
+ parentControl().focus();await wait('direct physical Category focus',()=>active()===parentControl()&&cue(parentControl())&&inactive(byId('r0213-category'))&&inactive(byId('r0213-menu'))&&agreement(null,roving));
+ outside.focus();await wait('outside focus clears only the departed cue',()=>active()===outside&&inactive(parentControl())&&inactive(byId('r0213-menu'))&&root().getAttribute('data-ix-overlay-open')==='true'&&agreement(null,roving));
+ outside.value='Note edited '+(roving?'roving':'AD');outside.dispatchEvent(new Event('input',{bubbles:true}));
+ await wait('outside typing does not restore an item cue',()=>byId('r0214-outside-state').textContent.includes(outside.value)&&inactive(parentControl())&&agreement(null,roving));
+ outside.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));select().focus();
+ await wait('pointer-mode direct focus has no keyboard cue',()=>active()===select()&&inactive(select())&&inactive(option())&&agreement(null,roving));
+ key(outside,'Shift');byId('r0213-first').focus();
+ await wait('keyboard-mode direct Dropdown focus restores cue',()=>active()===byId('r0213-first')&&cue(byId('r0213-first'))&&inactive(select())&&agreement('r0213-first',roving));
+ if(!roving&&key(active(),'Tab').defaultPrevented)throw new Error('ordinary interior AD Tab default was prevented');
  key(active(),'ArrowDown');await wait('Select host and option cue',()=>active()===byId('r0213-select')&&cue(byId('r0213-select'))&&cue(byId('r0213-select').querySelector('[data-ix-item-part="select-option"]'))&&agreement('r0213-select',roving));
  const revision=+byId('r0213-state').dataset.revision;key(active(),'F2');
  await wait('normal prop rerender preserves cue',()=>+byId('r0213-state').dataset.revision===revision+1&&cue(byId('r0213-select'))&&cue(byId('r0213-select').querySelector('[data-ix-item-part="select-option"]'))&&agreement('r0213-select',roving));
@@ -132,5 +155,5 @@ custom.scrollIntoView({block:'center'});custom.focus();key(custom,'Home');
 await wait('custom Rust ARIA binding',()=>customRoot().getAttribute('data-ix-overlay-open')==='true'&&cue(byId('r0213-custom-first'))&&custom.getAttribute('aria-activedescendant')==='r0213-custom-first'&&customRoot().getAttribute('aria-activedescendant')==='r0213-custom-first');
 key(active(),'End');await wait('custom Rust ARIA moves',()=>cue(byId('r0213-custom-last'))&&custom.getAttribute('aria-activedescendant')==='r0213-custom-last');
 key(active(),'Escape');await wait('custom closed ARIA',()=>customRoot().getAttribute('data-ix-overlay-open')==='false'&&!custom.hasAttribute('aria-activedescendant'));
-return {ok:true,modes:2,typedCue:true,selectPart:true,menuPhysicalFocus:true,categoryParent:true,rootTriggerAria:true,customRustAria:true,rerender:true,unmountRemount:true,linkedOpenReturn:true,disabledHiddenSkip:true,cueWrites:0};
+return {ok:true,modes:2,typedCue:true,selectPart:true,menuPhysicalFocus:true,categoryParent:true,rootTriggerAria:true,customRustAria:true,directFocusBlur:true,newerCuePreserved:true,outsideFocus:true,pointerCueClear:true,outsideEditing:true,interiorTabDefault:true,nativeTabTraversal:'Chromium only',rerender:true,unmountRemount:true,linkedOpenReturn:true,disabledHiddenSkip:true,cueWrites:0};
 "#;

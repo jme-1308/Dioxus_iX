@@ -60,7 +60,6 @@ mod icon_button_styles;
 pub mod icons;
 mod input_geometry;
 mod input_styles;
-mod item_visual;
 pub mod layout;
 mod menu_hover_dom;
 mod menu_scope_dom;
