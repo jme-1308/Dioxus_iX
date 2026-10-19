@@ -146,6 +146,8 @@ pub fn ChatExamples() -> Element {
         }
         section { class: "demo-section", id: "chat-input",
             h2 { "Chat input" }
+            crate::chat_composer_review::ChatComposerExample {}
+            h3 { "Configured examples" }
             ChatInputExample { onfeedback: move |value| feedback.set(value) }
         }
         section { class: "demo-section", id: "chat-attachment",

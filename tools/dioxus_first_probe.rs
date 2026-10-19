@@ -9,6 +9,8 @@ mod application_shell_review;
 mod application_viewport_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
+#[path = "dioxus_first_probe/chat_composer_review.rs"]
+mod chat_composer_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
 mod cue_review;
 #[path = "dioxus_first_probe/custom_validation_review.rs"]
@@ -185,6 +187,9 @@ fn Preview() -> Element {
     }
     if scope == "?toastlifetime" {
         return rsx! { toast_lifetime_review::ToastLifetimePreview {} };
+    }
+    if scope == "?chatcomposer" {
+        return rsx! { chat_composer_review::ChatComposerPreview {} };
     }
     if scope == "?applicationfocus" {
         return rsx! { application_focus_review::ApplicationFocusPreview {} };

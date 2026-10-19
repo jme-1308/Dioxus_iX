@@ -10,6 +10,7 @@ mod application_scenarios;
 mod button_review;
 mod chart_scenarios;
 mod chat;
+mod chat_composer_review;
 mod chat_scenarios;
 mod checkbox_review;
 mod composition;
@@ -200,6 +201,7 @@ fn Gallery() -> Element {
         style { {actions::STYLES} }
         style { {application::STYLES} }
         style { {chat::STYLES} }
+        style { {chat_composer_review::STYLES} }
         style { {composition::STYLES} }
         style { {patterns::STYLES} }
         style { {forms::STYLES} }
