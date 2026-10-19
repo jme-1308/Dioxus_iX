@@ -2326,7 +2326,7 @@ fn mounted_trigger_escape_and_explicit_close_run_as_dioxus_effects_in_both_modes
         );
         h.settle();
         assert_eq!(*mock.calls.borrow(), ["Menu", "Menu"]);
-        assert!(h.html().contains(r#"data-ix-dropdown-focus-owned="true""#));
+        assert!(!h.html().contains("data-ix-dropdown-focus-owned"));
     }
 }
 #[test]

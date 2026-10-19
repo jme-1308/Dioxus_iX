@@ -213,6 +213,9 @@ struct OwnedItemFocus {
     visual: Option<HostFacts>,
     focus_native: bool,
     exit_target: Option<MountedFocusTarget>,
+    // A repair is an ordinary mounted item job with an exact weak destination.
+    // Its tag lets later real input cancel repairs without disturbing key jobs.
+    repair_target: Option<MountedFocusTarget>,
     expected_open: Option<bool>,
     destination_popovers: Vec<String>,
     task: Option<(Weak<dioxus::core::Runtime>, dioxus::core::Task)>,
@@ -653,6 +656,87 @@ impl RuntimeHandle {
             self.notify_item_tabindex();
         }
     }
+    fn cancel_item_repairs(&self, focused: Option<&str>) {
+        let roots = self
+            .0
+            .borrow()
+            .owned_item_focus
+            .iter()
+            .filter(|(_, job)| {
+                job.repair_target
+                    .as_ref()
+                    .is_some_and(|target| focused != Some(target.focus_id.as_str()))
+            })
+            .map(|(root, _)| root.clone())
+            .collect::<Vec<_>>();
+        for root in roots {
+            self.cancel_owned_item_focus(&root);
+        }
+    }
+
+    fn repair_moved_item_focus(&self, report: &Report) {
+        let Some(moved) = report
+            .moved_focus
+            .as_ref()
+            .filter(|_| report.active_default)
+        else {
+            return;
+        };
+        let Some((root, generation, host, target)) = ({
+            let state = self.0.borrow();
+            let described = state.item_descriptions.get(&moved.key);
+            described.and_then(|description| {
+                let (root, generation) = description.owner.as_ref()?;
+                let entry = state.nodes.get(root)?;
+                let mount = state.item_mounts.get(&moved.key)?;
+                if entry.generation != *generation
+                    || entry.kind != OverlayKind::Dropdown
+                    || !entry.mounted
+                    || !entry.ownership_ready
+                    || entry.navigation_mode.as_deref() != Some("roving-tabindex")
+                    || mount.focus_id != moved.focus_id
+                    || mount.target != description.host.target
+                    || mount.owner.as_ref() != Some(&(root.clone(), *generation))
+                    || !description
+                        .host
+                        .eligible(crate::dropdown_inventory::InventoryMode::RovingTabindex)
+                    || !report
+                        .nodes
+                        .iter()
+                        .any(|node| node.id == *root && node.generation == *generation)
+                    || state.owned_item_focus.contains_key(root)
+                {
+                    return None;
+                }
+                Some((root.clone(), *generation, description.host.clone()))
+            })
+        })
+        .and_then(|(root, generation, host)| {
+            let target = self
+                .mounted_focus_target(&moved.focus_id)
+                .filter(|target| target.key == moved.key)?;
+            target.live_node()?;
+            Some((root, generation, host, target))
+        }) else {
+            return;
+        };
+        let node = NodeHandle {
+            runtime: Rc::downgrade(&self.0),
+            id: root.clone(),
+            generation,
+        };
+        // This remains the existing Dioxus executor: no native focus command,
+        // timer, DOM target retention or alternative unregistered destination.
+        let _ = node.with_owner(|| {
+            if node.queue_item_host_focus(&host, Rc::new(|| {})) {
+                if let Some(job) = self.0.borrow_mut().owned_item_focus.get_mut(&root) {
+                    job.repair_target = Some(target);
+                }
+                dioxus::core::needs_update();
+            }
+        });
+    }
+
     fn cancel_owned_item_focus(&self, root: &str) {
         let job = self.0.borrow_mut().owned_item_focus.remove(root);
         if let Some((owner, task)) = job.and_then(|job| job.task)
@@ -759,6 +843,7 @@ impl RuntimeHandle {
                         visual: None,
                         focus_native: true,
                         exit_target: Some(target),
+                        repair_target: None,
                         expected_open,
                         destination_popovers,
                         task: None,
@@ -817,6 +902,23 @@ impl RuntimeHandle {
         state.owned_item_focus.get(root).is_some_and(|job| {
             job.sequence == sequence
                 && job.generation == generation
+                && job.repair_target.as_ref().is_none_or(|target| {
+                    target
+                        .live_node()
+                        .is_some_and(|current| Rc::ptr_eq(&current, node))
+                        && state.nodes.get(root).is_some_and(|entry| {
+                            entry.navigation_mode.as_deref() == Some("roving-tabindex")
+                        })
+                        && state
+                            .item_descriptions
+                            .get(&job.key)
+                            .is_some_and(|description| {
+                                description.owner.as_ref() == Some(&(root.into(), generation))
+                                    && description.host.eligible(
+                                        crate::dropdown_inventory::InventoryMode::RovingTabindex,
+                                    )
+                            })
+                })
                 && if let Some(target) = &job.exit_target {
                     target
                         .live_node()
@@ -909,8 +1011,14 @@ impl RuntimeHandle {
             if let Some(visual) = visual {
                 runtime.mark_item_visual(&visual);
             }
+            let repair = runtime
+                .0
+                .borrow()
+                .owned_item_focus
+                .get(&task_root)
+                .is_some_and(|job| job.repair_target.is_some());
             drop(runtime);
-            if live().is_none() {
+            if repair || live().is_none() {
                 finish();
                 return;
             }
@@ -2133,6 +2241,7 @@ impl RuntimeHandle {
         }
         match &event.action {
             DocumentAction::Input { input_kind, key } => {
+                self.cancel_item_repairs(None);
                 if admitted {
                     domain.observe_input(input_kind, key);
                 }
@@ -2143,11 +2252,13 @@ impl RuntimeHandle {
                     self.0.borrow_mut().keyboard = keyboard;
                 }
             }
+            DocumentAction::Blur => self.cancel_item_repairs(None),
             DocumentAction::Outside {
                 hosts,
                 triggers,
                 anchors,
             } if admitted => {
+                self.cancel_item_repairs(None);
                 let mut inside = hosts.clone();
                 inside.extend(anchors.iter().cloned());
                 domain.outside(&inside, triggers);
@@ -2181,6 +2292,9 @@ impl RuntimeHandle {
             // A snapshot supplies read-only order, focus and Tab destinations.
             // Dioxus event handlers supply all keyboard policy and origin.
             runtime.observation = Some(report.clone());
+        }
+        if report.focus_changed || (!report.active_default && !report.active_id.is_empty()) {
+            self.cancel_item_repairs((!report.active_default).then_some(report.active_id.as_str()));
         }
         // Native open attributes may lag the Rust callback during an original
         // click. Reconcile with read(), never overwrite current state from DOM.
@@ -2223,6 +2337,7 @@ impl RuntimeHandle {
                 });
             }
         }
+        self.repair_moved_item_focus(report);
         KeyDecision::default()
     }
     fn reported_kind(&self, report: &Report, id: &str) -> Option<OverlayKind> {
@@ -3047,6 +3162,7 @@ impl NodeHandle {
                             visual,
                             focus_native,
                             exit_target: None,
+                            repair_target: None,
                             expected_open: Some(true),
                             destination_popovers: Vec::new(),
                             task: None,
@@ -3340,6 +3456,12 @@ struct Report {
     #[serde(default)]
     active_id: String,
     #[serde(default)]
+    active_default: bool,
+    #[serde(default)]
+    focus_changed: bool,
+    #[serde(default)]
+    moved_focus: Option<MovedFocus>,
+    #[serde(default)]
     hosts: Vec<String>,
     #[serde(default)]
     triggers: Vec<String>,
@@ -3353,6 +3475,11 @@ struct Report {
     active_hosts: Vec<String>,
     #[serde(default)]
     active_popover: String,
+}
+#[derive(Clone, Deserialize)]
+struct MovedFocus {
+    key: String,
+    focus_id: String,
 }
 #[derive(Clone, Deserialize)]
 struct DocumentEvent {
@@ -3383,6 +3510,7 @@ enum DocumentAction {
         anchors: Vec<String>,
     },
     Escape,
+    Blur,
     Input {
         input_kind: String,
         #[serde(default)]
@@ -5435,6 +5563,131 @@ mod tests {
         assert!(facts.shift && !facts.on_trigger && facts.inside);
         root.node.dioxus_key(facts);
         assert_eq!(*delivered.borrow(), ["b-parent", "custom", "a-control"]);
+    }
+
+    fn moved_item_fixture() -> (
+        VirtualDom,
+        RuntimeHandle,
+        NodeHandle,
+        HostFacts,
+        ItemMountMock,
+    ) {
+        let mut dom = VirtualDom::new(|| rsx! { div {} });
+        dom.rebuild_in_place();
+        let runtime = dom.in_scope(ScopeId::ROOT, RuntimeHandle::new);
+        let open = Rc::new(Cell::new(true));
+        let read = open.clone();
+        let apply = open.clone();
+        let node = dom.in_scope(ScopeId::ROOT, || {
+            runtime.register(
+                "moved-items".into(),
+                1,
+                OverlayKind::Dropdown,
+                CloseBehavior::Both,
+                Callbacks {
+                    read: Rc::new(move || Some(read.get())),
+                    before: Rc::new(|_| true),
+                    apply: Rc::new(move |change| apply.set(change.open)),
+                    key: None,
+                },
+            )
+        });
+        node.set_ownership(Vec::new(), true);
+        node.set_mounted();
+        node.set_navigation_mode("roving-tabindex");
+        let host = mixed_inventory_facts().hosts.remove(0);
+        runtime.register_item_cue(host.registration_key.clone(), host.kind);
+        runtime.register_owned_item_description(
+            &host.registration_key,
+            Some((node.id.clone(), 1)),
+            host.clone(),
+        );
+        let mock = ItemMountMock::default();
+        dom.in_scope(ScopeId::ROOT, || {
+            runtime.register_owned_item_control_mount(
+                &host.registration_key,
+                &host.target,
+                "moved-control",
+                Rc::new(MountedData::new(mock.clone())),
+                Some((node.id.clone(), 1)),
+            )
+        });
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":1,"kind":"observe","active_id":"moved-control",
+            "nodes":[{"id":node.id,"generation":1}]})));
+        runtime.0.borrow_mut().keyboard = true;
+        (dom, runtime, node, host, mock)
+    }
+    fn report_moved_item(runtime: &RuntimeHandle, node: &NodeHandle) {
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":2,"kind":"observe","active_default":true,
+            "moved_focus":{"key":"key-a","focus_id":"moved-control"},"nodes":[{"id":node.id,"generation":1}]})));
+    }
+    #[test]
+    fn registered_move_repair_uses_current_mounted_focus_and_cue_without_extra_scroll() {
+        let (mut dom, runtime, node, host, mock) = moved_item_fixture();
+        report_moved_item(&runtime, &node);
+        assert_eq!(runtime.pending_item_focus_count(), 1);
+        // The repair's own native focus report must not retire its cue job.
+        runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":3,"kind":"observe",
+            "active_id":"moved-control","focus_changed":true,"nodes":[{"id":node.id,"generation":1}]})));
+        assert_eq!(runtime.pending_item_focus_count(), 1);
+        settle_item_effects(&mut dom);
+        assert_eq!(*mock.events.borrow(), [("focus", ScopeId::ROOT)]);
+        assert!(runtime.item_visual_matches(&host));
+        assert_eq!(runtime.pending_item_focus_count(), 0);
+    }
+    #[test]
+    fn move_repair_rejects_ineligible_and_stale_destinations_and_preserves_normal_focus_jobs() {
+        for scenario in [
+            "hidden",
+            "disabled",
+            "outside",
+            "keydown",
+            "blur",
+            "replacement",
+            "closed",
+        ] {
+            let (mut dom, runtime, node, mut host, mock) = moved_item_fixture();
+            report_moved_item(&runtime, &node);
+            assert_eq!(runtime.pending_item_focus_count(), 1);
+            match scenario {
+                "hidden" | "disabled" => {
+                    host.hidden_attribute = scenario == "hidden";
+                    host.disabled_attribute = scenario == "disabled";
+                    runtime.register_owned_item_description(&host.registration_key, Some((node.id.clone(),1)), host.clone());
+                },
+                "outside" => runtime.input(event(serde_json::json!({"owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":3,"kind":"observe","active_id":"outside","focus_changed":true}))),
+                "keydown" => runtime.input(event(document_value(&runtime,3,&runtime.owner_id(),serde_json::json!({"sequence":1,"action":"input","input_kind":"keydown","key":"Tab"})))),
+                "blur" => runtime.input(event(document_value(&runtime,3,&runtime.owner_id(),serde_json::json!({"sequence":1,"action":"blur"})))),
+                "replacement" => runtime.register_owned_item_control_mount(&host.registration_key, &host.target, "moved-control", Rc::new(MountedData::new(ItemMountMock::default())), Some((node.id.clone(),1))),
+                "closed" => { node.request(false, Reason::Trigger, false); },
+                _ => unreachable!(),
+            }
+            settle_item_effects(&mut dom);
+            assert!(
+                mock.events.borrow().is_empty(),
+                "{scenario} cannot repair old focus"
+            );
+            assert_eq!(runtime.pending_item_focus_count(), 0);
+        }
+        let (mut dom, runtime, node, host, mock) = moved_item_fixture();
+        assert!(node.queue_item_host_focus(&host, Rc::new(|| {})));
+        report_moved_item(&runtime, &node);
+        runtime.input(event(document_value(
+            &runtime,
+            3,
+            &runtime.owner_id(),
+            serde_json::json!({"sequence":1,"action":"blur"}),
+        )));
+        assert_eq!(
+            runtime.pending_item_focus_count(),
+            1,
+            "repair cancellation must preserve an ordinary key-driven focus intent"
+        );
+        settle_item_effects(&mut dom);
+        assert_eq!(
+            *mock.events.borrow(),
+            [("focus", ScopeId::ROOT), ("scroll", ScopeId::ROOT)]
+        );
     }
 
     #[test]

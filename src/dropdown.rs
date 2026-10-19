@@ -2385,11 +2385,6 @@ fn DropdownSurface(
     let runtime_owner = runtime.owner_id();
     let root_role = (!external).then_some("button");
     let trigger_marker = (!external).then_some(id.clone());
-    let focus_retention = use_dropdown_focus_retention(
-        context.host_id(),
-        settings.mode == DropdownNavigationMode::RovingTabindex,
-    );
-    let blur_retention = focus_retention.clone();
     rsx! { div {
         id:if external {format!("ix-dropdown-surface-owner-{}",context.id)}else{trigger_id},
         class:"ix-dropdown {class}",role:root_role,tabindex:(!external).then_some(if blocked {-1}else{0}),
@@ -2399,7 +2394,6 @@ fn DropdownSurface(
         "aria-activedescendant":if settings.mode==DropdownNavigationMode::ActiveDescendant&&open{active_id.clone()}else{None},
         "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime_owner,"data-ix-overlay-trigger":trigger_marker,
         "data-ix-overlay-generation":generation.to_string(),"data-ix-overlay-open":open.to_string(),
-        "data-ix-dropdown-focus-owned":"true",
         "data-ix-overlay-revision":node.render_revision().to_string(),
         "data-ix-overlay-top-layer":enable_top_layer.to_string(),"data-ix-overlay-mode":settings.mode.as_str(),
         "data-ix-overlay-focus-proxy":(settings.mode==DropdownNavigationMode::ActiveDescendant).to_string(),
@@ -2425,8 +2419,6 @@ fn DropdownSurface(
             onfocus:move |_|panel_focus.set(true),onblur:move |_|panel_blur.set(false),
             onclick:move |event:MouseEvent|{event.stop_propagation();content_click.dioxus_inside_click(&event);},
             onkeydown:move |event:KeyboardEvent|{if panel_focused.get()||matches!(event.key(),Key::Escape|Key::Tab){direct_key(&content_key,event.clone(),false,None,true);event.stop_propagation();}},
-            onfocusin:move |_|{if let Some(transport)=focus_retention.borrow().as_ref(){let _=transport.send("focus");}},
-            onfocusout:move |_|{if let Some(transport)=blur_retention.borrow().as_ref(){let _=transport.send("blur");}},
             {children}
         }
         overlay_runtime::OverlayTransport {runtime}
@@ -2753,82 +2745,6 @@ pub fn DropdownItem(
         overlay_runtime::OverlayTransport {runtime:host_binding.runtime.clone()}
     }}
 }
-
-// Dioxus alpha.2's keyed insertBefore moves can blur an element whose
-// MountedData survives. MountedData can set focus, but neither it nor the
-// cross-target FocusData exposes activeElement/relatedTarget or a DOM-move
-// notification (dioxus-html events/{mounted,focus}.rs). Keep this narrow native
-// repair until the renderer preserves focus across moves: Dioxus owns focus
-// event dispatch and scope cleanup; observation is limited to this menu.
-fn use_dropdown_focus_retention(
-    menu_id: String,
-    enabled: bool,
-) -> Rc<RefCell<Option<dioxus::document::Eval>>> {
-    let transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let dropped = transport.clone();
-    use_drop(move || {
-        if let Some(task) = dropped.borrow_mut().take() {
-            let _ = task.send("finish");
-        }
-    });
-    let effect_transport = transport.clone();
-    use_effect(use_reactive(
-        (&menu_id, &enabled),
-        move |(menu_id, enabled)| {
-            if let Some(previous) = effect_transport.borrow_mut().take() {
-                let _ = previous.send("finish");
-            }
-            if !enabled {
-                return;
-            }
-            let task = dioxus::document::eval(DROPDOWN_FOCUS_RETENTION);
-            if task.send(menu_id).is_ok() {
-                *effect_transport.borrow_mut() = Some(task);
-            }
-        },
-    ));
-    transport
-}
-
-const DROPDOWN_FOCUS_RETENTION: &str = r#"
-const menu = document.getElementById(await dioxus.recv());
-if (!menu) return;
-const owned = target => {
-  const item = target instanceof Element ? target.closest('[data-ix-dropdown-item]') : null;
-  return item?.closest('[role="menu"]') === menu ? item : null;
-};
-let focused = owned(document.activeElement);
-const clear = () => { focused = null; };
-const fallback = () => document.activeElement === document.body || document.activeElement === menu;
-const contains = (nodes, target) => [...nodes].some(node => node === target || node.contains(target));
-const changed = records => {
-  const target = focused;
-  if (!menu.isConnected || !target?.isConnected || owned(target) !== target ||
-      target.disabled || target.hasAttribute('disabled') || !fallback()) return;
-  if (records.some(record => contains(record.removedNodes, target)) &&
-      records.some(record => contains(record.addedNodes, target))) target.focus({preventScroll: true});
-};
-const observer = new MutationObserver(changed);
-observer.observe(menu, {childList: true, subtree: true});
-// Window deactivation is not exposed by Dioxus's element FocusData.
-window.addEventListener('blur', clear);
-try {
-  for (;;) {
-    const event = await dioxus.recv();
-    if (event === 'finish') break;
-    if (event === 'focus') focused = owned(document.activeElement);
-    else if (event === 'blur' && focused) {
-      // A keyed move and its blur share the renderer's mutation batch. Repair
-      // that move before clearing an explicit blur, without scheduling focus.
-      changed(observer.takeRecords());
-      focused = fallback() ? null : owned(document.activeElement);
-    }
-  }
-} finally {
-  observer.disconnect();
-  window.removeEventListener('blur', clear);
-}
-"#;
 
 pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-select-item{display:block;position:relative}

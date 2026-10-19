@@ -30,11 +30,18 @@ pub fn DescendantPreview() -> Element {
     let mut applied = use_signal(|| 0_usize);
     let mut reverse = use_signal(|| false);
     let mut hide_middle = use_signal(|| false);
+    let mut focused_row = use_signal(|| None::<String>);
+    let mut removed_rows = use_signal(std::collections::BTreeSet::<String>::new);
+    let mut hidden_rows = use_signal(std::collections::BTreeSet::<String>::new);
     let ordered = if reverse() {
         ["third", "middle", "first"]
     } else {
         ["first", "middle", "third"]
     };
+    let ordered = ordered
+        .into_iter()
+        .filter(|name| !removed_rows.read().contains(*name))
+        .collect::<Vec<_>>();
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     rsx! {
@@ -81,15 +88,29 @@ pub fn DescendantPreview() -> Element {
                     }
                 }
             }
-            section {
+            section { id:"r0229-keyed-workflow", "data-reversed":reverse().to_string(),
+                onkeydown:move |event:KeyboardEvent| {
+                    match event.key() {
+                        Key::F6 => {event.prevent_default();event.stop_propagation();reverse.set(!reverse());}
+                        Key::F7 => {event.prevent_default();event.stop_propagation();if let Some(row)=focused_row.peek().clone(){removed_rows.write().insert(row);}}
+                        Key::F8 => {event.prevent_default();event.stop_propagation();if let Some(row)=focused_row.peek().clone(){hidden_rows.write().insert(row);}}
+                        Key::F9 => {event.prevent_default();event.stop_propagation();removed_rows.write().clear();hidden_rows.write().clear();}
+                        _ => {}
+                    }
+                },
                 h2 { "Current item order and props" }
+                p { "Keep an action focused while pressing F6 to reverse the order, F7 to remove it, or F8 to hide it. F9 restores removed and hidden actions. These shortcuts also work from the independent destination below." }
                 button { id:"r0225-reverse", r#type:"button", class:"ix-button ix-button-secondary", onclick:move |_|reverse.set(!reverse()), "Reverse action order" }
                 button { id:"r0225-hide", r#type:"button", class:"ix-button ix-button-secondary", onclick:move |_|hide_middle.set(!hide_middle()), "Toggle middle action" }
-                Dropdown { label:"Dynamic equipment actions", class:"r0225-dynamic",
+                button { id:"r0229-restore", r#type:"button", class:"ix-button ix-button-secondary", onclick:move |_|{removed_rows.write().clear();hidden_rows.write().clear();}, "Restore removed and hidden actions" }
+                Dropdown { label:"Dynamic equipment actions", class:"r0225-dynamic", navigation_mode:DropdownNavigationMode::RovingTabindex,
                     for name in ordered {
-                        DropdownItem { key:"{name}", id:format!("r0225-{name}"), label:format!("{name} action"), hidden:name=="middle"&&hide_middle(), tabindex:0 }
+                        DropdownItem { key:"{name}", id:format!("r0225-{name}"), label:format!("{name} action"), hidden:(name=="middle"&&hide_middle())||hidden_rows.read().contains(name), tabindex:0,
+                            onfocus:move |_|focused_row.set(Some(name.to_string()))
+                        }
                     }
                 }
+                button { id:"r0229-outside", r#type:"button", class:"ix-button ix-button-secondary", onfocus:move |_|focused_row.set(None), "Independent reorder destination" }
             }
             div { onmounted:move |_| {
                 #[cfg(all(feature="desktop",not(target_arch="wasm32")))]
@@ -155,6 +176,28 @@ key(document.activeElement,'Escape');await wait('reordered closed',()=>dynamic.g
 byId('r0225-hide').click();await wait('current hidden prop and layout',()=>byId('r0225-middle').hidden&&byId('r0225-middle').getClientRects().length===0);
 dynamic.focus();key(dynamic,'Home');await wait('hidden setup',()=>document.activeElement===byId('r0225-third'));
 key(document.activeElement,'ArrowDown');await wait('current hidden skipped',()=>document.activeElement===byId('r0225-first'));
-key(document.activeElement,'Escape');
-return {ok:true,ownedMetadata:true,keyedReorder:true,currentHiddenSkipped:true,registeredTabWrap:true,mixedPhysicalWrap:true,interiorTabDefault:true,checked:true,firstLast:true,disabledHiddenSkipped:true,registeredInput:true,editingKeys:true,nativeButton:true,mixedChildEntry:true,childNavigation:true,parentReturn:true,parentCue:true};
+key(document.activeElement,'Escape');await wait('hidden scenario closed',()=>dynamic.getAttribute('aria-expanded')==='false');
+byId('r0225-hide').click();await wait('restore middle action',()=>!byId('r0225-middle').hidden);
+dynamic.focus();key(dynamic,'Home');await wait('focused reorder setup',()=>document.activeElement===byId('r0225-third'));
+const movedKey=byId('r0225-third').getAttribute('data-ix-item-key');
+key(document.activeElement,'F6');
+await wait('retained physical focus after keyed move',()=>dynamic.querySelector('[data-ix-item-key]')===byId('r0225-first')&&document.activeElement===byId('r0225-third'));
+if(byId('r0225-third').getAttribute('data-ix-item-key')!==movedKey)throw new Error('focused move replaced mounted registration');
+await wait('moved physical focus and cue agree',()=>byId('r0225-third').getAttribute('data-active')==='true'&&document.activeElement===byId('r0225-third'));
+if(dynamic.hasAttribute('aria-activedescendant'))throw new Error('roving menu exposes an active-descendant proxy');
+key(document.activeElement,'ArrowDown');await wait('next arrow follows current reordered members',()=>document.activeElement===byId('r0225-first'));
+const independent=byId('r0229-outside');independent.focus();key(independent,'F6');
+await wait('explicit outside focus survives keyed move',()=>dynamic.querySelector('[data-ix-item-key]')===byId('r0225-third')&&document.activeElement===independent);
+if(dynamic.getAttribute('aria-activedescendant'))throw new Error('outside focus retained a menu ARIA cue');
+dynamic.focus();key(dynamic,'Home');await wait('focused removal setup',()=>document.activeElement===byId('r0225-third'));
+const removedKey=byId('r0225-third').getAttribute('data-ix-item-key');
+key(document.activeElement,'F7');await wait('focused keyed row removed',()=>!byId('r0225-third')&&dynamic.getAttribute('aria-activedescendant')!=='r0225-third');
+independent.focus();key(independent,'F9');
+await wait('reinserted row keeps outside focus',()=>byId('r0225-third')&&document.activeElement===independent);
+if(byId('r0225-third').getAttribute('data-ix-item-key')===removedKey||byId('r0225-third').getAttribute('data-active')==='true')throw new Error('reinserted row inherited old registration or cue');
+dynamic.focus();key(dynamic,'Home');await wait('focused hidden setup',()=>document.activeElement===byId('r0225-third'));
+key(document.activeElement,'F8');await wait('focused row hidden without restored cue',()=>byId('r0225-third').hidden&&document.activeElement!==byId('r0225-third')&&byId('r0225-third').getAttribute('data-active')!=='true'&&dynamic.getAttribute('aria-activedescendant')!=='r0225-third');
+independent.focus();key(independent,'F9');await wait('visible restoration keeps independent focus',()=>!byId('r0225-third').hidden&&document.activeElement===independent&&byId('r0225-third').getAttribute('data-active')!=='true');
+dynamic.focus();key(dynamic,'Escape');await wait('keyed workflows closed',()=>dynamic.getAttribute('aria-expanded')==='false');
+return {ok:true,focusedKeyedMove:true,outsideReorderFocusPreserved:true,removedRegistrationNotInherited:true,hiddenCueInvalidated:true,ownedMetadata:true,keyedReorder:true,currentHiddenSkipped:true,registeredTabWrap:true,mixedPhysicalWrap:true,interiorTabDefault:true,checked:true,firstLast:true,disabledHiddenSkipped:true,registeredInput:true,editingKeys:true,nativeButton:true,mixedChildEntry:true,childNavigation:true,parentReturn:true,parentCue:true};
 "#;
