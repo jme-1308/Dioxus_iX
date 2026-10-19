@@ -142,7 +142,7 @@ impl Surface {
         }
         let id = self.id();
         let marker = generation.to_string();
-        let result = crate::native_popover::present(
+        let result = crate::native_surface::present(
             &id,
             shown,
             Some(("data-surface-generation", &marker)),
@@ -159,125 +159,40 @@ impl Surface {
         }
     }
 
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    fn element(self) -> Result<web_sys::Element, NativeSurfaceError> {
-        self.node
-            .peek()
-            .as_ref()
-            .ok_or(NativeSurfaceError::NotMounted)?
-            .downcast::<web_sys::Element>()
-            .cloned()
-            .ok_or(NativeSurfaceError::UnsupportedRenderer)
-    }
-
-    // Modal and non-blocking Modal keep their native presentation semantics.
-    // Retained Popover presentation uses the shared binding above instead.
+    // MountedData has no native showModal/showPopover operation. Keep the
+    // primary binding shared across targets; Dioxus owns keyed teardown/focus.
     async fn native_open(self, modal: bool) -> Result<(), NativeSurfaceError> {
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        {
-            use wasm_bindgen::JsCast;
-            let element = self.element()?;
-            if !modal {
-                let generation = *self.generation.peek();
-                let published = element
-                    .get_attribute("data-surface-generation")
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let command = element
-                    .get_attribute("data-ix-surface-command")
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                if !element.is_connected() || published > generation || command > generation {
-                    return Err(NativeSurfaceError::Superseded);
-                }
-                let _ = element.set_attribute("data-ix-surface-command", &generation.to_string());
-            }
-            if modal {
-                let dialog = element
-                    .dyn_into::<web_sys::HtmlDialogElement>()
-                    .map_err(|_| NativeSurfaceError::UnsupportedRenderer)?;
-                dialog
-                    .show_modal()
-                    .map_err(|error| NativeSurfaceError::Rejected(format!("{error:?}")))?;
-                if !dialog.open() {
-                    return Err(NativeSurfaceError::Prevented);
-                }
-            } else {
-                let panel = element
-                    .dyn_into::<web_sys::HtmlElement>()
-                    .map_err(|_| NativeSurfaceError::UnsupportedRenderer)?;
-                panel
-                    .show_popover()
-                    .map_err(|error| NativeSurfaceError::Rejected(format!("{error:?}")))?;
-                if !panel.matches(":popover-open").unwrap_or(false) {
-                    return Err(NativeSurfaceError::Prevented);
-                }
-            }
-            Ok(())
+        if self.node.peek().is_none() {
+            return Err(NativeSurfaceError::NotMounted);
         }
-        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
-        {
-            if self.node.peek().is_none() {
-                return Err(NativeSurfaceError::NotMounted);
-            }
-            #[derive(serde::Deserialize)]
-            struct NativeReply {
-                opened: bool,
-                error: Option<String>,
-                #[serde(default)]
-                superseded: bool,
-            }
-            let generation = *self.generation.peek();
-            let expected_generation =
-                serde_json::to_string(&generation.to_string()).expect("string serialization");
-            let id = serde_json::to_string(&self.id()).expect("string serialization");
-            let script = format!(
-                r#"
-                const element=document.getElementById({id});
-                if(!element)return {{opened:false,error:'surface is not mounted'}};
-                if({modal}){{
-                    if(element.getAttribute('data-surface-generation')!=={expected_generation})return {{opened:false,error:null,superseded:true}};
-                }}else{{
-                    const expected=Number({expected_generation}),published=Number(element.getAttribute('data-surface-generation')||0),command=Number(element.getAttribute('data-ix-surface-command')||0);
-                    if(!element.isConnected||published>expected||command>expected)return {{opened:false,error:null,superseded:true}};
-                    element.setAttribute('data-ix-surface-command',String(expected));
-                }}
-                try{{
-                    if({modal})element.showModal();else element.showPopover();
-                    const opened={modal}?element.open:element.matches(':popover-open');
-                    return {{opened,error:null}};
-                }}catch(error){{return {{opened:false,error:String(error)}};}}
-            "#
-            );
-            let reply = crate::dom_query::eval(&script)
-                .join::<NativeReply>()
-                .await
-                .map_err(|error| NativeSurfaceError::Rejected(error.to_string()))?;
-            // Native dispatch and its response cross the desktop event loop.
-            // Neither a newer element with the same stable ID nor a late reply
-            // may revive a closed generation.
-            if *self.generation.peek() != generation || reply.superseded {
-                return Err(NativeSurfaceError::Superseded);
-            }
-            if let Some(error) = reply.error {
-                return Err(NativeSurfaceError::Rejected(error));
-            }
-            if !reply.opened {
-                return Err(NativeSurfaceError::Prevented);
-            }
-            Ok(())
-        }
-        #[cfg(not(any(
+        if !cfg!(any(
             all(feature = "web", target_arch = "wasm32"),
             all(feature = "desktop", not(target_arch = "wasm32"))
-        )))]
+        )) {
+            return Err(NativeSurfaceError::UnsupportedRenderer);
+        }
+        let generation = *self.generation.peek();
+        let id = self.id();
+        let marker = generation.to_string();
+        let result = crate::native_surface::open_modal(
+            &id,
+            Some(("data-surface-generation", &marker)),
+            modal,
+        )
+        .await;
+        // A native notification and close can arrive before the reply.
+        // Neither a replaced element nor a late result may revive it.
+        if !self
+            .generation
+            .try_peek()
+            .is_ok_and(|current| *current == generation)
         {
-            let _ = modal;
-            if self.node.peek().is_none() {
-                Err(NativeSurfaceError::NotMounted)
-            } else {
-                Err(NativeSurfaceError::UnsupportedRenderer)
-            }
+            return Err(NativeSurfaceError::Superseded);
+        }
+        match result {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(NativeSurfaceError::Superseded),
+            Err(error) => Err(error),
         }
     }
 
@@ -2334,8 +2249,15 @@ mod tests {
                 }
             }
             fn send(&self, message: serde_json::Value) -> Result<(), EvalError> {
-                assert_eq!(message, serde_json::json!({"kind": "finish"}));
-                self.acknowledgements.set(self.acknowledgements.get() + 1);
+                if message["kind"] == "finish" {
+                    self.acknowledgements.set(self.acknowledgements.get() + 1);
+                } else {
+                    assert_eq!(message["kind"], "data");
+                    assert_eq!(
+                        message["value"][2],
+                        serde_json::json!(["data-surface-generation", "0"])
+                    );
+                }
                 Ok(())
             }
         }
@@ -2402,9 +2324,7 @@ mod tests {
             // before the queued bridge result reaches this Rust task.
             modal.surface.open.set(true);
             modal.close("saved before native reply");
-            *reply.borrow_mut() = Some(serde_json::json!({
-                "opened": true, "error": null
-            }));
+            *reply.borrow_mut() = Some(serde_json::json!(true));
             assert!(matches!(
                 operation.as_mut().poll(&mut context),
                 Poll::Ready(Err(NativeSurfaceError::Superseded))

@@ -2971,11 +2971,11 @@ pub fn MenuCategory(
     let host_style = format!("{style};{consumer_style};anchor-name:--ix-menu-category-anchor-{id}");
     let flyout_style = format!("position-anchor:--ix-menu-category-anchor-{id}");
     let popup_id = format!("ix-category-popup-{id}");
-    let content_popover = crate::native_popover::use_native_popover(
+    let content_popover = crate::native_surface::use_native_popover(
         content_id.clone(),
         popup_open && !panel_open && !hidden,
     );
-    let empty_popover = crate::native_popover::use_native_popover(
+    let empty_popover = crate::native_surface::use_native_popover(
         popup_id.clone(),
         popup_open && panel_open && !hidden,
     );

@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('../src/native_popover.rs', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../src/native_surface.rs', import.meta.url), 'utf8');
 const script = source.split('const PRESENT: &str = r#"')[1].split('"#;')[0];
 const execute = new (async () => {}).constructor('dioxus', 'document', script);
 
@@ -14,26 +14,32 @@ class Panel {
   isConnected = true;
   inert = false;
   open = false;
+  popoverOpen = false;
   marker = 'current';
   calls = [];
   fail = false;
   prevent = false;
   getAttribute() { return this.marker; }
-  matches() { return this.open; }
+  matches() { return this.popoverOpen; }
   showPopover(options) {
     this.calls.push({ shown: true, inert: this.inert, options });
+    if (this.fail) throw new Error('native rejection');
+    if (!this.prevent) this.popoverOpen = true;
+  }
+  showModal() {
+    this.calls.push({ modal: true, inert: this.inert });
     if (this.fail) throw new Error('native rejection');
     if (!this.prevent) this.open = true;
   }
   hidePopover() {
     this.calls.push({ shown: false });
-    this.open = false;
+    this.popoverOpen = false;
   }
 }
 
 const input = { id: 'combobox' };
-const run = (panel, shown, guard = null, invoker = null) => execute(
-  { recv: async () => ['panel', shown, guard, invoker] },
+const run = (panel, shown, guard = null, invoker = null, mode = 'popover') => execute(
+  { recv: async () => ['panel', shown, guard, invoker, mode] },
   { getElementById: id => id === 'panel' ? panel : id === input.id ? input : null },
 );
 
@@ -66,15 +72,15 @@ const run = (panel, shown, guard = null, invoker = null) => execute(
   const panel = new Panel();
   assert.equal(await run(panel, true, ['data-current', 'old']), false);
   assert.equal(panel.calls.length, 0);
-  panel.open = true;
+  panel.popoverOpen = true;
   assert.equal(await run(panel, false, ['data-current', 'old']), false);
-  assert.equal(panel.open, true);
+  assert.equal(panel.popoverOpen, true);
   panel.isConnected = false;
   assert.equal(await run(panel, true, ['data-current', 'current']), false);
   assert.equal(panel.calls.length, 0);
   panel.isConnected = true;
   assert.equal(await run(panel, false, ['data-current', 'current']), true);
-  assert.equal(panel.open, false);
+  assert.equal(panel.popoverOpen, false);
   assert.deepEqual(panel.calls, [{ shown: false }]);
 }
 
@@ -82,9 +88,39 @@ const run = (panel, shown, guard = null, invoker = null) => execute(
 {
   const panel = new Panel();
   panel.prevent = true;
-  assert.match(await run(panel, true), /visibility did not match request/);
-  assert.equal(panel.open, false);
+  assert.equal(await run(panel, true), null);
+  assert.equal(panel.popoverOpen, false);
   assert.equal(panel.inert, false);
+}
+
+// Modal presentation permits native autofocus instead of promoting inertly.
+// Native dialog and Popover visibility are distinct; repeat opens are idempotent.
+for (const mode of ['modal', 'nonblocking-modal']) {
+  const panel = new Panel();
+  const guard = ['data-current', 'current'];
+  assert.equal(await run(panel, true, ['data-current', 'old'], null, mode), false);
+  assert.deepEqual(panel.calls, []);
+  panel.isConnected = false;
+  assert.equal(await run(panel, true, guard, null, mode), false);
+  panel.isConnected = true;
+  assert.equal(await run(panel, true, guard, null, mode), true);
+  assert.deepEqual(panel.calls, mode === 'modal'
+    ? [{ modal: true, inert: false }]
+    : [{ shown: true, inert: false, options: undefined }]);
+  assert.equal(panel.open, mode === 'modal');
+  assert.equal(panel.popoverOpen, mode === 'nonblocking-modal');
+  assert.equal(await run(panel, true, guard, null, mode), true);
+  assert.equal(panel.calls.length, 1);
+
+  const prevented = new Panel();
+  prevented.prevent = true;
+  assert.equal(await run(prevented, true, guard, null, mode), null);
+  assert.equal(prevented.inert, false);
+  const rejected = new Panel();
+  rejected.fail = true;
+  assert.match(await run(rejected, true, guard, null, mode), /native rejection/);
+  assert.equal(rejected.inert, false);
+  assert.match(await run(null, true, null, null, mode), /not mounted/);
 }
 
 assert.match(await run(null, true), /not mounted/);
@@ -92,4 +128,7 @@ assert.match(await run(new Panel(), true, null, 'removed-invoker'), /Invoker is 
 const unsupported = new Panel();
 unsupported.showPopover = undefined;
 assert.match(await run(unsupported, true), /unavailable/);
-console.log('PASS: native invoker, inert promotion, confirmed guarded visibility, idempotence and explicit errors');
+const unsupportedModal = new Panel();
+unsupportedModal.showModal = undefined;
+assert.match(await run(unsupportedModal, true, null, null, 'modal'), /unavailable/);
+console.log('PASS: native invoker, inert promotion, Modal autofocus eligibility, guarded visibility, idempotence and explicit errors');

@@ -17,6 +17,7 @@ pub fn ModalFocusPreview() -> Element {
     let note_mount = use_focus_mount("r0212-note");
     let custom_mount = use_focus_mount("r0212-custom-open");
     let input_mount = use_focus_mount("r0212-input-open");
+    let non_blocking_custom_mount = use_focus_mount("r0260-nonblocking-custom-open");
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     rsx! {
@@ -83,7 +84,11 @@ pub fn ModalFocusPreview() -> Element {
             section {
                 h2 { "Nonblocking dialog" }
                 p { "This panel leaves the rest of the page available. Closing still returns to its registered opener." }
-                div { id:"r0212-nonblocking-open", ModalTrigger { modal:non_blocking, variant:ButtonVariant::Secondary, "Open inspection note" } }
+                div { class:"modal-focus-controls",
+                    div { id:"r0212-nonblocking-open", ModalTrigger { modal:non_blocking, variant:ButtonVariant::Secondary, "Open inspection note" } }
+                    button { id:"r0260-nonblocking-custom-open", class:"ix-button ix-button-secondary", r#type:"button", onmounted:non_blocking_custom_mount,
+                        onclick:move |_|{spawn(async move {if let Err(reason)=non_blocking.open().await {error.set(reason.to_string());}});}, "Open note with custom control" }
+                }
                 Modal { modal:non_blocking, label:"Nonblocking inspection note", is_non_blocking:true, size:ModalSize::Xs,
                     ModalHeader { close_label:"Close inspection note", "Inspection note" }
                     ModalContent {
@@ -153,8 +158,21 @@ nonblocking.focus();nonblocking.click();await wait('nonblocking autofocus',()=>n
 byId('r0212-note').value='Inspection revised';byId('r0212-note').dispatchEvent(new Event('input',{bubbles:true}));
 await wait('nonblocking editing',()=>byId('r0212-nonblocking-state').textContent.includes('Inspection revised'));
 button('r0212-nonblocking-close').click();await wait('nonblocking return',()=>!notePanel().matches(':popover-open')&&active()===nonblocking);
+await wait('native nonblocking result',()=>byId('r0212-nonblocking-state').dataset.result.includes('Closed("note saved")'));
+const nonblockingCustom=byId('r0260-nonblocking-custom-open');
+const openCustomNote=async label=>{nonblockingCustom.scrollIntoView({block:'center'});nonblockingCustom.focus();nonblockingCustom.click();await wait(label,()=>notePanel().matches(':popover-open')&&byId('r0212-nonblocking-state').dataset.open==='true'&&active()===byId('r0212-note'));};
+const customNoteReturned=async label=>wait(label,()=>!notePanel().matches(':popover-open')&&byId('r0212-nonblocking-state').dataset.open==='false'&&active()===nonblockingCustom);
+await openCustomNote('imperative nonblocking autofocus');
+byId('r0212-note').value='Inspection from custom opener';byId('r0212-note').dispatchEvent(new Event('input',{bubbles:true}));
+await wait('imperative nonblocking editing',()=>byId('r0212-nonblocking-state').textContent.includes('Inspection from custom opener'));
+button('r0212-nonblocking-close').click();await customNoteReturned('imperative nonblocking confirmation return');
+await wait('imperative nonblocking result',()=>byId('r0212-nonblocking-state').dataset.result.includes('Closed("note saved")'));
+await openCustomNote('imperative nonblocking Escape setup');
+byId('r0212-note').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));
+await customNoteReturned('imperative nonblocking Escape return');
+await wait('imperative nonblocking Escape result',()=>byId('r0212-nonblocking-state').dataset.result.includes('Dismissed(Escape)'));
 const raw=document.querySelector('[data-r0212-unregistered]');if(raw.id)throw new Error('unregistered fixture must not have an ID');
 await open(raw,'unregistered opener still opens');button('r0212-confirm').click();await wait('unregistered close',closed);
 if(raw.id||raw.hasAttribute('data-ix-popover-focus-token'))throw new Error('unregistered opener received a focus identity');
-return {ok:true,autofocus:true,editing:true,typedOpeners:2,confirmationPayload:true,registeredImperativeButton:true,registeredImperativeInput:true,header:true,cancel:true,escapeRequest:true,guard:{denied:true,allowed:true},nonblocking:true,unregisteredIdMint:false,nativeTab:'physical browser check'};
+return {ok:true,autofocus:true,editing:true,typedOpeners:2,confirmationPayload:true,registeredImperativeButton:true,registeredImperativeInput:true,header:true,cancel:true,escapeRequest:true,guard:{denied:true,allowed:true},nonblocking:true,imperativeNonblocking:{autofocus:true,editing:true,result:true,escapeRequest:true,registeredReturn:true},unregisteredIdMint:false,nativeTab:'physical browser check'};
 "#;

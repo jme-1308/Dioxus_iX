@@ -807,7 +807,7 @@ fn render_tooltip(props: TooltipForProps, initial: Lifecycle) -> Element {
                 spawn(async move {
                     // The shared binding covers MountedData's missing native
                     // popover methods and guards this exact panel and intent.
-                    if let Err(error) = crate::native_popover::present(
+                    if let Err(error) = crate::native_surface::present(
                         &id,
                         visible,
                         Some(("data-ix-tooltip-native", &marker)),

@@ -2475,7 +2475,7 @@ fn DropdownSurface(
     let host_id = context.host_id();
     let trigger_id = context.trigger_id();
     let native_popup =
-        crate::native_popover::use_native_popover(host_id.clone(), open && enable_top_layer);
+        crate::native_surface::use_native_popover(host_id.clone(), open && enable_top_layer);
     let aria_name = aria_label.unwrap_or_else(|| label.clone());
     let mount_context = context.clone();
     let mounted_node = node.clone();

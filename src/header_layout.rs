@@ -995,11 +995,11 @@ pub(crate) fn HeaderLayout(
         });
     drop(state);
     let more_mount = crate::dropdown::use_focus_mount(more_id.clone());
-    let small_popover = crate::native_popover::use_native_popover(
+    let small_popover = crate::native_surface::use_native_popover(
         small_id.clone(),
         small && open && enable_top_layer,
     );
-    let large_popover = crate::native_popover::use_native_popover(
+    let large_popover = crate::native_surface::use_native_popover(
         large_id.clone(),
         !small && open && enable_top_layer,
     );

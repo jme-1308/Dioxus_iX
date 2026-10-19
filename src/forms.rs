@@ -2054,7 +2054,7 @@ fn SelectOptionsSurface(
                 let input = input_id.clone();
                 spawn(async move {
                     let presentation =
-                        crate::native_popover::present(&id, true, None, Some(&input)).await;
+                        crate::native_surface::present(&id, true, None, Some(&input)).await;
                     if alive.get() {
                         if let Err(error) = presentation {
                             native.set(false);
