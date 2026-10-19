@@ -6,6 +6,9 @@
 //! SVG serialization, canvas rasterization or file-download methods. These
 //! bindings implement those native-only operations; they are not fallback
 //! implementations of Dioxus measurements, events or component ownership.
+//! Desktop's pinned interpreter getClientRect supports HTMLElement only. Export
+//! therefore reads SVG dimensions alongside native serialization; interactive
+//! chart geometry uses the Dioxus-mounted HTML wrapper on both targets.
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use std::fmt;

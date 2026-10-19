@@ -201,6 +201,8 @@ impl Surface {
     }
 
     async fn contains_focus(self) -> bool {
+        // Pinned FocusData has no target/relatedTarget, and MountedData has no
+        // active-element containment API. Focus actions still use mounted handles.
         #[cfg(any(feature = "web", feature = "desktop"))]
         {
             let id = serde_json::to_string(&self.id()).expect("string serialization");

@@ -44,6 +44,7 @@ mod menu_hover_review;
 mod menu_navigation_review;
 mod menu_overlay_review;
 mod native_field_review;
+mod navigation;
 mod number_input_review;
 mod number_input_token_review;
 mod pattern_scenarios;
@@ -106,6 +107,33 @@ impl GalleryPage {
         Self::Theme,
         Self::Coverage,
     ];
+    fn slug(self) -> &'static str {
+        match self {
+            Self::Actions => "actions",
+            Self::Sources => "sources",
+            Self::Forms => "forms",
+            Self::Layout => "layout",
+            Self::DateTime => "datetime",
+            Self::DataGrid => "grid",
+            Self::Tree => "tree",
+            Self::Application => "application",
+            Self::Feedback => "feedback",
+            Self::Composition => "composition",
+            Self::Chat => "chat",
+            Self::Patterns => "patterns",
+            Self::Dialogs => "dialogs",
+            Self::Icons => "icons",
+            Self::Theme => "theme",
+            Self::Coverage => "coverage",
+        }
+    }
+    fn from_slug(slug: &str) -> Self {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|page| page.slug() == slug)
+            .unwrap_or(Self::Actions)
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Actions => "Actions & status",
@@ -123,7 +151,7 @@ impl GalleryPage {
             Self::Application => "Application shell",
             Self::Icons => "Icons",
             Self::Theme => "Theme & typography",
-            Self::Coverage => "Port coverage",
+            Self::Coverage => "Components",
         }
     }
     fn icon(self) -> &'static str {
@@ -161,9 +189,10 @@ fn Gallery() -> Element {
             web_sys::console::error_1(&info.to_string().into());
         }));
     });
-    let mut page = use_signal(|| GalleryPage::Actions);
-    let mut dark = use_signal(|| true);
-    let mut compact = use_signal(|| false);
+    let mut location = navigation::use_gallery_location();
+    let page = GalleryPage::from_slug(&location.read().page);
+    let dark = location.read().dark;
+    let compact = location.read().compact;
     rsx! {
         document::Title { "Dioxus iX | Component examples" }
         style { {GALLERY_STYLES} }
@@ -179,31 +208,29 @@ fn Gallery() -> Element {
         style { {tree::STYLES} }
         style { {grid_scenarios::STYLES} }
         IxTheme {
-            scheme: if dark() { ColorScheme::Dark } else { ColorScheme::Light },
-            density: if compact() { Density::Compact } else { Density::Normal },
+            scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
+            density: if compact { Density::Compact } else { Density::Normal },
             class: "review-app",
             a { class: "skip-link", href: "#review-content", "Skip to examples" }
             header { class: "review-header",
                 strong { class: "review-name", "Dioxus iX" }
                 span { class: "review-subtitle", "Component examples" }
                 div { class: "review-settings",
-                    label { input { r#type: "checkbox", checked: compact(), onchange: move |event| compact.set(event.checked()) } "Compact" }
-                    label { input { r#type: "checkbox", checked: dark(), onchange: move |event| dark.set(event.checked()) } "Dark theme" }
+                    label { input { r#type: "checkbox", checked: compact, onchange: move |event| location.write().compact = event.checked() } "Compact" }
+                    label { input { r#type: "checkbox", checked: dark, onchange: move |event| location.write().dark = event.checked() } "Dark theme" }
                 }
             }
             div { class: "review-workspace",
                 nav { class: "review-navigation", "aria-label": "Example categories",
                     label { class: "review-mobile-category", "Example category"
-                        select { value: page().label(), onchange: move |event| {
-                            if let Some(category) = GalleryPage::ALL.iter().find(|category| category.label() == event.value()) { page.set(*category); }
-                        },
-                            for category in GalleryPage::ALL.iter().copied() { option { value: category.label(), selected: page() == category, "{category.label()}" } }
+                        select { value: page.slug(), onchange: move |event| location.write().page = event.value(),
+                            for category in GalleryPage::ALL.iter().copied() { option { value: category.slug(), selected: page == category, "{category.label()}" } }
                         }
                     }
                     for category in GalleryPage::ALL.iter().copied() {
-                        button { r#type: "button", class: if page() == category { "review-nav-item selected" } else { "review-nav-item" },
-                            "aria-current": if page() == category { Some("page") } else { None },
-                            onclick: move |_| page.set(category),
+                        button { r#type: "button", class: if page == category { "review-nav-item selected" } else { "review-nav-item" },
+                            "aria-current": if page == category { Some("page") } else { None },
+                            onclick: move |_| location.write().page = category.slug().into(),
                             Icon { name: category.icon(), size: 20 }
                             "{category.label()}"
                         }
@@ -214,11 +241,15 @@ fn Gallery() -> Element {
                     }
                 }
                 main { id: "review-content", class: "review-content", tabindex: "-1",
-                    h1 { "{page().label()}" }
+                    h1 { "{page.label()}" }
+                    div { class: "review-view-links",
+                        a { href: location.read().to_hash(), onclick: move |event| follow_gallery_link(event, location, location.peek().clone()), "Link to this view" }
+                        a { href: "https://github.com/jme-1308/Dioxus_iX/blob/main/IMPLEMENTATION.md#work-queue", target: "_blank", rel: "noopener noreferrer", "Implementation status" }
+                    }
                     p { class: "review-intro", "Interactive Rust ports of iX examples, with recognizable styling and useful core interactions. This independent port uses public theme fallbacks." }
-                    match page() {
+                    match page {
                         GalleryPage::Actions => rsx! { progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
-                        GalleryPage::Sources => rsx! { source_examples::SourceExamples {} },
+                        GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
                         GalleryPage::Forms => rsx! { upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
@@ -233,7 +264,7 @@ fn Gallery() -> Element {
                         GalleryPage::Dialogs => rsx! { dialogs::DialogExamples {} },
                         GalleryPage::Icons => rsx! { IconExamples {} },
                         GalleryPage::Theme => rsx! { theme_review::ThemeReview {} },
-                        GalleryPage::Coverage => rsx! { CoverageExamples {} },
+                        GalleryPage::Coverage => rsx! { CoverageExamples { location } },
                     }
                 }
             }
@@ -242,7 +273,7 @@ fn Gallery() -> Element {
 }
 
 #[component]
-fn CoverageExamples() -> Element {
+fn CoverageExamples(location: Signal<navigation::GalleryLocation>) -> Element {
     let mut query = use_signal(String::new);
     let declared_tags = PORT_CATALOG
         .iter()
@@ -252,26 +283,80 @@ fn CoverageExamples() -> Element {
         .iter()
         .filter(|entry| entry.upstream_tag().is_some() && entry.rust_api.is_some())
         .count();
-    let needle = query().to_lowercase();
+    let needle = query();
+    let entries: Vec<_> = PORT_CATALOG
+        .iter()
+        .filter(|entry| catalog_matches(entry, &needle))
+        .collect();
     rsx! {
         section { class: "demo-section",
-            h2 { "Upstream coverage" }
-            p { "This inventory covers {declared_tags} current core component tags; deprecated components and legacy examples are excluded. {mapped_tags} tags have an initial Rust component, model, composition or internal integration. These are different mapping types; none is claimed to have complete verified parity. Source examples contains {UPSTREAM_EXAMPLE_NAMES.len()} Rust adaptations for reviewing current upstream HTML scenarios." }
+            h2 { "Component directory" }
+            p { "Find Rust APIs and their iX names. {mapped_tags} of {declared_tags} current core tags have a Rust component, model, composition or internal integration. Check Implementation status for delivered capabilities and limitations." }
             label { class: "review-icon-search", "Filter components"
-                input { r#type: "search", value: query(), oninput: move |event| query.set(event.value()) }
+                input { r#type: "search", value: query(), placeholder: "ix-progress-indicator or ProgressIndicator", oninput: move |event| query.set(event.value()) }
             }
+            p { role: "status", "{entries.len()} matching components" }
+            if entries.is_empty() {
+                p { "No components match this search. Try an iX tag or Rust API name." }
+                Button { variant: ButtonVariant::Secondary, onclick: move |_| query.set(String::new()), "Clear component search" }
+            }
+            div { class: "review-table-scroll",
             table { class: "review-coverage",
-                thead { tr { th { "Upstream tag" } th { "Rust mapping" } th { "Review status" } } }
+                thead { tr { th { "Upstream tag" } th { "Rust mapping" } th { "Mapping" } th { "Explore" } } }
                 tbody {
-                    for entry in PORT_CATALOG.iter().filter(|entry| entry.upstream.contains(&needle) || entry.upstream_tag().is_some_and(|tag| tag.contains(&needle))) {
+                    for entry in entries {
                         tr { td { code { {entry.upstream_tag().unwrap_or_else(|| entry.upstream.to_string())} } }
                             td { {entry.rust_api.unwrap_or("—")} }
-                            td { "{entry.mapping_kind().label()}" if entry.rust_api.is_some() { "; parity review pending" } }
+                            td { "{entry.mapping_kind().label()}" }
+                            td { if entry.rust_api.is_some() { a {
+                                href: component_examples_link(entry, &location.read()),
+                                onclick: move |event| {
+                                    let next = navigation::GalleryLocation::from_hash(&component_examples_link(entry, &location.peek()));
+                                    follow_gallery_link(event, location, next);
+                                },
+                                "Examples"
+                            } } }
                         }
                     }
                 }
             }
+            }
         }
+    }
+}
+
+fn catalog_matches(entry: &PortEntry, query: &str) -> bool {
+    fn normalized(value: &str) -> String {
+        value
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+    let needle = normalized(query);
+    normalized(&entry.upstream_tag().unwrap_or_default()).contains(&needle)
+        || entry
+            .rust_api
+            .is_some_and(|api| normalized(api).contains(&needle))
+}
+fn component_examples_link(entry: &PortEntry, current: &navigation::GalleryLocation) -> String {
+    let mut next = current.with_page("sources");
+    next.query = entry.upstream.into();
+    next.to_hash()
+}
+
+fn follow_gallery_link(
+    event: MouseEvent,
+    mut location: Signal<navigation::GalleryLocation>,
+    next: navigation::GalleryLocation,
+) {
+    // Keep real hrefs for copy/new-tab use; ordinary activation follows the
+    // Dioxus-owned state path, which then writes through the History provider.
+    if event.modifiers().is_empty()
+        && event.trigger_button() == Some(dioxus::html::input_data::MouseButton::Primary)
+    {
+        event.prevent_default();
+        location.set(next);
     }
 }
 
@@ -423,6 +508,7 @@ html,body { margin:0;min-height:100%; }
 .review-nav-footer { margin-top:auto;padding:32px 16px 12px;font-size:12px;line-height:1.8;color:var(--ix-color-text-secondary); }
 .review-content { width:100%;max-width:1440px;padding:32px 40px 80px;min-width:0; }
 .review-content h1 { margin:0 0 8px;font-size:28px;line-height:1.3;font-weight:600; }
+.review-view-links{display:flex;flex-wrap:wrap;gap:16px;margin:12px 0 16px;font-size:14px}.review-view-links a,.review-content a{text-underline-offset:3px}.review-navigation button:focus-visible,.review-content input:focus-visible,.review-content select:focus-visible,.review-content a:focus-visible,.review-header input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}.review-table-scroll{max-width:100%;overflow:auto}.review-coverage{min-width:560px}.review-icon-search input{font:inherit}
 .review-intro { max-width:85ch;margin:0 0 32px;color:var(--ix-color-text-secondary);font-size:14px; }
 .demo-section { padding:0 0 32px;margin:0 0 32px;border-bottom:1px solid var(--ix-color-border);min-width:0; }
 .demo-section h2 { margin:0 0 16px;font-size:22px;font-weight:600; }
@@ -446,3 +532,29 @@ html,body { margin:0;min-height:100%; }
 @media(max-width:900px) { .review-content { padding:24px; }.review-workspace {grid-template-columns:192px minmax(0,1fr);}.review-header {gap:12px}.review-subtitle {display:none} }
 @media(max-width:640px) { .review-header {padding:12px 16px;flex-wrap:wrap}.review-settings {gap:12px}.review-workspace {display:block}.review-navigation {border-right:0;border-bottom:1px solid var(--ix-color-border);padding:12px 16px}.review-nav-item {display:none}.review-mobile-category {display:flex;flex-direction:column;gap:8px;font-size:12px;width:100%}.review-mobile-category select{width:100%;min-width:0;height:40px;padding:8px 12px;font:inherit;font-size:14px;color:var(--ix-color-text);background:var(--ix-color-surface);border:1px solid var(--ix-color-border);border-radius:var(--ix-radius)}.review-nav-footer {display:none}.review-content {padding:24px 16px}.demo-label {width:100%}.review-content h1 {font-size:24px} }
 "#;
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[test]
+    fn component_directory_accepts_ix_tags_and_rust_api_names() {
+        let entry = PORT_CATALOG
+            .iter()
+            .find(|entry| entry.upstream == "progress-indicator")
+            .unwrap();
+        assert!(catalog_matches(entry, "ProgressIndicator"));
+        assert!(catalog_matches(entry, "ix-progress-indicator"));
+        assert!(!catalog_matches(entry, "unknown-component"));
+        let current = navigation::GalleryLocation::default();
+        let linked =
+            navigation::GalleryLocation::from_hash(&component_examples_link(entry, &current));
+        assert_eq!(linked.page, "sources");
+        assert_eq!(linked.query, "progress-indicator");
+        for page in GalleryPage::ALL {
+            assert_eq!(
+                navigation::GalleryLocation::from_hash(&format!("#page={}", page.slug())).page,
+                page.slug()
+            );
+        }
+    }
+}

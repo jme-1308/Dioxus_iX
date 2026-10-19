@@ -1692,6 +1692,8 @@ impl SelectController {
         if binding.input.borrow().is_none() {
             return Err(SelectMethodError::NotMounted);
         }
+        // Pinned MountedData/FormData cannot expose the associated native form
+        // or its metadata. This query supplies only that missing native fact.
         let task = crate::dom_query::eval(
             r#"
             const id = await dioxus.recv();
@@ -2783,7 +2785,9 @@ pub fn Select(
                             let id = validation_id.clone();
                             spawn(async move {
                                 // `noValidate` suppresses iX's internal touched validation too.
-                                // Read the form flag here; required/value/feedback stay Rust-owned.
+                                // Pinned FormData::valid() is aggregate validity; it
+                                // exposes neither the associated form nor noValidate.
+                                // Required/value/feedback stay Rust-owned.
                                 let task = crate::dom_query::eval(r#"
                                     const id = await dioxus.recv();
                                     const input = document.getElementById(id);

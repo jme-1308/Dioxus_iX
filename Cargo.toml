@@ -41,6 +41,11 @@ path = "examples/gallery/main.rs"
 required-features = ["launch"]
 
 [[example]]
+name = "gallery_location_probe"
+path = "tools/gallery_location_probe.rs"
+required-features = ["desktop"]
+
+[[example]]
 name = "dioxus_first_probe"
 path = "tools/dioxus_first_probe.rs"
 required-features = ["launch"]

@@ -1,10 +1,11 @@
 //! Searchable, individually mounted upstream preview scenarios.
 use super::{
     action_scenarios, application_scenarios, chat_scenarios, datetime_scenarios, dialog_scenarios,
-    feedback_scenarios, form_scenarios, layout_scenarios, pattern_scenarios,
+    feedback_scenarios, form_scenarios, layout_scenarios, navigation::GalleryLocation,
+    pattern_scenarios,
 };
 use dioxus::prelude::*;
-use dioxus_ix::{Button, ButtonVariant, UPSTREAM_EXAMPLE_NAMES, UPSTREAM_REVISION};
+use dioxus_ix::{Button, ButtonVariant, PORT_CATALOG, UPSTREAM_EXAMPLE_NAMES, UPSTREAM_REVISION};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Family {
@@ -57,27 +58,105 @@ fn family(name: &str) -> Option<Family> {
         None
     }
 }
-fn names_matching(query: &str, implemented_only: bool) -> Vec<&'static str> {
-    let needle = query.to_lowercase();
-    UPSTREAM_EXAMPLE_NAMES
-        .iter()
-        .copied()
-        .filter(|name| name.contains(&needle) && (!implemented_only || family(name).is_some()))
+fn normalized_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
         .collect()
 }
 
-#[component]
-pub fn SourceExamples() -> Element {
-    let mut query = use_signal(String::new);
-    let mut selected = use_signal(|| "buttons".to_string());
-    let mut implemented_only = use_signal(|| true);
-    let matches = names_matching(&query(), implemented_only());
-    let requested = selected();
-    let active = matches
+fn source_has_component(name: &str, upstream: &str) -> bool {
+    name == upstream
+        || name
+            .strip_prefix(upstream)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+        || (name == "buttons" && upstream == "button")
+}
+
+fn rust_mapping(name: &str) -> Option<&'static str> {
+    PORT_CATALOG
+        .iter()
+        .filter(|entry| source_has_component(name, entry.upstream) && entry.rust_api.is_some())
+        .max_by_key(|entry| entry.upstream.len())
+        .and_then(|entry| entry.rust_api)
+}
+
+fn names_matching(query: &str, implemented_only: bool) -> Vec<&'static str> {
+    let normalized = normalized_name(query);
+    let needle = normalized.strip_prefix("ix").unwrap_or(&normalized);
+    UPSTREAM_EXAMPLE_NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            let matches = normalized_name(name).contains(needle)
+                || PORT_CATALOG.iter().any(|entry| {
+                    source_has_component(name, entry.upstream)
+                        && entry
+                            .rust_api
+                            .is_some_and(|api| normalized_name(api).contains(needle))
+                });
+            matches && (!implemented_only || family(name).is_some())
+        })
+        .collect()
+}
+
+fn active_name(matches: &[&'static str], requested: &str) -> Option<&'static str> {
+    matches
         .iter()
         .copied()
         .find(|name| *name == requested)
-        .or_else(|| matches.first().copied());
+        .or_else(|| matches.first().copied())
+}
+
+fn rust_source_path(name: &str) -> Option<&'static str> {
+    Some(match family(name)? {
+        Family::AdvancedCharts => "advanced_chart_scenarios.rs",
+        Family::Grid => "grid_scenarios.rs",
+        Family::Charts => "chart_scenarios.rs",
+        Family::Icons => "icon_scenarios.rs",
+        Family::Actions => "action_scenarios.rs",
+        Family::Forms => "form_scenarios.rs",
+        Family::Layout => "layout_scenarios.rs",
+        Family::Feedback => "feedback_scenarios.rs",
+        Family::Application => "application_scenarios.rs",
+        Family::Chat => "chat_scenarios.rs",
+        Family::Dialogs => "dialog_scenarios.rs",
+        Family::Patterns => "pattern_scenarios.rs",
+        Family::DateTime => "datetime_scenarios.rs",
+    })
+}
+
+fn usage_hint(name: &str) -> &'static str {
+    match family(name) {
+        Some(Family::Forms | Family::DateTime) => {
+            "Try entering or selecting a value in the example below."
+        }
+        Some(Family::Actions | Family::Dialogs | Family::Application | Family::Chat) => {
+            "Try the available controls below. The example keeps its own local state."
+        }
+        Some(Family::Grid | Family::Charts | Family::AdvancedCharts) => {
+            "Explore the sample data and the controls provided by this example."
+        }
+        _ => "Inspect the example below. Switching examples starts a fresh instance.",
+    }
+}
+
+#[component]
+pub fn SourceExamples(mut location: Signal<GalleryLocation>) -> Element {
+    let mut implemented_only = use_signal(|| true);
+    use_effect(move || {
+        let current = location.read().clone();
+        let matches = names_matching(&current.query, implemented_only());
+        if let Some(active) = active_name(&matches, &current.example)
+            && current.example != active
+        {
+            location.write().example = active.into();
+        }
+    });
+    let current = location.read().clone();
+    let matches = names_matching(&current.query, implemented_only());
+    let active = active_name(&matches, &current.example);
     let index = active.and_then(|name| matches.iter().position(|candidate| *candidate == name));
     let previous = index
         .and_then(|index| index.checked_sub(1))
@@ -103,13 +182,13 @@ pub fn SourceExamples() -> Element {
         style { {crate::grid_scenarios::STYLES} }
         style { {crate::chart_scenarios::STYLES} }
         style { {crate::advanced_chart_scenarios::STYLES} }
-        p { class: "source-introduction", "{implemented} individual Rust examples are available from the {UPSTREAM_EXAMPLE_NAMES.len()} current upstream preview sources. Legacy examples are excluded. Each starts with fresh local state. These initial reproductions still require full visual and behavioral parity review." }
+        p { class: "source-introduction", "Explore {implemented} working Rust examples from {UPSTREAM_EXAMPLE_NAMES.len()} upstream preview sources. These examples aim for recognizable iX appearance and reliable core interactions. Each starts with fresh local state." }
         div { class: "source-controls",
             label { "Find an example"
-                input { r#type: "search", value: query(), placeholder: "Search upstream names", oninput: move |event| query.set(event.value()) }
+                input { r#type: "search", maxlength: super::navigation::MAX_QUERY_CHARS as i64, value: current.query.clone(), placeholder: "Try Button, ix-spinner, or ProgressIndicator", oninput: move |event| location.write().query = event.value() }
             }
             label { "Source example"
-                select { value: active.unwrap_or_default(), disabled: active.is_none(), onchange: move |event| selected.set(event.value()),
+                select { value: active.unwrap_or_default(), disabled: active.is_none(), onchange: move |event| location.write().example = event.value(),
                     if active.is_none() { option { value: "", "No matching examples" } }
                     for name in matches.iter().copied() { option { value: name, selected: active == Some(name), "{name}" } }
                 }
@@ -119,14 +198,35 @@ pub fn SourceExamples() -> Element {
             }
         }
         div { class: "source-navigation",
-            Button { variant: ButtonVariant::Secondary, disabled: previous.is_none(), onclick: move |_| { if let Some(previous) = previous { selected.set(previous.into()); } }, "Previous example" }
-            Button { variant: ButtonVariant::Secondary, disabled: next.is_none(), onclick: move |_| { if let Some(next) = next { selected.set(next.into()); } }, "Next example" }
+            Button { variant: ButtonVariant::Secondary, disabled: previous.is_none(), onclick: move |_| { if let Some(previous) = previous { location.write().example = previous.into(); } }, "Previous example" }
+            Button { variant: ButtonVariant::Secondary, disabled: next.is_none(), onclick: move |_| { if let Some(next) = next { location.write().example = next.into(); } }, "Next example" }
             span { role: "status", "{matches.len()} matching sources" }
         }
-        if let Some(name) = active {
+        // A keyed dynamic collection gives each source a fresh component owner.
+        // A key inside a static `if` slot alone does not remount on this Dioxus pin.
+        for name in active.into_iter() {
             section { key: "{name}", class: "source-preview",
+            { let mut permalink = current.clone(); permalink.page = "sources".into(); permalink.example = name.into();
+                rsx! { a {
+                    class: "source-permalink", href: permalink.to_hash(),
+                    onclick: move |event| super::follow_gallery_link(event, location, permalink.clone()),
+                    "Link to this example"
+                } }
+            }
             div { class: "source-heading", h2 { code { "{name}.html" } }
                 a { href: format!("https://github.com/siemens/ix/blob/{UPSTREAM_REVISION}/examples/html-examples/src/preview-examples/{name}.html"), target: "_blank", rel: "noopener noreferrer", "View reference source" }
+            }
+            div { class: "source-usage",
+                if let Some(api) = rust_mapping(name) {
+                    p { "Rust API: " code { "{api}" } }
+                } else {
+                    p { "Browse the Rust example to see the components used in this scenario." }
+                }
+                p { "{usage_hint(name)}" }
+                if let Some(path) = rust_source_path(name) {
+                    a { href: format!("https://github.com/jme-1308/Dioxus_iX/blob/main/examples/gallery/{path}"), target: "_blank", rel: "noopener noreferrer", "View Rust example" }
+                }
+                a { href: "https://github.com/jme-1308/Dioxus_iX/blob/main/IMPLEMENTATION.md#parity-ledger", target: "_blank", rel: "noopener noreferrer", "Implementation notes and limitations" }
             }
             div { class: if family(name) == Some(Family::Feedback) { "source-scenario-frame source-feedback-frame" } else { "source-scenario-frame" }, "data-source-example": name,
                 match family(name) {
@@ -147,7 +247,14 @@ pub fn SourceExamples() -> Element {
                 }
             }
             }
-        } else { p { role: "status", "No examples match this search. Clear or shorten the name to see more sources." } }
+        }
+        if active.is_none() {
+            div { class: "source-empty",
+                h2 { "No examples found" }
+                p { role: "status", "Try a component name such as Button or Spinner, or clear the search to browse all examples." }
+                Button { variant: ButtonVariant::Secondary, onclick: move |_| { location.write().query.clear(); implemented_only.set(true); }, "Clear search" }
+            }
+        }
     }
 }
 
@@ -160,6 +267,12 @@ const STYLES: &str = r#"
 .source-controls>.source-checkbox{grid-column:1/-1;flex-direction:row;align-items:center}
 .source-navigation{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:32px}
 .source-navigation>span{font-size:14px;color:var(--ix-color-text-secondary)}
+.source-permalink{display:inline-block;margin-bottom:16px;font-size:14px;text-underline-offset:3px}
+.source-usage{max-width:75ch;margin-bottom:24px;font-size:14px;color:var(--ix-color-text-secondary)}
+.source-usage p{margin:0 0 8px}.source-usage code{color:var(--ix-color-text)}
+.source-usage a{display:inline-block;margin-right:20px;font-size:14px;text-underline-offset:3px}
+.source-empty{max-width:65ch;padding:24px 0}.source-empty h2{font-size:24px;margin:0 0 12px}.source-empty p{margin:0 0 20px;color:var(--ix-color-text-secondary)}
+.source-controls :is(input,select):focus-visible,.source-permalink:focus-visible,.source-usage a:focus-visible{outline:2px solid var(--ix-color-primary);outline-offset:3px}
 .source-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:16px;margin:0 0 16px}
 .source-heading h2{font-size:18px;margin:0;overflow-wrap:anywhere}
 .source-heading a{font-size:14px;text-underline-offset:3px}
@@ -243,6 +356,34 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn search_accepts_rust_api_and_upstream_tag_spellings() {
+        let expected = names_matching("progress-indicator", true);
+        assert!(!expected.is_empty());
+        assert_eq!(names_matching("ProgressIndicator", true), expected);
+        assert_eq!(names_matching("ix-progress-indicator", true), expected);
+        assert_eq!(names_matching("progress_indicator", true), expected);
+        assert_eq!(names_matching(" progress indicator ", true), expected);
+        assert!(names_matching("Button", true).contains(&"buttons"));
+        assert_eq!(
+            rust_mapping("progress-indicator"),
+            Some("ProgressIndicator")
+        );
+        assert_eq!(rust_mapping("buttons"), Some("Button"));
+    }
+
+    #[test]
+    fn filtered_selection_falls_back_and_empty_search_recovers() {
+        let matches = names_matching("spinner", true);
+        let first = matches.first().copied();
+        assert_eq!(active_name(&matches, "buttons"), first);
+        assert_eq!(active_name(&[], "buttons"), None);
+        assert_eq!(
+            active_name(&names_matching("", true), "buttons"),
+            Some("buttons")
+        );
+    }
+
     #[test]
     fn search_preserves_upstream_order_and_all_inventory_sources_have_fixtures() {
         assert_eq!(
