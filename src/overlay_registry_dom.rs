@@ -146,10 +146,9 @@ function collectFacts(){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
     const id=root.getAttribute('data-ix-overlay-root')||'';if(!id)continue;
     const generation=Number(root.getAttribute('data-ix-overlay-generation')||root.getAttribute('data-generation')||'0')||0;
-    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id),anchor=findAnchor(root);
+    const host=findHost(id),itemsHost=findItemsHost(root,id),trigger=findTrigger(id);
     nodes.push({
       id,generation,trigger_id:nativeId(trigger),
-      anchor_in_dropdown_item:!!(anchor||trigger)?.closest('[data-ix-dropdown-item]'),
       items_host:nativeId(itemsHost),
       popover_host:root.getAttribute('data-ix-overlay-native-surface')==='popover'?nativeId(host):''
     });

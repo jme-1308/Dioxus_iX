@@ -46,6 +46,8 @@ mod tab_exit_review;
 mod text_control_method_review;
 #[path = "dioxus_first_probe/tooltip_mounted_review.rs"]
 mod tooltip_mounted_review;
+#[path = "dioxus_first_probe/trigger_placement_review.rs"]
+mod trigger_placement_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
 mod trigger_review;
 #[path = "dioxus_first_probe/upload_interaction_review.rs"]
@@ -143,6 +145,9 @@ fn Preview() -> Element {
     }
     if scope == "?headerchoices" {
         return rsx! { header_choice_review::HeaderChoiceReview {} };
+    }
+    if scope == "?triggerplacement" {
+        return rsx! { trigger_placement_review::TriggerPlacementReview {} };
     }
     if scope == "?menuorder" {
         return rsx! { menu_order_review::MenuOrderReview {} };

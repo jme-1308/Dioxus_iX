@@ -25,6 +25,17 @@ static NEXT_SOURCE_ITEM: AtomicUsize = AtomicUsize::new(1);
 #[derive(Clone)]
 pub(crate) struct ItemInventoryOwner(pub(crate) NodeHandle);
 
+/// Placement follows explicit Dioxus item composition, including controls
+/// rendered by consumer components inside an item. This scope renders no DOM.
+#[derive(Clone, Copy)]
+struct DropdownItemContentScope;
+
+#[component]
+fn DropdownItemContent(children: Element, parent_key: String) -> Element {
+    use_context_provider(|| DropdownItemContentScope);
+    rsx! { ItemOrderContent { parent_key, {children} } }
+}
+
 #[derive(Clone)]
 struct ItemOrderParent {
     key: String,
@@ -611,11 +622,11 @@ struct MenuState {
     forward: Option<DropdownHandle>,
     placement: DropdownPlacement,
     fallback_placement: Option<DropdownPlacement>,
-    anchor_in_dropdown_item: bool,
     trigger_id: Option<String>,
 }
 #[derive(Clone)]
 struct TriggerMount {
+    in_dropdown_item: bool,
     node: Rc<MountedData>,
     blocked: Rc<Cell<bool>>,
     visibility: Option<TriggerVisibility>,
@@ -756,13 +767,25 @@ impl DropdownContext {
             && state.focus_epoch == epoch
             && self.open.try_peek().is_ok_and(|open| *open)
     }
-    fn mount_trigger(&self, node: Rc<MountedData>, blocked: Rc<Cell<bool>>) {
+    fn anchor_in_dropdown_item(&self) -> bool {
+        self.trigger
+            .borrow()
+            .as_ref()
+            .is_some_and(|trigger| trigger.in_dropdown_item)
+    }
+    fn mount_trigger(
+        &self,
+        node: Rc<MountedData>,
+        blocked: Rc<Cell<bool>>,
+        in_dropdown_item: bool,
+    ) {
         let (changed, replaced) = {
             let current = self.trigger.borrow();
             (
-                current
-                    .as_ref()
-                    .is_none_or(|current| !Rc::ptr_eq(&current.node, &node)),
+                current.as_ref().is_none_or(|current| {
+                    !Rc::ptr_eq(&current.node, &node)
+                        || current.in_dropdown_item != in_dropdown_item
+                }),
                 current
                     .as_ref()
                     .is_some_and(|current| !Rc::ptr_eq(&current.node, &node)),
@@ -771,6 +794,9 @@ impl DropdownContext {
         if replaced {
             self.invalidate_focus();
         }
+        if changed {
+            self.state.borrow_mut().fallback_placement = None;
+        }
         let visibility = self
             .trigger
             .borrow()
@@ -778,6 +804,7 @@ impl DropdownContext {
             .filter(|current| Rc::ptr_eq(&current.node, &node))
             .and_then(|current| current.visibility);
         *self.trigger.borrow_mut() = Some(TriggerMount {
+            in_dropdown_item,
             node,
             blocked,
             visibility,
@@ -796,6 +823,7 @@ impl DropdownContext {
             .is_some_and(|current| Rc::ptr_eq(&current.node, node));
         if owns {
             self.trigger.borrow_mut().take();
+            self.state.borrow_mut().fallback_placement = None;
             self.sync_ownership();
             self.invalidate_focus();
             self.notify();
@@ -811,17 +839,23 @@ impl DropdownContext {
             node.set_ownership(ancestors, ready);
         }
     }
-    fn update_trigger_ancestors(&self, element: &Rc<MountedData>, ancestors: Vec<NodeHandle>) {
+    fn update_trigger_metadata(
+        &self,
+        element: &Rc<MountedData>,
+        ancestors: Vec<NodeHandle>,
+        in_dropdown_item: bool,
+    ) {
         let changed = {
             let mut trigger = self.trigger.borrow_mut();
             if let Some(trigger) = trigger
                 .as_mut()
                 .filter(|trigger| Rc::ptr_eq(&trigger.node, element))
             {
-                if trigger.ancestors == ancestors {
+                if trigger.ancestors == ancestors && trigger.in_dropdown_item == in_dropdown_item {
                     false
                 } else {
                     trigger.ancestors = ancestors;
+                    trigger.in_dropdown_item = in_dropdown_item;
                     true
                 }
             } else {
@@ -1420,7 +1454,7 @@ impl DropdownContext {
                 state.settings.mode,
                 state.settings.disable_focus_handling,
                 state.settings.disable_focus_trap,
-                state.anchor_in_dropdown_item,
+                self.anchor_in_dropdown_item(),
             )
         };
         let opening_key = matches!(
@@ -1766,7 +1800,6 @@ pub fn use_dropdown() -> DropdownHandle {
                 forward: None,
                 placement: DropdownPlacement::default(),
                 fallback_placement: None,
-                anchor_in_dropdown_item: false,
                 trigger_id: None,
             }))
         }),
@@ -1924,7 +1957,8 @@ impl DropdownTriggerBinding {
 /// its controller. Use one live bound trigger per controller. An ID alone does
 /// not bind a control: activation, anchor styling,
 /// visibility, keyboard and programmatic focus require the Dioxus binding. No
-/// JavaScript fallback is used.
+/// JavaScript fallback is used. Controls composed inside [`DropdownItem`]
+/// content inherit submenu placement through their Dioxus scope.
 pub fn use_dropdown_trigger_binding(dropdown: DropdownHandle) -> DropdownTriggerBinding {
     use_trigger_binding(dropdown.try_context(), false, None, false)
 }
@@ -1946,6 +1980,11 @@ fn use_trigger_binding(
     focus_id: Option<String>,
     in_dropdown_item: bool,
 ) -> DropdownTriggerBinding {
+    // Read the current scope on every render: a surviving binding must not
+    // retain placement metadata from a previous Dioxus parent. Missing explicit
+    // item composition is a standalone anchor, never a native-query fallback.
+    let in_dropdown_item =
+        in_dropdown_item || try_consume_context::<DropdownItemContentScope>().is_some();
     let identity = context.as_ref().map(|context| context.id);
     let ancestors = overlay_runtime::use_overlay_ancestors()
         .into_iter()
@@ -1976,7 +2015,7 @@ fn use_trigger_binding(
         context.invalidate_focus();
     }
     if let Some((current, node)) = owned.borrow().as_ref() {
-        current.update_trigger_ancestors(node, ancestors.clone());
+        current.update_trigger_metadata(node, ancestors.clone(), in_dropdown_item);
     }
     let cleanup = owned.clone();
     use_drop(move || {
@@ -2006,8 +2045,8 @@ fn use_trigger_binding(
                     .unwrap_or_else(|| context.trigger_id())
             });
             focus_binding.mount(&target, node.clone());
-            context.mount_trigger(node.clone(), blocked.clone());
-            context.update_trigger_ancestors(&node, ancestors.clone());
+            context.mount_trigger(node.clone(), blocked.clone(), in_dropdown_item);
+            context.update_trigger_metadata(&node, ancestors.clone(), in_dropdown_item);
             *owned.borrow_mut() = Some((context.clone(), node));
         }
     });
@@ -2037,8 +2076,6 @@ fn use_trigger_binding(
                         left: intersection.min_x(),
                         right: intersection.max_x(),
                     },
-                    anchor_in_dropdown_item: in_dropdown_item
-                        || context.state.borrow().anchor_in_dropdown_item,
                 },
             );
         context.observe_trigger_visibility(
@@ -2276,21 +2313,6 @@ fn DropdownSurface(
                     reset.notify();
                 }),
             );
-            let shape_context = context.clone();
-            node.set_anchor_shape_handler(Rc::new(move |in_dropdown_item| {
-                let changed = {
-                    let mut state = shape_context.state.borrow_mut();
-                    if !state.alive || !state.surface || state.generation != generation {
-                        return;
-                    }
-                    let changed = state.anchor_in_dropdown_item != in_dropdown_item;
-                    state.anchor_in_dropdown_item = in_dropdown_item;
-                    changed
-                };
-                if changed {
-                    shape_context.notify();
-                }
-            }));
             let intersection_context = context.clone();
             node.set_anchor_intersection_handler(Rc::new(move |geometry| {
                 let changed = {
@@ -2299,10 +2321,8 @@ fn DropdownSurface(
                         return;
                     }
                     let fallback = state.placement.clipped(geometry);
-                    let changed = state.fallback_placement != fallback
-                        || state.anchor_in_dropdown_item != geometry.anchor_in_dropdown_item;
+                    let changed = state.fallback_placement != fallback;
                     state.fallback_placement = fallback;
-                    state.anchor_in_dropdown_item = geometry.anchor_in_dropdown_item;
                     changed
                 };
                 if changed {
@@ -2403,7 +2423,7 @@ fn DropdownSurface(
     ));
     let state = context.state.borrow();
     let generation = state.generation;
-    let effective_placement = if state.anchor_in_dropdown_item {
+    let effective_placement = if context.anchor_in_dropdown_item() {
         DropdownPlacement::RightStart
     } else if !settings.suppress_trigger_visibility_check {
         state.fallback_placement.unwrap_or(placement)
@@ -2808,7 +2828,7 @@ pub fn DropdownItem(
         ..attributes,
         if let Some(name)=icon{Icon {name,size:20}}
         if !compact{span {"{label}"}}
-        ItemOrderContent {parent_key:host_binding.key.clone(),{children}}
+        DropdownItemContent {parent_key:host_binding.key.clone(),{children}}
         if checked{Icon {name:"single-check",size:16}}
         if dropdown.is_some(){Icon {name:"chevron-right-small",size:16}}
         overlay_runtime::OverlayTransport {runtime:host_binding.runtime.clone()}

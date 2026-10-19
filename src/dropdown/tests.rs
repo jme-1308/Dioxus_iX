@@ -758,7 +758,12 @@ fn closed_ordinary_trigger_keys_run_others_but_open_navigation_and_submenu_deleg
     h.dom
         .in_runtime(|| h.context().request(false, Reason::Trigger, false));
     h.settle();
-    h.context().state.borrow_mut().anchor_in_dropdown_item = true;
+    h.context()
+        .trigger
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .in_dropdown_item = true;
     h.key("Menu", Key::Enter);
     assert!(
         other.get(),
@@ -2812,7 +2817,11 @@ fn custom_trigger_scope_cleanup_preserves_newer_registration_and_releases_remove
     drop(previous_node);
     assert!(previous_second.calls.borrow().is_empty());
     let current = context.trigger.borrow().clone().unwrap();
-    context.mount_trigger(current.node.clone(), current.blocked.clone());
+    context.mount_trigger(
+        current.node.clone(),
+        current.blocked.clone(),
+        current.in_dropdown_item,
+    );
     drop(current);
     h.settle();
     assert!(Rc::ptr_eq(
@@ -3806,4 +3815,188 @@ fn typed_linked_row_arrow_right_uses_its_origin_after_a_different_roving_selecti
     assert!(*child.open.peek(), "the focused linked row owns ArrowRight");
     assert!(*parent.open.peek());
     assert!(parent.state.borrow().forward == h.config.borrow().linked.get());
+}
+
+#[derive(Clone, Default)]
+struct TriggerPlacementFixture(Rc<TriggerPlacementState>);
+#[derive(Default)]
+struct TriggerPlacementState {
+    custom: Cell<Option<DropdownHandle>>,
+    linked: Cell<Option<DropdownHandle>>,
+    show_nested: Cell<Option<Signal<bool>>>,
+    show_standalone: Cell<Option<Signal<bool>>>,
+    suppress_visibility: Cell<Option<Signal<bool>>>,
+    internal: Rc<RefCell<Option<DropdownContext>>>,
+}
+#[component]
+fn CapturePlacementContext(context: Rc<RefCell<Option<DropdownContext>>>) -> Element {
+    *context.borrow_mut() = Some(use_context::<DropdownContext>());
+    rsx! { DropdownItem { label:"Internal child" } }
+}
+fn trigger_placement_fixture(fixture: TriggerPlacementFixture) -> Element {
+    let custom = use_dropdown();
+    let linked = use_dropdown();
+    let show_nested = use_signal(|| true);
+    let show_standalone = use_signal(|| true);
+    let suppress_visibility = use_signal(|| true);
+    fixture.0.custom.set(Some(custom));
+    fixture.0.linked.set(Some(linked));
+    fixture.0.show_nested.set(Some(show_nested));
+    fixture.0.show_standalone.set(Some(show_standalone));
+    fixture.0.suppress_visibility.set(Some(suppress_visibility));
+    rsx! {
+        DropdownItem { label:"Placement container",
+            if show_nested() {
+                div { CustomTriggerControl { dropdown:custom, name:"nested placement" } }
+            }
+            Dropdown { label:"Internal nested", placement:DropdownPlacement::TopEnd,
+                suppress_trigger_visibility_check:true,
+                CapturePlacementContext { context:fixture.0.internal.clone() }
+            }
+        }
+        DropdownItem { label:"Linked placement", dropdown:linked }
+        if show_standalone() {
+            CustomTriggerControl { dropdown:custom, name:"standalone placement" }
+        }
+        Dropdown { controller:custom, label:"Custom placement", placement:DropdownPlacement::BottomEnd,
+            suppress_trigger_visibility_check:suppress_visibility(),
+            DropdownItem { label:"Custom placement child" }
+        }
+        Dropdown { controller:linked, label:"Linked surface", placement:DropdownPlacement::LeftEnd,
+            suppress_trigger_visibility_check:true,
+            DropdownItem { label:"Linked placement child" }
+        }
+    }
+}
+fn placement_harness(fixture: TriggerPlacementFixture) -> Harness {
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let mut dom = VirtualDom::new_with_props(trigger_placement_fixture, fixture);
+    let edits = dom.rebuild_to_vec();
+    let mut h = Harness {
+        dom,
+        config: Rc::new(RefCell::new(Fixture::default())),
+        attrs: BTreeMap::new(),
+        listeners: BTreeMap::new(),
+    };
+    h.collect(edits);
+    for target in h.listeners.get("mounted").cloned().unwrap_or_default() {
+        dispatch(&h.dom, "mounted", target, ());
+    }
+    h.settle();
+    h
+}
+fn placement_tag(h: &Harness, context: &DropdownContext) -> String {
+    item_tag(&h.html(), &context.host_id())
+}
+
+#[test]
+fn item_composition_owns_linked_custom_and_internal_trigger_placement_without_visibility() {
+    let _guard = crate::test_event_converter_guard();
+    let fixture = TriggerPlacementFixture::default();
+    let mut h = placement_harness(fixture.clone());
+    let custom = fixture.0.custom.get().unwrap().context();
+    let linked = fixture.0.linked.get().unwrap().context();
+    let internal = fixture.0.internal.borrow().clone().unwrap();
+    assert!(linked.anchor_in_dropdown_item());
+    assert!(internal.anchor_in_dropdown_item());
+    assert!(!custom.anchor_in_dropdown_item());
+    assert!(placement_tag(&h, &linked).contains("data-placement=\"right-start\""));
+    assert!(placement_tag(&h, &internal).contains("data-placement=\"right-start\""));
+    assert!(placement_tag(&h, &custom).contains("data-placement=\"bottom-end\""));
+    assert!(
+        linked
+            .trigger
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .visibility
+            .is_none()
+    );
+    assert!(
+        internal
+            .trigger
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .visibility
+            .is_none()
+    );
+
+    mount_trigger_mock(&mut h, "nested placement");
+    assert!(custom.anchor_in_dropdown_item());
+    assert!(placement_tag(&h, &custom).contains("data-placement=\"right-start\""));
+    h.dom
+        .in_runtime(|| custom.request(true, Reason::Trigger, false));
+    h.settle();
+    h.visible(
+        "nested placement",
+        TestVisible::new(true, [0.0, 20.0, 0.0, 100.0]),
+    );
+    assert!(placement_tag(&h, &custom).contains("data-placement=\"right-start\""));
+    h.dom
+        .in_runtime(|| fixture.0.suppress_visibility.get().unwrap().set(false));
+    h.settle();
+    assert!(placement_tag(&h, &custom).contains("data-placement=\"right-start\""));
+    assert_eq!(
+        custom.state.borrow().fallback_placement,
+        Some(DropdownPlacement::TopEnd)
+    );
+}
+
+#[test]
+fn trigger_replacement_current_metadata_and_scope_cleanup_reset_item_placement() {
+    let _guard = crate::test_event_converter_guard();
+    let fixture = TriggerPlacementFixture::default();
+    let mut h = placement_harness(fixture.clone());
+    let context = fixture.0.custom.get().unwrap().context();
+    mount_trigger_mock(&mut h, "nested placement");
+    let old = context.trigger.borrow().as_ref().unwrap().node.clone();
+    assert!(context.anchor_in_dropdown_item());
+    mount_trigger_mock(&mut h, "standalone placement");
+    let current = context.trigger.borrow().as_ref().unwrap().node.clone();
+    assert!(!context.anchor_in_dropdown_item());
+    h.dom.in_runtime(|| {
+        context.update_trigger_metadata(&old, Vec::new(), true);
+        context.unmount_trigger(&old);
+    });
+    h.visible(
+        "nested placement",
+        TestVisible::new(true, [0.0, 20.0, 0.0, 100.0]),
+    );
+    assert!(
+        !context.anchor_in_dropdown_item(),
+        "old item registration cannot overwrite a replacement"
+    );
+    assert!(placement_tag(&h, &context).contains("data-placement=\"bottom-end\""));
+
+    // The surviving current binding publishes its current composition metadata,
+    // rather than accumulating a true value across updates or visibility facts.
+    h.dom
+        .in_runtime(|| context.update_trigger_metadata(&current, Vec::new(), true));
+    h.settle();
+    assert!(placement_tag(&h, &context).contains("data-placement=\"right-start\""));
+    h.dom
+        .in_runtime(|| context.update_trigger_metadata(&current, Vec::new(), false));
+    h.settle();
+    assert!(placement_tag(&h, &context).contains("data-placement=\"bottom-end\""));
+
+    h.dom
+        .in_runtime(|| fixture.0.show_nested.get().unwrap().set(false));
+    h.settle();
+    assert!(
+        context.trigger.borrow().is_some(),
+        "old-scope drop preserves replacement"
+    );
+    mount_trigger_mock(&mut h, "standalone placement");
+    let current = context.trigger.borrow().as_ref().unwrap().node.clone();
+    h.dom
+        .in_runtime(|| context.update_trigger_metadata(&current, Vec::new(), true));
+    h.settle();
+    assert!(context.anchor_in_dropdown_item());
+    h.dom
+        .in_runtime(|| fixture.0.show_standalone.get().unwrap().set(false));
+    h.settle();
+    assert!(context.trigger.borrow().is_none());
+    assert!(!context.anchor_in_dropdown_item());
+    assert!(placement_tag(&h, &context).contains("data-placement=\"bottom-end\""));
 }

@@ -105,8 +105,6 @@ impl AnchorRect {
 pub(crate) struct AnchorIntersection {
     pub(crate) bounding: AnchorRect,
     pub(crate) intersection: AnchorRect,
-    #[serde(default)]
-    pub(crate) anchor_in_dropdown_item: bool,
 }
 impl AnchorIntersection {
     fn valid(self) -> bool {
@@ -134,7 +132,6 @@ struct Entry {
     behavior: CloseBehavior,
     trigger_visibility_check: bool,
     anchor_intersection: Option<AnchorIntersectionCallback>,
-    anchor_shape: Option<Rc<dyn Fn(bool)>>,
     surface_observer: Option<SurfaceObserver>,
     submenu: Option<SubmenuAccess>,
     navigation_mode: Option<String>,
@@ -1444,7 +1441,6 @@ impl RuntimeHandle {
                     behavior,
                     trigger_visibility_check: kind.is_dropdown(),
                     anchor_intersection: None,
-                    anchor_shape: None,
                     surface_observer: None,
                     submenu: None,
                     navigation_mode,
@@ -2387,27 +2383,6 @@ impl RuntimeHandle {
                 self.0.borrow_mut().registry.set_presence(id, open);
             }
         }
-        // Submenu anchor ancestry is a current DOM fact, independent of the
-        // optional visibility observer. Suppressing visibility must not disable
-        // the source's submenu placement override.
-        for node in &report.nodes {
-            let Some(in_dropdown_item) = node.anchor_in_dropdown_item else {
-                continue;
-            };
-            let Some(entry) = self
-                .entry(&node.id)
-                .filter(|entry| node.generation == entry.generation && entry.kind.is_dropdown())
-            else {
-                continue;
-            };
-            if let Some(callback) = &entry.anchor_shape {
-                self.with_owner(&node.id, node.generation, || {
-                    if self.read_current(&node.id, &entry) == Some(true) {
-                        callback(in_dropdown_item);
-                    }
-                });
-            }
-        }
         self.repair_moved_item_focus(report);
         self.notify_surfaces(
             SurfaceObservation::Focus(FocusObservation::from(report)),
@@ -3306,16 +3281,6 @@ impl NodeHandle {
             })
             .unwrap_or(false)
     }
-    pub(crate) fn set_anchor_shape_handler(&self, handler: Rc<dyn Fn(bool)>) {
-        let Some(runtime) = self.runtime() else {
-            return;
-        };
-        if let Some(entry) = runtime.0.borrow_mut().nodes.get_mut(&self.id)
-            && entry.generation == self.generation
-        {
-            entry.anchor_shape = Some(handler);
-        }
-    }
     /// Reuse canonical focus facts and shared mouse/touch input in this surface's
     /// Dioxus scope. Installation never synchronously delivers during render.
     pub(crate) fn set_surface_observer(&self, observer: SurfaceObserver) {
@@ -3648,8 +3613,6 @@ struct NodeFacts {
     generation: u64,
     #[serde(default)]
     trigger_id: String,
-    #[serde(default)]
-    anchor_in_dropdown_item: Option<bool>,
     #[serde(default)]
     items_host: String,
     #[serde(default)]

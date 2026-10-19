@@ -1824,7 +1824,6 @@ fn anchor_geometry() -> AnchorIntersection {
             left: 0.0,
             right: 100.0,
         },
-        anchor_in_dropdown_item: true,
     }
 }
 
@@ -1858,7 +1857,6 @@ fn positive_anchor_geometry_and_full_reset_enter_registered_owner_from_another_v
     assert_eq!(received.borrow()[0].intersection.top, 10.0);
     let mut full = anchor_geometry();
     full.intersection = full.bounding;
-    full.anchor_in_dropdown_item = false;
     dom_caller.in_scope(caller.scope(), || {
         fixture.node().observe_anchor_visibility(true, Some(full))
     });
@@ -1963,114 +1961,59 @@ fn anchor_visibility_rejects_invalid_closed_replaced_and_dropped_owners_and_hono
     assert!(fixture.0.borrow().calls.is_empty());
 }
 
-fn anchor_shape_report(fixture: &Fixture, sequence: u64) -> serde_json::Value {
-    serde_json::json!({"owner":fixture.runtime().owner_id(),"document":"current anchor shape document",
-        "sequence":sequence,"kind":"observe","nodes":[{"id":fixture.0.borrow().id,"generation":1,
-        "trigger_id":"geometry-trigger","anchor_id":"geometry-anchor"}]})
-}
-
 #[test]
-fn current_anchor_shape_is_independent_of_visibility_suppression_and_rejects_stale_owners() {
-    let fixture = Fixture::new("anchor-shape-owner", 723);
+fn obsolete_native_anchor_shape_fields_do_not_deliver_geometry_or_change_visibility() {
+    let fixture = Fixture::new("legacy-anchor-shape", 723);
     let dom = build(&fixture);
-    let shapes = Rc::new(RefCell::new(Vec::new()));
-    let capture = shapes.clone();
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let capture = received.clone();
     let owner = fixture.0.borrow().owner.clone().unwrap();
     let scope = fixture.scope();
     fixture
         .node()
-        .set_anchor_shape_handler(Rc::new(move |in_item| {
+        .set_anchor_intersection_handler(Rc::new(move |geometry| {
             assert_owner(&owner, scope, 723);
-            capture.borrow_mut().push(in_item);
+            capture.borrow_mut().push(geometry);
         }));
-    let geometries = Rc::new(Cell::new(0));
-    let capture = geometries.clone();
-    fixture
-        .node()
-        .set_anchor_intersection_handler(Rc::new(move |_| capture.set(capture.get() + 1)));
-    dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(true, Reason::Trigger, false))
+    dom.in_scope(scope, || {
+        assert!(fixture.node().request(true, Reason::Trigger, false));
     });
     fixture.0.borrow_mut().calls.clear();
-    fixture.node().set_trigger_visibility_check(false);
-    let mut suppressed = anchor_shape_report(&fixture, 1);
-    suppressed["nodes"][0]["anchor_in_dropdown_item"] = true.into();
-    assert!(deliver_trap(&dom, &fixture, suppressed).default_action_enabled());
-    assert_eq!(
-        *shapes.borrow(),
-        [true],
-        "initially suppressed visibility still reports current submenu anchor shape"
-    );
-    assert_eq!(
-        geometries.get(),
-        0,
-        "shape admission does not fabricate positive geometry"
-    );
 
-    let mut current = anchor_shape_report(&fixture, 2);
-    current["kind"] = "observe".into();
-    current["nodes"][0]["anchor_id"] = "reparented-current-anchor".into();
-    current["nodes"][0]["anchor_in_dropdown_item"] = false.into();
-    assert!(deliver_trap(&dom, &fixture, current.clone()).default_action_enabled());
-    assert_eq!(
-        *shapes.borrow(),
-        [true, false],
-        "ordinary current-anchor observation resets a stale item relationship without an IO threshold crossing"
-    );
-    assert_eq!(geometries.get(), 0);
-    assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
-    for (sequence, invalid) in [(3, "missing"), (4, "stale"), (5, "foreign-owner")] {
-        let mut report = current.clone();
-        report["sequence"] = sequence.into();
-        match invalid {
-            "missing" => {
-                report["nodes"][0]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("anchor_in_dropdown_item");
-            }
-            "stale" => report["nodes"][0]["generation"] = 2.into(),
-            "foreign-owner" => report["owner"] = "wrong-owner".into(),
-            _ => unreachable!(),
-        }
+    // A stale renderer may still send the old relationship field. It is no
+    // longer an input to runtime policy or the Dioxus visibility callback.
+    for (index, (enabled, shape)) in [(false, true), (true, false), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        fixture.node().set_trigger_visibility_check(enabled);
+        let report = serde_json::json!({
+            "owner":fixture.runtime().owner_id(), "document":"legacy anchor document",
+            "sequence":index + 1, "kind":"observe",
+            "nodes":[{"id":"legacy-anchor-shape", "generation":1,
+                "trigger_id":"geometry-trigger", "anchor_in_dropdown_item":shape}]
+        });
         assert!(deliver_trap(&dom, &fixture, report).default_action_enabled());
-        assert_eq!(
-            *shapes.borrow(),
-            [true, false],
-            "{invalid} shape cannot replace current state"
-        );
+        assert!(received.borrow().is_empty());
+        assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
     }
-    dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(false, Reason::Trigger, false))
+
+    // Geometry remains delivered only by the explicit mounted trigger. Even
+    // legacy shape data in an old geometry payload has no semantic meaning.
+    let geometry: AnchorIntersection = serde_json::from_value(serde_json::json!({
+        "bounding":{"top":0.0,"bottom":40.0,"left":0.0,"right":100.0},
+        "intersection":{"top":10.0,"bottom":40.0,"left":0.0,"right":100.0},
+        "anchor_in_dropdown_item":true
+    }))
+    .unwrap();
+    assert_eq!(geometry, anchor_geometry());
+    dom.in_scope(scope, || {
+        fixture
+            .node()
+            .observe_anchor_visibility(true, Some(geometry));
     });
-    fixture.0.borrow_mut().calls.clear();
-    current["sequence"] = 6.into();
-    assert!(deliver_trap(&dom, &fixture, current.clone()).default_action_enabled());
-    assert_eq!(
-        *shapes.borrow(),
-        [true, false],
-        "closed registration cannot receive shape commands"
-    );
-    dom.in_scope(fixture.scope(), || {
-        assert!(fixture.node().request(true, Reason::Trigger, false))
-    });
-    fixture.0.borrow_mut().calls.clear();
-    current["sequence"] = 7.into();
-    let late = trap_form(current);
-    let runtime = fixture.runtime();
-    let owner = fixture.0.borrow().owner.clone().unwrap();
-    drop(dom);
-    assert!(owner.upgrade().is_none());
-    let caller = Fixture::new("anchor-shape-after-drop", 724);
-    let dom_caller = build(&caller);
-    dom_caller.in_scope(caller.scope(), || runtime.input(late.clone()));
-    assert!(late.default_action_enabled());
-    assert_eq!(
-        *shapes.borrow(),
-        [true, false],
-        "late shape cannot reach the dropped actual owner"
-    );
-    assert!(fixture.0.borrow().calls.is_empty());
+    assert_eq!(received.borrow().as_slice(), &[anchor_geometry()]);
+    assert!(fixture.open() && fixture.0.borrow().calls.is_empty());
 }
 
 fn anchor_focus_nodes(nodes: &[(&Fixture, &[&str])]) -> Vec<serde_json::Value> {
