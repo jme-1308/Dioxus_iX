@@ -80,6 +80,18 @@ pub(crate) const STYLES: &str = r#"
   padding: var(--ix-select--padding);
   outline: none;
 }
+.ix-theme .ix-select.ix-select-visual .ix-select-direction-probe {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 1px;
+  padding: 0;
+  padding-left: 4px;
+  padding-inline-start: 0;
+  writing-mode: horizontal-tb;
+}
 .ix-theme .ix-select.ix-select-visual .ix-select-control:hover:not([data-readonly=true]):not([data-disabled=true]),
 .ix-theme .ix-select.ix-select-visual .ix-select-control[data-open=true]:not([data-readonly=true]):not([data-disabled=true]) {
   background-color: var(--ix-select--background--hover);

@@ -1874,32 +1874,24 @@ fn place_select_popup(
     }
 }
 
-// Pinned Dioxus =0.8.0-alpha.2 has mounted element geometry but no computed CSS
-// `direction` query. Viewport geometry comes from the shared root subscription;
-// this native read is limited to the inherited direction of the known anchor.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const SELECT_DIRECTION_QUERY: &str = r#"
-const anchorId = await dioxus.recv();
-const anchor = document.getElementById(anchorId);
-return !!anchor && getComputedStyle(anchor).direction === 'rtl';
-"#;
-
-// Pinned Dioxus HTML events and MountedData provide no inherited-style-change
-// subscription. Observe only known anchor ancestry for direction changes; the
-// shared DocumentViewport stream owns global scroll/resize notifications.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const SELECT_DIRECTION_INVALIDATION: &str = r#"
-const id = await dioxus.recv(), anchor = document.getElementById(id);
-const changed = () => dioxus.send(null);
-const inherited = new MutationObserver(changed);
-for(let node=anchor;node;node=node.parentElement)
-  inherited.observe(node,{attributes:true,attributeFilter:['dir','style','class']});
-try { await dioxus.recv(); } finally { inherited.disconnect(); }
-"#;
+// The hidden control probe keeps an 8px border box. Its logical padding maps to
+// the left in LTR (8px content) and right in RTL (4px content), so Dioxus's normal
+// content-box resize event reports inherited direction, including CSS changes.
+// Hidden controls can report zero; retain the last direction for unresolved facts.
+fn select_rtl_from_probe_width(width: f64) -> Option<bool> {
+    const EPSILON: f64 = 0.25;
+    if (width - 8.0).abs() <= EPSILON {
+        Some(false)
+    } else if (width - 4.0).abs() <= EPSILON {
+        Some(true)
+    } else {
+        None
+    }
+}
 
 #[component]
 fn SelectOptionsSurface(
-    anchor_id: String,
+    rtl: bool,
     input_id: String,
     anchor: MountedAnchor,
     content_revision: u64,
@@ -1924,7 +1916,6 @@ fn SelectOptionsSurface(
     let anchor_slot = use_hook(|| Rc::new(std::cell::RefCell::new(None::<Rc<MountedData>>)));
     *anchor_slot.borrow_mut() = anchor.0.clone();
     let measure_anchor = anchor_slot.clone();
-    let measure_anchor_id = anchor_id.clone();
     let measure_alive = alive.clone();
     let measure_generation = generation.clone();
     let measure_viewport = viewport.clone();
@@ -1942,7 +1933,6 @@ fn SelectOptionsSurface(
         let revision = measure_generation.get();
         let generation = measure_generation.clone();
         let alive = measure_alive.clone();
-        let anchor_id = measure_anchor_id.clone();
         spawn(async move {
             let (Ok(anchor_rect), Ok(popup_rect)) = (
                 anchor_node.get_client_rect().await,
@@ -1951,23 +1941,6 @@ fn SelectOptionsSurface(
                 return;
             };
             let Ok(content) = surface.get_scroll_size().await else {
-                return;
-            };
-            #[cfg(any(feature = "web", feature = "desktop"))]
-            let rtl = {
-                let query = crate::dom_query::eval(SELECT_DIRECTION_QUERY);
-                if query.send(anchor_id).is_ok() {
-                    query.join::<bool>().await.ok()
-                } else {
-                    None
-                }
-            };
-            #[cfg(not(any(feature = "web", feature = "desktop")))]
-            let rtl: Option<bool> = {
-                let _ = anchor_id;
-                None
-            };
-            let Some(rtl) = rtl else {
                 return;
             };
             if !alive.get() || generation.get() != revision {
@@ -1996,37 +1969,19 @@ fn SelectOptionsSurface(
         });
     });
     use_effect(use_reactive!(
-        |anchor, dropdown_width, dropdown_max_width, content_revision| {
-            let _ = (anchor, dropdown_width, dropdown_max_width, content_revision);
+        |anchor, rtl, dropdown_width, dropdown_max_width, content_revision| {
+            let _ = (
+                anchor,
+                rtl,
+                dropdown_width,
+                dropdown_max_width,
+                content_revision,
+            );
             measure.call(());
         }
     ));
-    let mut external_revision = use_signal(|| 0_u64);
-    #[cfg(any(feature = "web", feature = "desktop"))]
-    {
-        let stream = use_hook(|| Rc::new(std::cell::RefCell::new(None::<dioxus::document::Eval>)));
-        let cleanup = stream.clone();
-        use_drop(move || {
-            if let Some(stream) = cleanup.borrow_mut().take() {
-                let _ = stream.send("stop");
-            }
-        });
-        use_effect(move || {
-            let mut task = dioxus::document::eval(SELECT_DIRECTION_INVALIDATION);
-            if task.send(&anchor_id).is_err() {
-                return;
-            }
-            *stream.borrow_mut() = Some(task);
-            spawn(async move {
-                while task.recv::<()>().await.is_ok() {
-                    external_revision.with_mut(|revision| *revision = revision.wrapping_add(1));
-                }
-            });
-        });
-    }
     use_effect(move || {
         let _ = viewport.layout_revision();
-        let _ = external_revision();
         measure.call(());
     });
     let layout = place_select_popup(
@@ -2393,6 +2348,7 @@ pub fn Select(
     let control_id = format!("{id}-control");
     let help_id = format!("{id}-help");
     let mut open = use_signal(|| false);
+    let mut rtl = use_signal(|| false);
     let mut focused = use_signal(|| false);
     let mut measured_width = use_signal(|| 0.0_f64);
     let mut measured_available = use_signal(|| 0.0_f64);
@@ -2758,6 +2714,16 @@ pub fn Select(
                 onvisible: tooltip_anchor.onvisible,
                 onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
                 onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout, onkeydown: tooltip_anchor.onkeydown,
+                span { class: "ix-select-direction-probe", "aria-hidden": "true",
+                    onresize: move |event| {
+                        if let Ok(size) = event.get_content_box_size()
+                            && let Some(next) = select_rtl_from_probe_width(size.width)
+                            && next != *rtl.peek()
+                        {
+                            rtl.set(next);
+                        }
+                    },
+                }
                 div { class: "ix-select-input-container",
                     div { class: "ix-select-values ix-select-chips",
                         onmounted: move |event| { chips_ref.set(Some(event.data())); measure_layout.call(()); },
@@ -2900,7 +2866,7 @@ pub fn Select(
                 }
             }
             if open() && !read_only {
-                SelectOptionsSurface { anchor_id: control_id.clone(), input_id: id.clone(),
+                SelectOptionsSurface { rtl: rtl(), input_id: id.clone(),
                     anchor: MountedAnchor(control_ref()),
                     content_revision: (visible.len() as u64)
                         ^ (u64::from(can_add) << 32)
@@ -4603,11 +4569,11 @@ mod tests {
     }
     fn select_surface_contract_fixture() -> Element {
         rsx! {
-            SelectOptionsSurface { anchor_id: "control", input_id: "choice",
+            SelectOptionsSurface { rtl: false, input_id: "choice",
                 anchor: MountedAnchor::default(), content_revision: 0, enable_top_layer: true,
                 dropdown_width: Some("320px".into()), dropdown_max_width: None,
                 onnativeerror: move |_| {}, onclose: move |_| {}, "Native list" }
-            SelectOptionsSurface { anchor_id: "inline-control", input_id: "inline-choice",
+            SelectOptionsSurface { rtl: true, input_id: "inline-choice",
                 anchor: MountedAnchor::default(), content_revision: 0, enable_top_layer: false,
                 dropdown_width: Some("280px".into()), dropdown_max_width: Some("90%".into()),
                 onnativeerror: move |_| {}, onclose: move |_| {}, "Inline list" }
@@ -4631,7 +4597,7 @@ mod tests {
     fn select_reactive_surface_fixture(config: SelectSurfaceTestConfig) -> Element {
         let (width, max_width) = config.borrow().clone();
         rsx! {
-            SelectOptionsSurface { anchor_id: "reactive-control", input_id: "reactive-choice",
+            SelectOptionsSurface { rtl: false, input_id: "reactive-choice",
                 anchor: MountedAnchor::default(), content_revision: 0, enable_top_layer: true,
                 dropdown_width: width, dropdown_max_width: max_width,
                 onnativeerror: move |_| {}, onclose: move |_| {}, "Stable open list" }
@@ -4670,6 +4636,16 @@ mod tests {
         assert!(!reset.contains("data-requested-width="));
         assert!(!reset.contains("data-requested-max-width="));
         assert!(reset.contains("width:100%;max-width:100%"));
+    }
+    #[test]
+    fn select_direction_probe_ignores_hidden_and_unresolved_resize_facts() {
+        assert_eq!(select_rtl_from_probe_width(8.0), Some(false));
+        assert_eq!(select_rtl_from_probe_width(4.0), Some(true));
+        assert_eq!(select_rtl_from_probe_width(7.9), Some(false));
+        assert_eq!(select_rtl_from_probe_width(4.1), Some(true));
+        for width in [0.0, -4.0, 1.0, 6.0, 12.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(select_rtl_from_probe_width(width), None);
+        }
     }
     #[test]
     fn select_popup_placement_flips_and_aligns_rtl_and_width_constraints_in_rust() {
