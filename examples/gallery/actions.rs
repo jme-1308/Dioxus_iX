@@ -7,8 +7,6 @@ pub fn ActionExamples() -> Element {
     let mut toggle = use_signal(|| false);
     let mut favorite = use_signal(|| true);
     let mut loading = use_signal(|| false);
-    let mut chip_visible = use_signal(|| true);
-    let mut filter_visible = use_signal(|| true);
     let mut progress = use_signal(|| 75.0);
     let variants = [
         ButtonVariant::Primary,
@@ -87,21 +85,12 @@ pub fn ActionExamples() -> Element {
             }
         }
         section { class: "demo-section", id: "status-labels",
-            h2 { "Pills and chips" }
+            h2 { "Pills" }
             div { class: "demo-row",
                 for variant in statuses { Pill { variant, "{variant.as_str()}" } }
             }
             div { class: "demo-row",
                 for variant in statuses { Pill { variant, outline: true, icon: "info", "{variant.as_str()}" } }
-            }
-            div { class: "demo-row",
-                Chip { icon: "check", onclick: move |_| last_action.set("Chip clicked".into()), "Interactive chip" }
-                Chip { variant: StatusVariant::Neutral, inactive: true, "Inactive" }
-                if chip_visible() { Chip { variant: StatusVariant::Info, closable: true, onclose: move |_| chip_visible.set(false), "Closable chip" } }
-                if filter_visible() { FilterChip { onclose: move |_| filter_visible.set(false), "Status: Running" } }
-                FilterChip { readonly: true, "Read-only filter" }
-                FilterChip { disabled: true, "Disabled filter" }
-                Button { variant: ButtonVariant::Tertiary, onclick: move |_| { chip_visible.set(true); filter_visible.set(true); }, "Restore chips" }
             }
         }
         section { class: "demo-section", id: "badges",

@@ -11,6 +11,8 @@ mod application_viewport_review;
 mod chart_review;
 #[path = "dioxus_first_probe/chat_composer_review.rs"]
 mod chat_composer_review;
+#[path = "dioxus_first_probe/chip_workflows_review.rs"]
+mod chip_workflows_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
 mod cue_review;
 #[path = "dioxus_first_probe/custom_validation_review.rs"]
@@ -153,6 +155,9 @@ fn Preview() -> Element {
     }
     if scope == "?tooltip" {
         return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
+    }
+    if scope == "?chipworkflows" {
+        return rsx! { chip_workflows_review::ChipWorkflowsPreview {} };
     }
     if scope == "?iconcatalog" {
         return rsx! { icon_catalog_review::IconCatalogPreview {} };
