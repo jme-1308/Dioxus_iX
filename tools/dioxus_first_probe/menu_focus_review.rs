@@ -41,12 +41,12 @@ pub fn MenuFocusPreview() -> Element {
                         menu:rsx! {
                             for current in [generation()] {
                                 Menu { key:"{current}", label:"Equipment navigation", application_name:"Equipment", start_expanded:expanded(), pinned:true,
-                                    for (action_id,action_label,action_icon) in if reversed() {
+                                    for (order,(action_id,action_label,action_icon)) in (if reversed() {
                                         [("r0215-history","Service history","calendar"),("r0215-first","Equipment overview","home")]
                                     } else {
                                         [("r0215-first","Equipment overview","home"),("r0215-history","Service history","calendar")]
-                                    } {
-                                        MenuItem { key:"{action_id}",id:action_id,label:action_label,icon:action_icon,close_on_select:false,
+                                    }).into_iter().enumerate() {
+                                        MenuItem { order:Some(order),key:"{action_id}",id:action_id,label:action_label,icon:action_icon,close_on_select:false,
                                             onclick:move |_|last_action.set(action_label.into()) }
                                     }
                                     MenuItem { id:"r0215-disabled", label:"Unavailable action", icon:"lock", disabled:true }
@@ -111,9 +111,9 @@ const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return
 const key=(node,value)=>{const event=new KeyboardEvent('keydown',{key:value,code:value,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const root=()=>byId('r0215-stage').querySelector('[data-menu-root]'),bar=()=>root().querySelector('[role="menubar"]'),category=()=>byId('r0215-category'),parent=()=>category().querySelector('[data-ix-item-part="category-parent"]');
 const popup=()=>category().getAttribute('data-menu-category-popup-open')==='true',panel=()=>category().getAttribute('data-menu-category-panel-open')==='true';
-const focused=id=>active()===byId(id),ready=()=>root()?.getAttribute('data-menu-native')==='true'&&category()?.getAttribute('data-category-native')==='true';
+const focused=id=>active()===byId(id),ready=()=>Boolean(root()?.isConnected&&category()?.isConnected&&byId('r0215-first')&&byId('r0215-child-one')&&parent());
 const parentCue=()=>parent().getAttribute('data-active')==='true'&&parent().classList.contains('ix-focused');
-await wait('native Menu observations ready',ready);
+await wait('Dioxus Menu controls ready',ready);
 bar().scrollIntoView({block:'center'});bar().focus();key(bar(),'Home');await wait('root Home mounted focus',()=>focused('r0215-first'));
 key(active(),'ArrowDown');await wait('root Down mounted focus',()=>focused('r0215-history'));
 key(active(),'ArrowDown');await wait('root disabled and hidden skip',()=>active()===parent());

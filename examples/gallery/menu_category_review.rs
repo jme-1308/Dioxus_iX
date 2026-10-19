@@ -17,23 +17,25 @@ fn record(mut events: Signal<Vec<Value>>, event: &'static str, value: Value) {
 #[component]
 fn CategoryReviewEntry(
     entry: &'static str,
+    order: Option<usize>,
     disabled: bool,
+    #[props(default)] hidden: bool,
     one_active: bool,
     events: Signal<Vec<Value>>,
 ) -> Element {
     match entry {
         "one" => {
-            rsx! { MenuItem { label: "One", active: one_active, onclick: move |_| record(events, "select", json!("one")) } }
+            rsx! { MenuItem { label: "One", order, hidden, active: one_active, onclick: move |_| record(events, "select", json!("one")) } }
         }
         "disabled-child" => {
-            rsx! { MenuItem { label: "Disabled child", disabled, onclick: move |_| record(events, "select", json!("disabled-child")) } }
+            rsx! { MenuItem { label: "Disabled child", order, disabled, hidden, onclick: move |_| record(events, "select", json!("disabled-child")) } }
         }
         "two" => {
-            rsx! { MenuItem { label: "Two", onclick: move |_| record(events, "select", json!("two")) } }
+            rsx! { MenuItem { label: "Two", order, hidden, onclick: move |_| record(events, "select", json!("two")) } }
         }
         _ => rsx! {
-            a { id: "g04-category-wrapper", href: "#g04-category-stage",
-                MenuItem { label: "Wrapped child", onclick: move |_| record(events, "select", json!("wrapped")) }
+            div { id: "g04-category-wrapper",
+                MenuItem { label: "Wrapped child", order, hidden, href: "#g04-category-stage", onclick: move |_| record(events, "select", json!("wrapped")) }
             }
         },
     }
@@ -115,8 +117,8 @@ fn CategoryCases(initial_expanded: bool) -> Element {
                             onexpandchange: move |value| record(events, "expand", json!(value)),
                             MenuItem { label: "Other", onclick: move |_| record(events, "select", json!("other")) }
                             MenuCategory { label: "Category",
-                                for entry in order().into_iter().filter(|entry| !empty() && (*entry != "wrapped" || wrapped_present())) {
-                                    CategoryReviewEntry { key: "{entry}", entry, disabled: disabled(), one_active: one_active(), events }
+                                for (index, entry) in order().into_iter().filter(|entry| !empty() && (*entry != "wrapped" || wrapped_present())).enumerate() {
+                                    CategoryReviewEntry { key: "{entry}", entry, order: Some(index), disabled: disabled(), one_active: one_active(), events }
                                 }
                             }
                             MenuCategory { label: "Second category",

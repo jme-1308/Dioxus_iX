@@ -7,8 +7,8 @@ fn category_pointer_grace_handoff_and_reentry_keep_the_current_flyout() {
     let mut h = MenuHarness::new();
     h.toggle_expanded();
     let category = h.category("Category");
-    let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event("category-order", "", "Category", None, 0, facts);
+
+    h.settle();
     let clock = h.hover_clock("Category");
     let focused = h.focuses.borrow().clone();
     h.pointer("Category", "host", "pointerenter", "mouse");

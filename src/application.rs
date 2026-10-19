@@ -35,51 +35,43 @@ struct NavigationContext {
     category: Signal<Option<usize>>,
     prefix: Vec<usize>,
     roving: Option<MenuRoving>,
-    utility: bool,
+    section: MenuSection,
     nested: Option<CategoryNavigation>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct MenuDomItem {
-    id: usize,
-    disabled: bool,
-    hidden: bool,
-    display: String,
-    grandparent_display: String,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum MenuSection {
+    #[default]
+    Primary,
+    Bottom,
+    Utility,
 }
-impl MenuDomItem {
-    fn eligible(&self) -> bool {
-        !self.disabled
-            && !self.hidden
-            && self.display != "none"
-            && self.grandparent_display != "none"
-    }
+fn menu_attribute_value(attributes: &[Attribute], name: &str) -> Option<String> {
+    attributes
+        .iter()
+        .rev()
+        .find(|attribute| attribute.name == name)
+        .and_then(|attribute| match &attribute.value {
+            dioxus::core::AttributeValue::Text(value) => Some(value.clone()),
+            dioxus::core::AttributeValue::Bool(true) => Some(String::new()),
+            dioxus::core::AttributeValue::Int(value) => Some(value.to_string()),
+            dioxus::core::AttributeValue::Float(value) => Some(value.to_string()),
+            _ => None,
+        })
 }
-#[derive(serde::Deserialize)]
-struct MenuObservation {
-    owner: String,
-    kind: String,
-    #[serde(default)]
-    items: Vec<MenuDomItem>,
-    #[serde(default)]
-    category: Option<usize>,
-    #[serde(default)]
-    category_items: Vec<CategoryDomItem>,
-}
-
 struct MenuMember {
     node: Option<Rc<MountedData>>,
     disabled: bool,
     hidden: bool,
-    utility: bool,
+    section: MenuSection,
+    order: Option<usize>,
 }
 struct MenuRovingModel {
     owner: String,
     alive: bool,
-    native: bool,
     members: BTreeMap<usize, MenuMember>,
+    #[cfg(test)]
     categories: BTreeMap<usize, std::rc::Weak<CategoryCore>>,
-    observed: Vec<MenuDomItem>,
     tabs: BTreeMap<usize, i32>,
     last: Option<usize>,
     actual: Option<usize>,
@@ -103,10 +95,9 @@ impl MenuRoving {
             model: Rc::new(RefCell::new(MenuRovingModel {
                 owner,
                 alive: true,
-                native: false,
                 members: BTreeMap::new(),
+                #[cfg(test)]
                 categories: BTreeMap::new(),
-                observed: vec![],
                 tabs: BTreeMap::new(),
                 last: None,
                 actual: None,
@@ -131,20 +122,35 @@ impl MenuRoving {
             pending.cancel();
         }
     }
-    fn register(&self, id: usize, disabled: bool, hidden: bool, utility: bool) {
+    fn register(
+        &self,
+        id: usize,
+        disabled: bool,
+        hidden: bool,
+        section: MenuSection,
+        order: Option<usize>,
+    ) {
         let mut model = self.model.borrow_mut();
+        if !model.alive {
+            return;
+        }
         let changed = model.members.get(&id).is_none_or(|member| {
-            member.disabled != disabled || member.hidden != hidden || member.utility != utility
+            member.disabled != disabled
+                || member.hidden != hidden
+                || member.section != section
+                || member.order != order
         });
         let member = model.members.entry(id).or_insert(MenuMember {
             node: None,
             disabled,
             hidden,
-            utility,
+            section,
+            order,
         });
         member.disabled = disabled;
         member.hidden = hidden;
-        member.utility = utility;
+        member.section = section;
+        member.order = order;
         model.tabs.entry(id).or_insert(-1);
         if changed {
             model.generation = model.generation.wrapping_add(1);
@@ -155,6 +161,9 @@ impl MenuRoving {
         }
     }
     fn mount(&self, id: usize, node: Rc<MountedData>) {
+        if !self.model.borrow().alive {
+            return;
+        }
         self.cancel_focus();
         if let Some(member) = self.model.borrow_mut().members.get_mut(&id) {
             member.node = Some(node);
@@ -172,28 +181,20 @@ impl MenuRoving {
         self.notify();
     }
     fn items(model: &MenuRovingModel) -> Vec<usize> {
-        if model.native {
-            model
-                .observed
-                .iter()
-                .filter(|item| {
-                    item.eligible()
-                        && model
-                            .members
-                            .get(&item.id)
-                            .is_some_and(|member| !member.disabled && !member.hidden)
-                })
-                .map(|item| item.id)
-                .collect()
-        } else {
-            let mut items: Vec<_> = model
-                .members
-                .iter()
-                .filter(|(_, member)| !member.disabled && !member.hidden)
-                .collect();
-            items.sort_by_key(|(id, member)| (member.utility, **id));
-            items.into_iter().map(|(id, _)| *id).collect()
-        }
+        let mut items: Vec<_> = model
+            .members
+            .iter()
+            .filter(|(_, member)| !member.disabled && !member.hidden)
+            .collect();
+        items.sort_by_key(|(id, member)| {
+            (
+                member.section,
+                member.order.is_none(),
+                member.order.unwrap_or(**id),
+                **id,
+            )
+        });
+        items.into_iter().map(|(id, _)| *id).collect()
     }
     fn attributes(&self, id: usize) -> (i32, Option<usize>, Option<usize>) {
         let _ = (self.revision)();
@@ -208,22 +209,6 @@ impl MenuRoving {
             position,
             position.map(|_| items.len()),
         )
-    }
-    fn observe(&self, items: Vec<MenuDomItem>) {
-        let changed = {
-            let mut model = self.model.borrow_mut();
-            if model.observed == items {
-                false
-            } else {
-                model.observed = items;
-                model.generation = model.generation.wrapping_add(1);
-                true
-            }
-        };
-        if changed {
-            self.cancel_focus();
-            self.notify();
-        }
     }
     fn focus(&self, id: Option<usize>) {
         self.cancel_focus();
@@ -287,8 +272,8 @@ impl MenuRoving {
             for item in items {
                 model.tabs.insert(item, if item == target { 0 } else { -1 });
             }
-            // Actual native focus is only updated by focus events, never by a
-            // requested target that may be CSS-hidden through a source wrapper quirk.
+            // Actual focus is updated only by the typed focus event, not by a
+            // requested mounted target whose focus may be declined by a renderer.
             model.generation = model.generation.wrapping_add(1);
             MenuFocusRequest {
                 target,
@@ -337,42 +322,6 @@ impl MenuRoving {
         });
         dioxus::core::needs_update();
     }
-    fn observation(&self, event: FormEvent) {
-        let Ok(message) = serde_json::from_str::<MenuObservation>(&event.value()) else {
-            return;
-        };
-        if !self.model.borrow().alive || message.owner != self.model.borrow().owner {
-            return;
-        }
-        if message.kind.starts_with("category-") {
-            let category = message.category.and_then(|id| {
-                self.model
-                    .borrow()
-                    .categories
-                    .get(&id)
-                    .and_then(|category| category.upgrade())
-            });
-            if let Some(category) = category {
-                CategoryNavigation(category).observation(message, event);
-            }
-            return;
-        }
-        if !matches!(message.kind.as_str(), "ready" | "order") {
-            return;
-        }
-        let became_native = {
-            let mut model = self.model.borrow_mut();
-            let became_native = message.kind == "ready" && !model.native;
-            if message.kind == "ready" {
-                model.native = true;
-            }
-            became_native
-        };
-        self.observe(message.items);
-        if became_native {
-            self.notify();
-        }
-    }
     fn key_from(&self, event: KeyboardEvent, origin: Option<usize>) -> bool {
         if !event.default_action_enabled()
             || event.is_composing()
@@ -401,26 +350,19 @@ impl MenuRoving {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct CategoryDomItem {
-    id: usize,
-    disabled: bool,
-    hidden: bool,
-    tabindex: Option<String>,
-}
 struct CategoryChild {
     node: Option<Rc<MountedData>>,
     host_id: Option<String>,
     disabled: bool,
     hidden: bool,
     active: bool,
+    order: Option<usize>,
+    negative_tabindex: bool,
 }
 struct CategoryModel {
     alive: bool,
-    native: bool,
     generation: u64,
     children: BTreeMap<usize, CategoryChild>,
-    observed: Vec<CategoryDomItem>,
     parent: Option<Rc<MountedData>>,
     previous_expanded: bool,
     previous_flyout: Option<usize>,
@@ -531,10 +473,8 @@ impl CategoryNavigation {
             overlay: RefCell::new(None),
             model: RefCell::new(CategoryModel {
                 alive: true,
-                native: false,
                 generation: 0,
                 children: BTreeMap::new(),
-                observed: vec![],
                 parent: None,
                 previous_expanded: *expanded.peek(),
                 previous_flyout: *flyout.peek(),
@@ -565,10 +505,25 @@ impl CategoryNavigation {
         let next = revision.peek().wrapping_add(1);
         revision.set(next);
     }
-    fn register(&self, id: usize, disabled: bool, hidden: bool, active: bool) {
+    fn register(
+        &self,
+        id: usize,
+        disabled: bool,
+        hidden: bool,
+        active: bool,
+        order: Option<usize>,
+        negative_tabindex: bool,
+    ) {
         let mut model = self.0.model.borrow_mut();
+        if !model.alive {
+            return;
+        }
         let changed = model.children.get(&id).is_none_or(|child| {
-            child.disabled != disabled || child.hidden != hidden || child.active != active
+            child.disabled != disabled
+                || child.hidden != hidden
+                || child.active != active
+                || child.order != order
+                || child.negative_tabindex != negative_tabindex
         });
         if active && model.children.get(&id).is_none_or(|child| !child.active) {
             model.active_changed = true;
@@ -579,10 +534,14 @@ impl CategoryNavigation {
             disabled,
             hidden,
             active,
+            order,
+            negative_tabindex,
         });
         child.disabled = disabled;
         child.hidden = hidden;
         child.active = active;
+        child.order = order;
+        child.negative_tabindex = negative_tabindex;
         let pending = if changed {
             model.entry_focus = None;
             model.generation = model.generation.wrapping_add(1);
@@ -596,9 +555,26 @@ impl CategoryNavigation {
         }
     }
     fn mount(&self, id: usize, node: Rc<MountedData>) {
-        self.invalidate();
-        if let Some(child) = self.0.model.borrow_mut().children.get_mut(&id) {
-            child.node = Some(node);
+        let pending = {
+            let mut model = self.0.model.borrow_mut();
+            if !model.alive {
+                return;
+            }
+            if model
+                .children
+                .get(&id)
+                .is_some_and(|child| child.node.is_some())
+            {
+                model.entry_focus = None;
+            }
+            if let Some(child) = model.children.get_mut(&id) {
+                child.node = Some(node);
+            }
+            model.generation = model.generation.wrapping_add(1);
+            model.focus_task.take()
+        };
+        if let Some(pending) = pending {
+            pending.cancel();
         }
         self.notify();
     }
@@ -1003,96 +979,46 @@ impl CategoryNavigation {
             self.present(active_categories)
         };
         if keyboard && opening {
-            if let Some(first) = self.items(false).first().copied() {
-                let wait_for_children = {
-                    let mut model = self.0.model.borrow_mut();
-                    let wait = !self.is_expanded()
-                        && model.native
-                        && model.observed.iter().any(|item| item.hidden);
-                    if wait {
-                        // Source collapsed entry waits for showChanged, after
-                        // its MenuItem hosts publish their shown state.
-                        model.entry_focus = Some(first);
-                    }
-                    wait
-                };
-                if !wait_for_children {
-                    self.focus(Some(first));
-                }
+            if let Some(first) = self.items(!self.is_expanded()).first().copied() {
+                // The owning render commits visibility and native presentation
+                // before its entry effect can issue mounted focus.
+                self.0.model.borrow_mut().entry_focus = Some(first);
+                self.notify();
             }
         }
     }
     fn items(&self, eligible: bool) -> Vec<usize> {
         let model = self.0.model.borrow();
-        if model.native {
-            model
-                .observed
-                .iter()
-                .filter(|item| {
-                    model.children.contains_key(&item.id)
-                        && (!eligible
-                            || (!item.disabled
-                                && !item.hidden
-                                && !item
-                                    .tabindex
-                                    .as_ref()
-                                    .is_some_and(|tab| tab.starts_with('-'))))
-                })
-                .map(|item| item.id)
-                .collect()
-        } else {
-            model
-                .children
-                .iter()
-                .filter(|(_, child)| !eligible || (!child.disabled && !child.hidden))
-                .map(|(id, _)| *id)
-                .collect()
-        }
+        let mut items: Vec<_> = model
+            .children
+            .iter()
+            .filter(|(_, child)| {
+                !child.hidden && (!eligible || (!child.disabled && !child.negative_tabindex))
+            })
+            .collect();
+        items.sort_by_key(|(id, child)| (child.order.is_none(), child.order.unwrap_or(**id), **id));
+        items.into_iter().map(|(id, _)| *id).collect()
     }
-    fn observe(&self, items: Vec<CategoryDomItem>) {
-        let (changed, pending, entry) = {
+    fn commit_entry_focus(&self) {
+        let target = {
             let mut model = self.0.model.borrow_mut();
-            model.native = true;
-            if model.observed == items {
-                (false, None, None)
-            } else {
-                // Only the expected own-hidden release may carry a waiting
-                // entry across publication. Reorder, replacement, eligibility
-                // changes and a new hide invalidate that old intent.
-                let showing = model.observed.len() == items.len()
-                    && model.observed.iter().zip(&items).all(|(before, after)| {
-                        before.id == after.id
-                            && before.disabled == after.disabled
-                            && before.tabindex == after.tabindex
-                            && (!after.hidden || before.hidden)
-                    });
-                if !showing {
-                    model.entry_focus = None;
-                }
-                let entry = if items.iter().all(|item| !item.hidden) {
-                    model.entry_focus.take()
-                } else {
-                    None
-                };
-                model.observed = items;
-                model.generation = model.generation.wrapping_add(1);
-                (true, model.focus_task.take(), entry)
+            if !model.alive || !self.is_open() {
+                return;
             }
-        };
-        if let Some(pending) = pending {
-            pending.cancel();
-        }
-        if changed {
-            self.notify();
-        }
-        if let Some(entry) = entry {
-            if !self.is_expanded()
-                && self.is_open()
-                && self.0.model.borrow().children.contains_key(&entry)
+            let Some(target) = model.entry_focus else {
+                return;
+            };
+            if !model
+                .children
+                .get(&target)
+                .is_some_and(|child| !child.hidden && child.node.is_some())
             {
-                self.focus(Some(entry));
+                return;
             }
-        }
+            model.entry_focus = None;
+            target
+        };
+        self.focus(Some(target));
     }
     fn navigate(
         &self,
@@ -1347,20 +1273,7 @@ impl CategoryNavigation {
         }
         false
     }
-    fn observation(&self, message: MenuObservation, _event: FormEvent) {
-        if !self.0.model.borrow().alive
-            || message.category != Some(self.0.id)
-            || message.owner != self.0.owner
-            || message.kind != "category-order"
-        {
-            return;
-        }
-        self.ensure_initialized();
-        self.observe(message.category_items);
-    }
 }
-
-include!("application/menu_dom.rs");
 
 /// Which optional application-menu overlay is visible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1632,7 +1545,7 @@ fn navigation() -> NavigationContext {
         category: Signal::new(None),
         prefix: vec![],
         roving: None,
-        utility: false,
+        section: MenuSection::Primary,
         nested: None,
     })
 }
@@ -2256,14 +2169,14 @@ pub fn ApplicationHeader(
 
 /// Application navigation rail. Categories, avatar and overlays are Rust element slots.
 /// Native menubar entry follows the separate expansion control. Up/Down/Home/End
-/// move without activation through current direct/anchor-wrapped light items,
+/// move without activation through registered primary and bottom items,
 /// then utilities. Focusout resets eligible tab indices; container arrows restore
 /// the last requested eligible item. Category descendants belong to a separate scope.
-/// Typed Dioxus controls own keyboard navigation and focus. A nameless hidden
-/// observation input supplies current wrapped/keyed native order; SSR uses Rust
-/// registration order until those facts arrive. Consumer fields keep native keys.
-/// `disabled` maps normal disabled markup, not upstream's distinct property-only
-/// writes. The source inline-hidden anchor-wrapper eligibility quirk is preserved.
+/// Typed Dioxus controls own keyboard navigation and focus. Dynamic lists supply
+/// MenuItem/MenuCategory `order`; omitted declarations retain stable registration
+/// order. Primary items precede bottom items, then utilities. Wrapper components
+/// forward `hidden` for conditional visibility; arbitrary DOM/style discovery is
+/// unsupported. Consumer fields keep their native editing keys.
 #[component]
 pub fn Menu(
     children: Element,
@@ -2370,8 +2283,6 @@ pub fn Menu(
     let about_focus_runtime = focus_runtime;
     let owner_id = menu_id.clone();
     let about_owner_id = menu_id.clone();
-    let roving_bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let cleanup_roving = roving_bridge.clone();
     let lifetime_roving = roving.clone();
     use_drop(move || {
         lifetime_roving.cancel_focus();
@@ -2380,12 +2291,7 @@ pub fn Menu(
             model.alive = false;
             model.generation = model.generation.wrapping_add(1);
         }
-        if let Some(bridge) = cleanup_roving.borrow_mut().take() {
-            let _ = bridge.send("finish");
-        }
     });
-    let roving_mount = menu_id.clone();
-    let input_roving = roving.clone();
     let focus_roving = roving.clone();
     let blur_roving = roving.clone();
     let _ = (roving.revision)();
@@ -2399,7 +2305,6 @@ pub fn Menu(
     });
     rsx! {
         nav { id: menu_id.clone(), class: "ix-menu", "aria-label": application_name.clone(), "data-menu-root":"", "data-expanded": expanded().to_string(),
-            input {r#type:"hidden","data-menu-observer":menu_id.clone(),oninput:move |event|input_roving.observation(event)},
             if let Some(name) = application_name.clone() { div { class: "ix-menu-app-name", "{name}" } }
             button { class: "ix-menu-toggle ix-menu-item", r#type: "button", "data-menu-expansion-control":menu_id.clone(), "aria-label": if expanded() { "Collapse" } else { "Expand" }, "aria-expanded": expanded().to_string(),
                 onclick: move |_| request_expansion.call(None),
@@ -2407,14 +2312,13 @@ pub fn Menu(
                 span { class: "ix-menu-label", if expanded() { "Collapse" } else { "Expand" } }
             }
             div {class:"ix-menu-navigation",role:"menubar","aria-orientation":"vertical","aria-label":label,"aria-description":navigation_hint,tabindex:"0",
-                onmounted:move |_|{*roving_bridge.borrow_mut()=Some(dioxus::document::eval(&menu_roving_bridge(&roving_mount)));},
                 onfocus:move |_|focus_roving.bar_focus(true),
                 onfocusout:move |_|blur_roving.bar_focus(false),
                 onkeydown:move |event|context.key(event),
-                div { class: "ix-menu-primary", "data-menu-light":"primary", {children} }
+                div { class: "ix-menu-primary", "data-menu-light":"primary", MenuSectionContent {section:MenuSection::Primary,{children}} }
                 div { class: "ix-menu-bottom",
-                    div {"data-menu-light":"bottom", {bottom}}
-                    div {"data-menu-utilities":"",MenuUtilityContent {
+                    div {"data-menu-light":"bottom", MenuSectionContent {section:MenuSection::Bottom,{bottom}}}
+                    div {"data-menu-utilities":"",MenuSectionContent {section:MenuSection::Utility,
                 if settings.is_some() {
                     MenuItem { id: settings_invoker, label: "Settings", icon: "cogwheel", close_on_select: false, active: overlay() == Some(MenuOverlayKind::Settings), onclick: move |_| {
                         if let Some(next) = request_menu_overlay(overlay(), MenuOverlayKind::Settings, onbeforeopensettings) {
@@ -2442,9 +2346,9 @@ pub fn Menu(
 }
 
 #[component]
-fn MenuUtilityContent(children: Element) -> Element {
+fn MenuSectionContent(children: Element, section: MenuSection) -> Element {
     let mut context = consume_context::<NavigationContext>();
-    context.utility = true;
+    context.section = section;
     use_context_provider(|| context);
     rsx! {{children}}
 }
@@ -2452,8 +2356,9 @@ fn MenuUtilityContent(children: Element) -> Element {
 /// Navigation action or link with active, disabled and notification states.
 /// A navigation item. Within a generic Dropdown, consumer attributes and
 /// keyboard activation belong to a separate source host; its generated native
-/// control retains Menu/Category behavior. Category visibility overwrites a
-/// supplied child's host hidden state while that category opens or closes.
+/// control retains Menu/Category behavior. Category visibility composes with the
+/// child's authored `hidden` state. Dynamic wrappers forward `order` and `hidden`;
+/// no DOM order or wrapper/style discovery is performed.
 #[component]
 pub fn MenuItem(
     label: String,
@@ -2461,6 +2366,9 @@ pub fn MenuItem(
     #[props(default)] active: bool,
     #[props(default)] disabled: bool,
     #[props(default)] hidden: bool,
+    /// Current position in a dynamic list. Omit for static registration order.
+    #[props(default)]
+    order: Option<usize>,
     #[props(default)] style: String,
     #[props(default)] home: bool,
     #[props(default)] notifications: Option<u32>,
@@ -2473,34 +2381,40 @@ pub fn MenuItem(
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
+    let hidden = hidden || menu_attribute_value(&attributes, "hidden").is_some();
+    let disabled = disabled || menu_attribute_value(&attributes, "disabled").is_some();
+    let negative_tabindex =
+        menu_attribute_value(&attributes, "tabindex").is_some_and(|value| value.starts_with('-'));
     let item_host = crate::dropdown::use_item_host("menu");
     let generic = item_host.generic;
     let roving_tabindex = if generic { item_host.tabindex() } else { None };
     let (id, context) = navigation_item();
     let nested = context.as_ref().and_then(|context| context.nested.clone());
     if let Some(nested) = &nested {
-        nested.register(id, disabled, hidden, active);
+        nested.register(id, disabled, hidden, active, order, negative_tabindex);
     }
     let nested_update = nested.clone();
-    use_effect(use_reactive((&disabled, &hidden, &active), move |_| {
-        if let Some(nested) = &nested_update {
-            nested.notify();
-        }
-    }));
+    use_effect(use_reactive(
+        (&disabled, &hidden, &active, &order, &negative_tabindex),
+        move |_| {
+            if let Some(nested) = &nested_update {
+                nested.notify();
+            }
+        },
+    ));
     let nested_mount = nested.clone();
     let nested_key = nested.clone();
     let nested_id = nested.as_ref().map(|_| id.to_string());
     let nested_owner = nested.as_ref().map(|nested| nested.0.owner.clone());
     let nested_category = nested.as_ref().map(|nested| nested.0.id.to_string());
     let native_disabled = disabled && nested.is_none() && !generic;
-    // Category writes the supplied source host's own hidden state. This is
-    // independent of its popup ancestor and overrides a child hidden prop
-    // while that category is open, as source onShowItemsChange does.
+    // Rust composition preserves authored hidden state while the Category's
+    // own visibility controls whether its children are currently presented.
     let source_hidden = if let Some(category) = &nested {
         let expanded = (category.0.expanded)();
         let panel = (category.0.panel)();
         let flyout = (category.0.flyout)();
-        !(expanded && panel || flyout == Some(category.0.id))
+        hidden || !(expanded && panel || flyout == Some(category.0.id))
     } else {
         hidden
     };
@@ -2513,9 +2427,19 @@ pub fn MenuItem(
             id,
             disabled,
             hidden,
-            context.as_ref().is_some_and(|context| context.utility),
+            context
+                .as_ref()
+                .map(|context| context.section)
+                .unwrap_or_default(),
+            order,
         );
     }
+    let root_update = root_roving.clone();
+    use_effect(use_reactive((&disabled, &hidden, &order), move |_| {
+        if let Some(root) = &root_update {
+            root.notify();
+        }
+    }));
     let (tabindex, position, size) = root_roving
         .as_ref()
         .map(|roving| roving.attributes(id))
@@ -2746,11 +2670,17 @@ pub fn MenuCategory(
     #[props(default)] active: bool,
     #[props(default)] disable_tooltip: bool,
     #[props(default)] hidden: bool,
+    /// Current position in a dynamic list. Explicit orders precede omitted
+    /// registration order; equal declarations retain stable component order.
+    #[props(default)]
+    order: Option<usize>,
     #[props(default)] style: String,
     #[props(default)] onfocus: EventHandler<FocusEvent>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
 ) -> Element {
+    let hidden = hidden || menu_attribute_value(&attributes, "hidden").is_some();
+    let disabled = menu_attribute_value(&attributes, "disabled").is_some();
     let item_host = crate::dropdown::use_item_host("category");
     let parent_active = item_host.runtime.part_active(
         &item_host.key,
@@ -2769,11 +2699,21 @@ pub fn MenuCategory(
     if let Some(roving) = &root_roving {
         roving.register(
             id,
-            false,
+            disabled,
             hidden,
-            context.as_ref().is_some_and(|context| context.utility),
+            context
+                .as_ref()
+                .map(|context| context.section)
+                .unwrap_or_default(),
+            order,
         );
     }
+    let root_update = root_roving.clone();
+    use_effect(use_reactive((&disabled, &hidden, &order), move |_| {
+        if let Some(root) = &root_update {
+            root.notify();
+        }
+    }));
     let (tabindex, position, size) = root_roving
         .as_ref()
         .map(|roving| roving.attributes(id))
@@ -2878,6 +2818,7 @@ pub fn MenuCategory(
         category_cleanup.unregister_category(id);
         overlay_cleanup.unregister();
     });
+    #[cfg(test)]
     if let Some(roving) = &root_roving {
         roving
             .model
@@ -2886,6 +2827,7 @@ pub fn MenuCategory(
             .insert(id, Rc::downgrade(&category.0));
     }
     let cleanup = category.clone();
+    #[cfg(test)]
     let cleanup_root = root_roving.clone();
     use_drop(move || {
         cleanup.clear_hover();
@@ -2911,6 +2853,7 @@ pub fn MenuCategory(
         for pending in pending {
             pending.cancel();
         }
+        #[cfg(test)]
         if let Some(root) = cleanup_root {
             root.model.borrow_mut().categories.remove(&id);
         }
@@ -2973,6 +2916,22 @@ pub fn MenuCategory(
     let host_style = format!("{style};{consumer_style};anchor-name:--ix-menu-category-anchor-{id}");
     let flyout_style = format!("position-anchor:--ix-menu-category-anchor-{id}");
     let popup_id = format!("ix-category-popup-{id}");
+    let content_popover = crate::native_popover::use_native_popover(
+        content_id.clone(),
+        popup_open && !panel_open && !hidden,
+    );
+    let empty_popover = crate::native_popover::use_native_popover(
+        popup_id.clone(),
+        popup_open && panel_open && !hidden,
+    );
+    let entry_ready = category.clone();
+    use_effect(move || {
+        let _ = revision();
+        let _ = expanded_signal();
+        let _ = panel();
+        let _ = flyout();
+        entry_ready.commit_entry_focus();
+    });
     let mount_context = context.clone();
     let focus_context = context.clone();
     let mount_roving = root_roving.clone();
@@ -3044,7 +3003,7 @@ pub fn MenuCategory(
                 if let Some(count)=notifications {span {class:"ix-menu-notifications","{count}"}}
                 span {class:"ix-menu-category-chevron",crate::Icon{name:(if panel_open{"chevron-up-small"}else{"chevron-down-small"}).to_string(),size:16}}
             }
-            div {id:content_id,role:"menu","aria-labelledby":parent_id.clone(),class:if panel_open{"ix-menu-category-items"}else{"ix-menu-category-flyout"},hidden:!is_open,
+            div {id:content_id,"data-ix-native-popover":content_popover.marker,onmounted:content_popover.onmounted,role:"menu","aria-labelledby":parent_id.clone(),class:if panel_open{"ix-menu-category-items"}else{"ix-menu-category-flyout"},hidden:!is_open,
                 "data-ix-overlay-host":(!panel_open).then(||overlay_id.clone()),
                 "data-menu-category-panel":id.to_string(),"data-menu-category-popup":(!panel_open).then(||id.to_string()),"popover":(!panel_open).then_some("manual"),style:(!panel_open).then(||flyout_style.clone()),
                 onpointerenter:move |_|flyout_enter.flyout_enter(),
@@ -3054,7 +3013,7 @@ pub fn MenuCategory(
                     MenuCategoryContent {parent:id,category:category.clone(),{children}}
                 }
             }
-            div {id:popup_id,role:"menu","aria-labelledby":parent_id,class:"ix-menu-category-flyout",hidden:!(panel_open&&popup_open),
+            div {id:popup_id,"data-ix-native-popover":empty_popover.marker,onmounted:empty_popover.onmounted,role:"menu","aria-labelledby":parent_id,class:"ix-menu-category-flyout",hidden:!(panel_open&&popup_open),
                 "data-ix-overlay-host":panel_open.then(||overlay_id.clone()),
                 "data-menu-category-empty-popup":id.to_string(),"data-menu-category-popup":panel_open.then(||id.to_string()),"popover":"manual",style:flyout_style,
                 onpointerenter:move |_|popup_enter.flyout_enter(),

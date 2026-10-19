@@ -1,297 +1,225 @@
-// Read-only Menu/Category inventory followed by actual Dioxus interactions.
-// Mounted test handles prove delivery and cancellation without native discovery.
+// Scoped Rust Menu/Category registration exercised through typed Dioxus events.
+// Mounted handles prove actual focus delivery without native inventory input.
 
 use super::*;
 
 #[test]
-fn ordinary_category_controls_publish_source_hidden_through_both_presentations() {
+fn category_visibility_composes_with_authored_hidden_in_both_presentations() {
     let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    let category = h.category("Category");
-    let children = ["Child", "Disabled child", "Two"]
-        .map(|label| h.attributes[&h.target(label).raw()]["id"].clone());
-    for collapsed in [false, true] {
-        if collapsed {
+    for expanded in [true, false] {
+        let mut h = MenuHarness::new();
+        h.config.borrow_mut().hidden.insert("Two".into());
+        h.update();
+        if !expanded {
             h.toggle_expanded();
         }
-        assert!(!category.is_open());
-        let html = dioxus_ssr::render(&h.dom);
-        for id in &children {
+        let category = h.category("Category");
+        let ids = ["Child", "Disabled child", "Two"]
+            .map(|label| h.attributes[&h.target(label).raw()]["id"].clone());
+        let html = h.html();
+        for id in &ids {
             assert!(item_opening_tag(&html, id).contains(" hidden"));
         }
         h.click("Category");
         assert!(category.is_open());
-        let html = dioxus_ssr::render(&h.dom);
-        for id in &children {
-            assert!(!item_opening_tag(&html, id).contains(" hidden"));
-        }
-        if collapsed {
-            let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-            h.category_event("category-key", "Escape", "Category", None, 1, facts);
-        } else {
-            h.click("Category");
-        }
+        let html = h.html();
+        assert!(!item_opening_tag(&html, &ids[0]).contains(" hidden"));
+        assert!(!item_opening_tag(&html, &ids[1]).contains(" hidden"));
+        assert!(item_opening_tag(&html, &ids[2]).contains(" hidden"));
+        h.category_key("Escape", "Category", Some("Child"));
         assert!(!category.is_open());
-        let html = dioxus_ssr::render(&h.dom);
-        for id in &children {
+        let html = h.html();
+        for id in &ids {
             assert!(item_opening_tag(&html, id).contains(" hidden"));
         }
+        h.config.borrow_mut().hidden.remove("Two");
+        h.update();
+        h.click("Category");
+        assert!(!item_opening_tag(&h.html(), &ids[2]).contains(" hidden"));
     }
 }
 
 #[test]
-fn registered_nondirect_category_activation_does_not_expand_menu_candidates() {
-    let _guard = crate::test_event_converter_guard();
-    for kind in ["category-key", "category-click"] {
-        let mut h = MenuHarness::new();
-        h.toggle_expanded();
-        let category = h.category("Category");
-        let direct = h.facts(&["Alpha", "Omega", "Footer"]);
-        h.observe("ready", "", None, false, direct.clone());
-        h.observe("key", "End", None, false, direct.clone());
-        let root_last = h.last();
-        let root_tabs = h.tabs();
-        assert_eq!(root_last, Some(h.id("Footer")));
-        assert_eq!(h.context.attributes(category.0.id).1, None);
-        assert!(
-            h.context
-                .model
-                .borrow()
-                .categories
-                .contains_key(&category.0.id)
-        );
-
-        let mut children = h.category_facts(&["Child", "Disabled child", "Two"]);
-        for child in &mut children {
-            child.hidden = true;
-        }
-        let message = serde_json::json!({
-            "owner":category.0.owner,"kind":kind,"key":if kind=="category-key" {"Enter"} else {""},
-            "category":category.0.id,"category_parent":true,"sequence":1,
-            "category_items":children,"items":[]
-        });
-        assert_eq!(
-            h.raw(message.clone()),
-            if kind == "category-click" {
-                (false, false)
-            } else {
-                (true, false)
-            }
-        );
-        assert!(
-            category.is_open(),
-            "registered own activation remains valid outside the direct list"
-        );
-        assert_eq!(h.last(), root_last, "no outer-bar input was supplied");
-        assert_eq!(h.tabs(), root_tabs);
-        assert_eq!(h.context.model.borrow().observed, direct);
-        assert_eq!(h.context.attributes(category.0.id).1, None);
-        assert_eq!(h.context.attributes(h.id("Alpha")).2, Some(3));
-        assert_eq!(h.context.attributes(h.id("Child")).1, None);
-
-        if kind == "category-key" {
-            assert_eq!(category.0.model.borrow().entry_focus, Some(h.id("Child")));
-            for child in &mut children {
-                child.hidden = false;
-            }
-            assert_eq!(
-                h.category_event("category-order", "", "Category", None, 0, children),
-                (false, true)
-            );
-            assert_eq!(
-                category.0.model.borrow().requested,
-                Some(Some(h.id("Child")))
-            );
-        } else {
-            assert_eq!(
-                category.0.model.borrow().entry_focus,
-                None,
-                "pointer activation does not request keyboard entry"
-            );
-        }
-        assert_eq!(h.config.borrow().activations, 0);
-        assert!(category.is_open());
-        assert_eq!(h.last(), root_last);
-        assert_eq!(h.context.model.borrow().observed, direct);
-    }
-}
-
-#[test]
-fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_input() {
+fn root_keyed_order_insert_remove_preserves_primary_bottom_utility_priority() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let direct = h.facts(&["Alpha", "Omega"]);
-    h.observe("ready", "", None, false, direct.clone());
-    h.observe("key", "End", None, false, direct.clone());
-    let root_last = h.last();
-    let root_tabs = h.tabs();
-    let children = h.category_facts(&["Two", "Child", "Disabled child"]);
+    h.config.borrow_mut().root_keys = ["Alpha", "Link", "Omega"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    h.update();
+    let alpha = h.id("Alpha");
+    let link = h.id("Link");
+    h.root_key("Home", None, false);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(alpha));
+    h.config.borrow_mut().root_keys.reverse();
+    h.update();
+    assert_eq!(h.id("Alpha"), alpha, "a keyed move keeps its Rust owner");
+    h.root_key("Home", None, false);
+    assert_eq!(h.last(), Some(h.id("Omega")));
+    h.config.borrow_mut().root_keys.insert(1, "Inserted".into());
+    h.update();
+    h.root_key("ArrowDown", Some(h.id("Omega")), false);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Inserted")));
+    h.config
+        .borrow_mut()
+        .root_keys
+        .retain(|label| label != "Link");
+    h.update();
+    assert!(!h.context.model.borrow().members.contains_key(&link));
+    let expected = [
+        "Omega",
+        "Inserted",
+        "Alpha",
+        "Footer",
+        "Settings",
+        "Toggle theme",
+        "About & legal information",
+    ];
+    h.root_key("Home", None, false);
+    for (position, label) in expected.iter().enumerate() {
+        let id = h.id(label);
+        assert_eq!(h.last(), Some(id), "section order at {label}");
+        assert_eq!(h.context.attributes(id).1, Some(position + 1));
+        assert_eq!(h.context.attributes(id).2, Some(expected.len()));
+        if position + 1 < expected.len() {
+            h.root_key("ArrowDown", Some(id), false);
+        }
+    }
+    h.root_key("ArrowDown", Some(h.id("About & legal information")), false);
     assert_eq!(
-        h.category_event(
-            "category-key",
-            "Enter",
-            "Category",
-            None,
-            1,
-            children.clone()
-        ),
-        (true, false)
+        h.last(),
+        Some(h.id("Omega")),
+        "utilities wrap back to primary"
     );
-    assert!(category.is_open());
-    assert_eq!(
-        category.0.model.borrow().requested,
-        Some(Some(h.id("Two"))),
-        "entry uses current reported light-descendant order"
-    );
-    assert_eq!(
-        h.category_event(
-            "category-key",
-            "End",
-            "Category",
-            Some("Two"),
-            2,
-            children.clone()
-        ),
-        (true, false)
-    );
-    assert_eq!(
-        h.focused_category_target("Category"),
-        Some(format!(
-            "ix-menu-category-child-{}-{}",
-            category.0.id,
-            h.id("Child")
-        ))
-    );
-    let runtime = category
-        .0
-        .overlay
-        .borrow()
-        .as_ref()
-        .unwrap()
-        .runtime()
-        .unwrap();
-    assert!(runtime.pending_item_focus_count() == 0);
-    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
-    assert_eq!(h.last(), root_last);
-    assert_eq!(h.tabs(), root_tabs);
-    assert_eq!(h.context.model.borrow().observed, direct);
-
-    assert_eq!(
-        h.category_event(
-            "category-key",
-            "Enter",
-            "Category",
-            Some("Child"),
-            3,
-            children.clone()
-        ),
-        (true, false)
-    );
-    assert!(!category.is_open());
-    let focused_after_close = h.focuses.borrow().clone();
-    let node = category.0.overlay.borrow().as_ref().unwrap().clone();
-    let child_target = category.0.model.borrow().children[&h.id("Child")]
-        .host_id
-        .clone()
-        .unwrap();
-    assert!(!node.queue_item_focus(
-        child_target,
-        true,
-        Rc::new(|| panic!("closed Category item"))
-    ));
-    h.settle();
-    assert_eq!(*h.focuses.borrow(), focused_after_close);
-    assert!(runtime.pending_item_focus_count() == 0);
     assert_eq!(h.config.borrow().activations, 0);
-    assert_eq!(h.last(), root_last);
-    assert_eq!(h.tabs(), root_tabs);
-    assert_eq!(h.context.model.borrow().observed, direct);
-    assert!(!category.is_open());
 }
 
 #[test]
-fn category_scope_inventory_and_old_interactions_do_not_adopt_replacement() {
+fn category_keyed_order_insert_remove_stays_in_its_scoped_membership() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::new();
+    h.config.borrow_mut().child_keys = ["Child", "Two"].into_iter().map(str::to_string).collect();
+    h.update();
+    let category = h.category("Category");
+    let child = h.id("Child");
+    h.click("Category");
+    h.category_key("ArrowDown", "Category", None);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(child));
+    h.config.borrow_mut().child_keys.reverse();
+    h.update();
+    assert_eq!(h.id("Child"), child);
+    h.config
+        .borrow_mut()
+        .child_keys
+        .insert(1, "Inserted child".into());
+    h.update();
+    assert_eq!(
+        h.category_key("ArrowDown", "Category", Some("Two")),
+        (true, false)
+    );
+    assert_eq!(
+        h.focuses.borrow().last().copied(),
+        Some(h.id("Inserted child")),
+        "inserted child: requested={:?}, items={:?}, children={:?}, controls={:?}, pending_mounts={:?}",
+        category.0.model.borrow().requested,
+        category.items(false),
+        category
+            .0
+            .model
+            .borrow()
+            .children
+            .iter()
+            .map(|(id, child)| (*id, child.order, child.hidden, child.node.is_some()))
+            .collect::<Vec<_>>(),
+        h.controls,
+        h.mounts
+    );
+    h.config
+        .borrow_mut()
+        .child_keys
+        .retain(|label| label != "Child");
+    h.update();
+    assert!(!category.0.model.borrow().children.contains_key(&child));
+    h.category_key("Tab", "Category", Some("Inserted child"));
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Two")));
+    assert!(
+        !h.context
+            .model
+            .borrow()
+            .members
+            .contains_key(&h.id("Inserted child"))
+    );
+    assert!(!h.context.model.borrow().members.contains_key(&h.id("Two")));
+    assert_eq!(h.config.borrow().activations, 0, "navigation never selects");
+}
+
+#[test]
+fn collapsed_category_entry_skips_current_hidden_disabled_and_negative_tabindex() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
-    let category = h.category("Category");
-    let old_id = category.0.id;
-    let old_child = h.id("Child");
-    let owner = category.0.owner.clone();
-    let children = h.category_facts(&["Child", "Disabled child", "Two"]);
-    assert_eq!(
-        h.category_event(
-            "category-key",
-            "Enter",
-            "Category",
-            None,
-            1,
-            children.clone()
-        ),
-        (true, false)
-    );
-    assert_eq!(
-        h.category_event(
-            "category-key",
-            "Enter",
-            "Category",
-            Some("Child"),
-            2,
-            children.clone()
-        ),
-        (true, false)
-    );
-    assert!(!category.is_open());
-    let reordered = h.category_facts(&["Two", "Child", "Disabled child"]);
-    h.category_event("category-order", "", "Category", None, 0, reordered);
+    for reason in ["hidden", "disabled", "negative", "eligible"] {
+        {
+            let mut config = h.config.borrow_mut();
+            config.hidden.clear();
+            if reason == "hidden" {
+                config.hidden.insert("Child".into());
+            }
+            config.child_disabled = reason == "disabled";
+            config.child_negative = reason == "negative";
+        }
+        h.update();
+        h.category_key("Enter", "Category", None);
+        assert!(h.category("Category").is_open());
+        let expected = if reason == "eligible" { "Child" } else { "Two" };
+        assert_eq!(
+            h.focuses.borrow().last().copied(),
+            Some(h.id(expected)),
+            "{reason}"
+        );
+        h.category_key("Escape", "Category", Some(expected));
+        assert!(!h.category("Category").is_open());
+    }
+    assert_eq!(h.config.borrow().activations, 0);
+}
 
-    let retained = serde_json::json!({
-        "owner":owner,"kind":"category-click","category":old_id,
-        "category_parent":true,"child":old_child,"sequence":100,
-        "category_items":children,"items":[]
-    });
+#[test]
+fn retired_category_focus_cannot_adopt_a_replacement_with_the_same_label() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::new();
+    h.toggle_expanded();
+    let retired = h.category("Category");
+    let child = h.id("Child");
+    h.category_key("Enter", "Category", None);
+    assert!(retired.is_open());
     h.config.borrow_mut().category_present = false;
     h.update();
-    assert!(!category.0.model.borrow().alive);
-    assert!(!h.context.model.borrow().categories.contains_key(&old_id));
-    assert_eq!(h.raw(retained.clone()), (false, true));
-    h.config.borrow_mut().category_present = true;
-    h.update();
-    let other_id = h.id("Second category");
-    let replacement = CategoryNavigation(
-        h.context
+    assert!(!retired.0.model.borrow().alive);
+    assert!(
+        !h.context
             .model
             .borrow()
             .categories
-            .iter()
-            .find(|(id, _)| **id != other_id)
-            .and_then(|(_, category)| category.upgrade())
-            .unwrap(),
+            .contains_key(&retired.0.id)
     );
-    assert_ne!(replacement.0.id, old_id);
-    assert_eq!(replacement.0.owner, owner);
-    assert!(!replacement.is_open());
-    assert_eq!(h.raw(retained.clone()), (false, true));
-    assert!(
-        !replacement.is_open(),
-        "old Category ID cannot activate the new registered instance"
-    );
+    h.config.borrow_mut().category_present = true;
+    h.update();
+    let current = h.category("Category");
+    assert_ne!(current.0.id, retired.0.id);
+    assert!(!current.is_open());
+    let before = h.focuses.borrow().clone();
+    h.dom.in_runtime(|| retired.focus(Some(child)));
+    h.dom.in_runtime(|| retired.focus(None));
+    h.settle();
     assert_eq!(
-        h.raw(serde_json::json!({
-            "owner":owner,"kind":"category-click","category":replacement.0.id,
-            "category_parent":true,"sequence":1,"category_items":[],"items":[]
-        })),
-        (false, false)
+        *h.focuses.borrow(),
+        before,
+        "retired mounts cannot focus a new scope"
     );
-    assert!(
-        replacement.is_open(),
-        "the current registered replacement still accepts its own input"
-    );
-    assert_eq!(h.raw(retained), (false, true));
-    assert!(
-        replacement.is_open(),
-        "late old click cannot toggle the replacement closed"
-    );
+    assert!(!current.is_open());
+    h.category_key("Enter", "Category", None);
+    assert!(current.is_open());
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
+    assert_eq!(h.config.borrow().activations, 0);
 }

@@ -190,11 +190,17 @@ struct MenuFixtureConfig {
     visible: bool,
     alpha: bool,
     alpha_disabled: bool,
+    hidden: std::collections::BTreeSet<String>,
+    root_keys: Vec<String>,
+    child_keys: Vec<String>,
+    child_disabled: bool,
+    child_negative: bool,
     child_active: bool,
     child_present: bool,
     category_children: bool,
     category_present: bool,
     extra_menu: bool,
+    utilities: bool,
     label: String,
     hint: String,
     update: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
@@ -220,25 +226,41 @@ fn menu_navigation_fixture(config: Rc<RefCell<MenuFixtureConfig>>) -> Element {
         if settings.visible {
             Menu {
                 start_expanded:true,pinned:true,label:settings.label,navigation_hint:settings.hint,
-                application_name:"Example application",enable_toggle_theme:true,
-                settings:rsx!{MenuSettings {"Settings content"}},
-                about:rsx!{MenuAbout {"About content"}},
+                application_name:"Example application",enable_toggle_theme:settings.utilities,
+                settings:settings.utilities.then(||rsx!{MenuSettings {"Settings content"}}),
+                about:settings.utilities.then(||rsx!{MenuAbout {"About content"}}),
                 bottom:rsx!{MenuItem {label:"Footer"}},
                 input {id:"menu-search-fixture",aria_label:"Navigation search",onkeydown:move |_|{},onfocus:move |_|{}}
-                if settings.alpha { MenuItem {label:"Alpha",disabled:settings.alpha_disabled,onclick:move |_|activated.borrow_mut().activations+=1} }
-                MenuItem {label:"Disabled",disabled:true}
-                a {href:"#wrapped", MenuItem {label:"Link"}}
-                MenuItem {label:"Disabled link",href:"#disabled",disabled:true}
-                if settings.category_present {MenuCategory {label:"Category",
-                    input {id:"category-search-fixture",aria_label:"Category search",onkeydown:move |_|{},onfocus:move |_|{}}
-                    if settings.category_children {
-                    if settings.child_present {MenuItem {label:"Child",active:settings.child_active,onclick:move |_|child_activated.borrow_mut().activations+=1}}
-                    MenuItem {label:"Disabled child",disabled:true}
-                    a {href:"#category-wrapped",MenuItem {label:"Two"}}
+                for (order,item) in settings.root_keys.iter().enumerate() {
+                    Fragment {key:"{item}",
+                        if item=="Alpha" {
+                            if settings.alpha {
+                                {let activated=activated.clone();rsx!{MenuItem {label:"Alpha",order:Some(order),hidden:settings.hidden.contains(item),disabled:settings.alpha_disabled,onclick:move |_|activated.borrow_mut().activations+=1}}}
+                            }
+                        } else if item=="Disabled" {MenuItem {label:"Disabled",order:Some(order),disabled:true,hidden:settings.hidden.contains(item)}}
+                        else if item=="Link" {a {href:"#wrapped",MenuItem {label:"Link",order:Some(order),hidden:settings.hidden.contains(item)}}}
+                        else if item=="Disabled link" {MenuItem {label:"Disabled link",order:Some(order),href:"#disabled",disabled:true}}
+                        else if item=="Category" {
+                            if settings.category_present {MenuCategory {label:"Category",order:Some(order),
+                                input {id:"category-search-fixture",aria_label:"Category search",onkeydown:move |_|{},onfocus:move |_|{}}
+                                if settings.category_children {
+                                    for (child_order,child) in settings.child_keys.iter().enumerate() {
+                                        Fragment {key:"{child}",
+                                            if child=="Child" {
+                                                if settings.child_present {
+                                                    {let activated=child_activated.clone();rsx!{MenuItem {label:"Child",order:Some(child_order),hidden:settings.hidden.contains(child),disabled:settings.child_disabled,tabindex:if settings.child_negative {-1}else{0},active:settings.child_active,onclick:move |_|activated.borrow_mut().activations+=1}}}
+                                                }
+                                            } else if child=="Disabled child" {MenuItem {label:"Disabled child",order:Some(child_order),hidden:settings.hidden.contains(child),disabled:true}}
+                                            else if child=="Two" {a {href:"#category-wrapped",MenuItem {label:"Two",order:Some(child_order),hidden:settings.hidden.contains(child)}}}
+                                            else {MenuItem {label:child.clone(),order:Some(child_order),hidden:settings.hidden.contains(child)}}
+                                        }
+                                    }
+                                }
+                            }}
+                        } else if item=="Second category" {MenuCategory {label:"Second category",order:Some(order),MenuItem {label:"Solo"}}}
+                        else {MenuItem {label:item.clone(),order:Some(order),hidden:settings.hidden.contains(item)}}
                     }
-                }}
-                MenuItem {label:"Omega"}
-                MenuCategory {label:"Second category",MenuItem {label:"Solo"}}
+                }
             }
         }
         if settings.extra_menu { MenuHoverOtherMenu {} }
@@ -630,7 +652,7 @@ struct MenuHarness {
     dom: VirtualDom,
     config: Rc<RefCell<MenuFixtureConfig>>,
     context: MenuRoving,
-    input: dioxus::core::ElementId,
+    mounts: Vec<dioxus::core::ElementId>,
     bar: dioxus::core::ElementId,
     toggle: dioxus::core::ElementId,
     controls: BTreeMap<String, (dioxus::core::ElementId, usize)>,
@@ -655,11 +677,31 @@ impl MenuHarness {
             visible: true,
             alpha: true,
             alpha_disabled: false,
+            hidden: Default::default(),
+            root_keys: [
+                "Alpha",
+                "Disabled",
+                "Link",
+                "Disabled link",
+                "Category",
+                "Omega",
+                "Second category",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            child_keys: ["Child", "Disabled child", "Two"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            child_disabled: false,
+            child_negative: false,
             child_active,
             child_present: true,
             category_children: true,
             category_present: true,
             extra_menu,
+            utilities: true,
             label: "Application Navigation".into(),
             hint: "Use Up and Down arrow keys to navigate between menu items".into(),
             update: None,
@@ -669,109 +711,102 @@ impl MenuHarness {
         dioxus::html::set_event_converter(Box::new(MenuTestConverter));
         let mut dom = VirtualDom::new_with_props(menu_navigation_fixture, config.clone());
         let mutations = dom.rebuild_to_vec();
+        let context = config.borrow().capture.0.borrow().as_ref().unwrap().clone();
+        let mut result = Self {
+            dom,
+            config,
+            context,
+            mounts: Vec::new(),
+            bar: dioxus::core::ElementId::ROOT,
+            toggle: dioxus::core::ElementId::ROOT,
+            controls: BTreeMap::new(),
+            focuses: Rc::new(RefCell::new(Vec::new())),
+            attributes: BTreeMap::new(),
+        };
+        result.collect(mutations);
+        result.bar = result.named_target("Application Navigation");
+        result.toggle = result.named_target("Collapse");
+        result.mount_pending();
+        result
+    }
+    fn named_target(&self, label: &str) -> dioxus::core::ElementId {
+        self.attributes
+            .iter()
+            .find(|(_, attrs)| attrs.get("aria-label").is_some_and(|value| value == label))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
+            .unwrap_or_else(|| panic!("missing target {label}"))
+    }
+    fn collect(&mut self, mutations: dioxus::core::Mutations) {
         let mut current = dioxus::core::ElementId::ROOT;
-        let mut attributes = BTreeMap::<usize, BTreeMap<String, String>>::new();
-        let mut inputs = Vec::new();
         for edit in mutations.edits {
             match edit {
-                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
-                    current = id
+                dioxus::core::Mutation::SetId { id } => {
+                    // Renderer IDs can be reused after a subtree is removed.
+                    // A fresh registration must not inherit a retired label.
+                    self.controls.retain(|_, (target, _)| *target != id);
+                    self.attributes.remove(&id.raw());
+                    current = id;
                 }
+                dioxus::core::Mutation::PushId { id } => current = id,
                 dioxus::core::Mutation::SetAttribute {
                     name,
                     value: dioxus::core::AttributeValue::Text(value),
                     ..
                 } => {
-                    attributes
-                        .entry(current.raw())
-                        .or_default()
-                        .insert(name, value);
+                    let attrs = self.attributes.entry(current.raw()).or_default();
+                    attrs.insert(name, value);
+                    if let (Some(label), Some(id)) = (
+                        attrs.get("aria-label"),
+                        attrs
+                            .get("data-menu-control")
+                            .or_else(|| attrs.get("data-menu-category-child")),
+                    ) {
+                        self.controls
+                            .insert(label.clone(), (current, id.parse().unwrap()));
+                    }
                 }
-                dioxus::core::Mutation::NewEventListener { name } if name == "input" => {
-                    inputs.push(current)
+                dioxus::core::Mutation::NewEventListener { name } if name == "mounted" => {
+                    self.mounts.push(current)
                 }
                 _ => {}
             }
         }
-        let input = *inputs
-            .iter()
-            .find(|id| {
-                attributes
-                    .get(&id.raw())
-                    .is_some_and(|attrs| attrs.contains_key("data-menu-observer"))
-            })
-            .unwrap();
-        let target = |label: &str| {
-            attributes
-                .iter()
-                .find(|(_, attrs)| attrs.get("aria-label").is_some_and(|value| value == label))
-                .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
-                .unwrap_or_else(|| panic!("missing menu target {label}"))
-        };
-        let bar = target("Application Navigation");
-        let toggle = target("Collapse");
-        let controls = attributes
-            .iter()
-            .filter_map(|(id, attrs)| {
-                Some((
-                    attrs.get("aria-label")?.clone(),
-                    (
-                        dioxus::core::ElementId::from_raw(*id),
-                        attrs
-                            .get("data-menu-control")
-                            .or_else(|| attrs.get("data-menu-category-child"))?
-                            .parse()
-                            .unwrap(),
-                    ),
-                ))
-            })
-            .collect();
-        let context = config.borrow().capture.0.borrow().as_ref().unwrap().clone();
-        let focuses = Rc::new(RefCell::new(vec![]));
-        let result = Self {
-            dom,
-            config,
-            context,
-            input,
-            bar,
-            toggle,
-            controls,
-            focuses,
-            attributes,
-        };
-        for (target, id) in result.controls.values() {
+    }
+    fn mount_pending(&mut self) {
+        for target in std::mem::take(&mut self.mounts) {
+            let id = self
+                .controls
+                .values()
+                .find(|(control, _)| *control == target)
+                .map(|(_, id)| *id)
+                .unwrap_or(target.raw());
             let mount = MenuTestMount {
-                id: *id,
-                focuses: result.focuses.clone(),
+                id,
+                focuses: self.focuses.clone(),
                 ..Default::default()
             };
             mount.ready.set(true);
-            menu_dispatch(&result.dom, "mounted", *target, mount);
+            menu_dispatch(&self.dom, "mounted", target, mount);
         }
-        result
     }
     fn settle(&mut self) {
-        for _ in 0..3 {
-            let mutations = self.dom.render_immediate_to_vec();
-            let mut current = dioxus::core::ElementId::ROOT;
-            for edit in mutations.edits {
-                match edit {
-                    dioxus::core::Mutation::SetId { id }
-                    | dioxus::core::Mutation::PushId { id } => current = id,
-                    dioxus::core::Mutation::SetAttribute {
-                        name,
-                        value: dioxus::core::AttributeValue::Text(value),
-                        ..
-                    } => {
-                        self.attributes
-                            .entry(current.raw())
-                            .or_default()
-                            .insert(name, value);
-                    }
-                    _ => {}
-                }
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        for _ in 0..32 {
+            self.mount_pending();
+            // wait_for_work is cancel-safe and drains ready effects/tasks. One
+            // poll distinguishes queued work from genuinely blocked mounted
+            // focus futures without waiting for them or counting render turns.
+            let ready = {
+                let mut work = std::pin::pin!(self.dom.wait_for_work());
+                std::future::Future::poll(work.as_mut(), &mut context).is_ready()
+            };
+            if !ready && self.mounts.is_empty() {
+                return;
             }
+            let mutations = self.dom.render_immediate_to_vec();
+            self.collect(mutations);
         }
+        panic!("Menu fixture did not settle after 32 ready-work passes");
     }
     fn update(&mut self) {
         let update = self.config.borrow().update.clone().unwrap();
@@ -784,47 +819,8 @@ impl MenuHarness {
     fn target(&self, label: &str) -> dioxus::core::ElementId {
         self.controls[label].0
     }
-    fn facts(&self, labels: &[&str]) -> Vec<MenuDomItem> {
-        labels
-            .iter()
-            .map(|label| MenuDomItem {
-                id: self.id(label),
-                disabled: label.starts_with("Disabled"),
-                hidden: false,
-                display: String::new(),
-                grandparent_display: String::new(),
-            })
-            .collect()
-    }
-    fn observe(
-        &mut self,
-        kind: &str,
-        key: &str,
-        origin: Option<usize>,
-        excluded: bool,
-        items: Vec<MenuDomItem>,
-    ) -> (bool, bool) {
-        let owner = self.context.model.borrow().owner.clone();
-        self.raw(serde_json::json!({"owner":owner,"kind":kind,"key":key,"origin":origin,"excluded":excluded,"items":items}))
-    }
-    // Legacy-shaped fixture inputs describe an interaction plus current
-    // read-only facts. Only inventory facts reach the observer; keyboard,
-    // click and focus events always enter the real Dioxus listeners.
-    fn raw(&mut self, message: serde_json::Value) -> (bool, bool) {
-        let kind = message["kind"].as_str().unwrap_or_default();
-        let owner = self.context.model.borrow().owner.clone();
-        let current_owner = message["owner"].as_str() == Some(owner.as_str());
-        let category = message["category"].as_u64().map(|id| id as usize);
-        let live_category = category.is_some_and(|id| {
-            self.context
-                .model
-                .borrow()
-                .categories
-                .get(&id)
-                .and_then(|category| category.upgrade())
-                .is_some()
-        });
-        let key = match message["key"].as_str().unwrap_or_default() {
+    fn parse_key(key: &str) -> Key {
+        match key {
             "ArrowDown" => Key::ArrowDown,
             "ArrowUp" => Key::ArrowUp,
             "ArrowLeft" => Key::ArrowLeft,
@@ -836,68 +832,38 @@ impl MenuHarness {
             "Tab" => Key::Tab,
             " " => Key::Character(" ".into()),
             _ => Key::Character("Unidentified".into()),
-        };
-        let interaction = current_owner
-            && (kind == "key"
-                || kind == "focus"
-                || (live_category && matches!(kind, "category-key" | "category-click")));
-        if interaction {
-            let mut facts = message.clone();
-            facts["kind"] = serde_json::json!(if category.is_some() {
-                "category-order"
-            } else if self.context.model.borrow().native {
-                "order"
-            } else {
-                "ready"
-            });
-            facts["sequence"] = serde_json::json!(0);
-            menu_dispatch(&self.dom, "input", self.input, facts.to_string());
-            self.settle();
-            let control = |id: usize| {
-                self.attributes
-                    .iter()
-                    .find(|(_, attributes)| {
-                        attributes
-                            .get("data-menu-control")
-                            .or_else(|| attributes.get("data-menu-category-child"))
-                            .and_then(|value| value.parse::<usize>().ok())
-                            == Some(id)
-                    })
-                    .map(|(target, _)| dioxus::core::ElementId::from_raw(*target))
-            };
-            let target = if let Some(category) = category {
-                message["child"]
-                    .as_u64()
-                    .map(|id| id as usize)
-                    .or(Some(category))
-                    .and_then(control)
-            } else if kind == "key" && message["excluded"].as_bool() == Some(true) {
-                self.controls.get("Child").map(|(target, _)| *target)
-            } else {
-                message["origin"]
-                    .as_u64()
-                    .map(|id| id as usize)
-                    .and_then(control)
-                    .or(Some(self.bar))
-            };
-            if let Some(target) = target {
-                if kind == "focus" {
-                    let flags = menu_dispatch(&self.dom, "focus", target, ());
-                    self.settle();
-                    return flags;
-                }
-                if kind == "category-click" {
-                    let flags = menu_dispatch(&self.dom, "click", target, ());
-                    self.settle();
-                    return flags;
-                }
-                return self.key(target, key);
-            }
-            return (false, true);
         }
-        let flags = menu_dispatch(&self.dom, "input", self.input, message.to_string());
+    }
+    fn root_key(&mut self, key: &str, origin: Option<usize>, excluded: bool) -> (bool, bool) {
+        let target = if excluded {
+            self.target("Child")
+        } else {
+            origin
+                .and_then(|id| {
+                    self.controls
+                        .values()
+                        .find(|(_, current)| *current == id)
+                        .map(|(target, _)| *target)
+                })
+                .unwrap_or(self.bar)
+        };
+        self.key(target, Self::parse_key(key))
+    }
+    fn root_focus(&mut self, origin: Option<usize>) -> (bool, bool) {
+        let target = origin
+            .and_then(|id| {
+                self.controls
+                    .values()
+                    .find(|(_, current)| *current == id)
+                    .map(|(target, _)| *target)
+            })
+            .unwrap_or(self.bar);
+        let result = menu_dispatch(&self.dom, "focus", target, ());
         self.settle();
-        flags
+        result
+    }
+    fn category_key(&mut self, key: &str, category: &str, child: Option<&str>) -> (bool, bool) {
+        self.key(self.target(child.unwrap_or(category)), Self::parse_key(key))
     }
     fn key(&mut self, target: dioxus::core::ElementId, key: Key) -> (bool, bool) {
         if target == self.bar {
@@ -939,29 +905,6 @@ impl MenuHarness {
                 .upgrade()
                 .unwrap(),
         )
-    }
-    fn category_facts(&self, labels: &[&str]) -> Vec<CategoryDomItem> {
-        labels
-            .iter()
-            .map(|label| CategoryDomItem {
-                id: self.id(label),
-                disabled: label.starts_with("Disabled"),
-                hidden: false,
-                tabindex: Some("0".into()),
-            })
-            .collect()
-    }
-    fn category_event(
-        &mut self,
-        kind: &str,
-        key: &str,
-        category: &str,
-        child: Option<&str>,
-        sequence: u64,
-        items: Vec<CategoryDomItem>,
-    ) -> (bool, bool) {
-        let owner = self.context.model.borrow().owner.clone();
-        self.raw(serde_json::json!({"owner":owner,"kind":kind,"key":key,"category":self.id(category),"child":child.map(|label|self.id(label)),"category_parent":child.is_none(),"sequence":sequence,"shift":false,"category_items":items,"items":[]}))
     }
     fn category_surface(&self, label: &str, surface: &str) -> dioxus::core::ElementId {
         let id = self.id(label).to_string();
@@ -1077,229 +1020,148 @@ fn menu_navigation_has_separate_native_entry_labels_and_disabled_link_marker() {
 }
 
 #[test]
-fn menu_navigation_actual_observation_handlers_wrap_restore_and_only_cancel_defaults() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    let mut harness = MenuHarness::new();
-    let facts = harness.facts(&[
-        "Alpha",
-        "Disabled",
-        "Link",
-        "Disabled link",
-        "Category",
-        "Omega",
-        "Footer",
-        "Settings",
-        "Toggle theme",
-        "About & legal information",
-    ]);
-    // Ready can follow an equal order report; it must switch membership
-    // and rerender metadata even though the DOM facts themselves are equal.
-    let initial = harness.facts(&["Alpha"]);
-    harness.observe("order", "", None, false, initial.clone());
-    harness.observe("ready", "", None, false, initial);
-    let alpha = harness.id("Alpha");
-    assert_eq!(harness.context.attributes(alpha).2, Some(1));
-    let ready_html = harness.html();
-    let alpha_tag = ready_html
-        .split('<')
-        .filter_map(|element| element.split('>').next())
-        .find(|tag| tag.contains("aria-label=\"Alpha\""))
-        .unwrap();
-    assert!(
-        alpha_tag.contains("aria-setsize=\"1\""),
-        "ready must notify actual rendered metadata when equal facts change the membership policy"
-    );
-    harness.observe("order", "", None, false, facts.clone());
-    let about = harness.id("About & legal information");
+fn menu_navigation_actual_handlers_wrap_restore_and_only_cancel_owned_defaults() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::new();
+    let alpha = h.id("Alpha");
+    let about = h.id("About & legal information");
     assert_eq!(
-        harness.observe("key", "ArrowDown", None, false, facts.clone()),
-        (true, false)
+        h.context.attributes(alpha).2,
+        Some(9),
+        "Rust sections include all eligible primary/bottom/utility controls"
     );
-    assert_eq!(harness.last(), Some(alpha));
-    assert_eq!(
-        harness.config.borrow().bubbled,
-        0,
-        "owned keys stop at the Menu"
-    );
-    assert_eq!(harness.focuses.borrow().last().copied(), Some(alpha));
-    harness.observe("key", "ArrowUp", Some(alpha), false, facts.clone());
-    assert_eq!(harness.last(), Some(about));
-    menu_dispatch(&harness.dom, "focusout", harness.bar, ());
-    harness.settle();
-    assert!(harness.tabs().values().all(|tab| *tab == -1));
-    harness.observe("key", "ArrowDown", None, false, facts.clone());
-    assert_eq!(
-        harness.last(),
-        Some(about),
-        "container recalls last eligible request"
-    );
-    harness.observe("key", "Home", Some(about), false, facts.clone());
-    assert_eq!(harness.last(), Some(alpha));
-    harness.observe("key", "End", Some(alpha), false, facts.clone());
-    assert_eq!(harness.last(), Some(about));
-    assert_eq!(
-        harness.observe("key", "Home", Some(alpha), true, facts),
-        (false, false)
-    );
-    assert_eq!(
-        harness.last(),
-        Some(about),
-        "role=menu subtree does not enter root traversal"
-    );
-    assert_eq!(harness.config.borrow().activations, 0);
+    assert_eq!(h.root_key("ArrowDown", None, false), (true, false));
+    assert_eq!(h.last(), Some(alpha));
+    assert_eq!(h.config.borrow().bubbled, 0);
+    assert_eq!(h.focuses.borrow().last().copied(), Some(alpha));
+    h.root_key("ArrowUp", Some(alpha), false);
+    assert_eq!(h.last(), Some(about));
+    menu_dispatch(&h.dom, "focusout", h.bar, ());
+    h.settle();
+    assert!(h.tabs().values().all(|tab| *tab == -1));
+    h.root_key("ArrowDown", None, false);
+    assert_eq!(h.last(), Some(about), "bar recalls the last eligible item");
+    h.root_key("Home", Some(about), false);
+    assert_eq!(h.last(), Some(alpha));
+    h.root_key("End", Some(alpha), false);
+    assert_eq!(h.last(), Some(about));
+    assert_eq!(h.root_key("Home", Some(alpha), true), (false, false));
+    assert_eq!(h.last(), Some(about));
+    assert_eq!(h.config.borrow().activations, 0);
 }
 
 #[test]
-fn menu_navigation_uses_current_native_order_and_actual_origin_after_failed_focus() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    let mut harness = MenuHarness::new();
-    let mut facts = harness.facts(&["Alpha", "Link", "Omega", "Footer"]);
-    harness.observe("ready", "", None, false, facts.clone());
-    let alpha = harness.id("Alpha");
-    let link = harness.id("Link");
-    let omega = harness.id("Omega");
-    menu_dispatch(&harness.dom, "focus", harness.target("Alpha"), ());
-    harness.settle();
-    harness.observe("key", "ArrowDown", Some(alpha), false, facts.clone());
-    assert_eq!(harness.last(), Some(link));
+fn menu_navigation_uses_current_rust_order_and_actual_typed_origin() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::new();
+    {
+        let mut config = h.config.borrow_mut();
+        config.root_keys = ["Alpha", "Link", "Omega"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        config.utilities = false;
+    }
+    h.update();
+    let alpha = h.id("Alpha");
+    let link = h.id("Link");
+    let omega = h.id("Omega");
+    h.focus_control("Alpha");
+    h.root_key("ArrowDown", Some(alpha), false);
+    assert_eq!(h.last(), Some(link));
     assert_eq!(
-        harness.context.model.borrow().actual,
+        h.context.model.borrow().actual,
         Some(alpha),
-        "requesting a CSS-hidden wrapper does not invent focusin"
+        "a mounted request does not invent a later typed focus event"
     );
-    harness.observe("key", "ArrowDown", Some(alpha), false, facts.clone());
+    h.root_key("ArrowDown", Some(alpha), false);
+    assert_eq!(h.last(), Some(link));
+    h.config.borrow_mut().root_keys.swap(1, 2);
+    h.update();
     assert_eq!(
-        harness.last(),
-        Some(link),
-        "another real key starts from its actual typed control"
+        h.id("Link"),
+        link,
+        "keyed moves preserve the registered owner"
     );
-    facts.swap(1, 2);
-    harness.observe("key", "ArrowDown", Some(alpha), false, facts.clone());
-    assert_eq!(
-        harness.last(),
-        Some(omega),
-        "the latest observed order is used by the next Dioxus key"
-    );
-    facts[1].hidden = true;
-    harness.observe("key", "ArrowDown", Some(alpha), false, facts.clone());
-    assert_eq!(harness.last(), Some(link));
-    facts[2].display = "none".into();
-    harness.observe("key", "ArrowDown", Some(alpha), false, facts.clone());
-    assert_eq!(harness.last(), Some(harness.id("Footer")));
-    facts[3].grandparent_display = "none".into();
-    harness.observe("key", "ArrowDown", Some(alpha), false, facts);
-    assert_eq!(harness.last(), Some(alpha));
-    assert_eq!(
-        harness.observe("key", "Home", None, false, vec![]),
-        (false, true)
-    );
-    assert_eq!(harness.config.borrow().activations, 0);
+    h.root_key("ArrowDown", Some(alpha), false);
+    assert_eq!(h.last(), Some(omega));
+    h.config.borrow_mut().hidden.insert("Omega".into());
+    h.update();
+    h.root_key("ArrowDown", Some(alpha), false);
+    assert_eq!(h.last(), Some(link));
+    h.config.borrow_mut().alpha_disabled = true;
+    h.update();
+    h.root_key("Home", None, false);
+    assert_eq!(h.last(), Some(link));
+    assert_eq!(h.config.borrow().activations, 0);
 }
 
 #[test]
-fn menu_navigation_focus_observation_refreshes_current_facts_and_unknown_entry_reset() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    let mut harness = MenuHarness::new();
-    let facts = harness.facts(&["Alpha", "Category", "Omega"]);
-    harness.observe("ready", "", None, false, facts.clone());
-    let omega = harness.id("Omega");
-    harness.observe("key", "End", None, false, facts);
-    let current = harness.facts(&["Omega", "Category", "Alpha"]);
-    assert_eq!(
-        harness.observe("focus", "", None, false, current.clone()),
-        (false, false)
-    );
-    assert!(harness.tabs().values().all(|tab| *tab == -1));
-    assert_eq!(
-        harness.last(),
-        Some(omega),
-        "unknown descendant entry resets roving but retains remembered item"
-    );
-    assert_eq!(harness.context.model.borrow().actual, None);
-    assert_eq!(
-        harness.context.attributes(omega).1,
-        Some(1),
-        "focusin itself supplies fresh current topology"
-    );
-    let category = harness.id("Category");
-    harness.observe("focus", "", Some(category), true, current);
-    assert_eq!(harness.context.model.borrow().actual, Some(category));
-    assert_eq!(
-        harness.tabs()[&category],
-        0,
-        "category descendants attribute focus to the root category; only keys use the role-menu exclusion"
-    );
-    let facts = harness.facts(&["Alpha", "Omega"]);
-    harness.observe("order", "", None, false, facts);
-    assert_eq!(
-        harness.key(harness.target("Alpha"), Key::End),
-        (true, false)
-    );
-    assert_eq!(harness.last(), Some(omega));
-    assert_eq!(harness.focuses.borrow().last().copied(), Some(omega));
-}
-
-#[test]
-fn menu_navigation_category_descendants_and_wrong_protocol_owners_are_isolated() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    let mut harness = MenuHarness::new();
-    let root_members = harness.context.model.borrow().members.len();
-    menu_dispatch(&harness.dom, "click", harness.target("Category"), ());
-    let child = harness.target("Child");
-    harness.settle();
-    assert!(harness.html().contains("role=\"menu\""));
-    assert_eq!(
-        harness.context.model.borrow().members.len(),
-        root_members,
-        "expanded descendants do not register as outer items"
-    );
-    assert_eq!(harness.key(child, Key::Home), (false, false));
-    assert_eq!(
-        harness.last(),
-        None,
-        "Category descendants keep Home native without root navigation"
-    );
-    let ids: Vec<_> = harness
-        .context
-        .model
-        .borrow()
-        .members
-        .keys()
-        .copied()
+fn menu_navigation_typed_focus_retains_last_and_uses_current_rust_positions() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::new();
+    h.config.borrow_mut().root_keys = ["Omega", "Category", "Alpha"]
+        .into_iter()
+        .map(str::to_string)
         .collect();
-    let before = harness.last();
-    assert_eq!(harness.raw(serde_json::json!({"owner":"other-menu","kind":"order","items":harness.facts(&["Alpha","Omega"])})),(false,true));
-    assert_eq!(harness.last(), before);
-    assert_eq!(
-        harness
-            .context
-            .model
-            .borrow()
-            .members
-            .keys()
-            .copied()
-            .collect::<Vec<_>>(),
-        ids
-    );
-    let facts = harness.facts(&["Alpha", "Category", "Omega"]);
-    harness.observe("ready", "", None, false, facts.clone());
-    assert_eq!(
-        harness.observe("key", "Home", Some(harness.id("Category")), true, facts),
-        (false, false)
-    );
-    assert_eq!(harness.last(), before);
+    h.update();
+    let omega = h.id("Omega");
+    h.root_key("Home", None, false);
+    assert_eq!(h.last(), Some(omega));
+    assert_eq!(h.root_focus(None), (false, false));
+    assert!(h.tabs().values().all(|tab| *tab == -1));
+    assert_eq!(h.last(), Some(omega));
+    assert_eq!(h.context.model.borrow().actual, None);
+    assert_eq!(h.context.attributes(omega).1, Some(1));
+    let category = h.id("Category");
+    h.root_focus(Some(category));
+    assert_eq!(h.context.model.borrow().actual, Some(category));
+    assert_eq!(h.tabs()[&category], 0);
+    assert_eq!(h.root_key("Home", Some(category), true), (false, false));
+    assert_eq!(h.last(), Some(category));
 }
 
 #[test]
-fn native_inventory_keeps_dioxus_navigation_and_custom_field_defaults_in_both_layouts() {
+fn menu_navigation_category_descendants_and_independent_owners_are_isolated() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::unsettled_with_peer(false, true);
+    h.settle();
+    let members = h.context.model.borrow().members.len();
+    h.click("Category");
+    assert_eq!(
+        h.context.model.borrow().members.len(),
+        members,
+        "nested children stay outside the root inventory"
+    );
+    assert_eq!(h.key(h.target("Child"), Key::Home), (false, false));
+    assert_eq!(h.last(), None);
+    assert_eq!(
+        h.root_key("Home", Some(h.id("Category")), true),
+        (false, false)
+    );
+    assert_eq!(h.last(), None);
+    assert!(
+        !h.controls.contains_key("Other child")
+            || !h
+                .context
+                .model
+                .borrow()
+                .members
+                .contains_key(&h.id("Other child")),
+        "independent menu registrations are isolated"
+    );
+}
+
+#[test]
+fn rust_inventory_keeps_dioxus_navigation_and_custom_field_defaults_in_both_layouts() {
     let _guard = crate::test_event_converter_guard();
     for expanded in [true, false] {
         let mut h = MenuHarness::new();
         if !expanded {
             h.toggle_expanded();
         }
-        let facts = h.facts(&["Alpha", "Disabled", "Link", "Category", "Omega"]);
-        h.observe("ready", "", None, false, facts);
+
+        h.settle();
         assert_eq!(h.key(h.target("Alpha"), Key::ArrowDown), (true, false));
         assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Link")));
         let last = h.last();
@@ -1456,8 +1318,8 @@ fn menu_category_pointer_activation_toggles_panel_and_presents_flyout_after_obse
             h.toggle_expanded();
         }
         let category = h.category("Category");
-        let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-        h.category_event("category-order", "", "Category", None, 0, facts);
+
+        h.settle();
         assert_eq!(h.click("Category"), (false, false));
         assert!(category.is_open());
         assert_eq!(h.config.borrow().activations, 0);
@@ -1477,8 +1339,8 @@ fn menu_category_collapsed_escape_closes_and_returns_through_one_dioxus_key() {
     let mut h = MenuHarness::new();
     h.toggle_expanded();
     let category = h.category("Category");
-    let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event("category-order", "", "Category", None, 0, facts);
+
+    h.settle();
     h.click("Category");
     assert_eq!(h.key(h.target("Child"), Key::Escape), (false, false));
     assert!(!category.is_open());
@@ -1487,48 +1349,25 @@ fn menu_category_collapsed_escape_closes_and_returns_through_one_dioxus_key() {
 }
 
 #[test]
-fn menu_category_observation_and_actual_key_initialize_current_active_baseline() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    for (active, order_first) in [(false, false), (false, true), (true, false), (true, false)] {
-        let mut harness = MenuHarness::unsettled(active);
-        let category = harness.category("Category");
-        assert!(
-            !category.0.model.borrow().initialized,
-            "no first effect has been settled"
-        );
-        let owner = harness.context.model.borrow().owner.clone();
-        let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-        if order_first {
-            let message = serde_json::json!({"owner":owner,"kind":"category-order","category":harness.id("Category"),"sequence":0,"category_items":facts,"items":[]});
-            menu_dispatch(&harness.dom, "input", harness.input, message.to_string());
-            assert!(
-                category.0.model.borrow().initialized,
-                "native readiness establishes the baseline synchronously"
-            );
-            assert_eq!(*category.0.panel.peek(), active);
-        }
+fn menu_category_first_typed_key_initializes_current_active_baseline() {
+    let _guard = crate::test_event_converter_guard();
+    for active in [false, true] {
+        let mut h = MenuHarness::unsettled(active);
+        let category = h.category("Category");
+        assert!(!category.0.model.borrow().initialized);
         assert_eq!(
-            menu_dispatch(
-                &harness.dom,
-                "keydown",
-                harness.target("Category"),
-                Key::Enter
-            ),
+            menu_dispatch(&h.dom, "keydown", h.target("Category"), Key::Enter),
             (true, false)
         );
         assert!(category.0.model.borrow().initialized);
+        assert_eq!(category.is_open(), !active);
+        h.settle();
         assert_eq!(
             category.is_open(),
             !active,
-            "first Enter toggles from the source active-child baseline"
+            "late initial effect cannot overwrite accepted input"
         );
-        harness.settle();
-        assert_eq!(
-            category.is_open(),
-            !active,
-            "late first effect must not overwrite accepted input"
-        );
-        assert_eq!(harness.config.borrow().activations, 0);
+        assert_eq!(h.config.borrow().activations, 0);
     }
 }
 
@@ -1549,7 +1388,7 @@ fn menu_category_independent_panels_retain_pointer_selection_and_follow_active_l
             .to_string()
     };
     assert!(
-        !panel_tag(&harness).contains("popover="),
+        !panel_tag(&harness).contains(" popover="),
         "expanded panels must not inherit the native closed-popover display rule"
     );
     assert!(
@@ -1601,7 +1440,7 @@ fn menu_category_independent_panels_retain_pointer_selection_and_follow_active_l
         "reexpand opens only active-child categories"
     );
     let expanded = panel_tag(&harness);
-    assert!(!expanded.contains("popover="));
+    assert!(!expanded.contains(" popover="));
     assert!(!expanded.contains("position-anchor:"));
     harness.config.borrow_mut().child_active = false;
     harness.update();
@@ -1632,7 +1471,20 @@ fn menu_category_expanded_actual_keys_use_raw_children_local_tab_and_escape_only
     assert!(category.is_open());
     assert_eq!(
         harness.focuses.borrow().last().copied(),
-        Some(harness.id("Child"))
+        Some(harness.id("Child")),
+        "expanded entry: requested={:?}, pending={:?}, generation={}, children={:?}, pending_mounts={:?}",
+        category.0.model.borrow().requested,
+        category.0.model.borrow().entry_focus,
+        category.0.model.borrow().generation,
+        category
+            .0
+            .model
+            .borrow()
+            .children
+            .iter()
+            .map(|(id, child)| (*id, child.order, child.hidden, child.node.is_some()))
+            .collect::<Vec<_>>(),
+        harness.mounts
     );
     let html = harness.html();
     let disabled = html
@@ -1797,16 +1649,9 @@ fn menu_category_collapsed_arrows_filter_disabled_but_tab_and_repeated_present_s
     }
     harness.click("Second category");
     assert!(second.is_open() && !first.is_open());
-    let facts = harness.category_facts(&["Solo"]);
+
     assert_eq!(
-        harness.category_event(
-            "category-key",
-            "Escape",
-            "Second category",
-            Some("Solo"),
-            1,
-            facts
-        ),
+        harness.category_key("Escape", "Second category", Some("Solo")),
         (false, false)
     );
     assert!(!second.is_open());
@@ -1821,9 +1666,9 @@ fn menu_category_return_closes_and_focuses_parent_without_native_child_defaults(
     let _event_converter_guard = crate::test_event_converter_guard();
     let mut harness = MenuHarness::new();
     let category = harness.category("Category");
-    let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-    harness.category_event("category-order", "", "Category", None, 0, facts.clone());
-    for (sequence, key, expanded) in [
+
+    harness.settle();
+    for (_sequence, key, expanded) in [
         (1, "Enter", true),
         (2, " ", true),
         (3, "Enter", false),
@@ -1835,14 +1680,7 @@ fn menu_category_return_closes_and_focuses_parent_without_native_child_defaults(
         harness.click("Category");
         assert!(category.is_open());
         assert_eq!(
-            harness.category_event(
-                "category-key",
-                key,
-                "Category",
-                Some("Child"),
-                sequence,
-                facts.clone()
-            ),
+            harness.category_key(key, "Category", Some("Child")),
             (true, false)
         );
         assert!(!category.is_open());
@@ -1859,185 +1697,93 @@ fn menu_category_return_closes_and_focuses_parent_without_native_child_defaults(
 }
 
 #[test]
-fn menu_category_observed_order_and_owner_are_current_and_unmount_rejects_late_input() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    let mut harness = MenuHarness::new();
-    let category = harness.category("Category");
-    harness.click("Category");
-    let facts = harness.category_facts(&["Two", "Child", "Disabled child"]);
-    harness.category_event(
-        "category-key",
-        "ArrowUp",
-        "Category",
-        Some("Child"),
-        1,
-        facts.clone(),
-    );
-    assert_eq!(
-        category.0.model.borrow().requested,
-        Some(Some(harness.id("Two"))),
-        "current observed order supersedes mount order"
-    );
-    let owner = harness.context.model.borrow().owner.clone();
-    let before = category.0.model.borrow().generation;
-    assert_eq!(harness.raw(serde_json::json!({"owner":"wrong-owner","kind":"category-key","category":harness.id("Category"),"child":harness.id("Child"),"key":"Enter","sequence":2,"category_items":facts,"items":[]})),(false,true));
-    assert_eq!(category.0.model.borrow().generation, before);
-    let facts = harness.category_facts(&["Two", "Child", "Disabled child"]);
-    harness.category_event(
-        "category-key",
-        "Enter",
-        "Category",
-        Some("Child"),
-        2,
-        facts.clone(),
-    );
-    menu_dispatch(&harness.dom, "click", harness.toggle, ());
-    harness.settle();
-    harness.config.borrow_mut().category_present = false;
-    harness.update();
+fn menu_category_rust_order_updates_and_unmount_rejects_retained_focus() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::new();
+    let category = h.category("Category");
+    h.click("Category");
+    h.config.borrow_mut().child_keys = ["Two", "Child", "Disabled child"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    h.update();
+    h.category_key("ArrowUp", "Category", Some("Child"));
+    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Two")));
+    let child = h.id("Child");
+    h.config.borrow_mut().category_present = false;
+    h.update();
     assert!(!category.0.model.borrow().alive);
-    assert_eq!(harness.raw(serde_json::json!({"owner":owner,"kind":"category-key","category":harness.id("Category"),"child":harness.id("Child"),"key":"Home","sequence":3,"category_items":facts,"items":[]})),(false,true));
     assert!(
-        !harness
-            .context
+        !h.context
             .model
             .borrow()
             .categories
-            .contains_key(&harness.id("Category"))
+            .contains_key(&category.0.id)
     );
+    let before = h.focuses.borrow().clone();
+    h.dom.in_runtime(|| category.focus(Some(child)));
+    h.settle();
+    assert_eq!(*h.focuses.borrow(), before);
 }
 
 #[test]
-fn menu_category_keyboard_entry_waits_for_shown_hosts_before_mounted_focus() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    let mut harness = MenuHarness::new();
-    harness.toggle_expanded();
-    let category = harness.category("Category");
-    let child = harness.id("Child");
+fn menu_category_keyboard_entry_waits_for_its_rust_render_commit() {
+    let _guard = crate::test_event_converter_guard();
+    let mut h = MenuHarness::new();
+    h.toggle_expanded();
+    let category = h.category("Category");
+    let child = h.id("Child");
     let delayed = MenuTestMount {
         id: child,
-        focuses: harness.focuses.clone(),
+        focuses: h.focuses.clone(),
         ..Default::default()
     };
-    menu_dispatch(
-        &harness.dom,
-        "mounted",
-        harness.target("Child"),
-        delayed.clone(),
-    );
-    harness.settle();
-    let mut facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-    for item in &mut facts {
-        item.hidden = true;
-    }
-    harness.category_event("category-key", "Enter", "Category", None, 1, facts.clone());
+    menu_dispatch(&h.dom, "mounted", h.target("Child"), delayed.clone());
+    h.settle();
+    menu_dispatch(&h.dom, "keydown", h.target("Category"), Key::Enter);
     assert!(category.is_open());
     assert_eq!(category.0.model.borrow().entry_focus, Some(child));
-    assert!(
-        !delayed.started.get(),
-        "closed host tuples cannot authorize entry focus"
-    );
-
-    facts[0].hidden = false;
-    harness.category_event("category-order", "", "Category", None, 0, facts.clone());
-    assert_eq!(category.0.model.borrow().entry_focus, Some(child));
-    assert!(
-        !delayed.started.get(),
-        "partial publication is not the shown boundary"
-    );
-    for item in &mut facts {
-        item.hidden = false;
-    }
-    harness.category_event("category-order", "", "Category", None, 0, facts.clone());
+    assert!(!delayed.started.get());
+    h.settle();
     assert_eq!(category.0.model.borrow().entry_focus, None);
-    assert_eq!(category.0.model.borrow().requested, Some(Some(child)));
     assert!(
         delayed.started.get(),
-        "shown hosts admit the real mounted focus future"
+        "render commit admits the mounted focus once"
     );
-    assert!(!delayed.read_dropped.get());
-    harness.category_event("category-order", "", "Category", None, 0, facts);
-    assert!(
-        !delayed.read_dropped.get(),
-        "identical observations do not cancel admitted focus"
-    );
-    harness.config.borrow_mut().child_present = false;
-    harness.update();
-    assert!(
-        delayed.read_dropped.get(),
-        "removal still cancels the retained target"
-    );
-    harness.release(&delayed);
-    assert!(!harness.focuses.borrow().contains(&child));
+    h.config.borrow_mut().child_present = false;
+    h.update();
+    assert!(delayed.read_dropped.get());
+    h.release(&delayed);
+    assert!(!h.focuses.borrow().contains(&child));
 }
 
 #[test]
-fn menu_category_waiting_entry_rejects_changed_members_and_later_input() {
-    let _event_converter_guard = crate::test_event_converter_guard();
-    for invalidate in ["reorder", "eligibility", "key", "close", "mode", "unmount"] {
-        let mut harness = MenuHarness::new();
-        harness.toggle_expanded();
-        let category = harness.category("Category");
-        let mut facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-        for item in &mut facts {
-            item.hidden = true;
+fn menu_category_pending_focus_rejects_new_hidden_or_disabled_props() {
+    let _guard = crate::test_event_converter_guard();
+    for hidden in [false, true] {
+        let mut h = MenuHarness::new();
+        h.toggle_expanded();
+        let category = h.category("Category");
+        let child = h.id("Child");
+        let delayed = MenuTestMount {
+            id: child,
+            focuses: h.focuses.clone(),
+            ..Default::default()
+        };
+        menu_dispatch(&h.dom, "mounted", h.target("Child"), delayed.clone());
+        h.settle();
+        h.category_key("Enter", "Category", None);
+        assert!(delayed.started.get());
+        if hidden {
+            h.config.borrow_mut().hidden.insert("Child".into());
+        } else {
+            h.config.borrow_mut().child_disabled = true;
         }
-        harness.category_event("category-key", "Enter", "Category", None, 1, facts.clone());
-        assert!(
-            category.0.model.borrow().entry_focus.is_some(),
-            "{invalidate}"
-        );
-        match invalidate {
-            "reorder" => {
-                facts.swap(0, 2);
-            }
-            "eligibility" => {
-                facts[0].disabled = true;
-            }
-            "key" => {
-                harness.category_event(
-                    "category-key",
-                    "Unidentified",
-                    "Category",
-                    None,
-                    2,
-                    facts.clone(),
-                );
-            }
-            "close" => {
-                harness.category_event(
-                    "category-key",
-                    "Escape",
-                    "Category",
-                    None,
-                    2,
-                    facts.clone(),
-                );
-                assert!(!category.is_open());
-            }
-            "mode" => {
-                harness.toggle_expanded();
-            }
-            "unmount" => {
-                harness.config.borrow_mut().category_present = false;
-                harness.update();
-            }
-            _ => unreachable!(),
-        }
-        if matches!(invalidate, "reorder" | "eligibility") {
-            harness.category_event("category-order", "", "Category", None, 0, facts.clone());
-        }
-        assert_eq!(category.0.model.borrow().entry_focus, None, "{invalidate}");
-        let before = category.0.model.borrow().requested;
-        for item in &mut facts {
-            item.hidden = false;
-        }
-        harness.category_event("category-order", "", "Category", None, 0, facts);
-        assert_eq!(
-            category.0.model.borrow().requested,
-            before,
-            "stale reveal: {invalidate}"
-        );
+        h.update();
+        assert!(delayed.read_dropped.get());
+        h.release(&delayed);
+        assert!(!h.focuses.borrow().contains(&child));
+        assert_eq!(category.0.model.borrow().entry_focus, None);
     }
 }
 
@@ -2104,24 +1850,14 @@ fn menu_category_open_parent_endpoints_and_escape_use_separate_collapsed_scope()
     menu_dispatch(&harness.dom, "click", harness.toggle, ());
     harness.settle();
     harness.click("Category");
-    let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-    for (sequence, key, target) in [
+
+    for (_sequence, key, target) in [
         (1, "ArrowDown", "Child"),
         (2, "ArrowUp", "Two"),
         (3, "Home", "Child"),
         (4, "End", "Two"),
     ] {
-        assert_eq!(
-            harness.category_event(
-                "category-key",
-                key,
-                "Category",
-                None,
-                sequence,
-                facts.clone()
-            ),
-            (true, false)
-        );
+        assert_eq!(harness.category_key(key, "Category", None), (true, false));
         assert_eq!(
             category.0.model.borrow().requested,
             Some(Some(harness.id(target)))
@@ -2129,7 +1865,7 @@ fn menu_category_open_parent_endpoints_and_escape_use_separate_collapsed_scope()
         assert!(category.is_open());
     }
     assert_eq!(
-        harness.category_event("category-key", "Escape", "Category", None, 5, facts.clone()),
+        harness.category_key("Escape", "Category", None),
         (false, false)
     );
     assert!(!category.is_open());
@@ -2139,14 +1875,7 @@ fn menu_category_open_parent_endpoints_and_escape_use_separate_collapsed_scope()
     );
 
     assert_eq!(
-        harness.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            None,
-            7,
-            facts.clone()
-        ),
+        harness.category_key("ArrowDown", "Category", None),
         (true, false)
     );
     assert_eq!(
@@ -2158,7 +1887,7 @@ fn menu_category_open_parent_endpoints_and_escape_use_separate_collapsed_scope()
     harness.settle();
     harness.click("Category");
     assert_eq!(
-        harness.category_event("category-key", "Escape", "Category", None, 8, facts),
+        harness.category_key("Escape", "Category", None),
         (false, true)
     );
     assert!(category.is_open(), "expanded parent Escape is unhandled");
@@ -2173,8 +1902,8 @@ fn menu_category_parent_navigation_has_one_mounted_child_destination_in_both_lay
             h.toggle_expanded();
         }
         h.click("Category");
-        let root = h.facts(&["Alpha", "Category", "Second category", "Omega"]);
-        h.observe("ready", "", None, false, root);
+
+        h.settle();
         let child = MenuTestMount {
             id: h.id("Child"),
             focuses: h.focuses.clone(),
@@ -2193,11 +1922,8 @@ fn menu_category_parent_navigation_has_one_mounted_child_destination_in_both_lay
             neighbor.clone(),
         );
         h.settle();
-        let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-        assert_eq!(
-            h.category_event("category-key", "ArrowDown", "Category", None, 1, facts),
-            (true, false)
-        );
+
+        assert_eq!(h.category_key("ArrowDown", "Category", None), (true, false));
         assert!(child.started.get());
         assert!(
             !neighbor.started.get(),
@@ -2220,13 +1946,20 @@ fn menu_category_empty_parent_leaves_navigation_to_the_root() {
     let _guard = crate::test_event_converter_guard();
     for expanded in [true, false] {
         let mut h = MenuHarness::new();
-        h.config.borrow_mut().category_children = false;
+        {
+            let mut config = h.config.borrow_mut();
+            config.category_children = false;
+            config.root_keys = ["Alpha", "Category", "Second category", "Omega"]
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+        }
         h.update();
         if !expanded {
             h.toggle_expanded();
         }
-        let facts = h.facts(&["Alpha", "Category", "Second category", "Omega"]);
-        h.observe("ready", "", None, false, facts);
+
+        h.settle();
         assert_eq!(h.key(h.target("Category"), Key::ArrowDown), (true, false));
         assert_eq!(h.last(), Some(h.id("Second category")));
         assert_eq!(
@@ -2246,20 +1979,12 @@ fn menu_category_mounted_navigation_finishes_without_native_jobs_and_stops_after
     let category = harness.category("Category");
     let node = category.0.overlay.borrow().clone().unwrap();
     let runtime = node.runtime().unwrap();
-    for (sequence, child, expected) in [
+    for (_sequence, child, expected) in [
         (1, "Two", "Child"),
         (2, "Child", "Two"),
         (3, "Two", "Child"),
     ] {
-        let facts = harness.category_facts(&["Child", "Disabled child", "Two"]);
-        harness.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            Some(child),
-            sequence,
-            facts,
-        );
+        harness.category_key("ArrowDown", "Category", Some(child));
         assert_eq!(
             harness.focuses.borrow().last().copied(),
             Some(harness.id(expected))

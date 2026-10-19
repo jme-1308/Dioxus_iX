@@ -1,47 +1,41 @@
-// Native-observed Menu and Category navigation executes registered mounted controls.
+// Rust-owned Menu and Category navigation executes registered mounted controls.
 use super::*;
 
-fn mounted_native_menu() -> (MenuHarness, Vec<MenuDomItem>) {
+fn mounted_menu() -> MenuHarness {
     let mut h = MenuHarness::new();
-    let facts = h.facts(&["Alpha", "Disabled", "Link", "Omega", "Footer"]);
-    h.observe("ready", "", None, false, facts.clone());
-    assert!(h.context.model.borrow().native);
+    {
+        let mut config = h.config.borrow_mut();
+        config.root_keys = ["Alpha", "Disabled", "Link", "Omega"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        config.utilities = false;
+    }
+    h.update();
     h.focuses.borrow_mut().clear();
-    (h, facts)
+    h
 }
-
-fn native_category(h: &mut MenuHarness) -> (CategoryNavigation, Vec<CategoryDomItem>) {
-    let category = h.category("Category");
-    let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event("category-order", "", "Category", None, 0, facts.clone());
-    assert!(category.0.model.borrow().native);
-    (category, facts)
+fn mounted_category(h: &MenuHarness) -> CategoryNavigation {
+    h.category("Category")
 }
 
 #[test]
-fn native_menu_roving_reaches_mounted_controls_and_keeps_eligible_endpoints() {
+fn mounted_menu_roving_reaches_mounted_controls_and_keeps_eligible_endpoints() {
     let _guard = crate::test_event_converter_guard();
-    let (mut h, mut facts) = mounted_native_menu();
-    facts
-        .iter_mut()
-        .find(|item| item.id == h.id("Link"))
-        .unwrap()
-        .hidden = true;
-    h.observe("order", "", None, false, facts.clone());
+    let mut h = mounted_menu();
+    h.config.borrow_mut().hidden.insert("Link".into());
+    h.update();
     for (key, origin, expected) in [
         ("ArrowDown", "Alpha", "Omega"),
         ("End", "Omega", "Footer"),
         ("Home", "Footer", "Alpha"),
         ("ArrowUp", "Alpha", "Footer"),
     ] {
-        assert_eq!(
-            h.observe("key", key, Some(h.id(origin)), false, facts.clone()),
-            (true, false)
-        );
+        assert_eq!(h.root_key(key, Some(h.id(origin)), false), (true, false));
         assert_eq!(
             h.focuses.borrow().last().copied(),
             Some(h.id(expected)),
-            "native-observed navigation must call the registered MountedData"
+            "Rust-owned navigation must call the registered MountedData"
         );
     }
     assert_eq!(h.focuses.borrow().len(), 4);
@@ -49,9 +43,9 @@ fn native_menu_roving_reaches_mounted_controls_and_keeps_eligible_endpoints() {
 }
 
 #[test]
-fn native_menu_mounted_requests_reject_newer_intent_and_replaced_or_removed_controls() {
+fn mounted_menu_mounted_requests_reject_newer_intent_and_replaced_or_removed_controls() {
     let _guard = crate::test_event_converter_guard();
-    let (mut h, _) = mounted_native_menu();
+    let mut h = mounted_menu();
     h.dom.in_scope(ScopeId::ROOT, || {
         let old = h.context.choose("Home", None, false).unwrap();
         h.context.deliver(old);
@@ -110,9 +104,9 @@ fn native_menu_mounted_requests_reject_newer_intent_and_replaced_or_removed_cont
 }
 
 #[test]
-fn native_menu_pending_mounted_request_does_not_keep_its_owner_alive() {
+fn mounted_menu_pending_mounted_request_does_not_keep_its_owner_alive() {
     let _guard = crate::test_event_converter_guard();
-    let (h, _) = mounted_native_menu();
+    let h = mounted_menu();
     let retained = h.context.clone();
     let focuses = h.focuses.clone();
     h.dom.in_scope(ScopeId::ROOT, || {
@@ -125,34 +119,17 @@ fn native_menu_pending_mounted_request_does_not_keep_its_owner_alive() {
 }
 
 #[test]
-fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children() {
+fn mounted_category_panel_navigation_and_return_reach_mounted_parent_and_children() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.click("Category");
-    let (category, facts) = native_category(&mut h);
+    let category = mounted_category(&h);
     assert!(category.is_expanded() && category.is_open());
     h.focuses.borrow_mut().clear();
-    assert_eq!(
-        h.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            None,
-            1,
-            facts.clone()
-        ),
-        (true, false)
-    );
+    assert_eq!(h.category_key("ArrowDown", "Category", None), (true, false));
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
     assert_eq!(
-        h.category_event(
-            "category-key",
-            "ArrowDown",
-            "Category",
-            Some("Child"),
-            2,
-            facts.clone()
-        ),
+        h.category_key("ArrowDown", "Category", Some("Child")),
         (true, false)
     );
     assert_eq!(
@@ -161,14 +138,7 @@ fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children
         "expanded native buttons retain their ordinary ARIA-disabled traversal"
     );
     assert_eq!(
-        h.category_event(
-            "category-key",
-            "Enter",
-            "Category",
-            Some("Child"),
-            3,
-            facts.clone()
-        ),
+        h.category_key("Enter", "Category", Some("Child")),
         (true, false)
     );
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Category")));
@@ -184,14 +154,7 @@ fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children
     h.click("Category");
     assert!(category.is_open());
     assert_eq!(
-        h.category_event(
-            "category-key",
-            "Escape",
-            "Category",
-            Some("Child"),
-            4,
-            facts
-        ),
+        h.category_key("Escape", "Category", Some("Child")),
         (true, false)
     );
     assert!(!category.is_open());
@@ -199,21 +162,18 @@ fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children
 }
 
 #[test]
-fn native_category_collapsed_end_and_accepted_dismissal_use_live_mounted_controls() {
+fn mounted_category_collapsed_end_and_accepted_dismissal_use_live_mounted_controls() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
     h.click("Category");
-    let (category, facts) = native_category(&mut h);
+    let category = mounted_category(&h);
     h.focuses.borrow_mut().clear();
-    assert_eq!(
-        h.category_event("category-key", "End", "Category", None, 1, facts.clone()),
-        (true, false)
-    );
+    assert_eq!(h.category_key("End", "Category", None), (true, false));
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Two")));
     let before = h.focuses.borrow().len();
     assert_eq!(
-        h.category_event("category-key", "Tab", "Category", Some("Two"), 2, facts),
+        h.category_key("Tab", "Category", Some("Two")),
         (false, true)
     );
     assert_eq!(
@@ -227,11 +187,11 @@ fn native_category_collapsed_end_and_accepted_dismissal_use_live_mounted_control
 }
 
 #[test]
-fn native_category_mounted_focus_rejects_stale_mount_visibility_and_owner_lifetimes() {
+fn mounted_category_mounted_focus_rejects_stale_mount_visibility_and_owner_lifetimes() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.click("Category");
-    let (category, _) = native_category(&mut h);
+    let category = mounted_category(&h);
     let child = h.id("Child");
     let two = h.id("Two");
     h.focuses.borrow_mut().clear();

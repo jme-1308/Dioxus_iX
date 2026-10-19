@@ -13,9 +13,15 @@ fn cue_runtime(h: &mut MenuHarness, category: &CategoryNavigation) -> RuntimeHan
         .find(|(_, attributes)| attributes.get("data-ix-overlay-transport") == Some(&owner))
         .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
         .unwrap();
-    menu_dispatch(&h.dom,"input",transport,serde_json::json!({
+    menu_dispatch(
+        &h.dom,
+        "input",
+        transport,
+        serde_json::json!({
         "owner":owner,"document":format!("menu-cue-test-{owner}"),"sequence":1,"kind":"observe",
-        "nodes":[{"id":node.id(),"generation":node.generation()}]}).to_string());
+        "nodes":[{"id":node.id(),"generation":node.generation()}]})
+        .to_string(),
+    );
     menu_dispatch(
         &h.dom,
         "input",
@@ -78,25 +84,27 @@ fn logical_close_clears_child_cue_and_preserves_completed_focus_and_inventories(
     h.toggle_expanded();
     let category = h.category("Category");
     let runtime = cue_runtime(&mut h, &category);
-    let direct = h.facts(&["Alpha", "Category", "Omega", "Footer"]);
-    h.observe("ready", "", None, false, direct.clone());
-    let children = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event(
-        "category-key",
-        "Enter",
-        "Category",
-        None,
-        1,
-        children.clone(),
-    );
-    h.category_event(
-        "category-key",
-        "ArrowDown",
-        "Category",
-        None,
-        2,
-        children.clone(),
-    );
+    let direct = h
+        .context
+        .model
+        .borrow()
+        .members
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    let children = category
+        .0
+        .model
+        .borrow()
+        .children
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+
+    h.settle();
+
+    h.category_key("Enter", "Category", None);
+    h.category_key("ArrowDown", "Category", None);
     assert!(category.is_open());
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
     assert!(runtime.pending_item_focus_count() == 0);
@@ -119,8 +127,27 @@ fn logical_close_clears_child_cue_and_preserves_completed_focus_and_inventories(
     assert!(!runtime.item_visual_matches(&cue));
     assert_eq!(runtime.item_visual_key(), None);
     assert_eq!(runtime.item_visual_target(), None);
-    assert_eq!(h.context.model.borrow().observed, direct);
-    assert_eq!(category.0.model.borrow().observed, children);
+    assert_eq!(
+        h.context
+            .model
+            .borrow()
+            .members
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        direct
+    );
+    assert_eq!(
+        category
+            .0
+            .model
+            .borrow()
+            .children
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        children
+    );
     assert_eq!(h.tabs(), tabs);
     assert!(runtime.pending_item_focus_count() == 0);
     assert_eq!(
@@ -165,8 +192,8 @@ fn closed_owner_and_inline_panel_close_preserve_the_current_cue() {
     let mut inline = MenuHarness::new();
     let inline_category = inline.category("Category");
     let inline_runtime = cue_runtime(&mut inline, &inline_category);
-    let inline_children = inline.category_facts(&["Child", "Disabled child", "Two"]);
-    inline.category_event("category-order", "", "Category", None, 0, inline_children);
+
+    inline.settle();
     assert!(inline_category.is_expanded());
     inline.click("Category");
     assert!(inline_category.is_open());
@@ -189,25 +216,27 @@ fn logical_same_menu_ownership_loss_clears_child_cue_without_stealing_focus() {
     let category = h.category("Category");
     let other = h.category("Second category");
     let runtime = cue_runtime(&mut h, &category);
-    let direct = h.facts(&["Alpha", "Category", "Omega", "Footer"]);
-    h.observe("ready", "", None, false, direct.clone());
-    let children = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event(
-        "category-key",
-        "Enter",
-        "Category",
-        None,
-        1,
-        children.clone(),
-    );
-    h.category_event(
-        "category-key",
-        "ArrowDown",
-        "Category",
-        None,
-        2,
-        children.clone(),
-    );
+    let direct = h
+        .context
+        .model
+        .borrow()
+        .members
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    let children = category
+        .0
+        .model
+        .borrow()
+        .children
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+
+    h.settle();
+
+    h.category_key("Enter", "Category", None);
+    h.category_key("ArrowDown", "Category", None);
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
     assert!(runtime.pending_item_focus_count() == 0);
     let focused = h.focuses.borrow().clone();
@@ -228,8 +257,27 @@ fn logical_same_menu_ownership_loss_clears_child_cue_without_stealing_focus() {
     assert!(!runtime.item_visual_matches(&cue));
     assert_eq!(runtime.item_visual_key(), None);
     assert_eq!(runtime.item_visual_target(), None);
-    assert_eq!(h.context.model.borrow().observed, direct);
-    assert_eq!(category.0.model.borrow().observed, children);
+    assert_eq!(
+        h.context
+            .model
+            .borrow()
+            .members
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        direct
+    );
+    assert_eq!(
+        category
+            .0
+            .model
+            .borrow()
+            .children
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        children
+    );
     assert_eq!(h.tabs(), tabs);
     assert!(runtime.pending_item_focus_count() == 0);
     assert_eq!(
@@ -256,25 +304,11 @@ fn logical_return_clears_old_child_cue_and_keeps_the_parent_cue_after_rerender()
     h.toggle_expanded();
     let category = h.category("Category");
     let runtime = cue_runtime(&mut h, &category);
-    let children = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event(
-        "category-key",
-        "Enter",
-        "Category",
-        None,
-        1,
-        children.clone(),
-    );
+
+    h.category_key("Enter", "Category", None);
     let before_return = mark_rendered_child(&h, &runtime, "Child");
     assert_eq!(
-        h.category_event(
-            "category-key",
-            "Enter",
-            "Category",
-            Some("Child"),
-            2,
-            children
-        ),
+        h.category_key("Enter", "Category", Some("Child")),
         (true, false)
     );
     assert!(!category.is_open());

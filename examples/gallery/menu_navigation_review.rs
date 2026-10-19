@@ -1,4 +1,4 @@
-//! Outer Menu entry, current DOM order and roving focus review for G04.3.
+//! Outer Menu entry, current item order and roving focus review for G04.3.
 use dioxus::prelude::*;
 use dioxus_ix::*;
 use serde_json::{Value, json};
@@ -33,6 +33,7 @@ fn MenuEvents(events: Signal<Vec<Value>>) -> Element {
 #[component]
 fn MenuReviewEntry(
     entry: &'static str,
+    order: Option<usize>,
     disabled: bool,
     hidden: bool,
     link_hidden: bool,
@@ -40,30 +41,30 @@ fn MenuReviewEntry(
 ) -> Element {
     match entry {
         "alpha" => {
-            rsx! { MenuItem { label: "Alpha", onclick: move |_| record(events, "select", json!("alpha")) } }
+            rsx! { MenuItem { label: "Alpha", order, onclick: move |_| record(events, "select", json!("alpha")) } }
         }
         "disabled" => {
-            rsx! { MenuItem { label: "Disabled", disabled, onclick: move |_| record(events, "select", json!("disabled")) } }
+            rsx! { MenuItem { label: "Disabled", order, disabled, onclick: move |_| record(events, "select", json!("disabled")) } }
         }
         "link" => rsx! {
-            a { id: "g04-menu-link-wrapper", href: "#g04-menu-stage", style: if link_hidden { "display:none" } else { "" },
-                MenuItem { label: "Link", onclick: move |_| record(events, "select", json!("link")) }
+            div { id: "g04-menu-link-wrapper", style: if link_hidden { "display:none" } else { "" },
+                MenuItem { label: "Link", order, hidden: link_hidden, href: "#g04-menu-stage", onclick: move |_| record(events, "select", json!("link")) }
             }
         },
         "category" => rsx! {
-            MenuCategory { label: "Category",
+            MenuCategory { label: "Category", order,
                 MenuItem { label: "One", onclick: move |_| record(events, "select", json!("one")) }
                 MenuItem { label: "Disabled child", disabled: true, onclick: move |_| record(events, "select", json!("disabled-child")) }
                 MenuItem { label: "Two", onclick: move |_| record(events, "select", json!("two")) }
             }
         },
         "second-category" => rsx! {
-            MenuCategory { label: "Second category",
+            MenuCategory { label: "Second category", order,
                 MenuItem { label: "Solo", onclick: move |_| record(events, "select", json!("solo")) }
             }
         },
         _ => {
-            rsx! { MenuItem { label: "Omega", hidden, onclick: move |_| record(events, "select", json!("omega")) } }
+            rsx! { MenuItem { label: "Omega", order, hidden, onclick: move |_| record(events, "select", json!("omega")) } }
         }
     }
 }
@@ -171,8 +172,8 @@ fn MenuNavigationCases() -> Element {
                                 bottom: rsx! { MenuItem { label: "Footer", onclick: move |_| record(events, "select", json!("footer")) } },
                                 settings: rsx! { MenuSettings { div { id: "g04-menu-settings-content", p { "Settings review content." } } } },
                                 about: rsx! { MenuAbout { div { id: "g04-menu-about-content", p { "About review content." } } } },
-                                for entry in order().into_iter().filter(|entry| *entry != "link" || link_present()) {
-                                    MenuReviewEntry { key: "{entry}", entry, disabled: item_disabled(), hidden: omega_hidden(), link_hidden: link_hidden(), events }
+                                for (index, entry) in order().into_iter().filter(|entry| *entry != "link" || link_present()).enumerate() {
+                                    MenuReviewEntry { key: "{entry}", entry, order: Some(index), disabled: item_disabled(), hidden: omega_hidden(), link_hidden: link_hidden(), events }
                                 }
                                 MenuItem { label: "Disabled link", href: "#g04-menu-stage", disabled: true }
                             }
@@ -196,8 +197,8 @@ pub fn MenuNavigationReview() -> Element {
     rsx! {
         section { id: "g04-menu-review", class: "demo-section", style: "min-width:0;max-width:100%",
             h2 { "Menu entry and navigation order" }
-            p { "Tab into the menu, then use Up, Down, Home and End. Navigation moves focus without activating an item. Leave and return to check remembered focus; change the current DOM order with the controls." }
-            p { "This pinned large-screen stage reviews outer menu navigation. Category-local keyboard and flyout behavior remain the separate G04.4 boundary. Disabled controls use normal Rust markup; inline wrapper hiding exposes the documented source visibility quirk." }
+            p { "Tab into the menu, then use Up, Down, Home and End. Navigation moves focus without activating an item. Leave and return to check remembered focus; change the current item order with the controls." }
+            p { "This pinned large-screen stage reviews outer menu navigation. Category-local keyboard and flyout behavior remain the separate G04.4 boundary. Disabled controls use normal Rust markup; inline wrapper hiding forwards explicit hidden state so hidden controls are skipped." }
             div { class: "demo-row",
                 button { id: "g04-menu-reset", r#type: "button", class: "ix-button ix-button-secondary", onclick: move |_| revision += 1, "Reset menu review" }
             }

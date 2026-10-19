@@ -24,6 +24,8 @@ mod filter_layout_review;
 mod generic_focus_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
 mod menu_focus_review;
+#[path = "dioxus_first_probe/menu_order_review.rs"]
+mod menu_order_review;
 #[path = "dioxus_first_probe/modal_focus_review.rs"]
 mod modal_focus_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
@@ -121,6 +123,9 @@ fn Preview() -> Element {
     }
     if scope == "?tooltip" {
         return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
+    }
+    if scope == "?menuorder" {
+        return rsx! { menu_order_review::MenuOrderReview {} };
     }
     if scope == "?applicationshell" || scope.starts_with("?applicationshell&destination=") {
         return rsx! { application_shell_review::ApplicationShellReview {} };

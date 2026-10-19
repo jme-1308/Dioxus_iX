@@ -51,6 +51,7 @@ fn HoverMemory(name: &'static str, events: Signal<Vec<Value>>) -> Element {
 
 #[component]
 fn HoverEntry(
+    position: usize,
     name: &'static str,
     index: usize,
     one_active: Signal<bool>,
@@ -64,13 +65,14 @@ fn HoverEntry(
     if index == 4 {
         rsx! { div { id: "g04-hover-extra-{name}", style: "padding:.5rem", span { "Appended content " } em { "{label}" } } }
     } else {
-        rsx! { MenuItem { label: "{label} item {index}", active: name == "a" && index == 1 && one_active(),
+        rsx! { MenuItem { order:Some(position),label: "{label} item {index}", active: name == "a" && index == 1 && one_active(),
         onclick: move |_| record(events, "select", json!({"category": name, "item": index})) } }
     }
 }
 
 #[component]
 fn HoverCategory(
+    position: usize,
     name: &'static str,
     one_active: Signal<bool>,
     extra: Signal<bool>,
@@ -89,9 +91,9 @@ fn HoverCategory(
         order.reverse();
     }
     rsx! {
-        MenuCategory { label, icon: if name == "a" { "folder" } else { "piechart" },
-            for index in order {
-                HoverEntry { key: "{index}", name, index, one_active, events }
+        MenuCategory { order:Some(position),label, icon: if name == "a" { "folder" } else { "piechart" },
+            for (position,index) in order.into_iter().enumerate() {
+                HoverEntry { key: "{index}", position,name, index, one_active, events }
             }
             HoverMemory { name, events }
         }
@@ -204,9 +206,9 @@ fn HoverCases(generation: usize) -> Element {
                 menu: rsx! { if mounted() {
                     Menu { label: "Hover navigation", application_name: "Hover review", start_expanded: false, pinned: true,
                         onexpandchange: move |value| record(events, "expand", json!(value)),
-                        MenuItem { label: "Unrelated item", icon: "home", onclick: move |_| record(events, "select", json!("other")) }
-                        for name in ["a", "b"].into_iter().filter(|name| *name != "a" || a_present()) {
-                            HoverCategory { key: "{name}", name, one_active, extra, reversed, second_present, events }
+                        MenuItem { order:Some(0),label: "Unrelated item", icon: "home", onclick: move |_| record(events, "select", json!("other")) }
+                        for (position,name) in ["a", "b"].into_iter().filter(|name| *name != "a" || a_present()).enumerate() {
+                            HoverCategory { key: "{name}", position:position+1,name, one_active, extra, reversed, second_present, events }
                         }
                     }
                 } },
