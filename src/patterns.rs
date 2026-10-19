@@ -498,8 +498,8 @@ fn focus_filter(input: Signal<Option<MountedEvent>>, generation: Signal<u64>) {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FilterFocusTarget {
     Element(String),
-    PreviousSibling,
-    NextSibling,
+    PreviousControl,
+    NextControl,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FilterKeyboardFocus {
@@ -527,20 +527,61 @@ fn cancel_filter_keyboard_focus(
     pending.set(None);
 }
 
-// Resolves only a Rust-selected native focus target. Root siblings reproduce the
-// source shadow-host retargeting; text-node siblings deliberately remain no-ops.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const FILTER_KEYBOARD_FOCUS: &str = r#"
-const [rootId, generation, operation, targetId] = await dioxus.recv();
-await new Promise(requestAnimationFrame);
-const root = document.getElementById(rootId);
-if (!root?.isConnected || root.dataset.focusGeneration !== generation || root.dataset.disabled === 'true' || root.dataset.readonly === 'true') return false;
-const target = operation === 'previous' ? root.previousSibling : operation === 'next' ? root.nextSibling : document.getElementById(targetId);
-if (!(target instanceof HTMLElement) || !target.isConnected) return false;
-if (operation === 'element' && (root.dataset.open !== 'true' || !root.contains(target))) return false;
-target.focus();
-return document.activeElement === target;
-"#;
+type FilterFocusMounts = Signal<BTreeMap<String, Rc<MountedData>>>;
+
+/// Each rendered button owns its mounted registration. ID/epoch changes rebind
+/// that same Dioxus element explicitly; an old request cannot follow the new ID.
+#[component]
+fn FilterFocusButton(
+    id: String,
+    mut mounts: FilterFocusMounts,
+    #[props(default)] class: Option<String>,
+    #[props(default)] title: Option<String>,
+    #[props(default)] data_id: Option<String>,
+    #[props(default)] aria_label: Option<String>,
+    #[props(default)] aria_pressed: Option<String>,
+    onkeydown: EventHandler<KeyboardEvent>,
+    onclick: EventHandler<MouseEvent>,
+    children: Element,
+) -> Element {
+    let mut mounted = use_signal(|| None::<Rc<MountedData>>);
+    let registered = use_hook(|| Rc::new(RefCell::new(None::<(String, Rc<MountedData>)>)));
+    let binding = registered.clone();
+    use_effect(use_reactive!(|id| {
+        let node = mounted();
+        if node.is_none() && binding.borrow().is_none() {
+            return;
+        }
+        let mut targets = mounts.write();
+        if let Some((old_id, old_node)) = binding.borrow_mut().take() {
+            if targets
+                .get(&old_id)
+                .is_some_and(|current| Rc::ptr_eq(current, &old_node))
+            {
+                targets.remove(&old_id);
+            }
+        }
+        if let Some(node) = node {
+            targets.insert(id.clone(), node.clone());
+            *binding.borrow_mut() = Some((id, node));
+        }
+    }));
+    use_drop(move || {
+        if let Some((id, node)) = registered.borrow_mut().take() {
+            if let Ok(mut targets) = mounts.try_write() {
+                if targets
+                    .get(&id)
+                    .is_some_and(|current| Rc::ptr_eq(current, &node))
+                {
+                    targets.remove(&id);
+                }
+            }
+        }
+    });
+    rsx! {button {id:id.clone(),r#type:"button",class,title,"data-id":data_id,"aria-label":aria_label,"aria-pressed":aria_pressed,
+        onmounted:move |event|mounted.set(Some(event.data())),onkeydown,onclick,{children}
+    }}
+}
 
 fn filter_popup_key(
     event: KeyboardEvent,
@@ -970,11 +1011,11 @@ fn FilterOptionsSurface(
 /// Focus alone does not open options. Popup buttons retain the pinned source's
 /// canceled Enter/Space behavior, with only first/last Tab boundaries wrapped.
 /// Home/End preserve the input's native caret behavior; Escape never forces focus
-/// back to the input. Unmatched form arrows resolve direct root Node siblings,
-/// reproducing the source's shadow-host retargeting for this Rust DOM structure.
-/// Native focus delivery is asynchronous, including category pointer focus that
-/// the source completes before its category callback. Stale targets are guarded
-/// by mount identity, generation and option IDs. Rust propagation cancellation is
+/// back to the input. Unmatched input arrows call `onfocusprevious`/`onfocusnext`;
+/// consumers focus their own Dioxus mounted controls rather than implicit DOM
+/// siblings. Local keyboard targets use current mounted options/operator IDs.
+/// Category pointer focus remains asynchronous; stale work is guarded by mount
+/// identity, generation and option IDs. Rust propagation cancellation is
 /// preserved, but Dioxus alpha.2 does not mirror those stops to external native
 /// DOM listeners; native default cancellation is mirrored synchronously.
 /// The optional `aria_label_*` props override native control labels live, including
@@ -998,6 +1039,13 @@ pub fn CategoryFilter(
     #[props(default)] oninput: EventHandler<FilterInputState>,
     #[props(default)] oncategory: EventHandler<Option<String>>,
     #[props(default)] onclear: EventHandler<()>,
+    /// Unmatched backward navigation requests focus through consumer-owned
+    /// Dioxus handles. No arbitrary DOM sibling lookup is performed.
+    #[props(default)]
+    onfocusprevious: EventHandler<()>,
+    /// Unmatched forward navigation requests the next consumer-owned control.
+    #[props(default)]
+    onfocusnext: EventHandler<()>,
     /// Runs before clearing; cancellation preserves committed and draft values.
     #[props(default)]
     onbeforeclear: EventHandler<FilterClearEvent>,
@@ -1042,6 +1090,7 @@ pub fn CategoryFilter(
     let pending_keyboard_focus = use_signal(|| None::<FilterKeyboardFocus>);
     let focus_generation = use_signal(|| 0u64);
     let surface_ready = use_signal(|| false);
+    let focus_mounts = use_signal(BTreeMap::<String, Rc<MountedData>>::new);
     #[cfg(test)]
     if let Some(capture) = try_use_context::<tests::FilterKeyboardCapture>() {
         *capture.0.borrow_mut() = Some((pending_keyboard_focus, focus_generation, surface_ready));
@@ -1298,9 +1347,12 @@ pub fn CategoryFilter(
     let input_first = option_ids.first().cloned();
     let operator_targets = popup_targets.clone();
     let keyboard_alive = alive.clone();
+    let current_focus_options =
+        use_hook(|| Rc::new(RefCell::new((blocked, popup_targets.clone()))));
+    *current_focus_options.borrow_mut() = (blocked, popup_targets.clone());
     use_effect(use_reactive(
-        (&root_id, &blocked),
-        move |(root_id, blocked)| {
+        (&blocked, &popup_targets),
+        move |(blocked, targets)| {
             let request = pending_keyboard_focus();
             let generation = focus_generation();
             let is_open = open();
@@ -1315,50 +1367,53 @@ pub fn CategoryFilter(
                 pending.set(None);
                 return;
             }
-            // Keep the opening option request until the native panel's Rust
-            // positioning style is rendered and promotion has completed.
-            if matches!(request.target, FilterFocusTarget::Element(_))
-                && enable_top_layer
-                && !surface_ready()
-            {
-                return;
-            }
-            pending.set(None);
-            let lifetime = keyboard_alive.clone();
-            let node = input.peek().clone();
-            spawn(async move {
-                if !lifetime.get() || *focus_generation.peek() != generation {
-                    return;
+            match request.target {
+                FilterFocusTarget::PreviousControl => {
+                    pending.set(None);
+                    onfocusprevious.call(());
                 }
-                if let Some(node) = node {
-                    let _ = node.get_client_rect().await;
+                FilterFocusTarget::NextControl => {
+                    pending.set(None);
+                    onfocusnext.call(());
                 }
-                if !lifetime.get() || *focus_generation.peek() != generation {
-                    return;
-                }
-                #[cfg(any(feature = "web", feature = "desktop"))]
-                {
-                    let (operation, target_id) = match request.target {
-                        FilterFocusTarget::Element(id) => ("element", id),
-                        FilterFocusTarget::PreviousSibling => ("previous", String::new()),
-                        FilterFocusTarget::NextSibling => ("next", String::new()),
-                    };
-                    let task = crate::dom_query::eval(FILTER_KEYBOARD_FOCUS);
-                    if task
-                        .send((root_id, generation.to_string(), operation, target_id))
-                        .is_ok()
-                    {
-                        let _ = task.join::<bool>().await;
+                FilterFocusTarget::Element(id) => {
+                    if !targets.contains(&id) {
+                        pending.set(None);
+                        return;
                     }
+                    if enable_top_layer && !surface_ready() {
+                        return;
+                    }
+                    let Some(node) = focus_mounts.read().get(&id).cloned() else {
+                        return;
+                    };
+                    pending.set(None);
+                    let lifetime = keyboard_alive.clone();
+                    let current = current_focus_options.clone();
+                    spawn(async move {
+                        if !lifetime.get()
+                            || *focus_generation.peek() != generation
+                            || !*open.peek()
+                            || current.borrow().0
+                            || !current.borrow().1.contains(&id)
+                            || !focus_mounts
+                                .peek()
+                                .get(&id)
+                                .is_some_and(|mounted| Rc::ptr_eq(mounted, &node))
+                        {
+                            return;
+                        }
+                        // One Dioxus mounted attempt; the desktop void/bool response
+                        // defect does not justify another focus command or fallback.
+                        let _ = node.set_focus(true).await;
+                    });
                 }
-                #[cfg(not(any(feature = "web", feature = "desktop")))]
-                let _ = (root_id, request);
-            });
+            }
         },
     ));
 
     rsx! {
-        div {id:root_id.clone(),class:"ix-category-filter","data-disabled":disabled.to_string(),"data-readonly":readonly.to_string(),"data-open":(open()&&!blocked).to_string(),"data-focus-generation":focus_generation().to_string(),
+        div {id:root_id.clone(),class:"ix-category-filter","data-disabled":disabled.to_string(),"data-readonly":readonly.to_string(),"data-open":(open()&&!blocked).to_string(),
             div {id:anchor_id.clone(),class:"ix-category-filter-input",onmounted:move |event|anchor_node.set(Some(event.data())),onresize:move |_|anchor_revision.with_mut(|revision|*revision=revision.wrapping_add(1)),
                 if !hide_icon {Icon {name:icon,size:16}}
                 div {id:token_list_id,class:"ix-category-filter-tokens",onmounted:move |event|token_list.set(Some(event.data())),"data-scroll-revision":scroll_revision().to_string(),
@@ -1398,10 +1453,10 @@ pub fn CategoryFilter(
                                 Key::Home|Key::End=>event.stop_propagation(),
                                 Key::ArrowDown=>{
                                     if !open(){event.prevent_default();event.stop_propagation();open.set(true);if let Some(id)=input_first.clone(){request_filter_keyboard_focus(FilterFocusTarget::Element(id),pending_keyboard_focus,focus_generation);}}
-                                    else if category_mode {if let Some(id)=input_first.clone(){event.stop_propagation();request_filter_keyboard_focus(FilterFocusTarget::Element(id),pending_keyboard_focus,focus_generation);}else{event.prevent_default();request_filter_keyboard_focus(FilterFocusTarget::NextSibling,pending_keyboard_focus,focus_generation);}}
-                                    else{event.prevent_default();request_filter_keyboard_focus(FilterFocusTarget::NextSibling,pending_keyboard_focus,focus_generation);}
+                                    else if category_mode {if let Some(id)=input_first.clone(){event.stop_propagation();request_filter_keyboard_focus(FilterFocusTarget::Element(id),pending_keyboard_focus,focus_generation);}else{event.prevent_default();request_filter_keyboard_focus(FilterFocusTarget::NextControl,pending_keyboard_focus,focus_generation);}}
+                                    else{event.prevent_default();request_filter_keyboard_focus(FilterFocusTarget::NextControl,pending_keyboard_focus,focus_generation);}
                                 },
-                                Key::ArrowUp=>{event.prevent_default();request_filter_keyboard_focus(FilterFocusTarget::PreviousSibling,pending_keyboard_focus,focus_generation);},
+                                Key::ArrowUp=>{event.prevent_default();request_filter_keyboard_focus(FilterFocusTarget::PreviousControl,pending_keyboard_focus,focus_generation);},
                                 Key::Escape=>{cancel_filter_keyboard_focus(pending_keyboard_focus,focus_generation);open.set(false);active.set(None);},
                                 Key::Character(value) if value==" "=>{event.prevent_default();if !open(){open.set(true);if let Some(id)=input_first.clone(){request_filter_keyboard_focus(FilterFocusTarget::Element(id),pending_keyboard_focus,focus_generation);}}},
                                 Key::Enter=>{event.prevent_default();commit_filter_choice(FilterChoice::Value(draft().input.token),&keyboard_interaction,false);},
@@ -1429,15 +1484,15 @@ pub fn CategoryFilter(
                 FilterOptionsSurface { anchor_id:anchor_id.clone(),anchor:anchor_node,ready:surface_ready,anchor_revision:anchor_revision(),content_revision:option_epoch,enable_top_layer, onnativeerror, onclose:move |_|{cancel_filter_keyboard_focus(pending_keyboard_focus,focus_generation);open.set(false);active.set(None);},
                     div {class:"ix-category-filter-options-heading",
                         span {if !category_mode {"{label_plain_text}"}else if has_category {"{selected_category.clone().unwrap_or_default()}"}else{"{label_categories}"}}
-                        if operator_visible {button {id:operator_id,r#type:"button","aria-label":operator_label,"aria-pressed":(current_operator==LogicalFilterOperator::NotEqual).to_string(),
+                        if operator_visible {FilterFocusButton {id:operator_id,mounts:focus_mounts,aria_label:operator_label,aria_pressed:(current_operator==LogicalFilterOperator::NotEqual).to_string(),
                             onkeydown:move |event|filter_popup_key(event,0,&operator_targets,open,pending_keyboard_focus,focus_generation),
-                            onclick:move |event|{event.stop_propagation();if blocked{return;}let mut next=draft();next.operator=next.operator.toggled();draft.set(next);},"{current_operator.toggled().symbol()}"}}
+                            onclick:move |event:MouseEvent|{event.stop_propagation();if blocked{return;}let mut next=draft();next.operator=next.operator.toggled();draft.set(next);},"{current_operator.toggled().symbol()}"}}
                     }
                     div {id:list_id.clone(),
                         for (index,choice) in choices.iter().enumerate(){
-                            button {id:option_ids[index].clone(),r#type:"button",class:"ix-category-filter-option",title:choice.label(),"data-id":match choice{FilterChoice::Category(id,_)=>id.as_str(),FilterChoice::Value(value)|FilterChoice::Suggestion(value)=>value.as_str()},
+                            FilterFocusButton {id:option_ids[index].clone(),mounts:focus_mounts,class:"ix-category-filter-option",title:choice.label(),data_id:match choice{FilterChoice::Category(id,_)=>id.as_str(),FilterChoice::Value(value)|FilterChoice::Suggestion(value)=>value.as_str()},
                                 onkeydown:{let targets=popup_targets.clone();move |event|filter_popup_key(event,index+usize::from(operator_visible),&targets,open,pending_keyboard_focus,focus_generation)},
-                                onclick:{let choice=choice.clone();let interaction=interaction.clone();move |event|if !blocked{if !matches!(choice,FilterChoice::Suggestion(_)){event.prevent_default();}commit_filter_choice(choice.clone(),&interaction,true)}},
+                                onclick:{let choice=choice.clone();let interaction=interaction.clone();move |event:MouseEvent|if !blocked{if !matches!(choice,FilterChoice::Suggestion(_)){event.prevent_default();}commit_filter_choice(choice.clone(),&interaction,true)}},
                                 if matches!(choice,FilterChoice::Value(_))&&draft().input.category.is_some(){span {"{current_operator.symbol()} "}}
                                 "{choice.label()}"
                             }
@@ -2016,6 +2071,37 @@ mod tests {
             })
         }
     }
+    #[derive(Clone, Default)]
+    struct FilterDelayedFocus(FilterDelayedMount);
+    impl dioxus::html::RenderedElementBacking for FilterDelayedFocus {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            let state = self.0.clone();
+            let lifetime = FilterReadLifetime(state.read_dropped.clone());
+            Box::pin(async move {
+                let _lifetime = lifetime;
+                std::future::poll_fn(|cx| {
+                    state.started.set(true);
+                    if state.ready.get() {
+                        std::task::Poll::Ready(())
+                    } else {
+                        *state.waiter.borrow_mut() = Some(cx.waker().clone());
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                state.focus_count.set(state.focus_count.get() + 1);
+                Ok(())
+            })
+        }
+    }
     struct FilterTestConverter;
     macro_rules! filter_test_converter {
         (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
@@ -2034,7 +2120,9 @@ mod tests {
         }};
         (@data Focus, $event:ident) => { dioxus::html::FocusData::new(FilterTestFocus) };
         (@data Mounted, $event:ident) => {
-            if let Some(state)=$event.downcast::<FilterTokenMount>() {
+            if let Some(state)=$event.downcast::<FilterDelayedFocus>() {
+                MountedData::new(state.clone())
+            } else if let Some(state)=$event.downcast::<FilterTokenMount>() {
                 MountedData::new(state.clone())
             } else if let Some(state)=$event.downcast::<FilterDelayedMount>() {
                 MountedData::new(state.clone())
@@ -2070,6 +2158,32 @@ mod tests {
             }
         }
         ids
+    }
+    fn filter_focus_button_mounts(
+        mutations: &dioxus::core::Mutations,
+    ) -> Vec<(dioxus::core::ElementId, String)> {
+        let listeners = filter_listener_ids_ref(mutations, "mounted");
+        let mut current = dioxus::core::ElementId::ROOT;
+        let mut targets = Vec::new();
+        for edit in &mutations.edits {
+            match edit {
+                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
+                    current = *id
+                }
+                dioxus::core::Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(value),
+                    ..
+                } if *name == "id"
+                    && value.starts_with("ix-category-options-")
+                    && listeners.contains(&current) =>
+                {
+                    targets.push((current, value.clone()))
+                }
+                _ => {}
+            }
+        }
+        targets
     }
     fn filter_choice_target(
         mutations: &dioxus::core::Mutations,
@@ -3443,6 +3557,8 @@ mod tests {
         changes: Vec<FilterState>,
         keyboard: FilterKeyboardCapture,
         top_layer: bool,
+        blocked: bool,
+        neighbors: Rc<RefCell<Vec<&'static str>>>,
     }
     type FilterKeyboardSignals = (
         Signal<Option<FilterKeyboardFocus>>,
@@ -3467,7 +3583,10 @@ mod tests {
         let category = config.clone();
         let input = config.clone();
         let clear = config.clone();
+        let previous = settings.neighbors.clone();
+        let next = settings.neighbors.clone();
         rsx! { CategoryFilter {
+            onfocusprevious:move |_|previous.borrow_mut().push("previous"),onfocusnext:move |_|next.borrow_mut().push("next"),disabled:settings.blocked,
             categories: settings.categories, suggestions: settings.suggestions, default_state: settings.initial,enable_top_layer:settings.top_layer,
             label:"Legacy input",label_categories:"Category menu",label_plain_text:"Plain menu",placeholder:"Search criteria",
             aria_label_filter_input:settings.input_label,aria_label_reset_button:settings.reset_label,aria_label_operator_button:settings.operator_label,
@@ -3483,13 +3602,25 @@ mod tests {
         config: Rc<RefCell<CategoryModeConfig>>,
         input: dioxus::core::ElementId,
         reset: dioxus::core::ElementId,
+        mounts: BTreeMap<String, Rc<Cell<usize>>>,
     }
     impl CategoryModeHarness {
+        fn mount_buttons(&mut self, mutations: &dioxus::core::Mutations) {
+            for (element, id) in filter_focus_button_mounts(mutations) {
+                let count = Rc::new(Cell::new(0));
+                self.mounts.insert(id, count.clone());
+                dispatch_filter_event(&self.dom, "mounted", element, count);
+            }
+        }
+        fn render(&mut self) -> dioxus::core::Mutations {
+            let mutations = self.dom.render_immediate_to_vec();
+            self.mount_buttons(&mutations);
+            mutations
+        }
         fn settle(&mut self) {
-            // A state-changing event renders before tasks/effects are polled;
-            // the second round delivers those post-render focus requests.
-            self.dom.render_immediate_to_vec();
-            self.dom.render_immediate_to_vec();
+            for _ in 0..4 {
+                self.render();
+            }
         }
         fn new(categories: Option<Vec<FilterCategory>>) -> Self {
             Self::with_state(
@@ -3512,6 +3643,8 @@ mod tests {
                 changes: vec![],
                 keyboard: FilterKeyboardCapture::default(),
                 top_layer: false,
+                blocked: false,
+                neighbors: Rc::new(RefCell::new(Vec::new())),
             }));
             let mut dom = VirtualDom::new_with_props(category_mode_fixture, config.clone());
             dioxus::html::set_event_converter(Box::new(FilterTestConverter));
@@ -3521,6 +3654,7 @@ mod tests {
                 config,
                 input: clicks[clicks.len() - 2],
                 reset: *clicks.last().unwrap(),
+                mounts: BTreeMap::new(),
             };
             harness.settle();
             harness
@@ -3530,15 +3664,15 @@ mod tests {
         }
         fn open(&mut self) -> Vec<dioxus::core::ElementId> {
             dispatch_filter_event(&self.dom, "click", self.input, ());
-            filter_listener_ids(self.dom.render_immediate_to_vec(), "click")
+            filter_listener_ids(self.render(), "click")
         }
         fn click(&mut self, id: dioxus::core::ElementId) -> Vec<dioxus::core::ElementId> {
             dispatch_filter_event(&self.dom, "click", id, ());
-            filter_listener_ids(self.dom.render_immediate_to_vec(), "click")
+            filter_listener_ids(self.render(), "click")
         }
         fn text(&mut self, text: &str) {
             dispatch_filter_event(&self.dom, "input", self.input, text.to_string());
-            self.dom.render_immediate_to_vec();
+            self.render();
         }
         fn key(&mut self, key: Key) -> bool {
             let data: Rc<dyn std::any::Any> =
@@ -3547,12 +3681,12 @@ mod tests {
             self.dom
                 .runtime()
                 .handle_event("keydown", event.clone(), self.input);
-            self.dom.render_immediate_to_vec();
+            self.render();
             !event.default_action_enabled()
         }
         fn update(&mut self) -> Vec<dioxus::core::ElementId> {
             self.dom.mark_dirty(ScopeId::APP);
-            filter_listener_ids(self.dom.render_immediate_to_vec(), "click")
+            filter_listener_ids(self.render(), "click")
         }
     }
 
@@ -3617,7 +3751,43 @@ mod tests {
     }
 
     #[test]
-    fn category_keyboard_input_uses_native_focus_requests_and_commits_draft_not_choices() {
+    fn category_keyboard_focuses_mounted_options_and_calls_explicit_neighbors() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut harness = CategoryModeHarness::new(Some(categories()));
+        let neighbors = harness.config.borrow().neighbors.clone();
+        harness.open();
+        harness.settle();
+        let ids = filter_native_option_ids(&harness.html());
+        filter_key_at(&harness.dom, harness.input, Key::ArrowDown);
+        harness.settle();
+        assert_eq!(
+            harness.mounts[&ids[0]].get(),
+            1,
+            "opening navigation uses the current mounted option"
+        );
+        assert_eq!(harness.mounts[&ids[1]].get(), 0);
+        filter_key_at(&harness.dom, harness.input, Key::ArrowUp);
+        harness.settle();
+        assert_eq!(*neighbors.borrow(), ["previous"]);
+        harness.config.borrow_mut().categories = None;
+        harness.update();
+        harness.settle();
+        filter_key_at(&harness.dom, harness.input, Key::ArrowDown);
+        harness.settle();
+        assert_eq!(*neighbors.borrow(), ["previous", "next"]);
+        filter_key_at(&harness.dom, harness.input, Key::ArrowUp);
+        harness.config.borrow_mut().blocked = true;
+        harness.update();
+        harness.settle();
+        assert_eq!(
+            *neighbors.borrow(),
+            ["previous", "next"],
+            "blocking before delivery cancels the queued neighbor request"
+        );
+    }
+
+    #[test]
+    fn category_keyboard_input_uses_mounted_focus_requests_and_commits_draft_not_choices() {
         let _event_converter_guard = crate::test_event_converter_guard();
         let mut harness = CategoryModeHarness::new(Some(categories()));
         let capture = harness.config.borrow().keyboard.clone();
@@ -3636,7 +3806,7 @@ mod tests {
         );
         assert_eq!(
             capture.request().unwrap().target,
-            FilterFocusTarget::PreviousSibling
+            FilterFocusTarget::PreviousControl
         );
         harness.settle();
         assert!(harness.html().contains("data-open=\"false\""));
@@ -3732,7 +3902,7 @@ mod tests {
         );
         assert_eq!(
             capture.request().unwrap().target,
-            FilterFocusTarget::NextSibling
+            FilterFocusTarget::NextControl
         );
         harness.settle();
         assert!(harness.html().contains("data-open=\"true\""));
@@ -3746,7 +3916,7 @@ mod tests {
         );
         assert_eq!(
             capture.request().unwrap().target,
-            FilterFocusTarget::NextSibling
+            FilterFocusTarget::NextControl
         );
         harness.settle();
         assert!(harness.html().contains("data-open=\"true\""));
@@ -3802,6 +3972,11 @@ mod tests {
         );
         harness.settle();
         assert_eq!(
+            harness.mounts[&ids[1]].get(),
+            1,
+            "reverse boundary focuses the mounted last option"
+        );
+        assert_eq!(
             filter_key_at(&harness.dom, options[1], Key::Tab),
             (true, false)
         );
@@ -3810,6 +3985,11 @@ mod tests {
             FilterFocusTarget::Element(ids[0].clone())
         );
         harness.settle();
+        assert_eq!(
+            harness.mounts[&ids[0]].get(),
+            1,
+            "forward boundary focuses the mounted first option"
+        );
         assert_eq!(
             filter_key_at(&harness.dom, options[0], Key::Escape),
             (false, false)
@@ -3860,7 +4040,7 @@ mod tests {
         filter_key_at(&harness.dom, harness.input, Key::ArrowDown);
         let pending = capture.request().unwrap();
         // A mode update replaces the actual option identity even when the first
-        // ordinal remains zero. The native query cannot focus a replacement row.
+        // ordinal remains zero. A mounted request cannot follow a replacement ID.
         harness.config.borrow_mut().categories = None;
         harness.update();
         let current = filter_native_option_ids(&harness.html());
@@ -3888,29 +4068,31 @@ mod tests {
     }
 
     #[test]
-    fn category_keyboard_unmount_drops_pending_native_focus_delivery() {
+    fn category_keyboard_unmount_drops_pending_mounted_option_focus() {
         let _event_converter_guard = crate::test_event_converter_guard();
         let mut harness = CategoryModeHarness::new(Some(categories()));
-        let delayed = FilterDelayedMount::default();
-        dispatch_filter_event(&harness.dom, "mounted", harness.input, delayed.clone());
+        let options = harness.open();
+        harness.settle();
+        let delayed = FilterDelayedFocus::default();
+        dispatch_filter_event(&harness.dom, "mounted", options[0], delayed.clone());
         harness.settle();
         filter_key_at(&harness.dom, harness.input, Key::ArrowDown);
         harness.settle();
         assert!(
-            delayed.started.get(),
-            "keyboard focus reached the native delivery barrier"
+            delayed.0.started.get(),
+            "the current option receives its mounted focus attempt"
         );
-        assert!(!delayed.ready.get());
-        assert!(!delayed.read_dropped.get());
+        assert!(!delayed.0.read_dropped.get());
         drop(harness);
         assert!(
-            delayed.read_dropped.get(),
-            "unmount releases the pending native read"
+            delayed.0.read_dropped.get(),
+            "unmount drops the outstanding mounted focus future"
         );
-        delayed.ready.set(true);
-        if let Some(waiter) = delayed.waiter.borrow_mut().take() {
+        delayed.0.ready.set(true);
+        if let Some(waiter) = delayed.0.waiter.borrow_mut().take() {
             waiter.wake();
         }
+        assert_eq!(delayed.0.focus_count.get(), 0);
     }
 
     #[test]

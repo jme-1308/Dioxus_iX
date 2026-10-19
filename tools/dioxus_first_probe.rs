@@ -12,6 +12,8 @@ mod descendant_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
+#[path = "../examples/gallery/filter_keyboard_review.rs"]
+mod filter_keyboard_review;
 #[path = "dioxus_first_probe/filter_layout_review.rs"]
 mod filter_layout_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
@@ -24,6 +26,8 @@ mod modal_focus_review;
 mod select_method_review;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
 mod tab_exit_review;
+#[path = "dioxus_first_probe/text_control_method_review.rs"]
+mod text_control_method_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
 mod trigger_review;
 #[path = "dioxus_first_probe/upload_interaction_review.rs"]
@@ -90,6 +94,12 @@ fn Preview() -> Element {
     });
     if scope == "?visibility" {
         return rsx! { visibility_review::VisibilityPreview {} };
+    }
+    if scope == "?filterkeys" {
+        return rsx! { IxTheme { scheme:ColorScheme::Dark, filter_keyboard_review::FilterKeyboardReview {} } };
+    }
+    if scope == "?textmethods" {
+        return rsx! { text_control_method_review::TextControlMethodReview {} };
     }
     if scope == "?filterlayout" {
         return rsx! { filter_layout_review::FilterLayoutReview {} };

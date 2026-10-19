@@ -427,8 +427,8 @@ const catReset = () => catHost()?.querySelector('.ix-category-filter-reset');
 const plainHost = () => byId('r0235-plain-host');
 const plainInput = () => plainHost()?.querySelector('.ix-category-filter-text');
 const plainPanel = () => plainHost()?.querySelector('.ix-category-filter-options');
-const key = (node, value) => {
-    const event = new KeyboardEvent('keydown', { key: value, code: value, bubbles: true, cancelable: true });
+const key = (node, value, shiftKey = false) => {
+    const event = new KeyboardEvent('keydown', { key: value, code: value, shiftKey, bubbles: true, cancelable: true });
     node.dispatchEvent(event);
     return event;
 };
@@ -463,6 +463,15 @@ await wait('top-layer popup open and placed below anchor', () => {
     const p = panel.getBoundingClientRect(), a = anchor.getBoundingClientRect(), s = scrollBox.getBoundingClientRect();
     return p.width > 280 && Math.abs(p.width - a.width) <= 2 && Math.abs(p.top - (a.bottom + 2)) <= 6 && p.bottom > s.bottom && (!panel.dataset.placement || panel.dataset.placement.startsWith('bottom'));
 });
+// Actual mounted option focus and both popup boundary Tab directions.
+catInput().focus();key(catInput(), 'ArrowDown');
+const options = () => [...catPanel().querySelectorAll('.ix-category-filter-option')];
+await wait('mounted first option focus', () => document.activeElement === options()[0]);
+key(options()[0], 'Tab', true);
+await wait('mounted reverse Tab wraps to last option', () => document.activeElement === options().at(-1));
+key(options().at(-1), 'Tab');
+await wait('mounted forward Tab wraps to first option', () => document.activeElement === options()[0]);
+catInput().focus();
 const initialAnchorTop = catAnchor().getBoundingClientRect().top;
 const initialPanelTop = catPanel().getBoundingClientRect().top;
 const wideWidth = catPanel().getBoundingClientRect().width;
@@ -588,6 +597,7 @@ await wait('final outside close', () => !catPanel() && status()?.dataset.nativeE
 return {
     ok: true,
     syntheticEvents: true,
+    mountedOptionFocusAndTab: true,
     topLayerEscapeClipping: true,
     scrollReposition: true,
     narrowResizeWidth: Math.round(narrowWidth),

@@ -1,4 +1,4 @@
-//! Native option focus and source keyboard quirks established by B10.5.
+//! Mounted option focus and explicit neighboring-control navigation.
 use dioxus::prelude::*;
 use dioxus_ix::*;
 use serde_json::{Value, json};
@@ -65,6 +65,8 @@ fn NativeKeyboardCase(
     observed: Signal<FilterState>,
 ) -> Element {
     let mut observed = observed;
+    let mut previous = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    let mut next = use_signal(|| None::<std::rc::Rc<MountedData>>);
     let category_options = (!plain_suggestions).then(categories);
     let suggestion_options = if plain_suggestions {
         vec!["Apple".into(), "Banana".into()]
@@ -73,6 +75,8 @@ fn NativeKeyboardCase(
     };
     let filter = rsx! {
         CategoryFilter { label, categories: category_options, suggestions: suggestion_options, enable_top_layer: top_layer,
+            onfocusprevious: move |_| if direct_siblings { if let Some(node) = previous.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
+            onfocusnext: move |_| if direct_siblings { if let Some(node) = next.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
             onchange: move |value: FilterState| { record(events, case_name, "onchange", state_value(&value)); observed.set(value); },
             oninput: move |value: FilterInputState| record(events, case_name, "oninput", json!({"token": value.token, "category": value.category})),
             oncategory: move |value| record(events, case_name, "oncategory", json!(value)),
@@ -86,10 +90,10 @@ fn NativeKeyboardCase(
             if plain_suggestions { p { "Categories omitted; Apple and Banana suggestions." } }
             else { p { "Vendor: Alpha, Beta. Product: X, Y." } }
             if direct_siblings {
-                p { "Before and after buttons are direct element siblings of the filter root for the source host-sibling arrow path." }
-                button { id: "b10-keyboard-{case_name}-before", r#type: "button", class: "ix-button ix-button-secondary", "Before category filter" }
+                p { "Before and after buttons explicitly provide Dioxus-mounted focus destinations for filter arrows." }
+                button { id: "b10-keyboard-{case_name}-before", r#type: "button", class: "ix-button ix-button-secondary", onmounted:move |event|previous.set(Some(event.data())), "Before category filter" }
                 {filter}
-                button { id: "b10-keyboard-{case_name}-after", r#type: "button", class: "ix-button ix-button-secondary", "After category filter" }
+                button { id: "b10-keyboard-{case_name}-after", r#type: "button", class: "ix-button ix-button-secondary", onmounted:move |event|next.set(Some(event.data())), "After category filter" }
             } else {
                 button { id: "b10-keyboard-{case_name}-before", r#type: "button", class: "ix-button ix-button-secondary", "Before {title}" }
                 div { id: "b10-keyboard-{case_name}-mount", style: "min-width:0", {filter} }

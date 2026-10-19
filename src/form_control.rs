@@ -92,6 +92,8 @@ struct Binding {
     touched: Rc<Cell<bool>>,
     node: Rc<RefCell<Option<Rc<MountedData>>>>,
     has_value: bool,
+    focused: Rc<Cell<bool>>,
+    focusable: Rc<Cell<bool>>,
 }
 
 /// Descriptor scoped to a mounted input or textarea. Retained descriptors reject
@@ -99,36 +101,34 @@ struct Binding {
 #[derive(Clone)]
 pub struct NativeTextControl {
     binding: Binding,
+    node: Rc<MountedData>,
 }
 impl NativeTextControl {
     pub fn id(&self) -> &str {
         &self.binding.id
     }
     pub async fn focus(&self) -> Result<(), TextControlError> {
-        self.binding.ensure_mounted()?;
-        let task = crate::dom_query::eval(
-            r#"
-            const id=await dioxus.recv(), input=document.getElementById(id);
-            if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return false;
-            if (document.activeElement!==input) input.focus();
-            return document.activeElement===input;
-        "#,
-        );
-        task.send(&self.binding.id).map_err(dom_error)?;
-        let focused = task.join::<bool>().await.map_err(dom_error)?;
-        self.binding.ensure_mounted()?;
-        if focused {
-            Ok(())
-        } else {
-            Err(TextControlError::Dom(
-                "Native input could not receive focus".into(),
-            ))
+        self.binding.ensure_current(&self.node)?;
+        self.binding.ensure_focusable()?;
+        let result = self.node.set_focus(true).await;
+        self.binding.ensure_current(&self.node)?;
+        self.binding.ensure_focusable()?;
+        if let Err(error) = result {
+            // Pinned desktop alpha.2 asks setFocus for bool; its interpreter
+            // returns void. Typed focus/blur confirms the current mounted input
+            // only. No retry, native query or alternative focus path runs.
+            if !self.binding.focused.get() {
+                return Err(dom_error(error));
+            }
         }
+        Ok(())
     }
     /// Set a native value without dispatching application input/change events.
     /// Controlled props remain authoritative on the next render.
     pub async fn set_value(&self, value: &str) -> Result<(), TextControlError> {
         self.binding.ensure_mounted()?;
+        // MountedData has no native input value setter; controlled Rust props
+        // remain authoritative, while this explicit native-value API is silent.
         let task = crate::dom_query::eval(
             r#"
             const [id,value]=await dioxus.recv(), input=document.getElementById(id);
@@ -147,6 +147,28 @@ impl NativeTextControl {
     }
 }
 impl Binding {
+    fn ensure_current(&self, node: &Rc<MountedData>) -> Result<(), TextControlError> {
+        self.ensure_mounted()?;
+        if self
+            .node
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(current, node))
+        {
+            Ok(())
+        } else {
+            Err(TextControlError::NotMounted)
+        }
+    }
+    fn ensure_focusable(&self) -> Result<(), TextControlError> {
+        if self.focusable.get() {
+            Ok(())
+        } else {
+            Err(TextControlError::Dom(
+                "Native input could not receive focus".into(),
+            ))
+        }
+    }
     fn ensure_mounted(&self) -> Result<(), TextControlError> {
         if self.alive.get() && self.node.borrow().is_some() {
             Ok(())
@@ -206,7 +228,12 @@ impl TextControlController {
     pub fn get_native_input_element(&self) -> Result<NativeTextControl, TextControlError> {
         let binding = self.binding()?;
         binding.ensure_mounted()?;
-        Ok(NativeTextControl { binding })
+        let node = binding
+            .node
+            .borrow()
+            .clone()
+            .ok_or(TextControlError::NotMounted)?;
+        Ok(NativeTextControl { binding, node })
     }
     pub async fn focus_input(&self) -> Result<(), TextControlError> {
         self.get_native_input_element()?.focus().await
@@ -223,6 +250,7 @@ impl TextControlController {
     ) -> Result<Option<NativeFormElement>, TextControlError> {
         let binding = self.binding()?;
         binding.ensure_mounted()?;
+        // MountedData does not expose an input's associated form/metadata.
         let task = crate::dom_query::eval(
             r#"
             const id=await dioxus.recv(), input=document.getElementById(id);
@@ -246,6 +274,8 @@ struct Snapshot {
     no_validate: bool,
     validation_message: String,
 }
+// Pinned MountedData has no native validity flags, validation message or
+// associated-form validation setting API; this adapter only reads those facts.
 async fn read_snapshot(id: &str) -> Result<Snapshot, TextControlError> {
     let task = crate::dom_query::eval(
         r#"
@@ -266,17 +296,22 @@ pub(crate) struct ControlLifecycle {
     pub touched: bool,
     pub mounted: Callback<Rc<MountedData>>,
     pub observe: Callback<bool>,
+    pub focus_state: Callback<bool>,
     pub message: String,
 }
 pub(crate) fn use_control(
     id: &str,
     has_value: bool,
+    can_focus: bool,
     controller: Option<TextControlController>,
     validity_changed: EventHandler<ValidityStateChangeEvent>,
 ) -> ControlLifecycle {
     let alive = use_hook(|| Rc::new(Cell::new(true)));
     let touched = use_hook(|| Rc::new(Cell::new(false)));
     let node = use_hook(|| Rc::new(RefCell::new(None)));
+    let focused = use_hook(|| Rc::new(Cell::new(false)));
+    let focusable = use_hook(|| Rc::new(Cell::new(can_focus)));
+    focusable.set(can_focus);
     let token = use_hook(|| BINDING_ID.fetch_add(1, Ordering::Relaxed));
     let bound = use_hook(|| Rc::new(RefCell::new(None::<TextControlController>)));
     if *bound.borrow() != controller {
@@ -294,13 +329,19 @@ pub(crate) fn use_control(
                 touched: touched.clone(),
                 node: node.clone(),
                 has_value,
+                focused: focused.clone(),
+                focusable: focusable.clone(),
             },
         );
     }
     let drop_alive = alive.clone();
     let drop_bound = bound.clone();
+    let drop_node = node.clone();
+    let drop_focus = focused.clone();
     use_drop(move || {
         drop_alive.set(false);
+        drop_focus.set(false);
+        drop_node.borrow_mut().take();
         if let Some(controller) = drop_bound.borrow_mut().take() {
             controller.bindings.borrow_mut().remove(&token);
         }
@@ -348,7 +389,16 @@ pub(crate) fn use_control(
             }
         });
     });
+    let mount_focus = focused.clone();
+    let focus_state = use_callback(move |value: bool| focused.set(value));
     let mounted = use_callback(move |data: Rc<MountedData>| {
+        if node
+            .borrow()
+            .as_ref()
+            .is_none_or(|current| !Rc::ptr_eq(current, &data))
+        {
+            mount_focus.set(false);
+        }
         *node.borrow_mut() = Some(data);
         observe.call(false);
     });
@@ -357,6 +407,7 @@ pub(crate) fn use_control(
         touched: *touched_state.read(),
         mounted,
         observe,
+        focus_state,
         message: snapshot.read().validation_message.clone(),
     }
 }
@@ -449,6 +500,265 @@ pub(crate) fn use_custom_validation(id: &str) -> (crate::FieldState, Callback<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Clone)]
+    struct FocusReply {
+        attempts: Rc<Cell<usize>>,
+        focused: Rc<Cell<bool>>,
+        confirms: Rc<Cell<bool>>,
+        ready: Rc<Cell<bool>>,
+    }
+    impl dioxus::html::RenderedElementBacking for FocusReply {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            let state = self.clone();
+            Box::pin(async move {
+                state.attempts.set(state.attempts.get() + 1);
+                std::future::poll_fn(|_| {
+                    if state.ready.get() {
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                if state.confirms.get() {
+                    state.focused.set(true);
+                }
+                Err(dioxus::html::MountedError::OperationFailed(Box::new(
+                    std::io::Error::other("focus response unavailable"),
+                )))
+            })
+        }
+    }
+    fn poll_focus<T>(
+        future: std::pin::Pin<&mut impl std::future::Future<Output = T>>,
+    ) -> std::task::Poll<T> {
+        future.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    }
+    fn ready_focus<T>(future: impl std::future::Future<Output = T>) -> T {
+        let mut future = std::pin::pin!(future);
+        match poll_focus(future.as_mut()) {
+            std::task::Poll::Ready(result) => result,
+            std::task::Poll::Pending => panic!("expected one completed focus attempt"),
+        }
+    }
+    fn response_binding() -> (Binding, FocusReply) {
+        let state = FocusReply {
+            attempts: Rc::default(),
+            focused: Rc::default(),
+            confirms: Rc::new(Cell::new(true)),
+            ready: Rc::new(Cell::new(true)),
+        };
+        let binding = Binding {
+            id: "input".into(),
+            alive: Rc::new(Cell::new(true)),
+            touched: Rc::default(),
+            has_value: true,
+            node: Rc::new(RefCell::new(Some(Rc::new(MountedData::new(state.clone()))))),
+            focused: state.focused.clone(),
+            focusable: Rc::new(Cell::new(true)),
+        };
+        (binding, state)
+    }
+    #[test]
+    fn text_focus_uses_one_current_mount_attempt_and_requires_confirmation_of_errors() {
+        let (binding, state) = response_binding();
+        let descriptor = NativeTextControl {
+            node: binding.node.borrow().clone().unwrap(),
+            binding: binding.clone(),
+        };
+        assert_eq!(ready_focus(descriptor.focus()), Ok(()));
+        assert_eq!(state.attempts.get(), 1);
+        state.confirms.set(false);
+        assert_eq!(
+            ready_focus(descriptor.focus()),
+            Ok(()),
+            "already focused input still makes exactly one attempt"
+        );
+        assert_eq!(state.attempts.get(), 2);
+        state.focused.set(false);
+        assert!(matches!(
+            ready_focus(descriptor.focus()),
+            Err(TextControlError::Dom(_))
+        ));
+        assert_eq!(state.attempts.get(), 3, "unconfirmed error does not retry");
+        binding.focusable.set(false);
+        state.focused.set(true);
+        assert!(matches!(
+            ready_focus(descriptor.focus()),
+            Err(TextControlError::Dom(_))
+        ));
+        assert_eq!(
+            state.attempts.get(),
+            3,
+            "disabled/hidden controls do not issue ineffective focus commands"
+        );
+        binding.focusable.set(true);
+        binding
+            .node
+            .borrow_mut()
+            .replace(Rc::new(MountedData::new(())));
+        assert_eq!(
+            ready_focus(descriptor.focus()),
+            Err(TextControlError::NotMounted)
+        );
+        assert_eq!(state.attempts.get(), 3);
+    }
+    #[test]
+    fn text_focus_pending_response_rejects_replaced_or_dropped_mounts() {
+        let (binding, state) = response_binding();
+        let descriptor = NativeTextControl {
+            node: binding.node.borrow().clone().unwrap(),
+            binding: binding.clone(),
+        };
+        state.ready.set(false);
+        let mut future = std::pin::pin!(descriptor.focus());
+        assert!(poll_focus(future.as_mut()).is_pending());
+        binding
+            .node
+            .borrow_mut()
+            .replace(Rc::new(MountedData::new(())));
+        state.ready.set(true);
+        assert_eq!(
+            poll_focus(future.as_mut()),
+            std::task::Poll::Ready(Err(TextControlError::NotMounted))
+        );
+        assert_eq!(state.attempts.get(), 1);
+        let (binding, state) = response_binding();
+        let descriptor = NativeTextControl {
+            node: binding.node.borrow().clone().unwrap(),
+            binding: binding.clone(),
+        };
+        state.ready.set(false);
+        let mut future = std::pin::pin!(descriptor.focus());
+        assert!(poll_focus(future.as_mut()).is_pending());
+        binding.alive.set(false);
+        state.ready.set(true);
+        assert_eq!(
+            poll_focus(future.as_mut()),
+            std::task::Poll::Ready(Err(TextControlError::NotMounted))
+        );
+        assert_eq!(state.attempts.get(), 1);
+    }
+
+    struct FocusEventData;
+    impl dioxus::html::HasFocusData for FocusEventData {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    struct FocusConverter;
+    macro_rules! focus_converter {
+        (enum Event {$(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)*}) => {
+            impl dioxus::html::HtmlEventConverter for FocusConverter {
+                $(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data {let _=event;focus_converter!(@data $group,event)})*
+            }
+        };
+        (@data Focus,$event:ident)=>{dioxus::html::FocusData::new(FocusEventData)};
+        (@data Mounted,$event:ident)=>{MountedData::new($event.downcast::<FocusReply>().unwrap().clone())};
+        (@data $other:ident,$event:ident)=>{panic!("Unexpected text focus test event")};
+    }
+    dioxus::html::with_html_event_groups!(focus_converter);
+    type ComponentFocusFixture = (u8, TextControlController, Rc<RefCell<Vec<bool>>>);
+    fn component_focus_fixture((kind, controller, results): ComponentFocusFixture) -> Element {
+        let focus_controller = controller.clone();
+        let focus_results = results.clone();
+        let onfocus = use_callback(move |_: FocusEvent| {
+            focus_results
+                .borrow_mut()
+                .push(ready_focus(focus_controller.focus_input()).is_ok())
+        });
+        let blur_controller = controller.clone();
+        let onixblur = use_callback(move |()| {
+            results
+                .borrow_mut()
+                .push(ready_focus(blur_controller.focus_input()).is_ok())
+        });
+        match kind {
+            0 => {
+                rsx! {crate::Input {id:"method-control",controller,readonly:true,onfocus,onixblur}}
+            }
+            1 => {
+                rsx! {crate::Textarea {id:"method-control",controller,readonly:true,onfocus,onixblur}}
+            }
+            _ => {
+                rsx! {crate::NumberInput {id:"method-control",controller,readonly:true,onfocus,onixblur}}
+            }
+        }
+    }
+    fn dispatch_focus_event(
+        dom: &VirtualDom,
+        name: &str,
+        id: dioxus::core::ElementId,
+        payload: impl std::any::Any,
+    ) {
+        let data: Rc<dyn std::any::Any> =
+            Rc::new(dioxus::html::PlatformEventData::new(Box::new(payload)));
+        dom.runtime()
+            .handle_event(name, Event::new(data, false), id);
+    }
+    #[test]
+    fn input_textarea_number_confirm_typed_focus_before_consumers_and_clear_before_blur() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(FocusConverter));
+        for kind in 0..3 {
+            let controller = TextControlController::default();
+            let results = Rc::new(RefCell::new(Vec::new()));
+            let mut dom = VirtualDom::new_with_props(
+                component_focus_fixture,
+                (kind, controller.clone(), results.clone()),
+            );
+            let mutations = dom.rebuild_to_vec();
+            let mut current = dioxus::core::ElementId::ROOT;
+            let id = mutations
+                .edits
+                .iter()
+                .find_map(|edit| match edit {
+                    dioxus::core::Mutation::SetId { id }
+                    | dioxus::core::Mutation::PushId { id } => {
+                        current = *id;
+                        None
+                    }
+                    dioxus::core::Mutation::SetAttribute {
+                        name,
+                        value: dioxus::core::AttributeValue::Text(value),
+                        ..
+                    } if name == "id" && value == "method-control" => Some(current),
+                    _ => None,
+                })
+                .expect("current native text element");
+            let (_, reply) = response_binding();
+            reply.confirms.set(false);
+            dispatch_focus_event(&dom, "mounted", id, reply.clone());
+            let descriptor = controller.get_native_input_element().unwrap();
+            dispatch_focus_event(&dom, "focus", id, ());
+            dispatch_focus_event(&dom, "blur", id, ());
+            assert_eq!(
+                results.borrow().as_slice(),
+                [true, false],
+                "typed state precedes consumer callbacks for control kind {kind}"
+            );
+            assert_eq!(
+                reply.attempts.get(),
+                2,
+                "readonly controls retain the one-attempt focus API"
+            );
+            drop(dom);
+            assert_eq!(
+                ready_focus(descriptor.focus()),
+                Err(TextControlError::NotMounted)
+            );
+            assert_eq!(reply.attempts.get(), 2);
+        }
+    }
+
     #[test]
     fn native_constraints_are_distinct_from_required_nonempty_queries() {
         let controller = TextControlController::default();
@@ -462,6 +772,8 @@ mod tests {
                 touched: touched.clone(),
                 node: Rc::default(),
                 has_value: true,
+                focused: Rc::default(),
+                focusable: Rc::new(Cell::new(true)),
             },
         );
         assert_eq!(controller.has_valid_value(), Ok(true));
@@ -484,6 +796,8 @@ mod tests {
             touched: Rc::default(),
             node: Rc::new(RefCell::new(Some(Rc::new(MountedData::new(()))))),
             has_value: false,
+            focused: Rc::default(),
+            focusable: Rc::new(Cell::new(true)),
         };
         controller.bindings.borrow_mut().insert(1, binding.clone());
         let descriptor = controller.get_native_input_element().unwrap();

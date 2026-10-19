@@ -395,8 +395,13 @@ pub fn Input(
     } else {
         !value.is_empty()
     };
-    let lifecycle =
-        crate::form_control::use_control(&id, has_value, controller, onvaliditystatechange);
+    let lifecycle = crate::form_control::use_control(
+        &id,
+        has_value,
+        !disabled && !input_type.eq_ignore_ascii_case("hidden"),
+        controller,
+        onvaliditystatechange,
+    );
     let supplied = crate::form_control::validation_class_state(&class);
     let state = if state != FieldState::Default {
         state
@@ -410,6 +415,7 @@ pub fn Input(
     });
     let observe = lifecycle.observe;
     let mounted = lifecycle.mounted;
+    let focus_state = lifecycle.focus_state;
     let constraints = (
         pattern.clone(),
         min_length,
@@ -476,8 +482,8 @@ pub fn Input(
                     "data-ix-touched": lifecycle.touched.to_string(),
                     onmounted: move |event| mounted.call(event.data()),
                     oninput: move |event| { onvaluechange.call(event.value()); observe.call(false); },
-                    onfocus: move |event| { focus_commit.call(()); onfocus.call(event); },
-                    onblur: move |event| { onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
+                    onfocus: move |event| { focus_state.call(true); focus_commit.call(()); onfocus.call(event); },
+                    onblur: move |event| { focus_state.call(false); onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
                     onkeydown: move |event| {
                         onkeydown.call(event.clone());
                         if event.key() == Key::Enter { commit.call(()); }
@@ -552,8 +558,13 @@ pub fn Textarea(
 ) -> Element {
     let id = field_id(id);
     let (focus_commit, commit) = use_text_commit(&value, onchange);
-    let lifecycle =
-        crate::form_control::use_control(&id, !value.is_empty(), controller, onvaliditystatechange);
+    let lifecycle = crate::form_control::use_control(
+        &id,
+        !value.is_empty(),
+        !disabled,
+        controller,
+        onvaliditystatechange,
+    );
     let supplied = crate::form_control::validation_class_state(&class);
     let state = if state != FieldState::Default {
         state
@@ -567,6 +578,7 @@ pub fn Textarea(
     });
     let observe = lifecycle.observe;
     let mounted = lifecycle.mounted;
+    let focus_state = lifecycle.focus_state;
     use_effect(use_reactive(
         (
             &value,
@@ -619,9 +631,9 @@ pub fn Textarea(
                 "data-ix-touched": lifecycle.touched.to_string(),
                 onmounted: move |event| mounted.call(event.data()),
                 oninput: move |event| { onvaluechange.call(event.value()); observe.call(false); },
-                onfocus: move |event| { focus_commit.call(()); onfocus.call(event); },
+                onfocus: move |event| { focus_state.call(true); focus_commit.call(()); onfocus.call(event); },
                 onkeydown,
-                onblur: move |event| { onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
+                onblur: move |event| { focus_state.call(false); onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
             }
                 }
             }
