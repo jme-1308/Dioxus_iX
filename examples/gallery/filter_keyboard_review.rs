@@ -126,7 +126,7 @@ pub fn FilterKeyboardReview() -> Element {
     rsx! {
         section { id: "b10-keyboard-review", class: "demo-section", style: "min-width:0;max-width:100%",
             h2 { "Native filter keyboard and focus" }
-            p { "This review follows the pinned source quirks: options receive real button focus, option Enter and Space are canceled, and input Enter commits the draft. Tab follows input, reset and operator order, then traps at the popup boundaries once focus enters its controls." }
+            p { "Options use native button focus and activation: Enter or Space selects an option or toggles the operator. Input Enter commits the draft. Tab follows input, reset and operator order, then wraps at the popup boundaries once focus enters its controls." }
             p { "Compare closed and open ArrowDown, literal Space, Escape, and Home/End with selection. Focusing the input alone keeps options closed. Remount restores three fresh empty filters and clears observations." }
             div { class: "demo-row",
                 button { id: "b10-keyboard-reset", r#type: "button", class: "ix-button ix-button-secondary", onclick: move |_| revision += 1, "Reset keyboard review" }

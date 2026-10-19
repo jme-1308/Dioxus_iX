@@ -615,10 +615,8 @@ fn filter_popup_key(
                 );
             }
         }
-        Key::Enter | Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End => {
-            event.prevent_default()
-        }
-        Key::Character(value) if value == " " => event.prevent_default(),
+        Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End => event.prevent_default(),
+        // Native button Enter/Space activation reaches the existing onclick once.
         _ => {}
     }
 }
@@ -3870,21 +3868,22 @@ mod tests {
     }
 
     #[test]
-    fn category_keyboard_native_buttons_cancel_activation_and_wrap_only_popup_boundaries() {
+    fn category_keyboard_native_buttons_allow_activation_and_wrap_only_popup_boundaries() {
         let _event_converter_guard = crate::test_event_converter_guard();
         let mut harness = CategoryModeHarness::new(Some(categories()));
         let capture = harness.config.borrow().keyboard.clone();
         let options = harness.open();
         let ids = filter_native_option_ids(&harness.html());
         harness.config.borrow_mut().events.clear();
-        for key in [
-            Key::Enter,
-            Key::Character(" ".into()),
-            Key::ArrowUp,
-            Key::ArrowDown,
-            Key::Home,
-            Key::End,
-        ] {
+        let before_activation = harness.html();
+        for key in [Key::Enter, Key::Character(" ".into())] {
+            assert_eq!(filter_key_at(&harness.dom, options[0], key), (false, true));
+            harness.settle();
+            assert_eq!(harness.html(), before_activation);
+            assert!(harness.config.borrow().events.is_empty());
+            assert!(capture.request().is_none());
+        }
+        for key in [Key::ArrowUp, Key::ArrowDown, Key::Home, Key::End] {
             assert_eq!(filter_key_at(&harness.dom, options[0], key), (true, true));
             assert!(
                 capture.request().is_none(),
@@ -3945,26 +3944,39 @@ mod tests {
         assert!(harness.config.borrow().events.is_empty());
 
         let options = harness.open();
+        assert_eq!(
+            filter_key_at(&harness.dom, options[0], Key::Enter),
+            (false, true)
+        );
+        // SSR dispatch does not emulate the browser's default button click.
+        assert!(harness.config.borrow().events.is_empty());
         let native = harness.click(options[0]);
+        assert_eq!(harness.config.borrow().events, ["category"]);
+        assert!(harness.config.borrow().changes.is_empty());
         let operator = native[0];
         let focus = Rc::new(Cell::new(0_usize));
         dispatch_filter_event(&harness.dom, "mounted", harness.input, focus.clone());
         harness.settle();
         let before_focus = focus.get();
         harness.config.borrow_mut().events.clear();
-        harness.click(operator);
-        assert_eq!(
-            focus.get(),
-            before_focus,
-            "pointer operator does not request input focus"
-        );
-        assert!(harness.html().contains("aria-pressed=\"true\""));
-        assert!(harness.config.borrow().events.is_empty());
-        for key in [Key::Enter, Key::Character(" ".into())] {
-            assert_eq!(filter_key_at(&harness.dom, operator, key), (true, true));
+        for (key, pressed) in [(Key::Enter, true), (Key::Character(" ".into()), false)] {
+            let before_activation = harness.html();
+            assert_eq!(filter_key_at(&harness.dom, operator, key), (false, true));
+            harness.settle();
+            assert_eq!(harness.html(), before_activation);
+            harness.click(operator);
+            assert!(
+                harness
+                    .html()
+                    .contains(&format!("aria-pressed=\"{pressed}\""))
+            );
+            assert_eq!(
+                focus.get(),
+                before_focus,
+                "operator activation does not request input focus"
+            );
+            assert!(harness.config.borrow().events.is_empty());
         }
-        harness.settle();
-        assert!(harness.html().contains("aria-pressed=\"true\""));
         assert_eq!(
             filter_key_at(&harness.dom, operator, Key::Escape),
             (false, false)
@@ -3976,6 +3988,52 @@ mod tests {
             "Escape requests no input restoration"
         );
         assert!(harness.html().contains("data-open=\"false\""));
+
+        let native = harness.open();
+        assert_eq!(
+            filter_key_at(&harness.dom, native[1], Key::Character(" ".into())),
+            (false, true)
+        );
+        harness.settle();
+        assert!(harness.config.borrow().events.is_empty());
+        assert!(harness.config.borrow().changes.is_empty());
+        harness.click(native[1]);
+        assert_eq!(harness.config.borrow().events, ["change"]);
+        assert_eq!(
+            harness.config.borrow().changes,
+            [FilterState {
+                tokens: vec!["Committed mode token".into()],
+                categories: vec![CategoryToken {
+                    id: "vendor".into(),
+                    value: "Apple".into(),
+                    operator: LogicalFilterOperator::Equal,
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn category_keyboard_plain_button_defers_activation_to_one_click() {
+        let _event_converter_guard = crate::test_event_converter_guard();
+        let mut harness = CategoryModeHarness::new(None);
+        let options = harness.open();
+        let before_activation = harness.html();
+        for key in [Key::Enter, Key::Character(" ".into())] {
+            assert_eq!(filter_key_at(&harness.dom, options[0], key), (false, true));
+            harness.settle();
+            assert_eq!(harness.html(), before_activation);
+            assert!(harness.config.borrow().events.is_empty());
+            assert!(harness.config.borrow().changes.is_empty());
+        }
+        harness.click(options[0]);
+        assert_eq!(harness.config.borrow().events, ["change"]);
+        assert_eq!(
+            harness.config.borrow().changes,
+            [FilterState {
+                tokens: vec!["Committed mode token".into(), "Shared".into()],
+                categories: vec![],
+            }]
+        );
     }
 
     #[test]

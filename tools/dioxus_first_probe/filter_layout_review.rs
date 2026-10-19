@@ -470,6 +470,15 @@ const key = (node, value, shiftKey = false) => {
     node.dispatchEvent(event);
     return event;
 };
+// Synthetic dispatch cannot execute a browser default action. Verify the
+// key remains unprevented, then emulate its single native click explicitly.
+// Actual Enter/Space default activation is verified separately in Chromium.
+const activate = (node, value) => {
+    node.focus();
+    if (key(node, value).defaultPrevented) throw new Error('button activation prevented: ' + value);
+    node.dispatchEvent(new KeyboardEvent('keyup', { key: value, code: value, bubbles: true }));
+    node.click();
+};
 const wait = async (label, predicate) => {
     for (let n = 0; n < 220; n++) {
         if (predicate()) return;
@@ -569,18 +578,24 @@ await wait('top fixture restored to bottom placement', () => {
 // 5. Category and value selection + plain suggestion selection.
 const statusCategory = () => catPanel()?.querySelector('.ix-category-filter-option[data-id="status"]');
 await wait('status category option available', () => Boolean(statusCategory()));
-statusCategory().click();
+activate(statusCategory(), 'Enter');
 await wait('status category preview selected', () => status()?.dataset.activeCategory === 'status' && Boolean(catHost()?.querySelector('.ix-category-filter-preview')));
+const operator = () => catPanel()?.querySelector('button[aria-pressed]');
+await wait('operator button available', () => operator()?.getAttribute('aria-pressed') === 'false');
+activate(operator(), 'Enter');
+await wait('operator Enter toggles once', () => operator()?.getAttribute('aria-pressed') === 'true');
+activate(operator(), ' ');
+await wait('operator Space toggles once', () => operator()?.getAttribute('aria-pressed') === 'false');
 const runningValue = () => catPanel()?.querySelector('.ix-category-filter-option[data-id="Running"]');
 await wait('Running value option available', () => Boolean(runningValue()));
-runningValue().click();
+activate(runningValue(), ' ');
 await wait('Running category token committed', () => status()?.dataset.chipCount === '3' && status()?.dataset.categoryCount === '2');
 
 plainInput().click();
 await wait('plain suggestion popup open', () => plainPanel()?.dataset.topLayer === 'true' && plainPanel()?.matches(':popover-open'));
 const sealOption = () => plainPanel()?.querySelector('.ix-category-filter-option[data-id="Seal leakage"]');
 await wait('plain suggestion option present', () => Boolean(sealOption()));
-sealOption().click();
+activate(sealOption(), 'Enter');
 await wait('plain suggestion committed', () => status()?.dataset.plainCount === '1' && status()?.dataset.plainChanges === '1');
 byId('r0235-outside').click();
 await wait('outside click closes popups', () => !catPanel() && !plainPanel());
@@ -681,6 +696,9 @@ return {
     wideWidth: Math.round(wideWidth),
     viewportClampAndFlipTop: true,
     categoryAndPlainSelection: true,
+    activationKeysUnprevented: true,
+    nativeDefaultClickEmulated: true,
+    operatorEnterAndSpace: true,
     simultaneousSharedViewportConsumers: true,
     closedRemovedRemountedPeerIndependent: true,
     remainingConsumerAncestorScrollAndWindowResize: true,
