@@ -42,12 +42,13 @@ fn field_id(id: Option<String>) -> String {
     id.unwrap_or(generated)
 }
 
-// Header and Popover groups are scope-owned. Capture participation once so conditional
+// Header, Popover and Pane groups are scope-owned. Capture participation once so conditional
 // registration never changes hook order during ordinary control rerenders.
 // Other form uses keep their existing controller-owned mounted lifecycle.
 fn use_surface_focus_mount(id: String) -> Option<EventHandler<MountedEvent>> {
     let in_surface = use_hook(|| {
         try_consume_context::<crate::header_control_scope::HeaderControlGroup>().is_some()
+            || try_consume_context::<crate::application::PaneFocusScope>().is_some()
             || try_consume_context::<crate::overlay_runtime::PopoverFocusScope>()
                 .and_then(|scope| scope.owner)
                 .is_some_and(|owner| owner.is_registered())
@@ -366,6 +367,10 @@ pub fn Input(
     #[props(default = "text".to_string())] input_type: String,
     #[props(default)] placeholder: Option<String>,
     #[props(default)] required: bool,
+    /// Request native focus when mounted. Floating Panes also prioritize this
+    /// registered control when they open.
+    #[props(default)]
+    autofocus: bool,
     #[props(default)] disabled: bool,
     #[props(default)] readonly: bool,
     #[props(default)] pattern: Option<String>,
@@ -492,7 +497,7 @@ pub fn Input(
                     "data-padding-end": padding.map(|facts| facts.end.to_string()),
                     span { class: "ix-input-start", onresize: adornments.start_resized, if let Some(start) = start { {start} } }
                 input { id, class: "ix-input", name, r#type: native_type, value, placeholder,
-                    required, disabled, readonly, pattern, minlength: min_length, maxlength: max_length,
+                    required, disabled, readonly, autofocus, pattern, minlength: min_length, maxlength: max_length,
                     min, max, step, autocomplete,
                     style: input_style,
                     "aria-label": aria_label,
@@ -3574,6 +3579,157 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct PaneFormsCapture {
+        runtime: Option<crate::overlay_runtime::RuntimeHandle>,
+        visible: Option<Signal<bool>>,
+        epoch: Option<Signal<u64>>,
+    }
+    #[component]
+    fn PaneStandardForms(prefix: String, epoch: u64) -> Element {
+        rsx! {
+            Input {id:format!("{prefix}-input-{epoch}"),autofocus:true,value:"Pump"}
+            Textarea {id:format!("{prefix}-textarea-{epoch}"),value:"Inspection"}
+            Select {id:format!("{prefix}-select-{epoch}"),options:vec![SelectOption::new("a","Alpha")]}
+            Checkbox {id:format!("{prefix}-checkbox-{epoch}"),name:"pane-check-mirror",label:"Approved",checked:true}
+            Radio {id:format!("{prefix}-radio-{epoch}"),name:"pane-radio",value:"primary",label:"Primary",checked:true}
+            Toggle {id:format!("{prefix}-toggle-{epoch}"),name:"pane-toggle-mirror",label:"Remote",checked:true}
+        }
+    }
+    fn pane_forms_fixture(capture: Rc<std::cell::RefCell<PaneFormsCapture>>) -> Element {
+        let runtime = crate::overlay_runtime::use_overlay_runtime();
+        let visible = use_signal(|| true);
+        let epoch = use_signal(|| 0_u64);
+        {
+            let mut capture = capture.borrow_mut();
+            capture.runtime = Some(runtime);
+            capture.visible = Some(visible);
+            capture.epoch = Some(epoch);
+        }
+        rsx! {
+            PaneStandardForms {prefix:"outside",epoch:0}
+            if visible() {
+                crate::Pane {key:"pane-{epoch()}",heading:"Registered forms",expanded:true,
+                    PaneStandardForms {prefix:"pane",epoch:epoch()}
+                }
+            }
+        }
+    }
+    #[derive(Clone)]
+    struct PaneFormsMount;
+    impl dioxus::html::RenderedElementBacking for PaneFormsMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    struct PaneFormsConverter;
+    macro_rules! pane_forms_converter {
+        (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
+            impl dioxus::html::HtmlEventConverter for PaneFormsConverter {
+                $(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data {let _=event;pane_forms_converter!(@data $group,event)})*
+            }
+        };
+        (@data Mounted,$event:ident) => {MountedData::new(PaneFormsMount)};
+        (@data $other:ident,$event:ident) => {panic!("unexpected Pane form test event")};
+    }
+    dioxus::html::with_html_event_groups!(pane_forms_converter);
+    fn mount_pane_forms(dom: &mut VirtualDom, mut mutations: dioxus::core::Mutations) {
+        for _ in 0..8 {
+            let mut current = dioxus::core::ElementId::ROOT;
+            for edit in mutations.edits {
+                match edit {
+                    dioxus::core::Mutation::SetId { id }
+                    | dioxus::core::Mutation::PushId { id } => current = id,
+                    dioxus::core::Mutation::NewEventListener { name } if name == "mounted" => {
+                        let data: Rc<dyn std::any::Any> =
+                            Rc::new(dioxus::html::PlatformEventData::new(Box::new(())));
+                        dom.runtime()
+                            .handle_event("mounted", Event::new(data, false), current);
+                    }
+                    _ => {}
+                }
+            }
+            mutations = dom.render_immediate_to_vec();
+        }
+    }
+    #[test]
+    fn pane_standard_forms_enroll_native_controls_and_expire_with_keyed_scope() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(PaneFormsConverter));
+        let capture = Rc::new(std::cell::RefCell::new(PaneFormsCapture::default()));
+        let mut dom = VirtualDom::new_with_props(pane_forms_fixture, capture.clone());
+        let mutations = dom.rebuild_to_vec();
+        mount_pane_forms(&mut dom, mutations);
+        let runtime = capture.borrow().runtime.clone().unwrap();
+        let ids = ["input", "textarea", "select", "checkbox", "radio", "toggle"];
+        let registered: Vec<_> = ids
+            .iter()
+            .map(|kind| {
+                assert!(
+                    runtime
+                        .capture_registered_focus(&format!("outside-{kind}-0"))
+                        .is_none(),
+                    "ordinary outside form remains outside the surface registry"
+                );
+                runtime
+                    .capture_registered_focus(&format!("pane-{kind}-0"))
+                    .expect("standard control enrolls in Pane scope")
+            })
+            .collect();
+        let retained: Vec<_> = registered
+            .iter()
+            .map(|target| target.live_node().unwrap())
+            .collect();
+        assert!(
+            runtime
+                .capture_registered_focus("pane-select-0-control")
+                .is_none(),
+            "Select presentation wrapper is not the focus target"
+        );
+        let html = dioxus_ssr::render(&dom);
+        let input = html.find("id=\"pane-input-0\"").unwrap();
+        let end = input + html[input..].find('>').unwrap();
+        assert!(
+            html[input..end].contains("autofocus"),
+            "Input authors native autofocus"
+        );
+        dom.in_scope(ScopeId::ROOT, || capture.borrow().epoch.unwrap().set(1));
+        let mutations = dom.render_immediate_to_vec();
+        mount_pane_forms(&mut dom, mutations);
+        for (kind, target) in ids.iter().zip(&registered) {
+            assert!(
+                runtime
+                    .capture_registered_focus(&format!("pane-{kind}-0"))
+                    .is_none()
+            );
+            assert!(target.live_node().is_none());
+            assert!(
+                runtime
+                    .capture_registered_focus(&format!("pane-{kind}-1"))
+                    .is_some()
+            );
+        }
+        dom.in_scope(ScopeId::ROOT, || {
+            capture.borrow().visible.unwrap().set(false)
+        });
+        let mutations = dom.render_immediate_to_vec();
+        mount_pane_forms(&mut dom, mutations);
+        for kind in ids {
+            assert!(
+                runtime
+                    .capture_registered_focus(&format!("pane-{kind}-1"))
+                    .is_none()
+            );
+        }
+        assert!(
+            registered
+                .iter()
+                .zip(&retained)
+                .all(|(target, node)| target.matches_node(node)),
+            "retaining backing handles cannot retain a retired registration"
+        );
+    }
 
     #[test]
     fn text_commit_snapshots_focus_and_deduplicates_enter_then_blur() {

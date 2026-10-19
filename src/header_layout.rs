@@ -1604,6 +1604,7 @@ mod tests {
             |id: &str, hosts: &[&str], active: bool| crate::popover_focus::NativeFocusCandidate {
                 target: id.into(),
                 tab_index: 0,
+                autofocus: false,
                 hosts: hosts.iter().map(|host| (*host).into()).collect(),
                 nearest_host: String::new(),
                 popover: String::new(),

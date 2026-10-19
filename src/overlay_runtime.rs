@@ -89,6 +89,32 @@ pub(crate) enum SurfaceObservation {
 }
 type SurfaceObserver = Rc<dyn Fn(SurfaceObservation)>;
 
+/// Passive consumers share canonical focus observations without entering the
+/// overlay hierarchy or authorizing overlay dismissal/keyboard ownership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScopedFocusFacts {
+    pub(crate) observation: FocusObservation,
+    pub(crate) active_hosts: Vec<String>,
+    pub(crate) eligible_focus_ids: Vec<String>,
+    pub(crate) nested: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ScopedFocusEvent {
+    Observe(ScopedFocusFacts),
+    Requested {
+        request: u64,
+        facts: ScopedFocusFacts,
+    },
+}
+#[derive(Clone)]
+struct ScopedFocusRegistration {
+    generation: u64,
+    callback: Rc<dyn Fn(ScopedFocusEvent)>,
+    renderer: Weak<dioxus::core::Runtime>,
+    scope: ScopeId,
+    live: CopyValue<()>,
+}
+
 /// Authored Popover role for an already registered Dioxus mounted control.
 /// Nested Popovers replace this scope; native ancestry never infers a header.
 #[derive(Clone, Default)]
@@ -189,6 +215,8 @@ struct Runtime {
     domain: Option<Domain>,
     document: String,
     categories: BTreeMap<usize, CategoryCallback>,
+    focus_observers: BTreeMap<String, ScopedFocusRegistration>,
+    focus_observer_sequence: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OwnedItemDescription {
@@ -477,7 +505,113 @@ impl RuntimeHandle {
             domain: None,
             document: String::new(),
             categories: BTreeMap::new(),
+            focus_observers: BTreeMap::new(),
+            focus_observer_sequence: 0,
         })))
+    }
+    pub(crate) fn register_focus_observer(
+        &self,
+        root: String,
+        callback: Rc<dyn Fn(ScopedFocusEvent)>,
+    ) -> u64 {
+        let renderer = dioxus::core::Runtime::current();
+        let scope = dioxus::core::current_scope_id();
+        let live = CopyValue::new(());
+        let mut state = self.0.borrow_mut();
+        state.focus_observer_sequence = state.focus_observer_sequence.wrapping_add(1).max(1);
+        let generation = state.focus_observer_sequence;
+        state.focus_observers.insert(
+            root,
+            ScopedFocusRegistration {
+                generation,
+                callback,
+                renderer: Rc::downgrade(&renderer),
+                scope,
+                live,
+            },
+        );
+        generation
+    }
+    pub(crate) fn unregister_focus_observer(&self, root: &str, generation: u64) {
+        let mut state = self.0.borrow_mut();
+        if state
+            .focus_observers
+            .get(root)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            state.focus_observers.remove(root);
+        }
+    }
+    pub(crate) fn request_scoped_focus(&self, root: &str, generation: u64, request: u64) -> bool {
+        let state = self.0.borrow();
+        if !state.focus_observers.get(root).is_some_and(|entry| {
+            entry.generation == generation
+                && entry.live.try_read().is_ok()
+                && entry.renderer.upgrade().is_some()
+        }) {
+            return false;
+        }
+        state.bridge.as_ref().is_some_and(|bridge| {
+            bridge
+                .send(serde_json::json!({"focus_request": {
+                    "id": root, "generation": generation, "request": request
+                }}))
+                .is_ok()
+        })
+    }
+    fn deliver_scoped_focus(
+        &self,
+        root: &str,
+        generation: u64,
+        sequence: u64,
+        event: ScopedFocusEvent,
+    ) {
+        let entry = self.0.borrow().focus_observers.get(root).cloned();
+        let Some(entry) =
+            entry.filter(|entry| entry.generation == generation && entry.live.try_read().is_ok())
+        else {
+            return;
+        };
+        let Some(renderer) = entry.renderer.upgrade() else {
+            return;
+        };
+        renderer.in_scope(entry.scope, || {
+            // A previous callback may remove/replace this registration, dispose
+            // its scope, or admit newer native facts. None authorizes old work.
+            let callback = {
+                let state = self.0.borrow();
+                state
+                    .focus_observers
+                    .get(root)
+                    .filter(|current| {
+                        state.sequence == sequence
+                            && current.generation == generation
+                            && current.live.try_read().is_ok()
+                    })
+                    .map(|entry| entry.callback.clone())
+            };
+            if let Some(callback) = callback {
+                callback(event);
+            }
+        });
+    }
+    fn notify_focus_observers(&self, report: &Report) {
+        let recipients = self
+            .0
+            .borrow()
+            .focus_observers
+            .iter()
+            .map(|(root, entry)| (root.clone(), entry.generation))
+            .collect::<Vec<_>>();
+        let facts = ScopedFocusFacts::from(report);
+        for (root, generation) in recipients {
+            self.deliver_scoped_focus(
+                &root,
+                generation,
+                report.sequence,
+                ScopedFocusEvent::Observe(facts.clone()),
+            );
+        }
     }
     pub(crate) fn owner_id(&self) -> String {
         self.0.borrow().owner.clone()
@@ -2541,6 +2675,18 @@ impl RuntimeHandle {
             SurfaceObservation::Focus(FocusObservation::from(report)),
             Some(report),
         );
+        self.notify_focus_observers(report);
+        if let Some(request) = &report.focus_request {
+            self.deliver_scoped_focus(
+                &request.id,
+                request.generation,
+                report.sequence,
+                ScopedFocusEvent::Requested {
+                    request: request.request,
+                    facts: ScopedFocusFacts::from(report),
+                },
+            );
+        }
         if let Some(request) = &report.focus_request
             && self.0.borrow().sequence == report.sequence
         {
@@ -3817,6 +3963,8 @@ struct Report {
     #[serde(default)]
     active_default: bool,
     #[serde(default)]
+    active_nested: bool,
+    #[serde(default)]
     focus_changed: bool,
     #[serde(default)]
     focus_request: Option<FocusRequest>,
@@ -3837,7 +3985,19 @@ struct Report {
     #[serde(default)]
     active_hosts: Vec<String>,
     #[serde(default)]
+    eligible_focus_ids: Vec<String>,
+    #[serde(default)]
     active_popover: String,
+}
+impl From<&Report> for ScopedFocusFacts {
+    fn from(report: &Report) -> Self {
+        Self {
+            observation: FocusObservation::from(report),
+            active_hosts: report.active_hosts.clone(),
+            eligible_focus_ids: report.eligible_focus_ids.clone(),
+            nested: report.active_nested,
+        }
+    }
 }
 impl From<&Report> for FocusObservation {
     fn from(report: &Report) -> Self {
@@ -4363,6 +4523,293 @@ mod tests {
         );
         popover.unregister();
         assert!(popover.opening_focus_candidates(&observation).is_empty());
+    }
+
+    #[test]
+    fn passive_focus_requests_use_original_scope_and_exact_non_overlay_recipient() {
+        use dioxus::document::{Eval, EvalError, Evaluator};
+        use std::task::{Context, Poll};
+        struct Wire(Rc<RefCell<Vec<serde_json::Value>>>);
+        impl Evaluator for Wire {
+            fn send(&self, value: serde_json::Value) -> Result<(), EvalError> {
+                self.0.borrow_mut().push(value);
+                Ok(())
+            }
+            fn poll_recv(
+                &mut self,
+                _: &mut Context<'_>,
+            ) -> Poll<Result<serde_json::Value, EvalError>> {
+                Poll::Pending
+            }
+            fn poll_join(
+                &mut self,
+                _: &mut Context<'_>,
+            ) -> Poll<Result<serde_json::Value, EvalError>> {
+                Poll::Pending
+            }
+        }
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let runtime = fixture.0.node.borrow().as_ref().unwrap().runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        let caller = fixture.0.caller.get().unwrap();
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let delivered = received.clone();
+        let generation = dom.in_scope(owner, || {
+            runtime.register_focus_observer(
+                "passive-pane".into(),
+                Rc::new(move |event| {
+                    assert_eq!(current_scope_id(), owner);
+                    assert_eq!(consume_context::<RequestTaskContext>().0, "owner");
+                    delivered.borrow_mut().push(event);
+                }),
+            )
+        });
+        let peer_requests = Rc::new(Cell::new(0));
+        let peer_seen = peer_requests.clone();
+        let peer_generation = dom.in_scope(caller, || {
+            runtime.register_focus_observer(
+                "passive-peer".into(),
+                Rc::new(move |event| {
+                    assert_eq!(current_scope_id(), caller);
+                    if matches!(event, ScopedFocusEvent::Requested { .. }) {
+                        peer_seen.set(peer_seen.get() + 1);
+                    }
+                }),
+            )
+        });
+        assert!(!runtime.0.borrow().nodes.contains_key("passive-pane"));
+        assert!(
+            !runtime.request_scoped_focus("passive-pane", generation, 44),
+            "missing bridge is explicit failure"
+        );
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let eval_owner = dioxus::signals::Owner::default();
+        runtime.0.borrow_mut().bridge = Some(Eval::new(
+            eval_owner.insert(Box::new(Wire(sent.clone())) as Box<dyn Evaluator>),
+        ));
+        assert!(dom.in_scope(caller, || runtime.request_scoped_focus(
+            "passive-pane",
+            generation,
+            44
+        )));
+        assert_eq!(
+            sent.borrow()[0],
+            serde_json::json!({"focus_request":{"id":"passive-pane","generation":generation,"request":44}})
+        );
+        assert!(!runtime.request_scoped_focus("passive-pane", generation + 100, 44));
+        let mut report: Report = serde_json::from_value(serde_json::json!({
+            "owner":runtime.owner_id(),"sequence":1,"kind":"observe","document":"passive shared facts",
+            "active_id":"pane-input","active_hosts":["passive-pane"],"active_nested":true,"eligible_focus_ids":["programmatic-opener","pane-input"],
+            "focus_candidates":[{"target":"pane-input","tab_index":0,"hosts":["passive-pane"],"autofocus":true}],
+            "focus_request":{"id":"passive-pane","generation":generation,"request":44}
+        })).unwrap();
+        dom.in_scope(caller, || {
+            runtime.observe(&report);
+            assert_eq!(current_scope_id(), caller);
+        });
+        let events = received.borrow();
+        let ScopedFocusEvent::Observe(facts) = &events[0] else {
+            panic!("canonical report broadcasts ordinary facts first");
+        };
+        assert_eq!(facts.active_hosts, ["passive-pane"]);
+        assert!(facts.nested);
+        assert_eq!(
+            facts.eligible_focus_ids,
+            ["programmatic-opener", "pane-input"]
+        );
+        assert!(
+            !facts
+                .observation
+                .candidates
+                .iter()
+                .any(|candidate| candidate.target == "programmatic-opener"),
+            "return eligibility does not broaden Tab candidates"
+        );
+        let legacy: Report = serde_json::from_value(serde_json::json!({"owner":runtime.owner_id(),"sequence":1,"kind":"observe","focus_candidates":[{"target":"legacy-control","tab_index":0}]})).unwrap();
+        assert!(
+            ScopedFocusFacts::from(&legacy)
+                .eligible_focus_ids
+                .is_empty(),
+            "missing native eligibility never invents a destination"
+        );
+        assert!(!legacy.active_nested);
+        assert!(
+            !legacy.focus_candidates[0].autofocus,
+            "missing autofocus metadata defaults to false"
+        );
+        assert!(facts.observation.candidates[0].autofocus);
+        assert_eq!(
+            events[1],
+            ScopedFocusEvent::Requested {
+                request: 44,
+                facts: facts.clone()
+            }
+        );
+        drop(events);
+        assert_eq!(
+            peer_requests.get(),
+            0,
+            "another passive root cannot consume this request"
+        );
+        runtime.observe(&report);
+        report.sequence = 2;
+        report.owner = "foreign-runtime".into();
+        runtime.observe(&report);
+        assert_eq!(
+            received.borrow().len(),
+            2,
+            "duplicate and foreign reports are not admitted"
+        );
+        runtime.unregister_focus_observer("passive-pane", generation);
+        assert!(!runtime.request_scoped_focus("passive-pane", generation, 45));
+        runtime.unregister_focus_observer("passive-peer", peer_generation);
+    }
+
+    #[test]
+    fn passive_focus_registration_does_not_keep_disposed_scope_or_renderer_alive() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let runtime = fixture.0.node.borrow().as_ref().unwrap().runtime().unwrap();
+        let caller = fixture.0.caller.get().unwrap();
+        let seen = Rc::new(Cell::new(0));
+        let delivered = seen.clone();
+        let generation = dom.in_scope(caller, || {
+            runtime.register_focus_observer(
+                "disposed-pane".into(),
+                Rc::new(move |_| delivered.set(delivered.get() + 1)),
+            )
+        });
+        let mut report = Report {
+            owner: runtime.owner_id(),
+            sequence: 1,
+            kind: "observe".into(),
+            ..Default::default()
+        };
+        runtime.observe(&report);
+        assert_eq!(seen.get(), 1);
+        dom.in_scope(ScopeId::APP, || {
+            fixture.0.show_caller.get().unwrap().set(false)
+        });
+        settle_item_effects(&mut dom);
+        assert!(fixture.0.caller_dropped.get());
+        report.sequence = 2;
+        report.focus_request = Some(FocusRequest {
+            id: "disposed-pane".into(),
+            generation,
+            request: 1,
+        });
+        runtime.observe(&report);
+        assert_eq!(
+            seen.get(),
+            1,
+            "forgotten cleanup still cannot invoke a disposed scope"
+        );
+        let weak = runtime.0.borrow().focus_observers["disposed-pane"]
+            .renderer
+            .clone();
+        drop(dom);
+        assert!(
+            weak.upgrade().is_none(),
+            "registration holds no renderer ownership"
+        );
+        report.sequence = 3;
+        runtime.observe(&report);
+        assert_eq!(seen.get(), 1);
+        runtime.unregister_focus_observer("disposed-pane", generation);
+    }
+
+    #[test]
+    fn passive_focus_delivery_rechecks_replacement_and_newer_admission_after_callbacks() {
+        let fixture = RequestTaskFixture(Rc::new(RequestTaskState::default()));
+        let mut dom = VirtualDom::new_with_props(request_task_root, fixture.clone());
+        dom.rebuild_in_place();
+        let runtime = fixture.0.node.borrow().as_ref().unwrap().runtime().unwrap();
+        let owner = fixture.0.owner.get().unwrap();
+        let caller = fixture.0.caller.get().unwrap();
+        let old_calls = Rc::new(Cell::new(0));
+        let old_seen = old_calls.clone();
+        let old_generation = dom.in_scope(caller, || {
+            runtime.register_focus_observer(
+                "z-peer".into(),
+                Rc::new(move |_| old_seen.set(old_seen.get() + 1)),
+            )
+        });
+        let replaced = Rc::new(Cell::new(false));
+        let current_generation = Rc::new(Cell::new(0));
+        let new_generation = current_generation.clone();
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let delivered = received.clone();
+        let reentrant = runtime.clone();
+        let first_generation = dom.in_scope(owner, || {
+            runtime.register_focus_observer(
+                "a-first".into(),
+                Rc::new(move |event| {
+                    if !matches!(event, ScopedFocusEvent::Observe(_)) || replaced.replace(true) {
+                        return;
+                    }
+                    reentrant.unregister_focus_observer("z-peer", old_generation);
+                    let output = delivered.clone();
+                    let generation = reentrant.register_focus_observer(
+                        "z-peer".into(),
+                        Rc::new(move |event| {
+                            let (request, facts) = match event {
+                                ScopedFocusEvent::Observe(facts) => (0, facts),
+                                ScopedFocusEvent::Requested { request, facts } => (request, facts),
+                            };
+                            output
+                                .borrow_mut()
+                                .push((request, facts.observation.active_id));
+                        }),
+                    );
+                    new_generation.set(generation);
+                    reentrant.observe(&Report {
+                        owner: reentrant.owner_id(),
+                        sequence: 2,
+                        kind: "observe".into(),
+                        active_id: "fresh".into(),
+                        focus_request: Some(FocusRequest {
+                            id: "z-peer".into(),
+                            generation,
+                            request: 9,
+                        }),
+                        ..Default::default()
+                    });
+                }),
+            )
+        });
+        runtime.observe(&Report {
+            owner: runtime.owner_id(),
+            sequence: 1,
+            kind: "observe".into(),
+            active_id: "retired".into(),
+            focus_request: Some(FocusRequest {
+                id: "z-peer".into(),
+                generation: old_generation,
+                request: 8,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            old_calls.get(),
+            0,
+            "earlier callback removal retires the old recipient"
+        );
+        assert_eq!(
+            *received.borrow(),
+            [(0, "fresh".into()), (9, "fresh".into())],
+            "new recipient sees only current admitted facts and its exact request"
+        );
+        runtime.unregister_focus_observer("z-peer", old_generation);
+        assert_eq!(
+            runtime.0.borrow().focus_observers["z-peer"].generation,
+            current_generation.get(),
+            "stale cleanup cannot remove a replacement"
+        );
+        runtime.unregister_focus_observer("z-peer", current_generation.get());
+        runtime.unregister_focus_observer("a-first", first_generation);
     }
 
     struct Model {

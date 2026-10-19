@@ -26,6 +26,7 @@ pub fn ApplicationFocusPreview() -> Element {
     let mut close_events = use_signal(|| 0_usize);
     let settings_note = use_signal(|| "Station A".to_string());
     let pane_note = use_signal(|| "Pump P-101".to_string());
+    let pane_help = use_popover();
     let mut pane_expanded = use_signal(|| false);
     let mut floating = use_signal(|| true);
     let mut pane_generation = use_signal(|| 1_usize);
@@ -73,8 +74,17 @@ pub fn ApplicationFocusPreview() -> Element {
                                 Pane {key:"{generation}",heading:"Equipment details",expanded:pane_expanded(),size:"320px",hide_on_collapse:true,
                                     close_on_click_outside:true,aria_label_collapse_close_button:"Close equipment details",
                                     onexpandedchange:move |open|pane_expanded.set(open),
-                                    WorkspaceField {id:"r0216-pane-note",label:"Equipment name",value:pane_note,autofocus:true}
+                                    Input {id:"r0216-pane-note",label:"Equipment name",value:pane_note(),autofocus:true,
+                                        onvaluechange:move |value|{let mut pane_note=pane_note;pane_note.set(value);}}
                                     p {"Edit this name, then use Escape or the close control to return to the opener."}
+                                    div {id:"r0253-help-open",class:"application-focus-controls",PopoverTrigger {popover:pane_help,"Equipment field help"}}
+                                    Popover {popover:pane_help,label:"Equipment field help",
+                                        PopoverHeader {"Equipment name"}
+                                        PopoverContent {
+                                            p {"Use the equipment identifier from the local station."}
+                                            Button {id:"r0253-help-action",variant:ButtonVariant::Secondary,"Understood"}
+                                        }
+                                    }
                                     Button {id:"r0216-pane-action",onclick:move |_|applied.set(applied()+1),"Apply equipment name"}
                                 }
                             }},
@@ -141,7 +151,10 @@ const opener=byId('r0216-pane-open');opener.focus();opener.click();
 await wait('floating Pane registered autofocus',()=>paneOpen()&&active()===byId('r0216-pane-note'));
 const paneField=byId('r0216-pane-note');paneField.value='Pump revised';paneField.dispatchEvent(new Event('input',{bubbles:true}));
 await wait('Pane editing',()=>byId('r0216-state').textContent.includes('Pump revised'));
-await paneFocusReady();if(key(paneField,'Tab').defaultPrevented)throw new Error('Pane interior Tab was intercepted');
+const helpTrigger=()=>byId('r0253-help-open').querySelector('button'),helpPanel=()=>document.getElementById(helpTrigger()?.getAttribute('aria-controls'));
+helpTrigger().click();await wait('nested Popover opening inside Pane',()=>helpPanel()?.matches(':popover-open')&&active()===byId('r0253-help-action')&&paneOpen());
+await paneFocusReady();key(active(),'Escape');await wait('nested Escape closes only Popover',()=>!helpPanel()?.matches(':popover-open')&&paneOpen()&&active()===helpTrigger());
+paneField.focus();await paneFocusReady();if(key(paneField,'Tab').defaultPrevented)throw new Error('Pane interior Tab was intercepted');
 byId('r0216-pane-action').focus();await paneFocusReady();if(!key(active(),'Tab').defaultPrevented)throw new Error('Pane forward boundary was not trapped');
 await wait('Pane forward wrap',()=>active()===paneClose());
 await paneFocusReady();if(!key(active(),'Tab',true).defaultPrevented)throw new Error('Pane reverse boundary was not trapped');
@@ -159,5 +172,5 @@ byId('r0216-pane-mode').click();await wait('floating Pane restored',()=>pane().g
 opener.focus();opener.click();await wait('Pane remount setup',()=>paneOpen()&&active()===byId('r0216-pane-note'));
 const oldPane=pane(),reset=byId('r0216-pane-remount');reset.focus();reset.click();
 await wait('closed remount rejects stale Pane focus',()=>pane()!==oldPane&&!paneOpen()&&active()===reset);
-return {ok:true,menu:{settings:true,about:true,closeReturn:true,escapeReturn:true,directSwitch:true,outsidePreserved:true,veto:true,editing:true},pane:{autofocus:true,editing:true,boundaries:2,interiorDefault:true,escapeReturn:true,closeReturn:true,outsidePreserved:true,inlineNoTrap:true,remount:true},stateWrites:0,nativeTabTraversal:'Chromium only'};
+return {ok:true,menu:{settings:true,about:true,closeReturn:true,escapeReturn:true,directSwitch:true,outsidePreserved:true,veto:true,editing:true},pane:{standardInputAutofocus:true,editing:true,nestedPopoverEscapeProtection:true,boundaries:2,interiorDefault:true,escapeReturn:true,closeReturn:true,outsidePreserved:true,inlineNoTrap:true,remount:true},stateWrites:0,nativeTabTraversal:'Chromium only'};
 "#;

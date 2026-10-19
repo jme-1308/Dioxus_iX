@@ -41,6 +41,8 @@ pub(crate) struct NativeFocusCandidate {
     pub(crate) target: String,
     pub(crate) tab_index: i32,
     #[serde(default)]
+    pub(crate) autofocus: bool,
+    #[serde(default)]
     pub(crate) hosts: Vec<String>,
     #[serde(default)]
     pub(crate) nearest_host: String,

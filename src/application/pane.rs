@@ -235,31 +235,20 @@ pub fn PaneLayout(
     }
 }
 
-#[derive(Default, PartialEq, Eq, serde::Deserialize)]
-struct PaneFocusFacts {
-    #[serde(default)]
-    ids: Vec<String>,
-    #[serde(default)]
-    autofocus: Vec<String>,
-    #[serde(default)]
-    active: Option<String>,
-    #[serde(default)]
-    inside: bool,
-    #[serde(default)]
-    active_default: bool,
-    #[serde(default)]
-    nested: bool,
-    #[serde(default)]
-    return_eligible: bool,
-}
+/// Standard controls register their actual Dioxus mounted focus destination.
+/// This composition marker carries no native registry or overlay hierarchy.
+#[derive(Clone, Copy)]
+pub(crate) struct PaneFocusScope;
 
-#[derive(serde::Deserialize)]
-struct PaneObservation {
-    kind: String,
-    #[serde(default)]
-    epoch: u64,
-    #[serde(flatten)]
-    focus: PaneFocusFacts,
+#[derive(Default, PartialEq, Eq)]
+struct PaneFocusFacts {
+    ids: Vec<String>,
+    autofocus: Vec<String>,
+    active: Option<String>,
+    inside: bool,
+    active_default: bool,
+    nested: bool,
+    return_eligible: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -278,18 +267,29 @@ struct PaneFocusModel {
     task: Option<dioxus::core::Task>,
 }
 #[derive(Clone)]
-struct PaneFocusController {
+struct PaneFocusController(Rc<PaneFocusOwner>);
+struct PaneFocusOwner {
     runtime: crate::overlay_runtime::RuntimeHandle,
+    root_id: String,
+    registration: Cell<u64>,
     model: Rc<RefCell<PaneFocusModel>>,
     revision: Signal<u64>,
+}
+impl std::ops::Deref for PaneFocusController {
+    type Target = PaneFocusOwner;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 #[cfg(test)]
 #[derive(Clone, Default)]
 struct PaneFocusCapture(Rc<RefCell<Option<PaneFocusController>>>);
 impl PaneFocusController {
-    fn new(runtime: crate::overlay_runtime::RuntimeHandle) -> Self {
-        Self {
+    fn new(runtime: crate::overlay_runtime::RuntimeHandle, root_id: String) -> Self {
+        let controller = Self(Rc::new(PaneFocusOwner {
             runtime,
+            root_id,
+            registration: Cell::new(0),
             revision: Signal::new(0),
             model: Rc::new(RefCell::new(PaneFocusModel {
                 alive: true,
@@ -301,7 +301,18 @@ impl PaneFocusController {
                 invoker: None,
                 task: None,
             })),
-        }
+        }));
+        let weak = Rc::downgrade(&controller.0);
+        let generation = controller.runtime.register_focus_observer(
+            controller.root_id.clone(),
+            Rc::new(move |event| {
+                if let Some(owner) = weak.upgrade() {
+                    PaneFocusController(owner).observe(event);
+                }
+            }),
+        );
+        controller.registration.set(generation);
+        controller
     }
     fn transition(&self, expanded: bool, floating: bool) {
         let pending = {
@@ -330,28 +341,56 @@ impl PaneFocusController {
             task.cancel();
         }
     }
-    fn refresh(&self, bridge: &Rc<RefCell<Option<dioxus::document::Eval>>>) {
+    fn refresh(&self) {
         let model = self.model.borrow();
-        if model.alive
-            && let Some(bridge) = bridge.borrow().as_ref()
-        {
-            let _ = bridge.send(serde_json::json!({"epoch":model.epoch,
-                "invoker":model.invoker.as_ref().map(|(id,_)|id)}));
+        if model.alive {
+            let _ = self.runtime.request_scoped_focus(
+                &self.root_id,
+                self.registration.get(),
+                model.epoch,
+            );
         }
     }
     fn current(&self) -> Option<String> {
         let _ = (self.revision)();
         self.model.borrow().facts.active.clone()
     }
-    fn observe(&self, epoch: u64, facts: PaneFocusFacts) {
+    fn observe(&self, event: crate::overlay_runtime::ScopedFocusEvent) {
+        use crate::overlay_runtime::ScopedFocusEvent;
+        let (request, shared) = match event {
+            ScopedFocusEvent::Observe(facts) => (None, facts),
+            ScopedFocusEvent::Requested { request, facts } => (Some(request), facts),
+        };
         let (intent, changed) = {
             let mut model = self.model.borrow_mut();
-            if !model.alive || model.epoch != epoch {
+            if !model.alive || request.is_some_and(|epoch| model.epoch != epoch) {
                 return;
             }
+            let candidates = &shared.observation.candidates;
+            let ids = crate::popover_focus::tab_order_targets(
+                &crate::popover_focus::project_tab_candidates(candidates, |candidate| {
+                    candidate.hosts.contains(&self.root_id)
+                }),
+            );
+            let facts = PaneFocusFacts {
+                autofocus: ids.iter().filter(|id| candidates.iter().any(|candidate| {
+                    candidate.target == **id && candidate.autofocus
+                })).cloned().collect(),
+                ids,
+                active: (!shared.observation.active_id.is_empty())
+                    .then_some(shared.observation.active_id),
+                inside: shared.active_hosts.contains(&self.root_id),
+                active_default: shared.observation.active_default,
+                nested: shared.nested,
+                // The shared scan also reports visible/enabled programmatic
+                // destinations, preserving registered negative-tabindex openers.
+                return_eligible: model.invoker.as_ref().is_some_and(|(id,_)| {
+                    shared.eligible_focus_ids.contains(id)
+                }),
+            };
             let changed = model.facts != facts;
             model.facts = facts;
-            (model.intent.take(), changed)
+            (request.and_then(|_| model.intent.take()), changed)
         };
         if changed {
             let mut revision = self.revision;
@@ -366,7 +405,7 @@ impl PaneFocusController {
                     ids.extend(model.facts.ids.iter().cloned());
                     (model.facts.active.clone(), ids)
                 };
-                let invoker = active.and_then(|id| {
+                let invoker = active.filter(|id| shared.eligible_focus_ids.contains(id)).and_then(|id| {
                     self.runtime
                         .capture_registered_focus(&id)
                         .map(|target| (id, target))
@@ -461,6 +500,7 @@ impl PaneFocusController {
         true
     }
     fn dispose(&self) {
+        self.runtime.unregister_focus_observer(&self.root_id, self.registration.get());
         let task = {
             let mut model = self.model.borrow_mut();
             model.alive = false;
@@ -555,7 +595,8 @@ pub fn Pane(
     let toggle_id = format!("{id}-toggle");
     let toggle_mount = crate::dropdown::use_focus_mount(toggle_id.clone());
     let runtime = crate::overlay_runtime::use_overlay_runtime();
-    let focus = use_hook(|| PaneFocusController::new(runtime));
+    let focus = use_hook(|| PaneFocusController::new(runtime.clone(), root_id.clone()));
+    use_context_provider(|| PaneFocusScope);
     #[cfg(test)]
     if let Some(capture) = try_consume_context::<PaneFocusCapture>() {
         *capture.0.borrow_mut() = Some(focus.clone());
@@ -578,16 +619,13 @@ pub fn Pane(
         }
     });
     let sync_focus = focus.clone();
-    let sync_bridge = bridge.clone();
     use_effect(use_reactive((&variant,), move |(variant,)| {
         sync_focus.transition(state(), variant == PaneVariant::Floating);
-        sync_focus.refresh(&sync_bridge);
+        sync_focus.refresh();
     }));
     let mount_focus = focus.clone();
     let key_focus = focus.clone();
-    let focus_bridge = bridge.clone();
     let focused = focus.clone();
-    let blur_bridge = bridge.clone();
     let blurred = focus.clone();
     let label = if expanded {
         if hide_on_collapse || mobile {
@@ -623,30 +661,27 @@ pub fn Pane(
         }
     };
     rsx! {
+            crate::overlay_runtime::OverlayTransport {runtime}
             aside { id: root_id.clone(), class: "ix-pane ix-pane-{composition.class()}", "aria-label": heading.clone(), hidden: !expanded && hide_on_collapse,
+                "data-ix-overlay-host":root_id.clone(),
                 "data-expanded": expanded.to_string(), "data-floating": (variant == PaneVariant::Floating).to_string(),
                 "data-mobile": mobile.to_string(), "data-hide-on-collapse": hide_on_collapse.to_string(),
                 "data-close-on-outside": close_on_click_outside.to_string(),"data-pane-focus-current":current_focus,
                 "data-borderless": borderless.to_string(), style: "--ix-pane-size:{size}px",
                 onmounted: move |_| {
-                    let mut task_bridge = dioxus::document::eval(PANE_DOM_BRIDGE);
+                    let mut task_bridge = dioxus::document::eval(PANE_OUTSIDE_EVENTS);
                     if task_bridge.send(root_id.clone()).is_err() { return; }
                     *bridge.borrow_mut() = Some(task_bridge);
                     mount_focus.transition(*state.peek(),variant == PaneVariant::Floating);
-                    mount_focus.refresh(&bridge);
-                    let focus = mount_focus.clone();
+                    mount_focus.refresh();
                     spawn(async move {
-                        while let Ok(report) = task_bridge.recv::<PaneObservation>().await {
-                            match report.kind.as_str() {
-                                "outside" => request.call(false),
-                                "focus" => focus.observe(report.epoch,report.focus),
-                                _ => {}
-                            }
+                        while task_bridge.recv::<()>().await.is_ok() {
+                            request.call(false);
                         }
                     });
                 },
-                onfocusin: move |_| focused.refresh(&focus_bridge),
-                onfocusout: move |_| blurred.refresh(&blur_bridge),
+                onfocusin: move |_| focused.refresh(),
+                onfocusout: move |_| blurred.refresh(),
                 onkeydown: move |event: KeyboardEvent| {
                     if !event.default_action_enabled() || key_focus.model.borrow().facts.nested { return; }
                     match event.key() {
@@ -685,32 +720,19 @@ fn pane_expanded_size(size: &str, parent: f64) -> f64 {
     }
 }
 
-// Pinned MountedData can focus and measure a registered element, but cannot
-// enumerate descendant controls, report the active control or test CSS/inert
-// visibility (dioxus-html alpha.2 events/mounted.rs and events/focus.rs). These
-// bounded facts contain existing Rust IDs only; every focus uses a live mounted
-// snapshot in Rust. Document-wide outside clicks remain a native notification
-// because pinned Dioxus does not expose a global event subscription.
-// Dioxus lifecycle/focus events refresh the cache; interior Tab stays native.
-const PANE_DOM_BRIDGE: &str = r#"
+// Pinned Dioxus has no global click subscription with capture/bubble phases.
+// Capture the expanded/close-on-outside state before target handlers can change
+// it; Rust owns dismissal. Canonical shared observations supply all focus facts.
+const PANE_OUTSIDE_EVENTS: &str = r#"
 const pane=document.getElementById(await dioxus.recv());
 if(!pane)return;
 let disposed=false;
-const presented=node=>node instanceof HTMLElement&&!node.matches(':disabled,[disabled],[hidden],[aria-disabled="true"]')&&!node.closest('[aria-hidden="true"],[hidden],[inert]')&&node.getClientRects().length>0&&getComputedStyle(node).visibility!=='hidden'&&getComputedStyle(node).visibility!=='collapse';
-const facts=command=>{
-    const active=document.activeElement;
-    const items=[...pane.querySelectorAll('button,a[href],input,select,textarea,[tabindex],[contenteditable]')].filter(node=>node.tabIndex>=0&&presented(node));
-    dioxus.send({kind:'focus',epoch:command.epoch,ids:items.map(node=>node.id),autofocus:items.filter(node=>node.hasAttribute('autofocus')).map(node=>node.id),
-        active:active?.id||null,inside:pane.contains(active),active_default:active===document.body||active===document.documentElement,
-        nested:!!active?.closest?.('dialog[open],[data-ix-overlay-open="true"]')||(()=>{try{return !!active?.closest?.('[popover]:popover-open');}catch{return false;}})(),
-        return_eligible:!!command.invoker&&presented(document.getElementById(command.invoker))});
-};
 const outsideEvents=new WeakSet();
 const captureOutside=event=>{if(pane.dataset.expanded==='true'&&pane.dataset.closeOnOutside==='true'&&!event.composedPath().includes(pane))outsideEvents.add(event);};
-const outside=event=>{if(!outsideEvents.has(event))return;outsideEvents.delete(event);if(!disposed&&pane.dataset.expanded==='true')dioxus.send({kind:'outside'});};
+const outside=event=>{if(!outsideEvents.has(event))return;outsideEvents.delete(event);if(!disposed&&pane.dataset.expanded==='true')dioxus.send(null);};
 window.addEventListener('click',captureOutside,true);window.addEventListener('click',outside);
 try{
-    for(;;){const command=await dioxus.recv();if(command==='finish')break;facts(command);}
+    await dioxus.recv();
 }finally{
     disposed=true;
     window.removeEventListener('click',captureOutside,true);window.removeEventListener('click',outside);
@@ -868,27 +890,35 @@ mod pane_focus_tests {
             });
             self.settle();
         }
-        fn facts(&self, active: Option<&str>, inside: bool) -> PaneFocusFacts {
-            PaneFocusFacts {
-                ids: vec![
-                    self.toggle.clone(),
-                    "pane-field".into(),
-                    "pane-action".into(),
-                ],
-                autofocus: vec!["pane-field".into()],
-                active: active.map(str::to_string),
-                inside,
-                active_default: active.is_none(),
-                return_eligible: true,
-                ..Default::default()
+        fn candidate(&self, id: &str, autofocus: bool, inside: bool) -> crate::popover_focus::NativeFocusCandidate {
+            serde_json::from_value(serde_json::json!({
+                "target":id,"tab_index":0,"autofocus":autofocus,
+                "hosts":if inside {vec![self.focus.root_id.clone()]} else {Vec::new()}
+            })).unwrap()
+        }
+        fn facts(&self, active: Option<&str>, inside: bool) -> crate::overlay_runtime::ScopedFocusFacts {
+            crate::overlay_runtime::ScopedFocusFacts {
+                observation: crate::overlay_runtime::FocusObservation {
+                    candidates: vec![
+                        self.candidate(&self.toggle, false, true),
+                        self.candidate("pane-field", true, true),
+                        self.candidate("pane-action", false, true),
+                        self.candidate("pane-opener", false, false),
+                    ],
+                    active_id: active.unwrap_or_default().to_string(),
+                    active_default: active.is_none(),
+                },
+                active_hosts: if inside {vec![self.focus.root_id.clone()]} else {Vec::new()},
+                eligible_focus_ids: vec![self.toggle.clone(),"pane-field".into(),"pane-action".into(),"pane-opener".into()],
+                nested: false,
             }
         }
-        fn report_pending(&self, facts: PaneFocusFacts) {
+        fn report_pending(&self, facts: crate::overlay_runtime::ScopedFocusFacts) {
             let epoch = self.focus.model.borrow().epoch;
             self.dom
-                .in_scope(ScopeId::ROOT, || self.focus.observe(epoch, facts));
+                .in_scope(ScopeId::ROOT, || self.focus.observe(crate::overlay_runtime::ScopedFocusEvent::Requested {request:epoch,facts}));
         }
-        fn report(&mut self, facts: PaneFocusFacts) {
+        fn report(&mut self, facts: crate::overlay_runtime::ScopedFocusFacts) {
             self.report_pending(facts);
             self.settle();
         }
@@ -906,7 +936,7 @@ mod pane_focus_tests {
         let mut h = Harness::new();
         h.expanded(true);
         let mut facts = h.facts(Some("pane-opener"), false);
-        facts.autofocus.insert(0, "unregistered-autofocus".into());
+        facts.observation.candidates.insert(0, h.candidate("unregistered-autofocus", true, true));
         h.report(facts);
         assert_eq!(*h.log.borrow(), ["pane-field"]);
         h.report(h.facts(Some("pane-field"), true));
@@ -922,7 +952,7 @@ mod pane_focus_tests {
             Some("pane-action")
         );
         let mut unsupported = h.facts(Some("pane-action"), true);
-        unsupported.ids.insert(0, "unregistered-boundary".into());
+        unsupported.observation.candidates.insert(0, h.candidate("unregistered-boundary", false, true));
         h.report(unsupported);
         assert!(
             !h.tab(false),
@@ -968,12 +998,29 @@ mod pane_focus_tests {
         h.log.borrow_mut().clear();
         h.expanded(false);
         let mut facts = h.facts(None, false);
-        facts.return_eligible = false;
+        facts.observation.candidates.retain(|candidate|candidate.target != "pane-opener");
+        facts.eligible_focus_ids.retain(|id| id != "pane-opener");
         h.report(facts);
         assert!(
             h.log.borrow().is_empty(),
             "a hidden or disabled opener is not a return destination"
         );
+    }
+
+    #[test]
+    fn pane_close_returns_registered_programmatic_opener_without_enrolling_it_in_tab_order() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.expanded(true);
+        let mut facts = h.facts(Some("pane-opener"), false);
+        facts.observation.candidates.retain(|candidate| candidate.target != "pane-opener");
+        h.report(facts);
+        assert_eq!(*h.log.borrow(), ["pane-field"]);
+        h.expanded(false);
+        let mut facts = h.facts(None, false);
+        facts.observation.candidates.retain(|candidate| candidate.target != "pane-opener");
+        h.report(facts);
+        assert_eq!(h.log.borrow().last().map(String::as_str), Some("pane-opener"));
     }
     #[test]
     fn pane_mounted_focus_rejects_replacement_close_and_scope_teardown() {
@@ -1013,6 +1060,44 @@ mod pane_focus_tests {
         drop(h);
         assert!(!retained.model.borrow().alive);
         assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn pane_passive_facts_update_cache_without_consuming_current_or_stale_intents() {
+        use crate::overlay_runtime::ScopedFocusEvent;
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.expanded(true);
+        let opening_epoch = h.focus.model.borrow().epoch;
+        h.dom.in_scope(ScopeId::ROOT, || {
+            h.focus.observe(ScopedFocusEvent::Observe(h.facts(Some("pane-opener"), false)));
+        });
+        h.settle();
+        assert!(h.log.borrow().is_empty());
+        assert!(matches!(h.focus.model.borrow().intent, Some(PaneFocusIntent::Open)));
+        assert_eq!(h.focus.model.borrow().facts.active.as_deref(), Some("pane-opener"));
+        h.dom.in_scope(ScopeId::ROOT, || {
+            h.focus.observe(ScopedFocusEvent::Requested {
+                request: opening_epoch.wrapping_sub(1),
+                facts: h.facts(Some("pane-action"), true),
+            });
+        });
+        assert_eq!(h.focus.model.borrow().facts.active.as_deref(), Some("pane-opener"));
+        h.report(h.facts(Some("pane-opener"), false));
+        assert_eq!(*h.log.borrow(), ["pane-field"]);
+        h.expanded(false);
+        h.dom.in_scope(ScopeId::ROOT, || {
+            h.focus.observe(ScopedFocusEvent::Observe(h.facts(None, false)));
+            h.focus.observe(ScopedFocusEvent::Requested {
+                request: opening_epoch,
+                facts: h.facts(None, false),
+            });
+        });
+        h.settle();
+        assert_eq!(h.log.borrow().len(), 1, "old opening reply cannot release the return intent");
+        assert!(matches!(h.focus.model.borrow().intent, Some(PaneFocusIntent::Return)));
+        h.report(h.facts(None, false));
+        assert_eq!(h.log.borrow().last().map(String::as_str), Some("pane-opener"));
     }
 }
 

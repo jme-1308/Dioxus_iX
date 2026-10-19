@@ -68,7 +68,6 @@ function isHiddenOrInert(n){
   }
   return false;
 }
-function visibleFocusable(n){return n instanceof HTMLElement&&n.tabIndex>=0&&!isHiddenOrInert(n);}
 function hostAncestors(element){
   const result=[];
   for(let n=element;n;n=stepParent(n))if(n instanceof HTMLElement&&isActiveHost(n)){
@@ -91,12 +90,17 @@ function pathIds(path,attr,pred){
 // computed visibility. One document-order scan supplies those native facts;
 // Rust derives host/Popover projections, active selection and Tab ordering.
 function focusCandidates(active){
-  return document.body?Array.from(document.body.querySelectorAll(focusableSelector))
-    .filter(visibleFocusable).map(element=>({
-      target:nativeId(element),tab_index:element.tabIndex,hosts:hostAncestors(element),
+  const eligible=document.body?Array.from(document.body.querySelectorAll(focusableSelector)).filter(element=>!isHiddenOrInert(element)):[];
+  return {
+    // Programmatic return may target a registered tabindex=-1 opener. This is
+    // the same visibility pass, not another discovery or native focus path.
+    eligible_focus_ids:eligible.map(nativeId).filter(Boolean),
+    focus_candidates:eligible.filter(element=>element.tabIndex>=0).map(element=>({
+      target:nativeId(element),tab_index:element.tabIndex,autofocus:element.hasAttribute('autofocus'),hosts:hostAncestors(element),
       nearest_host:nativeId(nearestHost(element)),popover:nativeId(nearestPopover(element)),
       exact_active:element===active,contains_active:!!active&&composedContains(element,active)
-    })):[];
+    }))
+  };
 }
 // The pinned interpreter uses insertBefore for keyed moves. MountedData has
 // no move notification or activeElement query, so observe the existing native
@@ -128,7 +132,8 @@ function collectFacts(){
   return {
     owner,document:nativeDocument.identity,sequence:++sequence,kind:'observe',active_id:nativeId(active),
     active_default:!active||active===document.body||active===document.documentElement||active.matches('[data-ix-overlay-host]'),
-    focus_candidates:focusCandidates(active),
+    active_nested:!!active?.closest?.('dialog[open],[data-ix-overlay-open="true"]')||(()=>{try{return !!active?.closest?.('[popover]:popover-open');}catch{return false;}})(),
+    ...focusCandidates(active),
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
@@ -153,7 +158,7 @@ function reportObserve(records=[],focusChanged=false,focusoutMove=null,focusRequ
   report.focus_changed=focusChanged||explicitBlur;
   if(focusRequest)report.focus_request=focusRequest;
   if(moved)report.moved_focus=moved;
-  const sig=JSON.stringify({active_id:report.active_id,active_default:report.active_default,focus_candidates:report.focus_candidates});
+  const sig=JSON.stringify({active_id:report.active_id,active_default:report.active_default,focus_candidates:report.focus_candidates,active_hosts:report.active_hosts,active_nested:report.active_nested,eligible_focus_ids:report.eligible_focus_ids});
   if(focusRequest||moved||report.focus_changed||sig!==lastSignature){lastSignature=sig;send(report);}
   if(!documentEvents)documentEvents=subscribeDocumentEvents();
 }
@@ -223,7 +228,7 @@ document.addEventListener('focusout',()=>{const observedMoves=movedSequence;queu
 const observer=new MutationObserver(records=>reportObserve(records));
 observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
   'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
-  'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','hidden','disabled','tabindex','inert','class',
+  'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','open','hidden','disabled','tabindex','autofocus','inert','class',
   'data-ix-item-key','data-ix-overlay-items-host-id','aria-activedescendant','data-ix-overlay-active-item'
 ]});
 document.documentElement.setAttribute('data-ix-overlay-registry-native',owner);
