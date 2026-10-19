@@ -420,8 +420,9 @@ await wait('move item focus',()=>document.activeElement.textContent==='Move this
 const moving=document.activeElement;
 moving.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
 await wait('keyed reorder',()=>menu.querySelector('[data-ix-dropdown-item]').textContent==='Move this item');
-const retained=document.activeElement===moving;
-if(!retained)throw new Error('Focused keyed item was lost');
+// The typed observation and Dioxus mounted repair complete asynchronously.
+await wait('focused keyed item retained',()=>document.activeElement===moving);
+const retained=true;
 moving.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
 await wait('dropdown dismissal',()=>trigger.getAttribute('aria-expanded')==='false'&&document.activeElement===trigger);
 await wait('dropdown callbacks',()=>document.querySelector('#r02-dropdown-changes').textContent==='Changes: [true, false]');

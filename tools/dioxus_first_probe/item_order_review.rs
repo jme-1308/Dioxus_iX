@@ -155,7 +155,10 @@ await dioxus.recv();
 const byId=id=>document.getElementById(id),state=()=>byId('r0243-state'),root=()=>document.querySelector('.r0243-mixed'),menu=()=>root()?.querySelector(':scope > [role="menu"]'),child=()=>document.querySelector('.r0243-child');
 const open=()=>root()?.getAttribute('data-ix-overlay-open')==='true',control=id=>id==='r0243-category'?byId(id)?.querySelector('[data-ix-item-part="category-parent"]'):byId(id);
 const at=id=>root()?.getAttribute('data-ix-overlay-active-item')===id||document.activeElement===control(id);
-const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' mode='+state()?.dataset.mode+' focus='+document.activeElement?.id+' active='+root()?.getAttribute('data-ix-overlay-active-item'));};
+// Synthetic actions wait for visible state and asynchronous typed facts.
+// This does not assert elapsed time or add a production delay.
+const settleInput=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate()){await settleInput();return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' mode='+state()?.dataset.mode+' focus='+document.activeElement?.id+' active='+root()?.getAttribute('data-ix-overlay-active-item'));};
 const key=(node,value)=>{const event=new KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const press=value=>key(document.activeElement,value),click=id=>byId(id).click();
 const show=async()=>{root().focus();key(root(),'ArrowDown');await wait('mixed menu opens by keyboard',open);};

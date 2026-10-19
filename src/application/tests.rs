@@ -446,7 +446,10 @@ fn source_item_dom(
 }
 #[test]
 fn generic_menu_source_hosts_preserve_raw_attributes_and_category_anchor() {
-    let (dom, _) = source_item_dom(GenericMenuItemCapture::default());
+    let capture = GenericMenuItemCapture::default();
+    let (dom, _) = source_item_dom(capture.clone());
+    let category_id = capture.category.borrow().as_ref().unwrap().0.id;
+    let overlay_id = format!("ix-menu-category-overlay-{category_id}");
     let html = dioxus_ssr::render(&dom);
     let host = item_opening_tag(&html, "property-menu-item");
     assert!(host.starts_with("<div "));
@@ -466,8 +469,12 @@ fn generic_menu_source_hosts_preserve_raw_attributes_and_category_anchor() {
         "source generated button remains natively focusable"
     );
     let category = item_opening_tag(&html, "consumer-category");
+    assert!(category.contains("id=\"consumer-category\""));
     assert!(category.contains("data-ix-item-kind=\"category\""));
-    assert!(category.contains("data-ix-overlay-anchor-id=\"consumer-category\""));
+    assert!(category.contains(&format!("data-ix-overlay-root=\"{overlay_id}\"")));
+    assert!(category.contains(&format!("data-ix-overlay-anchor=\"{overlay_id}\"")));
+    assert!(!category.contains("data-ix-overlay-anchor-id"));
+    assert!(!category.contains("data-ix-overlay-trigger"));
     assert!(category.contains("anchor-name:--ix-menu-category-anchor-"));
     assert!(category.contains("color: blue"));
     assert!(
@@ -1301,10 +1308,8 @@ fn menu_category_overlay_anchor_does_not_install_a_generic_trigger() {
     let html = h.html();
     let overlay_id = format!("ix-menu-category-overlay-{}", category.0.id);
     assert!(html.contains(&format!("data-ix-overlay-root=\"{overlay_id}\"")));
-    assert!(html.contains(&format!(
-        "data-ix-overlay-anchor-id=\"ix-menu-category-overlay-{}\"",
-        category.0.id
-    )));
+    assert!(html.contains(&format!("data-ix-overlay-anchor=\"{overlay_id}\"")));
+    assert!(!html.contains("data-ix-overlay-anchor-id"));
     assert!(!html.contains(&format!("data-ix-overlay-trigger=\"{overlay_id}\"")));
     assert_eq!(
         category

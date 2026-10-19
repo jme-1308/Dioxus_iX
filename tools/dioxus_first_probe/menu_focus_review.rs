@@ -139,6 +139,12 @@ await wait('Category keyboard cue',parentCue);
 const pointer=(node,type,pointerType='mouse')=>node.dispatchEvent(new PointerEvent(type,{pointerType}));
 const flyout=()=>category().querySelector('[popover]');
 pointer(category(),'pointerenter');await wait('collapsed hover opens flyout',popup);
+// The consumer-supplied Category host ID differs from its logical overlay ID.
+// A direct anchor hit is inside; an independent workspace click is outside.
+if(category().getAttribute('data-ix-overlay-anchor')!==category().getAttribute('data-ix-overlay-root'))throw new Error('Category did not declare its logical anchor');
+category().click();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));if(!popup())throw new Error('Category anchor hit dismissed its own popup');
+byId('r0215-outside').click();await wait('independent click dismisses Category popup',()=>!popup());
+pointer(category(),'pointerenter');await wait('hover reopens after outside click',popup);
 pointer(category(),'pointerleave');pointer(flyout(),'pointerenter');
 await new Promise(resolve=>setTimeout(resolve,400));
 if(!popup())throw new Error('host to flyout handoff lost surface');
@@ -177,5 +183,5 @@ byId('r0215-remount').click();outside.focus();
 await wait('fresh mounted Menu and Category',()=>root()!==oldRoot&&parent()!==oldParent&&+byId('r0215-state').dataset.generation===generation+1&&ready());
 if(active()!==outside)throw new Error('remount stole independent focus');
 bar().focus();key(bar(),'Home');await wait('fresh root navigation uses current mount',()=>focused('r0215-first'));
-return {ok:true,root:{home:true,end:true,upDown:true,disabledHiddenSkip:true,keyedCurrentOrder:true,nativeFieldDefaults:true},collapsed:{entry:true,childNavigation:true,enterReturn:true,spaceReturn:true,escapeReturn:true},expanded:{entry:true,wrap:true,escapeReturn:true},hoverEligibleReturn:true,hoverHandoffReentry:true,siblingOwnership:true,touchKeyboard:true,pendingHoverModeChange:true,categoryCue:true,childRemovalRemount:true,ownerRemount:true,cueWrites:0,rootOutline:getComputedStyle(active()).outlineWidth};
+return {ok:true,root:{home:true,end:true,upDown:true,disabledHiddenSkip:true,keyedCurrentOrder:true,nativeFieldDefaults:true},collapsed:{entry:true,childNavigation:true,enterReturn:true,spaceReturn:true,escapeReturn:true},expanded:{entry:true,wrap:true,escapeReturn:true},hoverEligibleReturn:true,hoverHandoffReentry:true,siblingOwnership:true,touchKeyboard:true,pendingHoverModeChange:true,categoryCue:true,declaredAnchorHitPreservesPopup:true,independentOutsideDismisses:true,childRemovalRemount:true,ownerRemount:true,cueWrites:0,rootOutline:getComputedStyle(active()).outlineWidth};
 "#;

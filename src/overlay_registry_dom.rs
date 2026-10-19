@@ -49,10 +49,6 @@ function isActiveHost(n){
   const hr=n.closest('[data-small],[data-ix-overlay-root]');
   return n.getAttribute('data-header-popup-host')===(hr?.getAttribute('data-small')==='true'?'small':'large');
 }
-function findAnchor(root){
-  const id=root?.getAttribute('data-ix-overlay-anchor-id'),el=id?document.getElementById(id):null;
-  return el instanceof HTMLElement&&el.isConnected?el:null;
-}
 function nearestHost(n){for(let c=n;c;c=stepParent(c))if(c instanceof HTMLElement&&isActiveHost(c))return c;return null;}
 function isHiddenOrInert(n){
   if(!(n instanceof HTMLElement)||n.matches(':disabled,[disabled],[hidden],[aria-disabled="true"]')||!n.getClientRects().length)return true;
@@ -103,11 +99,10 @@ function focusCandidates(active){
 // records. Only key/ID strings survive this callback; Rust performs any repair.
 function registeredFocus(element){
   if(!(element instanceof HTMLElement)||!element.id)return null;
-  const item=element.closest('[data-ix-item-key]'),host=nearestHost(element);
-  if(!item||!host)return null;
-  const key=item.getAttribute('data-ix-item-key'),rootId=host.getAttribute('data-ix-overlay-host');
-  const root=Array.from(document.querySelectorAll('[data-ix-overlay-root]')).find(root=>root.getAttribute('data-ix-overlay-root')===rootId&&root.getAttribute('data-ix-overlay-owner')===owner);
-  if(!key||!root||root.getAttribute('data-ix-overlay-mode')!=='roving-tabindex'||root.getAttribute('data-ix-overlay-open')!=='true')return null;
+  // A key is only a raw fact. Current Rust descriptions/mounts and roving/open
+  // ownership authorize repair; native code cannot enroll or choose an owner.
+  const key=element.closest('[data-ix-item-key]')?.getAttribute('data-ix-item-key');
+  if(!key)return null;
   return {key,focus_id:element.id};
 }
 function movedRegisteredFocus(records,active){
@@ -167,12 +162,7 @@ function sendDocumentEvent(action,event,deliverySequence){
     const path=event.composedPath();
     document_event.hosts=pathIds(path,'data-ix-overlay-host',isActiveHost);
     document_event.triggers=pathIds(path,'data-ix-overlay-trigger');
-    document_event.anchors=[];
-    for(const root of document.querySelectorAll('[data-ix-overlay-root][data-ix-overlay-anchor-id]')){
-      if(!(root instanceof HTMLElement)||!root.isConnected)continue;
-      const id=root.getAttribute('data-ix-overlay-root'),anchor=findAnchor(root);
-      if(id&&anchor&&path.some(node=>node instanceof Node&&composedContains(anchor,node))&&!document_event.anchors.includes(id))document_event.anchors.push(id);
-    }
+    document_event.anchors=pathIds(path,'data-ix-overlay-anchor');
   }
   send({owner,document:nativeDocument.identity,sequence:++sequence,kind:'document',document_event});
   return true;
@@ -216,7 +206,7 @@ document.addEventListener('focusout',()=>{const observedMoves=movedSequence;queu
 // this observer never enrolls roots or changes ownership/lifecycle in Rust.
 const observer=new MutationObserver(records=>reportObserve(records));
 observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:[
-  'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-anchor-id','data-ix-overlay-generation','data-ix-overlay-open',
+  'data-ix-overlay-root','data-ix-overlay-owner','data-ix-overlay-host','data-ix-overlay-trigger','data-ix-overlay-generation','data-ix-overlay-open',
   'data-ix-overlay-mode','data-ix-overlay-native-surface','data-ix-overlay-items-owner','data-ix-overlay-revision','data-ix-overlay-top-layer','data-small','data-open','open','hidden','disabled','tabindex','autofocus','inert','class',
   'data-ix-item-key','data-ix-overlay-items-host-id','aria-activedescendant','data-ix-overlay-active-item'
 ]});

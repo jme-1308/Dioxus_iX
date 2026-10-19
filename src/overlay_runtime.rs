@@ -7538,6 +7538,67 @@ mod tests {
         assert_eq!(runtime.pending_item_focus_count(), 0);
     }
     #[test]
+    fn raw_move_facts_cannot_enroll_foreign_closed_non_roving_or_retired_controls() {
+        for scenario in [
+            "current",
+            "foreign",
+            "closed",
+            "active-descendant",
+            "removed",
+            "replaced",
+        ] {
+            let (mut dom, runtime, node, host, original) = moved_item_fixture();
+            let replacement = ItemMountMock::default();
+            match scenario {
+                "closed" => {
+                    node.request(false, Reason::Trigger, false);
+                }
+                "active-descendant" => {
+                    node.set_navigation_mode("active-descendant");
+                }
+                "removed" => runtime.unregister_item_cue(&host.registration_key),
+                "replaced" => dom.in_scope(ScopeId::ROOT, || {
+                    runtime.register_owned_item_control_mount(
+                        &host.registration_key,
+                        &host.target,
+                        "replacement-control",
+                        Rc::new(MountedData::new(replacement.clone())),
+                        Some((node.id.clone(), 1)),
+                    );
+                }),
+                _ => {}
+            }
+            runtime.test_report(serde_json::json!({
+                "owner":runtime.owner_id(),"document":runtime.owner_id(),"sequence":2,
+                "kind":"observe","active_default":true,
+                "moved_focus":{"key":if scenario=="foreign"{"foreign-item"}else{&host.registration_key},"focus_id":"moved-control"}
+            }));
+            assert_eq!(
+                runtime.pending_item_focus_count(),
+                usize::from(scenario == "current"),
+                "only the current registered roving owner can authorize repair: {scenario}"
+            );
+            settle_item_effects(&mut dom);
+            if scenario == "current" {
+                assert_eq!(*original.events.borrow(), [("focus", ScopeId::ROOT)]);
+                assert!(runtime.item_visual_matches(&host));
+                continue;
+            }
+            assert!(
+                original.events.borrow().is_empty(),
+                "{scenario} cannot focus the old control"
+            );
+            assert!(
+                replacement.events.borrow().is_empty(),
+                "{scenario} cannot retarget a replacement"
+            );
+            assert!(
+                runtime.item_visual_key().is_none(),
+                "{scenario} cannot publish a focus cue"
+            );
+        }
+    }
+    #[test]
     fn move_repair_rejects_ineligible_and_stale_destinations_and_preserves_normal_focus_jobs() {
         for scenario in [
             "hidden",
