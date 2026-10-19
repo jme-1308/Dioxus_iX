@@ -53,6 +53,14 @@ SOFTWARE.
 
 The embedded nonlogo pictogram geometry is adapted from `@siemens/ix-icons` 3.7.0. Source: the published package's `LICENSE.md`. The package JavaScript runtime is not embedded.
 
+Bundled geometry is derived from the published `@siemens/ix-icons` **3.7.0** archive
+(`https://registry.npmjs.org/@siemens/ix-icons/-/ix-icons-3.7.0.tgz`), SHA256
+`09f50676e3cd42958210181b66f64ba8a4f79739fab969a38c02f8bf77a935a3`.
+This asset version is independent of the core reference's icon dependency.
+The Rust bundle retains 1,473 pictograms; the 15 `*-logo` entries and
+`youtube`/`youtube-filled` are excluded. Original geometry and coordinate systems
+are preserved with monochrome SVG framing adaptations. Source: `package/LICENSE.md`.
+
 ```text
 MIT License
 

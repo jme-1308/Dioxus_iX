@@ -35,6 +35,7 @@ mod header_layout_review;
 mod header_nested_review;
 mod header_switch_review;
 mod icon_button_review;
+mod icon_catalog;
 mod icon_scenarios;
 mod icon_toggle_button_review;
 mod input_review;
@@ -202,6 +203,7 @@ fn Gallery() -> Element {
         style { {application::STYLES} }
         style { {chat::STYLES} }
         style { {chat_composer_review::STYLES} }
+        style { {icon_catalog::STYLES} }
         style { {composition::STYLES} }
         style { {patterns::STYLES} }
         style { {forms::STYLES} }
@@ -464,25 +466,7 @@ fn TooltipReviewExamples() -> Element {
 
 #[component]
 fn IconExamples() -> Element {
-    let mut query = use_signal(String::new);
-    let names: Vec<_> = icon_names()
-        .filter(|name| name.contains(&query().to_lowercase()))
-        .collect();
-    rsx! {
-        section { class: "demo-section",
-            h2 { "Industrial pictograms" }
-            p { "{names.len()} matching icons. Logos and brand marks are excluded." }
-            label { class: "review-icon-search", "Filter icons"
-                input { r#type: "search", value: query(), placeholder: "Search by upstream name", oninput: move |event| query.set(event.value()) }
-            }
-            div { class: "review-icons",
-                for name in names.into_iter().take(180) {
-                    div { class: "review-icon-item", Icon { name, size: 32, label: name } code { "{name}" } }
-                }
-            }
-            p { "Showing up to 180 at once. Filter to find more." }
-        }
-    }
+    rsx! { icon_catalog::IconCatalogExample {} }
 }
 
 const GALLERY_STYLES: &str = r#"

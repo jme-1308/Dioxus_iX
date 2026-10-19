@@ -70,10 +70,11 @@ fn theme_applies_scheme_and_density_without_external_assets() {
 #[test]
 fn icon_catalog_is_sorted_complete_nonempty_and_excludes_brand_marks() {
     let names: Vec<_> = icon_names().collect();
-    assert_eq!(names.len(), 1475);
+    assert_eq!(names.len(), 1473);
     assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
     for name in names {
         assert!(!name.contains("logo") && !name.contains("siemens"));
+        assert!(!matches!(name, "youtube" | "youtube-filled"));
         let svg = icons::icon_svg(name).expect("every listed icon resolves");
         assert!(!svg.is_empty(), "empty geometry for {name}");
         assert!(!svg.contains("<script"));

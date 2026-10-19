@@ -32,6 +32,8 @@ mod header_choice_review;
 mod header_group_review;
 #[path = "dioxus_first_probe/header_tab_review.rs"]
 mod header_tab_review;
+#[path = "dioxus_first_probe/icon_catalog_review.rs"]
+mod icon_catalog_review;
 #[path = "dioxus_first_probe/item_order_review.rs"]
 mod item_order_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
@@ -151,6 +153,9 @@ fn Preview() -> Element {
     }
     if scope == "?tooltip" {
         return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
+    }
+    if scope == "?iconcatalog" {
+        return rsx! { icon_catalog_review::IconCatalogPreview {} };
     }
     if scope == "?itemorder" {
         return rsx! { item_order_review::ItemOrderReview {} };

@@ -214,7 +214,7 @@ Date/time field and date-dropdown panels also use CSS anchor positioning with pl
 
 ## License and upstream attribution
 
-This port is distributed under the [MIT license](LICENSE), also declared by `license = "MIT"` in Cargo.toml. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) preserves the original upstream license texts and source copyright notices. Both files are explicitly included in the crate package. Ported behavior, adapted examples, and pictograms derive from upstream MIT-licensed work. The embedded non-logo pictograms come from `@siemens/ix-icons` **3.7.0**; 1,475 names are available through `icon_names()`. No separately licensed corporate fonts or corporate-theme archive is bundled.
+This port is distributed under the [MIT license](LICENSE), also declared by `license = "MIT"` in Cargo.toml. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) preserves the original upstream license texts and source copyright notices. Both files are explicitly included in the crate package. Ported behavior, adapted examples, and pictograms derive from upstream MIT-licensed work. The embedded non-logo pictograms come from `@siemens/ix-icons` **3.7.0**; 1,473 names are available through `icon_names()`. No separately licensed corporate fonts or corporate-theme archive is bundled.
 
 Siemens' [theme usage documentation](https://ix.siemens.io/docs/styles/theming/usage-developers) limits the Corporate Brand Theme to official Siemens AG products. Its [published font terms](https://opensource.siemens.com/_licenses.html) impose separate restrictions on Siemens corporate fonts. Consumers are responsible for authorization to supply external theme values and fonts; the token adapter does not supply those assets or permissions.
 
