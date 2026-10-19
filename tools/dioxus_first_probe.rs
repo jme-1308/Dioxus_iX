@@ -26,6 +26,8 @@ mod tab_exit_review;
 mod trigger_review;
 #[path = "dioxus_first_probe/upload_interaction_review.rs"]
 mod upload_interaction_review;
+#[path = "dioxus_first_probe/virtual_navigation_review.rs"]
+mod virtual_navigation_review;
 #[path = "dioxus_first_probe/visibility_review.rs"]
 mod visibility_review;
 
@@ -86,6 +88,9 @@ fn Preview() -> Element {
     });
     if scope == "?visibility" {
         return rsx! { visibility_review::VisibilityPreview {} };
+    }
+    if scope == "?virtualnav" {
+        return rsx! { virtual_navigation_review::VirtualNavigationPreview {} };
     }
     if scope == "?applicationfocus" {
         return rsx! { application_focus_review::ApplicationFocusPreview {} };

@@ -4,10 +4,9 @@
 //! ARIA levels for a flat visible list, as does the upstream virtualized tree.
 use crate::Icon;
 use dioxus::prelude::*;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_TREE_FOCUS_REQUEST: AtomicU64 = AtomicU64::new(1);
+use std::rc::Rc;
 
 /// Flat, stable-keyed item for [`TreeModel`]. `data` belongs to the application;
 /// the ordered child IDs define the hierarchy, independently of map ordering.
@@ -870,104 +869,216 @@ fn reveal_offset(index: usize, viewport: TreeViewport, total: usize) -> f64 {
     desired.clamp(0.0, (total as f64 * TREE_ROW_HEIGHT - height).max(0.0))
 }
 
-// Event-driven DOM metrics only; Rust derives the window and owns all tree state.
-// A hidden tree reports zero height and is measured again when it becomes visible.
-const TREE_OBSERVE: &str = r#"
-const id = await dioxus.recv(), root = document.getElementById(id);
-if (!root) return;
-let frame = 0, previous = '', done = () => {};
-const cleanup = () => { root.removeEventListener('scroll', schedule); resize.disconnect(); removal.disconnect(); cancelAnimationFrame(frame); done(); };
-const measure = () => {
-  frame = 0;
-  if (!root.isConnected) { cleanup(); return; }
-  const value = {top:root.scrollTop,height:root.clientHeight}, json = JSON.stringify(value);
-  if (previous !== json) { previous = json; dioxus.send(value); }
-};
-const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
-const resize = new ResizeObserver(schedule);
-const removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
-root.addEventListener('scroll', schedule, {passive:true}); resize.observe(root);
-removal.observe(document.documentElement, {childList:true,subtree:true});
-await new Promise(resolve => { done = resolve; schedule(); });
-"#;
-
-fn reveal_tree_row(
-    root: String,
-    mut focused: Signal<Option<String>>,
-    mut viewport: Signal<TreeViewport>,
-    index: usize,
-    id: String,
-    total: usize,
-) {
-    focused.set(Some(id.clone()));
-    let mut next = *viewport.peek();
-    next.top = reveal_offset(index, next, total);
-    viewport.set(next);
-    let sequence = NEXT_TREE_FOCUS_REQUEST.fetch_add(1, Ordering::Relaxed);
-    spawn(async move {
-        let task = crate::dom_query::eval(
-            r#"
-const [rootId, id, top, sequence] = await dioxus.recv();
-const root = document.getElementById(rootId);
-if (!root) return;
-// Native VDOM edits cross IPC: one animation frame does not prove that the
-// requested virtual row exists. A later request also owns focus immediately.
-if ((root.__ixTreePendingFocus?.sequence ?? -1) >= sequence) return;
-root.__ixTreePendingFocus?.cancel?.();
-const request = {sequence, cancel:null};
-root.__ixTreePendingFocus = request;
-root.scrollTop = top;
-await new Promise(resolve => {
-  let observer, timeout, finished = false;
-  const cleanup = () => {
-    if (finished) return;
-    finished = true;
-    observer?.disconnect(); clearTimeout(timeout);
-    document.removeEventListener('pointerdown', cleanup, true);
-    document.removeEventListener('keydown', cancelKey, true);
-    document.removeEventListener('focusin', cancelOutsideFocus, true);
-    request.cancel = null;
-    resolve();
-  };
-  const cancelKey = event => { if (event.key === 'Tab' || event.key === 'Escape') cleanup(); };
-  const cancelOutsideFocus = event => { if (!root.contains(event.target)) cleanup(); };
-  request.cancel = cleanup;
-  const attempt = () => {
-    if (!root.isConnected || root.__ixTreePendingFocus !== request) { cleanup(); return; }
-    const node = Array.from(root.querySelectorAll('[data-tree-node-id]')).find(node => node.dataset.treeNodeId === id);
-    if (node?.getAttribute('tabindex') !== '0') return;
-    root.scrollTop = top;
-    node.focus({preventScroll:true});
-    cleanup();
-  };
-  observer = new MutationObserver(attempt);
-  observer.observe(document.documentElement, {childList:true,subtree:true,attributes:true,attributeFilter:['tabindex']});
-  document.addEventListener('pointerdown', cleanup, true);
-  document.addEventListener('keydown', cancelKey, true);
-  document.addEventListener('focusin', cancelOutsideFocus, true);
-  timeout = setTimeout(cleanup, 2000);
-  attempt();
-});
-"#,
-        );
-        let _ = task.send((root, id, next.top, sequence));
-        let _ = task.await;
-    });
+// The tree owns real mounted rows. A virtual target is admitted only after its
+// current Dioxus row mounts; no document lookup, timeout or native focus fallback.
+#[derive(Clone)]
+struct TreeDom {
+    state: Rc<RefCell<TreeDomState>>,
+    focused: Signal<Option<String>>,
+    viewport: Signal<TreeViewport>,
 }
-
-fn focus_node(
-    mut focused: Signal<Option<String>>,
-    mounted: Signal<BTreeMap<String, MountedEvent>>,
+struct TreeFocusIntent {
+    epoch: u64,
     id: String,
-) {
-    focused.set(Some(id.clone()));
-    let node = mounted.peek().get(&id).cloned();
-    if let Some(node) = node {
+    ready: bool,
+}
+struct TreeDomState {
+    alive: bool,
+    epoch: u64,
+    root: Option<Rc<MountedData>>,
+    rows: BTreeMap<String, Rc<MountedData>>,
+    enabled: BTreeSet<String>,
+    actual: Option<String>,
+    pending: Option<TreeFocusIntent>,
+    focusing: Option<u64>,
+    scroll_left: f64,
+}
+impl TreeDom {
+    fn new(focused: Signal<Option<String>>, viewport: Signal<TreeViewport>) -> Self {
+        Self {
+            focused,
+            viewport,
+            state: Rc::new(RefCell::new(TreeDomState {
+                alive: true,
+                epoch: 0,
+                root: None,
+                rows: BTreeMap::new(),
+                enabled: BTreeSet::new(),
+                actual: None,
+                pending: None,
+                focusing: None,
+                scroll_left: 0.0,
+            })),
+        }
+    }
+    fn cancel(&self) {
+        let mut state = self.state.borrow_mut();
+        state.epoch = state.epoch.wrapping_add(1);
+        state.pending = None;
+        state.focusing = None;
+    }
+    fn current(&self, epoch: u64, id: &str, node: Option<&Rc<MountedData>>) -> bool {
+        let state = self.state.borrow();
+        state.alive
+            && state.enabled.contains(id)
+            && state
+                .pending
+                .as_ref()
+                .is_some_and(|intent| intent.epoch == epoch && intent.id == id)
+            && node.is_none_or(|node| {
+                state
+                    .rows
+                    .get(id)
+                    .is_some_and(|current| Rc::ptr_eq(current, node))
+            })
+    }
+    fn request(&self, index: usize, id: String, total: usize) {
+        self.cancel();
+        if !self.state.borrow().alive || !self.state.borrow().enabled.contains(&id) {
+            return;
+        }
+        let mut focused = self.focused;
+        focused.set(Some(id.clone()));
+        let mut viewport = self.viewport;
+        let mut next = *viewport.peek();
+        next.top = reveal_offset(index, next, total);
+        viewport.set(next);
+        let Some((root, left, epoch)) = ({
+            let mut state = self.state.borrow_mut();
+            state.root.clone().map(|root| {
+                let epoch = state.epoch;
+                state.pending = Some(TreeFocusIntent {
+                    epoch,
+                    id: id.clone(),
+                    ready: false,
+                });
+                (root, state.scroll_left, epoch)
+            })
+        }) else {
+            return;
+        };
+        let runtime = self.clone();
         spawn(async move {
-            let _ = node.set_focus(true).await;
+            if !runtime.current(epoch, &id, None) {
+                return;
+            }
+            let _ = root
+                .scroll(
+                    dioxus::html::geometry::PixelsVector2D::new(left, next.top),
+                    ScrollBehavior::Instant,
+                )
+                .await;
+            if !runtime.current(epoch, &id, None) {
+                return;
+            }
+            if let Some(intent) = runtime.state.borrow_mut().pending.as_mut() {
+                intent.ready = true;
+            }
+            runtime.attempt();
         });
     }
+    fn attempt(&self) {
+        let Some((epoch, id, node)) = ({
+            let mut state = self.state.borrow_mut();
+            let work = state
+                .pending
+                .as_ref()
+                .filter(|intent| intent.ready && state.focusing != Some(intent.epoch))
+                .and_then(|intent| {
+                    state
+                        .rows
+                        .get(&intent.id)
+                        .map(|node| (intent.epoch, intent.id.clone(), node.clone()))
+                });
+            if let Some((epoch, _, _)) = &work {
+                state.focusing = Some(*epoch);
+            }
+            work
+        }) else {
+            return;
+        };
+        let runtime = self.clone();
+        spawn(async move {
+            if !runtime.current(epoch, &id, Some(&node)) {
+                return;
+            }
+            let _ = node.set_focus(true).await;
+            if runtime.current(epoch, &id, Some(&node)) {
+                runtime.state.borrow_mut().pending = None;
+                runtime.state.borrow_mut().focusing = None;
+                // Release a pinned origin row after the actual target is ready.
+                let mut focused = runtime.focused;
+                focused.set(Some(id));
+            }
+        });
+    }
+    fn mount(&self, id: String, node: Rc<MountedData>) {
+        if !self.state.borrow().alive {
+            return;
+        }
+        self.state.borrow_mut().rows.insert(id, node);
+        self.attempt();
+    }
+    fn unmount(&self, id: &str, node: &Rc<MountedData>) {
+        let mut state = self.state.borrow_mut();
+        if state
+            .rows
+            .get(id)
+            .is_some_and(|current| Rc::ptr_eq(current, node))
+        {
+            state.rows.remove(id);
+            if state.pending.as_ref().is_some_and(|intent| intent.id == id) {
+                state.epoch = state.epoch.wrapping_add(1);
+                state.pending = None;
+                state.focusing = None;
+            }
+        }
+    }
+    fn row_focus(&self, id: &str) {
+        let expected = self
+            .state
+            .borrow()
+            .pending
+            .as_ref()
+            .is_some_and(|intent| intent.id == id);
+        if !expected {
+            self.cancel();
+        }
+        self.state.borrow_mut().actual = Some(id.into());
+    }
+    fn blur(&self) -> bool {
+        if self.state.borrow().focusing.is_some() {
+            return false;
+        }
+        self.cancel();
+        self.state.borrow_mut().actual = None;
+        true
+    }
+    fn reconcile(&self, enabled: BTreeSet<String>) {
+        let cancel = self
+            .state
+            .borrow()
+            .pending
+            .as_ref()
+            .is_some_and(|intent| !enabled.contains(&intent.id));
+        self.state.borrow_mut().enabled = enabled;
+        if cancel {
+            self.cancel();
+        }
+    }
+    fn pinned(&self) -> Option<String> {
+        let state = self.state.borrow();
+        state.pending.as_ref().and(state.actual.clone())
+    }
+    fn dispose(&self) {
+        self.cancel();
+        let mut state = self.state.borrow_mut();
+        state.alive = false;
+        state.root = None;
+        state.rows.clear();
+    }
 }
+
 fn publish_tree_state(
     mut local: Signal<TreeState>,
     onchange: EventHandler<TreeState>,
@@ -1045,8 +1156,6 @@ pub fn Tree(
     use std::sync::atomic::{AtomicUsize, Ordering};
     static TREE_ID: AtomicUsize = AtomicUsize::new(1);
     let root_id = use_hook(|| format!("ix-tree-{}", TREE_ID.fetch_add(1, Ordering::Relaxed)));
-    let mount_id = root_id.clone();
-    let keyboard_root = root_id.clone();
     let mut viewport = use_signal(|| TreeViewport {
         top: 0.0,
         height: f64::from(max_height.max(32)),
@@ -1055,9 +1164,18 @@ pub fn Tree(
     let snapshot = state.unwrap_or(local());
     let mut focused = use_signal(|| None::<String>);
     let mut has_focus = use_signal(|| false);
-    let mut mounted = use_signal(BTreeMap::<String, MountedEvent>::new);
+    let dom = use_hook(|| TreeDom::new(focused, viewport));
+    use_context_provider(|| dom.clone());
+    let cleanup = dom.clone();
+    use_drop(move || cleanup.dispose());
     let mut rows = vec![];
     visible_nodes(&nodes, &snapshot, None, 1, false, &mut rows);
+    dom.reconcile(
+        rows.iter()
+            .filter(|row| !row.disabled)
+            .map(|row| row.id.clone())
+            .collect(),
+    );
     let active = focused()
         .filter(|id| rows.iter().any(|row| row.id == *id && !row.disabled))
         .or_else(|| {
@@ -1095,29 +1213,36 @@ pub fn Tree(
                 .map(|row| row.id.clone())
         });
     let total = rows.len();
-    let leading = window.start as f64 * TREE_ROW_HEIGHT;
-    let trailing = (total - window.end) as f64 * TREE_ROW_HEIGHT;
+    let mut rendered: Vec<usize> = window.clone().collect();
+    if let Some(origin) = dom.pinned()
+        && let Some(index) = rows.iter().position(|row| row.id == origin)
+        && !rendered.contains(&index)
+    {
+        rendered.push(index);
+        rendered.sort_unstable();
+    }
+    let mut previous = 0;
+    let rendered: Vec<_> = rendered
+        .into_iter()
+        .map(|index| {
+            let gap = index - previous;
+            previous = index + 1;
+            (rows[index].clone(), gap)
+        })
+        .collect();
+    let trailing = (total - previous) as f64 * TREE_ROW_HEIGHT;
     {
         let active = active.clone();
         let rows = rows.clone();
-        let root = root_id.clone();
+        let repair = dom.clone();
         use_effect(use_reactive!(|active| {
             if has_focus() && focused() != active {
                 if let Some(id) = active.clone() {
                     if let Some(index) = rows.iter().position(|row| row.id == id) {
-                        reveal_tree_row(root.clone(), focused, viewport, index, id, rows.len());
+                        repair.request(index, id, rows.len());
                     }
                 }
             }
-        }));
-    }
-    {
-        let visible_ids: BTreeSet<_> = rows[window.clone()]
-            .iter()
-            .map(|row| row.id.clone())
-            .collect();
-        use_effect(use_reactive!(|visible_ids| {
-            mounted.write().retain(|id, _| visible_ids.contains(id));
         }));
     }
     let callback_nodes = std::rc::Rc::new(nodes.clone());
@@ -1125,22 +1250,35 @@ pub fn Tree(
     let keyboard_nodes = nodes.clone();
     let keyboard_state = snapshot.clone();
     let keyboard_active = active.clone();
+    let keyboard_dom = dom.clone();
+    let mount_dom = dom.clone();
+    let scroll_dom = dom.clone();
+    let blur_dom = dom.clone();
+    let pointer_dom = dom.clone();
+    let wheel_dom = dom.clone();
     rsx! {
         ul { id: root_id, class: "ix-tree {class}", role: "tree", "aria-label": label, "aria-multiselectable": checkboxes,
             style: format!("max-height:{}px", max_height.max(32)),
             "data-virtualized": virtualized, "data-visible-count": total, "data-refresh-revision": refresh_revision,
-            onmounted: move |_| {
-                let id = mount_id.clone();
-                spawn(async move {
-                    let mut task = dioxus::document::eval(TREE_OBSERVE);
-                    if task.send(id).is_err() { return; }
-                    while let Ok(measured) = task.recv::<TreeViewport>().await {
-                        if measured.top.is_finite() && measured.height.is_finite() && measured.height > 0.0 && *viewport.peek() != measured { viewport.set(measured); }
-                    }
-                });
+            onmounted: move |event:MountedEvent| {mount_dom.state.borrow_mut().root=Some(event.data());},
+            onscroll: move |event:ScrollEvent| {
+                scroll_dom.state.borrow_mut().scroll_left=event.scroll_left();
+                let measured=TreeViewport {top:event.scroll_top(),height:f64::from(event.client_height())};
+                if measured.top.is_finite()&&measured.height>0.0&&*viewport.peek()!=measured {viewport.set(measured);}
             },
-            onfocusin: move |_| has_focus.set(true), onfocusout: move |_| has_focus.set(false),
+            onresize: move |event:ResizeEvent| {
+                if let Ok(size)=event.get_content_box_size()
+                    && size.height.is_finite()&&size.height>0.0 {
+                    let mut next=*viewport.peek();next.height=size.height;
+                    if next!=*viewport.peek() {viewport.set(next);}
+                }
+            },
+            onpointerdown:move |_|pointer_dom.cancel(),onwheel:move |_|wheel_dom.cancel(),
+            onfocusin: move |_| has_focus.set(true),
+            onfocusout: move |_| if blur_dom.blur() {has_focus.set(false);},
             onkeydown: move |event: KeyboardEvent| {
+                if matches!(event.key(),Key::Tab|Key::Escape) {keyboard_dom.cancel();return;}
+                if !event.default_action_enabled() {return;}
                 let modifiers = event.modifiers();
                 if modifiers.ctrl() || modifiers.meta() || modifiers.alt() { return; }
                 let Some(id) = focused().or_else(|| keyboard_active.clone()) else { return; };
@@ -1180,30 +1318,31 @@ pub fn Tree(
                 event.prevent_default(); event.stop_propagation();
                 if let Some(target) = target {
                     if let Some(index) = keyboard_rows.iter().position(|row| row.id == target) {
-                        reveal_tree_row(keyboard_root.clone(), focused, viewport, index, target, keyboard_rows.len());
+                        keyboard_dom.request(index,target,keyboard_rows.len());
                     }
                 }
             },
-            if leading > 0.0 { li { class: "ix-tree-spacer", role: "presentation", "aria-hidden": "true", style: format!("height:{leading}px") } }
-            for row in rows.into_iter().skip(window.start).take(window.len()) {
+            for (row,gap) in rendered {
+                Fragment {key:"{row.id}",
+                if gap>0 {li {key:"gap-{row.id}",class:"ix-tree-spacer",role:"presentation","aria-hidden":"true",style:format!("height:{}px",gap as f64*TREE_ROW_HEIGHT)}}
                 TreeItem {
-                    key: "{row.id}", node_id: row.id.clone(), label: row.label.clone(), icon: if render_item.is_none() { row.icon.clone() } else { None },
+                    node_id: row.id.clone(), label: row.label.clone(), icon: if render_item.is_none() { row.icon.clone() } else { None },
                     children: render_item.map(|renderer| renderer.call(TreeItemData { id: row.id.clone(), label: row.label.clone(), icon: row.icon.clone(), level: row.level, expanded: row.expanded, selected: selected_ids.as_ref().map_or(snapshot.selected.as_deref() == Some(&row.id), |ids| ids.contains(&row.id)), disabled: row.disabled, checked: row.check_state })),
                     level: row.level, position: row.position, set_size: row.set_size,
                     has_children: row.has_children, expanded: row.expanded, selected: selected_ids.as_ref().map_or(snapshot.selected.as_deref() == Some(&row.id), |ids| ids.contains(&row.id)),
                     disabled: row.disabled, focusable: tab_stop.as_deref() == Some(&row.id),
                     checked: if checkboxes { Some(row.check_state) } else { None }, loading: row.loading,
-                    onmounted: { let id = row.id.clone(); move |event| { mounted.write().insert(id.clone(), event); } },
                     onfocus: { let id = row.id.clone(); move |_| focused.set(Some(id.clone())) },
-                    onselect: { let id = row.id.clone(); let snapshot = snapshot.clone(); let nodes = callback_nodes.clone(); move |_| {
-                        focus_node(focused, mounted, id.clone());
+                    onselect: { let id = row.id.clone(); let snapshot = snapshot.clone(); let nodes = callback_nodes.clone(); let dom=dom.clone(); let rows=rows.clone(); move |_| {
+                        if let Some(index)=rows.iter().position(|row|row.id==id) {dom.request(index,id.clone(),total);}
                         let mut next = snapshot.clone(); next.select(&nodes, &id);
                         if toggle_on_item_click && find_node(&nodes, &id, false).is_some_and(|(node, _)| node.has_children()) { toggle_branch(&nodes, &next, &id, local, onstatechange, onexpand, onload); }
                         else { publish_tree_state(local, onstatechange, next); }
                         onselect.call(id.clone());
                     } },
-                    ontoggle: { let id = row.id.clone(); let snapshot = snapshot.clone(); let nodes = callback_nodes.clone(); move |_| { focus_node(focused, mounted, id.clone()); toggle_branch(&nodes, &snapshot, &id, local, onstatechange, onexpand, onload); } },
-                    oncheck: { let id = row.id.clone(); let snapshot = snapshot.clone(); let nodes = callback_nodes.clone(); move |_| { focus_node(focused, mounted, id.clone()); let mut next = snapshot.clone(); if next.toggle_checked(&nodes, &id) { publish_tree_state(local, onstatechange, next); } } },
+                    ontoggle: { let id = row.id.clone(); let snapshot = snapshot.clone(); let nodes = callback_nodes.clone(); let dom=dom.clone(); let rows=rows.clone(); move |_| { if let Some(index)=rows.iter().position(|row|row.id==id) {dom.request(index,id.clone(),total);} toggle_branch(&nodes, &snapshot, &id, local, onstatechange, onexpand, onload); } },
+                    oncheck: { let id = row.id.clone(); let snapshot = snapshot.clone(); let nodes = callback_nodes.clone(); let dom=dom.clone(); let rows=rows.clone(); move |_| { if let Some(index)=rows.iter().position(|row|row.id==id) {dom.request(index,id.clone(),total);} let mut next = snapshot.clone(); if next.toggle_checked(&nodes, &id) { publish_tree_state(local, onstatechange, next); } } },
+                }
                 }
             }
             if trailing > 0.0 { li { class: "ix-tree-spacer", role: "presentation", "aria-hidden": "true", style: format!("height:{trailing}px") } }
@@ -1246,6 +1385,21 @@ pub fn TreeItem(
     #[props(default)] onmounted: EventHandler<MountedEvent>,
     #[props(default)] onfocus: EventHandler<()>,
 ) -> Element {
+    let tree = use_hook(try_consume_context::<TreeDom>);
+    let own = use_hook(|| Rc::new(RefCell::new(None::<Rc<MountedData>>)));
+    let cleanup = own.clone();
+    let cleanup_tree = tree.clone();
+    let cleanup_id = node_id.clone();
+    use_drop(move || {
+        if let Some(tree) = cleanup_tree
+            && let Some(node) = cleanup.borrow_mut().take()
+        {
+            tree.unmount(&cleanup_id, &node);
+        }
+    });
+    let mount_tree = tree.clone();
+    let mount_id = node_id.clone();
+    let focus_id = node_id.clone();
     rsx! {
         li {
             class: "ix-tree-item", role: "treeitem", "data-tree-node-id": node_id,
@@ -1255,7 +1409,12 @@ pub fn TreeItem(
             "aria-checked": checked.map(TreeCheckState::aria), "aria-busy": loading,
             tabindex: if focusable && !disabled { 0 } else { -1 },
             style: format!("--ix-tree-indent:{}px", level.saturating_sub(1) * 16),
-            onmounted: move |event| onmounted.call(event), onfocus: move |_| onfocus.call(()),
+            onmounted: move |event:MountedEvent| {
+                *own.borrow_mut()=Some(event.data());
+                if let Some(tree)=&mount_tree {tree.mount(mount_id.clone(),event.data());}
+                onmounted.call(event);
+            },
+            onfocus: move |_| {if let Some(tree)=&tree {tree.row_focus(&focus_id);}onfocus.call(());},
             onclick: move |_| if !disabled { onselect.call(()); },
             span { class: "ix-tree-chevron", "data-expanded": expanded, "aria-hidden": "true",
                 onclick: move |event| { if has_children { event.stop_propagation(); if !disabled { ontoggle.call(()); } } },
@@ -1283,6 +1442,152 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+    type DomCapture = Rc<RefCell<Option<TreeDom>>>;
+    fn mounted_dom_fixture() -> Element {
+        let focused = use_signal(|| None::<String>);
+        let viewport = use_signal(|| TreeViewport {
+            top: 0.0,
+            height: 320.0,
+        });
+        let runtime = use_hook(|| TreeDom::new(focused, viewport));
+        let capture = consume_context::<DomCapture>();
+        *capture.borrow_mut() = Some(runtime);
+        VNode::empty()
+    }
+    #[derive(Clone)]
+    struct TreeMount {
+        name: String,
+        focused: Rc<RefCell<Vec<String>>>,
+        scrolled: Rc<RefCell<Vec<f64>>>,
+    }
+    impl dioxus::html::RenderedElementBacking for TreeMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            let target = self.clone();
+            Box::pin(async move {
+                target.focused.borrow_mut().push(target.name);
+                Ok(())
+            })
+        }
+        fn scroll(
+            &self,
+            point: dioxus::html::geometry::PixelsVector2D,
+            _: ScrollBehavior,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            let target = self.clone();
+            Box::pin(async move {
+                target.scrolled.borrow_mut().push(point.y);
+                Ok(())
+            })
+        }
+    }
+    fn settle_dom(dom: &mut VirtualDom) {
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+        }
+    }
+    #[test]
+    fn delayed_tree_row_mount_obeys_latest_intent_and_removed_target_cancellation() {
+        let capture: DomCapture = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new(mounted_dom_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        let runtime = capture.borrow().clone().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let scrolls = Rc::new(RefCell::new(Vec::new()));
+        let mount = |id: &str| {
+            Rc::new(MountedData::new(TreeMount {
+                name: id.into(),
+                focused: calls.clone(),
+                scrolled: scrolls.clone(),
+            }))
+        };
+        runtime.state.borrow_mut().root = Some(mount("root"));
+        runtime.reconcile(BTreeSet::from(["a".into(), "b".into()]));
+        dom.in_scope(ScopeId::ROOT, || runtime.request(1999, "a".into(), 2000));
+        settle_dom(&mut dom);
+        assert!(
+            calls.borrow().is_empty(),
+            "a real target mount is required after scrolling"
+        );
+        dom.in_scope(ScopeId::ROOT, || runtime.request(0, "b".into(), 2000));
+        settle_dom(&mut dom);
+        dom.in_scope(ScopeId::ROOT, || runtime.mount("a".into(), mount("a")));
+        settle_dom(&mut dom);
+        assert!(
+            calls.borrow().is_empty(),
+            "late old target cannot inherit the newer intent"
+        );
+        dom.in_scope(ScopeId::ROOT, || runtime.mount("b".into(), mount("b")));
+        settle_dom(&mut dom);
+        assert_eq!(calls.borrow().as_slice(), ["b"]);
+        assert_eq!(scrolls.borrow().as_slice(), [63680.0, 0.0]);
+        let a = runtime.state.borrow_mut().rows.remove("a").unwrap();
+        dom.in_scope(ScopeId::ROOT, || runtime.request(1999, "a".into(), 2000));
+        settle_dom(&mut dom);
+        runtime.reconcile(BTreeSet::from(["b".into()]));
+        dom.in_scope(ScopeId::ROOT, || runtime.mount("a".into(), a));
+        settle_dom(&mut dom);
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["b"],
+            "removed model target cancels pending focus"
+        );
+        assert!(runtime.state.borrow().pending.is_none());
+        runtime.dispose();
+    }
+    #[test]
+    fn tree_blur_and_owner_teardown_cancel_waiting_mount_and_old_drop_keeps_replacement() {
+        let capture: DomCapture = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new(mounted_dom_fixture).with_root_context(capture.clone());
+        dom.rebuild_in_place();
+        let runtime = capture.borrow().clone().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let scrolls = Rc::new(RefCell::new(Vec::new()));
+        let mount = || {
+            Rc::new(MountedData::new(TreeMount {
+                name: "row".into(),
+                focused: calls.clone(),
+                scrolled: scrolls.clone(),
+            }))
+        };
+        runtime.state.borrow_mut().root = Some(mount());
+        runtime.reconcile(BTreeSet::from(["row".into()]));
+        dom.in_scope(ScopeId::ROOT, || runtime.request(0, "row".into(), 1));
+        settle_dom(&mut dom);
+        assert!(runtime.blur());
+        let old = mount();
+        let replacement = mount();
+        dom.in_scope(ScopeId::ROOT, || {
+            runtime.mount("row".into(), old.clone());
+            runtime.mount("row".into(), replacement.clone());
+        });
+        runtime.unmount("row", &old);
+        settle_dom(&mut dom);
+        assert!(calls.borrow().is_empty());
+        assert!(Rc::ptr_eq(
+            runtime.state.borrow().rows.get("row").unwrap(),
+            &replacement
+        ));
+        runtime.unmount("row", &replacement);
+        dom.in_scope(ScopeId::ROOT, || runtime.request(0, "row".into(), 1));
+        settle_dom(&mut dom);
+        runtime.dispose();
+        dom.in_scope(ScopeId::ROOT, || runtime.mount("row".into(), mount()));
+        settle_dom(&mut dom);
+        assert!(
+            calls.borrow().is_empty(),
+            "teardown cannot acquire an outside control's focus"
+        );
+    }
     fn flat_sample() -> TreeModel<String> {
         TreeModel::new(
             "root",

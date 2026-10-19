@@ -6,7 +6,7 @@
 use crate::Icon;
 use dioxus::prelude::*;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
@@ -625,25 +625,276 @@ struct GridValidationContext {
     id: String,
 }
 
-const GRID_OBSERVE: &str = r#"
-const id = await dioxus.recv(), root = document.getElementById(id);
-if (!root) return;
-let frame = 0, previous = '', done = () => {};
-const cleanup = () => { root.removeEventListener('scroll', schedule); resize.disconnect(); removal.disconnect(); cancelAnimationFrame(frame); done(); };
-const measure = () => {
-  frame = 0; if (!root.isConnected) { cleanup(); return; }
-  const value = {top:root.scrollTop,height:root.clientHeight}, json = JSON.stringify(value);
-  if (previous !== json) { previous = json; dioxus.send(value); }
-};
-const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
-const resize = new ResizeObserver(schedule), removal = new MutationObserver(() => { if (!root.isConnected) cleanup(); });
-root.addEventListener('scroll', schedule, {passive:true}); resize.observe(root);
-removal.observe(document.documentElement, {childList:true,subtree:true});
-await new Promise(resolve => { done = resolve; schedule(); });
-"#;
+/// One pending Dioxus focus intent, consumed by its live row/editor mount.
+/// `None` targets the mounted Header checkbox, never an arbitrary DOM query.
+#[derive(Clone)]
+struct GridFocusRequest {
+    serial: u64,
+    target: Option<GridFocus>,
+    top: Option<f64>,
+    claimed: bool,
+}
+#[derive(Clone, Default)]
+struct GridMountState {
+    serial: u64,
+    pending: Option<GridFocusRequest>,
+    active: Option<GridFocus>,
+    origin: Option<String>,
+    applying: bool,
+}
+#[derive(Clone, Copy)]
+struct GridMountContext {
+    root: Signal<Option<Rc<MountedData>>>,
+    state: Signal<GridMountState>,
+    width: Signal<f64>,
+}
+impl GridMountContext {
+    fn cancel(mut self) {
+        if let Ok(mut state) = self.state.try_write() {
+            state.serial = state.serial.wrapping_add(1);
+            state.pending = None;
+            state.origin = None;
+            state.applying = false;
+        }
+    }
+    fn request(mut self, target: Option<GridFocus>, top: Option<f64>) {
+        let mut state = self.state.write();
+        state.serial = state.serial.wrapping_add(1);
+        state.origin = state.active.as_ref().map(|active| active.row.clone());
+        state.pending = Some(GridFocusRequest {
+            serial: state.serial,
+            target,
+            top,
+            claimed: false,
+        });
+        state.applying = false;
+    }
+    fn current(self, serial: u64) -> bool {
+        self.state.try_peek().is_ok_and(|state| {
+            state
+                .pending
+                .as_ref()
+                .is_some_and(|request| request.serial == serial)
+        })
+    }
+    fn focused(mut self, focus: Option<GridFocus>) {
+        let keep = self
+            .state
+            .peek()
+            .pending
+            .as_ref()
+            .is_some_and(|request| request.target == focus);
+        if !keep {
+            self.cancel();
+        }
+        let mut state = self.state.write();
+        state.active = focus;
+        state.origin = None;
+    }
+    fn blurred(mut self) {
+        // A requested mounted focus causes its own normal blur/focus pair.
+        // Other blur cancels a waiting target before it can steal outside focus.
+        if !self.state.peek().applying {
+            self.cancel();
+        }
+        self.state.write().active = None;
+    }
+    fn finish(mut self, serial: u64) {
+        if self.current(serial) {
+            let mut state = self.state.write();
+            state.pending = None;
+            state.origin = None;
+            state.applying = false;
+        }
+    }
+}
+
+fn use_grid_focus_lane(
+    focus: Option<GridFocus>,
+    selection: Option<(String, bool)>,
+) -> EventHandler<MountedEvent> {
+    let context = use_context::<GridMountContext>();
+    let mut mounted = use_signal(|| None::<Rc<MountedData>>);
+    let alive = use_hook(|| Rc::new(Cell::new(true)));
+    let drop_alive = alive.clone();
+    let drop_focus = focus.clone();
+    use_drop(move || {
+        drop_alive.set(false);
+        if context.state.try_peek().is_ok_and(|state| {
+            state
+                .pending
+                .as_ref()
+                .is_some_and(|request| request.claimed && request.target == drop_focus)
+        }) {
+            context.cancel();
+        }
+    });
+    use_effect(use_reactive!(|focus, selection| {
+        let Some(request) = context
+            .state
+            .read()
+            .pending
+            .clone()
+            .filter(|request| !request.claimed && request.target == focus)
+        else {
+            return;
+        };
+        let Some(target) = mounted.read().clone() else {
+            return;
+        };
+        let Some(root) = context.root.read().clone() else {
+            return;
+        };
+        let mut context = context;
+        context.state.write().pending.as_mut().unwrap().claimed = true;
+        let alive = alive.clone();
+        let selection = selection.clone();
+        spawn(async move {
+            let checked_context = context;
+            let valid = || alive.get() && checked_context.current(request.serial);
+            if !valid() {
+                return;
+            }
+            if let Some(top) = request.top {
+                let Ok(offset) = root.get_scroll_offset().await else {
+                    context.finish(request.serial);
+                    return;
+                };
+                if !valid() {
+                    return;
+                }
+                let _ = root
+                    .scroll(
+                        dioxus::html::geometry::PixelsVector2D::new(offset.x, top),
+                        dioxus::html::ScrollBehavior::Instant,
+                    )
+                    .await;
+                if !valid() {
+                    return;
+                }
+            }
+            context.state.write().applying = true;
+            // Pinned desktop may apply setFocus and then fail its bool response
+            // decode. Make one mounted call; typed focus/native selection facts
+            // confirm its result rather than retrying through JavaScript.
+            let _ = target.set_focus(true).await;
+            if !valid() {
+                return;
+            }
+            context.state.write().applying = false;
+            if let Some((id, select_all)) = selection {
+                // MountedData and typed SelectionData expose no selection setter
+                // in alpha.2. This primary adapter touches only the unique,
+                // explicitly mounted current editor; it never focuses or waits.
+                let task = crate::dom_query::eval(
+                    r#"const [id,all]=await dioxus.recv();const input=document.getElementById(id);if(input instanceof HTMLInputElement&&input.isConnected&&document.activeElement===input){if(all)input.select();else input.setSelectionRange(input.value.length,input.value.length);}"#,
+                );
+                let _ = task.send((id, select_all));
+                let _ = task.await;
+                if !valid() {
+                    return;
+                }
+            }
+            let Ok(bounds) = root.get_client_rect().await else {
+                context.finish(request.serial);
+                return;
+            };
+            if !valid() {
+                return;
+            }
+            let Ok(rect) = target.get_client_rect().await else {
+                context.finish(request.serial);
+                return;
+            };
+            if !valid() {
+                return;
+            }
+            let Ok(offset) = root.get_scroll_offset().await else {
+                context.finish(request.serial);
+                return;
+            };
+            if !valid() {
+                return;
+            }
+            let width = *context.width.peek();
+            let right = bounds.origin.x
+                + if width > 0.0 {
+                    width
+                } else {
+                    bounds.size.width
+                };
+            let adjustment = if rect.origin.x < bounds.origin.x {
+                rect.origin.x - bounds.origin.x
+            } else if rect.origin.x + rect.size.width > right {
+                rect.origin.x + rect.size.width - right
+            } else {
+                0.0
+            };
+            if adjustment.abs() > 0.5 {
+                let _ = root
+                    .scroll(
+                        dioxus::html::geometry::PixelsVector2D::new(
+                            (offset.x + adjustment).max(0.0),
+                            offset.y,
+                        ),
+                        dioxus::html::ScrollBehavior::Instant,
+                    )
+                    .await;
+            }
+            context.finish(request.serial);
+        });
+    }));
+    EventHandler::new(move |event: MountedEvent| mounted.set(Some(event.data())))
+}
+
+fn retain_outgoing_grid_editor(session: &GridEditSession, state: &GridMountState) -> bool {
+    let own = GridFocus {
+        row: session.row.clone(),
+        lane: GridLane::Editor(session.column.clone()),
+    };
+    state.origin.as_deref() == Some(session.row.as_str())
+        && state.active.as_ref() == Some(&own)
+        && state
+            .pending
+            .as_ref()
+            .is_some_and(|request| request.target.as_ref() != Some(&own))
+}
+
+fn grid_focus_target_live(
+    target: &GridFocus,
+    rows: &[DataGridRow],
+    columns: &[DataGridColumn],
+    editing: Option<&GridEditSession>,
+    suppress_cell_focus: bool,
+    can_reorder: bool,
+) -> bool {
+    if !rows.iter().any(|row| row.id == target.row) {
+        return false;
+    }
+    match &target.lane {
+        GridLane::Selection => true,
+        GridLane::Cell(column) => {
+            !suppress_cell_focus && columns.iter().any(|item| item.id == *column)
+        }
+        GridLane::Drag(column) => {
+            can_reorder
+                && columns
+                    .iter()
+                    .any(|item| item.id == *column && item.row_drag)
+        }
+        GridLane::Editor(column) => {
+            !suppress_cell_focus
+                && editing
+                    .is_some_and(|session| session.row == target.row && session.column == *column)
+                && columns
+                    .iter()
+                    .any(|item| item.id == *column && item.editable)
+        }
+    }
+}
 
 fn reveal_grid_row(
-    root: String,
+    context: GridMountContext,
     focus: GridFocus,
     index: usize,
     total: usize,
@@ -665,74 +916,9 @@ fn reveal_grid_row(
         0.0,
         (total as f64 * f64::from(row_height) - height).max(0.0),
     );
+    context.request(Some(focus.clone()), Some(next.top));
     viewport.set(next);
-    focused.set(Some(focus.clone()));
-    let (lane, column) = match focus.lane {
-        GridLane::Selection => ("selection", String::new()),
-        GridLane::Cell(id) => ("cell", id),
-        GridLane::Drag(id) => ("drag", id),
-        GridLane::Editor(id) => ("editor", id),
-    };
-    // A render frame does not acknowledge desktop renderer IPC mutations.
-    // Sequence requests in Rust; wait for the actual mounted target in the DOM.
-    let sequence = GRID_ID.fetch_add(1, Ordering::Relaxed);
-    spawn(async move {
-        let task = crate::dom_query::eval(
-            r#"
-const [id, rowId, lane, column, top, sequence] = await dioxus.recv(), root = document.getElementById(id);
-if (!root) return;
-const previous = root.__ixGridFocus;
-if (previous && previous.sequence >= sequence) return;
-previous?.cancel?.();
-const token = {sequence, cancel:null}; root.__ixGridFocus = token; root.scrollTop = top;
-const target = await new Promise(resolve => {
-  let finished = false;
-  const cleanup = result => {
-    if (finished) return; finished = true;
-    mounted.disconnect(); removal.disconnect(); clearTimeout(deadline);
-    document.removeEventListener('pointerdown', cancel, true);
-    document.removeEventListener('keydown', cancelKey, true);
-    document.removeEventListener('focusin', cancelOutsideFocus, true);
-    token.cancel = null; resolve(result);
-  };
-  const find = () => {
-    if (!root.isConnected || root.__ixGridFocus !== token) { cleanup(null); return; }
-    const row = Array.from(root.querySelectorAll('[data-row-id]')).find(node => node.dataset.rowId === rowId);
-    const cell = Array.from(row?.querySelectorAll('[data-column-id]') ?? []).find(node => node.dataset.columnId === column);
-    const node = lane === 'selection' ? row?.querySelector('.ix-data-grid-check') : lane === 'drag' ? cell?.querySelector('.ix-data-grid-drag') : lane === 'editor' ? cell?.querySelector('.ix-data-grid-editor') : cell;
-    // Attributes may follow insertion in a renderer's mutation transaction.
-    if (node && (lane !== 'cell' || node.hasAttribute('tabindex'))) cleanup(node);
-  };
-  const mounted = new MutationObserver(find), removal = new MutationObserver(() => { if (!root.isConnected) cleanup(null); });
-  const deadline = setTimeout(() => cleanup(null), 2000);
-  const cancel = () => cleanup(null); token.cancel = cancel;
-  const cancelKey = event => { if (event.key === 'Tab' || event.key === 'Escape') cancel(); };
-  const cancelOutsideFocus = event => { if (!root.contains(event.target)) cancel(); };
-  document.addEventListener('pointerdown', cancel, true);
-  document.addEventListener('keydown', cancelKey, true);
-  document.addEventListener('focusin', cancelOutsideFocus, true);
-  mounted.observe(root, {childList:true,subtree:true,attributes:true,attributeFilter:['tabindex']});
-  removal.observe(document.documentElement, {childList:true,subtree:true});
-  find();
-});
-if (!target || !root.isConnected || root.__ixGridFocus !== token || !target.isConnected) return;
-target.focus({preventScroll:true});
-if (lane === 'editor' && target instanceof HTMLInputElement) {
-  if (target.dataset.selectAll === 'true') target.select();
-  else target.setSelectionRange(target.value.length, target.value.length);
-}
-if (target) {
-  const rect = target.getBoundingClientRect(), bounds = root.getBoundingClientRect();
-  // clientWidth excludes the stable scrollbar gutter; the border box does not.
-  const left = bounds.left + root.clientLeft, right = left + root.clientWidth;
-  if (rect.left < left) root.scrollLeft -= left - rect.left;
-  else if (rect.right > right) root.scrollLeft += rect.right - right;
-}
-"#,
-        );
-        let _ = task.send((root, focus.row, lane, column, next.top, sequence));
-        let _ = task.await;
-    });
+    focused.set(Some(focus));
 }
 
 // Only DOM measurement lives in this bridge. Column order, filtering and width
@@ -926,13 +1112,23 @@ pub fn DataGrid(
     });
     let autosize_grid_id = grid_id.clone();
     let scroll_id = format!("{grid_id}-scroll");
-    let observe_id = scroll_id.clone();
     let row_height = row_height.max(24);
     let mut viewport = use_signal(|| GridViewport {
         top: 0.0,
         height: f64::from(height),
     });
     let mut focused = use_signal(|| None::<GridFocus>);
+    let mounted_root = use_signal(|| None::<Rc<MountedData>>);
+    let mount_state = use_signal(GridMountState::default);
+    let client_width = use_signal(|| 0.0_f64);
+    let mut focus_context = use_context_provider(|| GridMountContext {
+        root: mounted_root,
+        state: mount_state,
+        width: client_width,
+    });
+    let header_mount = use_grid_focus_lane(None, None);
+    use_drop(move || focus_context.cancel());
+
     let latest_state = use_hook(|| Rc::new(RefCell::new(state.clone())));
     *latest_state.borrow_mut() = state.clone();
     let row_label_column = columns.first().map(|column| column.id.clone());
@@ -976,10 +1172,21 @@ pub fn DataGrid(
             rendered.sort_unstable();
         }
     }
+    if let Some(index) = focus_context
+        .state
+        .read()
+        .origin
+        .as_ref()
+        .and_then(|origin| visible.iter().position(|row| &row.id == origin))
+    {
+        if !rendered.contains(&index) {
+            rendered.push(index);
+            rendered.sort_unstable();
+        }
+    }
     let callback_rows = Rc::new(rows.clone());
     let record_state = Rc::new(state.clone());
     let keyboard_rows = visible.clone();
-    let keyboard_root = scroll_id.clone();
     let keyboard_columns = columns.clone();
     let navigate = move |(index, key, command, backwards): (usize, Key, bool, bool)| {
         let Some(mut focus) = focused.peek().clone() else {
@@ -1064,7 +1271,7 @@ pub fn DataGrid(
         if let Some(row) = keyboard_rows.get(target) {
             focus.row = row.id.clone();
             reveal_grid_row(
-                keyboard_root.clone(),
+                focus_context,
                 focus,
                 target,
                 visible_count,
@@ -1076,24 +1283,25 @@ pub fn DataGrid(
     };
     {
         let ids: Vec<_> = visible.iter().map(|row| row.id.clone()).collect();
-        let root = scroll_id.clone();
         use_effect(use_reactive!(|ids| {
-            // Filtering/removal may remove a focused record. Restore only if
-            // native focus was lost, never steal it from a filter editor.
             if focused
                 .peek()
                 .as_ref()
                 .is_some_and(|focus| !ids.contains(&focus.row))
             {
+                let owned = focus_context
+                    .state
+                    .peek()
+                    .active
+                    .as_ref()
+                    .is_some_and(|focus| !ids.contains(&focus.row));
                 focused.set(None);
-                let root = root.clone();
-                spawn(async move {
-                    let task = crate::dom_query::eval(
-                        r#"const id=await dioxus.recv(); await new Promise(requestAnimationFrame); const root=document.getElementById(id); if(document.activeElement===document.body) root?.querySelector('.ix-data-grid-header .ix-data-grid-check')?.focus({preventScroll:true});"#,
-                    );
-                    let _ = task.send(root);
-                    let _ = task.await;
-                });
+                focus_context.cancel();
+                // Typed ownership proves the removed row still owned grid focus.
+                // A filter editor/outside blur clears it and cannot be stolen.
+                if owned {
+                    focus_context.request(None, None);
+                }
             }
         }));
     }
@@ -1107,6 +1315,7 @@ pub fn DataGrid(
                 .zip(columns.iter().find(|column| column.id == session.column))
                 .is_some_and(|(row, column)| editable_cell(row, column, read_only))
         {
+            focus_context.cancel();
             editing.set(None);
             let current_focus = focused.peek().clone();
             if current_focus.as_ref().is_some_and(|focus| {
@@ -1119,16 +1328,34 @@ pub fn DataGrid(
             }
         }
     }
+    let invalid_target = focus_context
+        .state
+        .peek()
+        .pending
+        .as_ref()
+        .and_then(|request| request.target.as_ref())
+        .is_some_and(|target| {
+            !grid_focus_target_live(
+                target,
+                &visible,
+                &columns,
+                editing.peek().as_ref(),
+                suppress_cell_focus,
+                state.can_reorder(),
+            )
+        });
+    if invalid_target {
+        focus_context.cancel();
+    }
     let edit_rows = rows.clone();
     let edit_columns = columns.clone();
     let edit_state = state.clone();
-    let edit_root = scroll_id.clone();
     let edit_action = EventHandler::new(move |action: GridEditAction| {
         let reveal = |session: &GridEditSession, records: &[DataGridRow], editor: bool| {
             let displayed = edit_state.visible_rows(records);
             if let Some(index) = displayed.iter().position(|row| row.id == session.row) {
                 reveal_grid_row(
-                    edit_root.clone(),
+                    focus_context,
                     GridFocus {
                         row: session.row.clone(),
                         lane: if editor {
@@ -1260,7 +1487,9 @@ pub fn DataGrid(
     let validation_error = editing().and_then(|session| session.error);
     rsx! {
         div { id: grid_id, class: "ix-data-grid {class}", "data-striped": striped.to_string(), "data-virtualized": (!suppress_row_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
-            onkeydown: move |event: KeyboardEvent| if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); },
+            onpointerdown: move |_| focus_context.cancel(),
+            onfocusout: move |_| focus_context.blurred(),
+            onkeydown: move |event: KeyboardEvent| { focus_context.cancel(); if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); } },
             // The fixed resize overlay can become the native click target. Delegate
             // its double-click by hit-testing separators at the actual click point.
             ondoubleclick: move |event: MouseEvent| {
@@ -1273,10 +1502,13 @@ pub fn DataGrid(
                 } });
             },
             div { id: scroll_id, class: "ix-data-grid-scroll", role: "grid", "aria-label": label, "aria-rowcount": visible_count + 1, "aria-colcount": columns.len() + 1, "aria-multiselectable": "true",
-                onmounted: move |_| { let id = observe_id.clone(); spawn(async move { let mut task=dioxus::document::eval(GRID_OBSERVE); if task.send(id).is_err() {return;} while let Ok(measured)=task.recv::<GridViewport>().await { if measured.top.is_finite() && measured.height.is_finite() && measured.height > 0.0 && *viewport.peek()!=measured { viewport.set(measured); } } }); },
+                onmounted: move |event| { let node = event.data(); focus_context.root.set(Some(node.clone())); spawn(async move { if let Ok(rect) = node.get_client_rect().await { if let Ok(mut current) = viewport.try_write() { current.height = rect.size.height.max(1.0); } } }); },
+                onscroll: move |event: ScrollEvent| { let measured = GridViewport { top: event.scroll_top(), height: f64::from(event.client_height()) }; if measured.top.is_finite() && measured.height > 0.0 && *viewport.peek() != measured { viewport.set(measured); } focus_context.width.set(f64::from(event.client_width())); },
+                onresize: move |event: ResizeEvent| { if let Ok(size) = event.get_content_box_size() { if size.height > 0.0 { let mut current = *viewport.peek(); current.height = size.height; viewport.set(current); } focus_context.width.set(size.width); } },
                 div { class: "ix-data-grid-header", role: "row", "aria-rowindex": "1",
                     div { class: "ix-data-grid-selection", role: "columnheader",
                         GridCheckbox { label: "Select all filtered rows", checked, mixed, disabled: visible_count == 0,
+                            onmounted: header_mount, onfocus: move |_| focus_context.focused(None),
                             onchange: move |_| { let mut next = header_state.clone(); next.select_filtered(&header_rows, !checked); onstatechange.call(next); },
                         }
                     }
@@ -1324,8 +1556,9 @@ fn GridCheckbox(
     #[props(default)] disabled: bool,
     onchange: EventHandler<MouseEvent>,
     #[props(default)] onfocus: EventHandler<()>,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
 ) -> Element {
-    rsx! { button { class: "ix-data-grid-check", r#type: "button", role: "checkbox", disabled,
+    rsx! { button { onmounted, class: "ix-data-grid-check", r#type: "button", role: "checkbox", disabled,
         "aria-label": label, "aria-checked": if mixed { "mixed" } else if checked { "true" } else { "false" },
         "data-checked": (checked || mixed).to_string(), onclick: move |event| onchange.call(event), onfocus: move |_| onfocus.call(()),
         svg { view_box: "0 0 18 18", width: "18", height: "18", "aria-hidden": "true",
@@ -1616,6 +1849,14 @@ fn GridRecord(
     let over_id = row.id.clone();
     let can_reorder = state.can_reorder();
     let is_target = drop_target.read().as_deref() == Some(row.id.as_str());
+    let focus_context = use_context::<GridMountContext>();
+    let selection_mount = use_grid_focus_lane(
+        Some(GridFocus {
+            row: row.id.clone(),
+            lane: GridLane::Selection,
+        }),
+        None,
+    );
     let focus_id = row.id.clone();
     let first_column = columns.first().map(|column| column.id.clone());
     let last_column = columns.last().map(|column| column.id.clone());
@@ -1645,7 +1886,8 @@ fn GridRecord(
             }
         },
         div { class: "ix-data-grid-selection", role: "gridcell", GridCheckbox { label: format!("Select {row_label}"), checked: selected,
-            onfocus: move |_| { if editing.peek().is_some() { edit_action.call(GridEditAction::Commit { tab:None, restore_focus:false }); } focused.set(Some(GridFocus {row:focus_id.clone(),lane:GridLane::Selection})); },
+            onmounted: selection_mount,
+            onfocus: move |_| { let focus = GridFocus {row:focus_id.clone(),lane:GridLane::Selection}; focus_context.focused(Some(focus.clone())); focused.set(Some(focus)); if editing.peek().is_some() { edit_action.call(GridEditAction::Commit { tab:None, restore_focus:false }); } },
             onchange: move |event: MouseEvent| { let mut next = select_state.as_ref().clone(); next.select_row(&select_rows, &select_id, !selected, event.modifiers().shift()); onstatechange.call(next); },
         } }
         for (column_index, column) in columns.into_iter().enumerate() {
@@ -1677,6 +1919,21 @@ fn GridCell(
     edit_action: EventHandler<GridEditAction>,
     editable: bool,
 ) -> Element {
+    let focus_context = use_context::<GridMountContext>();
+    let cell_mount = use_grid_focus_lane(
+        Some(GridFocus {
+            row: row_id.clone(),
+            lane: GridLane::Cell(column.id.clone()),
+        }),
+        None,
+    );
+    let drag_mount = use_grid_focus_lane(
+        Some(GridFocus {
+            row: row_id.clone(),
+            lane: GridLane::Drag(column.id.clone()),
+        }),
+        None,
+    );
     let mut generation = use_signal(|| 0_u64);
     let mut show_tooltip = use_signal(|| false);
     let mut point = use_signal(|| (0.0_f64, 0.0_f64));
@@ -1701,21 +1958,44 @@ fn GridCell(
     let edit_column = column.id.clone();
     let double_row = row_id.clone();
     let double_column = column.id.clone();
-    let session = editing
+    let current_session = editing
         .read()
         .as_ref()
         .filter(|session| session.row == row_id && session.column == column.id)
         .cloned();
+    let last_editor = use_hook(|| Rc::new(RefCell::new(None::<GridEditSession>)));
+    if let Some(session) = &current_session {
+        *last_editor.borrow_mut() = Some(session.clone());
+    }
+    // Retain the one outgoing, actually focused editor while its next mounted
+    // target is pending. Removing it first emits native focusout and looks like
+    // a real outside departure. Target focus/cancellation releases this input;
+    // outside focusout still cancels normally, without inspecting relatedTarget.
+    let retiring = current_session.is_none()
+        && editable
+        && !suppress_cell_focus
+        && last_editor.borrow().as_ref().is_some_and(|session| {
+            retain_outgoing_grid_editor(session, &focus_context.state.read())
+        });
+    let session = if retiring {
+        last_editor.borrow().clone()
+    } else {
+        current_session
+    };
+    if session.is_none() {
+        *last_editor.borrow_mut() = None;
+    }
     let select_state = state.clone();
     let select_rows = rows.clone();
     let select_id = row_id.clone();
-    rsx! { div { class: "ix-data-grid-cell", role: "gridcell", "data-column-id": column.id.clone(), "aria-readonly": (!editable).to_string(), "data-editing": session.is_some().to_string(), "aria-describedby": if show_tooltip() { Some(tooltip_id.clone()) } else { None },
+    rsx! { div { onmounted: cell_mount, class: "ix-data-grid-cell", role: "gridcell", "data-column-id": column.id.clone(), "aria-readonly": (!editable).to_string(), "data-editing": session.is_some().to_string(), "aria-describedby": if show_tooltip() { Some(tooltip_id.clone()) } else { None },
         tabindex: if suppress_cell_focus { None } else { Some(if session.is_none() && (is_active || (entry_cell && !focused.read().as_ref().is_some_and(|focus| matches!(focus.lane, GridLane::Cell(_) | GridLane::Editor(_))))) { "0" } else { "-1" }) },
         onfocus: move |_| if !suppress_cell_focus {
             let current=editing.peek().clone();
             let own=current.as_ref().is_some_and(|session|session.row==focus_row && session.column==focus_column);
+            let focus = GridFocus {row:focus_row.clone(),lane:if own {GridLane::Editor(focus_column.clone())} else {GridLane::Cell(focus_column.clone())}};
+            focus_context.focused(Some(focus.clone())); focused.set(Some(focus));
             if current.is_some() && !own { edit_action.call(GridEditAction::Commit {tab:None,restore_focus:false}); }
-            focused.set(Some(GridFocus {row:focus_row.clone(),lane:if own {GridLane::Editor(focus_column.clone())} else {GridLane::Cell(focus_column.clone())}}));
         },
         onmouseenter: move |event: MouseEvent| {
             let current = generation.peek().wrapping_add(1); generation.set(current);
@@ -1734,8 +2014,8 @@ fn GridCell(
                 event.prevent_default(); event.stop_propagation(); let mut next=select_state.as_ref().clone(); let checked=!next.selected.contains(&select_id); next.select_row(&select_rows,&select_id,checked,event.modifiers().shift()); onstatechange.call(next);
             }
         },
-        if column.row_drag { button { class: "ix-data-grid-drag", r#type: "button", draggable: can_reorder.to_string(), disabled: !can_reorder,
-            onfocus: move |event: FocusEvent| { event.stop_propagation(); focused.set(Some(GridFocus {row:drag_focus_row.clone(),lane:GridLane::Drag(drag_focus_column.clone())})); },
+        if column.row_drag { button { onmounted: drag_mount, class: "ix-data-grid-drag", r#type: "button", draggable: can_reorder.to_string(), disabled: !can_reorder,
+            onfocus: move |event: FocusEvent| { event.stop_propagation(); let focus = GridFocus {row:drag_focus_row.clone(),lane:GridLane::Drag(drag_focus_column.clone())}; focus_context.focused(Some(focus.clone())); focused.set(Some(focus)); },
             "aria-label": "Move {row_label}", title: if can_reorder { "Drag to move. Keyboard: Alt+Up or Alt+Down." } else { "Row movement is unavailable while sorting or filtering." },
             ondragstart: move |event: DragEvent| { if can_reorder { let transfer = event.data_transfer(); let _ = transfer.set_data("text/plain", &drag_id); transfer.set_effect_allowed("move"); dragging.set(Some(drag_id.clone())); } },
             ondragend: move |_| { dragging.set(None); drop_target.set(None); },
@@ -1752,7 +2032,7 @@ fn GridCell(
             },
             Icon { name: "drag-gripper", size: 16 }
         } }
-        if let Some(session)=session.clone() { GridTextEditor {session,title:column.title.clone(),editing,edit_action} }
+        if let Some(session)=session.clone() { GridTextEditor {session,title:column.title.clone(),editing,edit_action,retiring} }
         else { span { class: "ix-data-grid-cell-text", "{text}" } }
         if editing.read().is_none() && show_tooltip() && !tooltip.is_empty() { span { id: tooltip_id.clone(), class: "ix-data-grid-tooltip", role: "tooltip", style: "--ix-grid-tip-x:{point().0}px;--ix-grid-tip-y:{point().1}px", "{tooltip}" } }
     } }
@@ -1764,14 +2044,27 @@ fn GridTextEditor(
     title: String,
     mut editing: Signal<Option<GridEditSession>>,
     edit_action: EventHandler<GridEditAction>,
+    #[props(default)] retiring: bool,
 ) -> Element {
+    let focus_context = use_context::<GridMountContext>();
+    let editor_id =
+        use_hook(|| format!("ix-grid-editor-{}", GRID_ID.fetch_add(1, Ordering::Relaxed)));
+    let editor_mount = use_grid_focus_lane(
+        Some(GridFocus {
+            row: session.row.clone(),
+            lane: GridLane::Editor(session.column.clone()),
+        }),
+        Some((editor_id.clone(), session.select_all)),
+    );
     let error_id = use_context::<GridValidationContext>().id;
     let row = session.row.clone();
     let column = session.column.clone();
     rsx! {div {class:"ix-data-grid-editor-wrap",
-        input {class:"ix-data-grid-editor",r#type:"text",value:session.draft,"data-select-all":session.select_all.to_string(),"aria-label":"Edit {title} for {session.row}","aria-invalid":session.error.is_some().to_string(),"aria-errormessage":if session.error.is_some(){Some(error_id.clone())}else{None},
-            oninput:move|event:FormEvent|{let current=editing.peek().clone();if let Some(mut session)=current.filter(|session|session.row==row&&session.column==column){session.draft=event.value();session.error=None;session.select_all=false;editing.set(Some(session));}},
-            onkeydown:move|event:KeyboardEvent|{event.stop_propagation();if event.is_composing(){return;}match event.key(){
+        input {id:editor_id,onmounted:editor_mount,class:"ix-data-grid-editor",r#type:"text",readonly:retiring,tabindex:retiring.then_some("-1"),value:session.draft,"data-select-all":session.select_all.to_string(),"aria-label":"Edit {title} for {session.row}","aria-invalid":session.error.is_some().to_string(),"aria-errormessage":if session.error.is_some(){Some(error_id.clone())}else{None},
+            onfocus:{let row=session.row.clone();let column=session.column.clone();move |_|focus_context.focused(Some(GridFocus {row:row.clone(),lane:GridLane::Editor(column.clone())}))},
+            oninput:move|event:FormEvent|{focus_context.cancel();if retiring{return;}let current=editing.peek().clone();if let Some(mut session)=current.filter(|session|session.row==row&&session.column==column){session.draft=event.value();session.error=None;session.select_all=false;editing.set(Some(session));}},
+            onkeydown:move|event:KeyboardEvent|{event.stop_propagation();if retiring {focus_context.cancel();return;}
+                if event.is_composing(){return;}match event.key(){
                 Key::Escape=>{event.prevent_default();edit_action.call(GridEditAction::Cancel);},
                 Key::Enter=>{event.prevent_default();edit_action.call(GridEditAction::Commit{tab:None,restore_focus:true});},
                 Key::Tab=>{event.prevent_default();edit_action.call(GridEditAction::Commit{tab:Some(event.modifiers().shift()),restore_focus:true});},_=>{}}},
@@ -1835,6 +2128,253 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Clone, Default)]
+    struct MountedFocusFixture {
+        context: Rc<Cell<Option<GridMountContext>>>,
+        mount: Rc<Cell<Option<EventHandler<MountedEvent>>>>,
+    }
+    impl PartialEq for MountedFocusFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.context, &other.context)
+        }
+    }
+    fn mounted_focus_probe(fixture: MountedFocusFixture) -> Element {
+        let root = use_signal(|| Some(Rc::new(MountedData::new(()))));
+        let state = use_signal(GridMountState::default);
+        let width = use_signal(|| 0.0);
+        let context = use_context_provider(|| GridMountContext { root, state, width });
+        fixture.context.set(Some(context));
+        fixture.mount.set(Some(use_grid_focus_lane(
+            Some(test_grid_focus("target")),
+            None,
+        )));
+        rsx! { div {} }
+    }
+    fn test_grid_focus(row: &str) -> GridFocus {
+        GridFocus {
+            row: row.into(),
+            lane: GridLane::Cell("status".into()),
+        }
+    }
+    #[derive(Clone)]
+    struct GridFocusMock(Rc<Cell<usize>>);
+    impl dioxus::html::RenderedElementBacking for GridFocusMock {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn set_focus(
+            &self,
+            focus: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = dioxus::html::MountedResult<()>>>>
+        {
+            assert!(focus);
+            let calls = self.0.clone();
+            Box::pin(async move {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+        }
+    }
+    fn settle_grid_focus(dom: &mut VirtualDom) {
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+        }
+    }
+    #[test]
+    fn mounted_grid_focus_waits_for_its_lane_and_cancels_before_late_mount() {
+        let fixture = MountedFocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(mounted_focus_probe, fixture.clone());
+        dom.rebuild_in_place();
+        let context = fixture.context.get().unwrap();
+        let calls = Rc::new(Cell::new(0));
+        dom.in_runtime(|| {
+            context.focused(Some(test_grid_focus("origin")));
+            context.request(Some(test_grid_focus("target")), None);
+        });
+        settle_grid_focus(&mut dom);
+        assert_eq!(calls.get(), 0);
+        assert_eq!(context.state.peek().origin.as_deref(), Some("origin"));
+        // Real outside blur cancels a request waiting for a virtual row mount.
+        dom.in_runtime(|| {
+            context.blurred();
+            fixture.mount.get().unwrap().call(dioxus::core::Event::new(
+                Rc::new(MountedData::new(GridFocusMock(calls.clone()))),
+                false,
+            ));
+        });
+        settle_grid_focus(&mut dom);
+        assert_eq!(calls.get(), 0);
+        assert!(context.state.peek().pending.is_none());
+        // The same live mount can still satisfy a new explicit keyboard intent.
+        dom.in_runtime(|| context.request(Some(test_grid_focus("target")), None));
+        settle_grid_focus(&mut dom);
+        assert_eq!(calls.get(), 1);
+        assert!(context.state.peek().pending.is_none());
+    }
+    #[test]
+    fn grid_focus_supersession_and_owner_drop_invalidate_old_completion() {
+        let fixture = MountedFocusFixture::default();
+        let mut dom = VirtualDom::new_with_props(mounted_focus_probe, fixture.clone());
+        dom.rebuild_in_place();
+        let context = fixture.context.get().unwrap();
+        let (first, second) = dom.in_runtime(|| {
+            context.request(Some(test_grid_focus("first")), None);
+            let first = context.state.peek().serial;
+            context.request(Some(test_grid_focus("target")), None);
+            let second = context.state.peek().serial;
+            context.finish(first);
+            (first, second)
+        });
+        assert!(!context.current(first));
+        assert!(context.current(second));
+        drop(dom);
+        assert!(!context.current(second));
+    }
+    #[test]
+    fn grid_pending_targets_reject_removed_columns_disabled_drag_and_closed_editors() {
+        let rows = rows();
+        let mut column = edit_column("status");
+        column.row_drag = true;
+        let columns = [column];
+        let cell = test_grid_focus("a");
+        assert!(grid_focus_target_live(
+            &cell, &rows, &columns, None, false, true
+        ));
+        assert!(!grid_focus_target_live(
+            &cell,
+            &rows,
+            &[],
+            None,
+            false,
+            true
+        ));
+        assert!(!grid_focus_target_live(
+            &cell, &rows, &columns, None, true, true
+        ));
+        assert!(!grid_focus_target_live(
+            &test_grid_focus("removed"),
+            &rows,
+            &columns,
+            None,
+            false,
+            true
+        ));
+        let drag = GridFocus {
+            row: "a".into(),
+            lane: GridLane::Drag("status".into()),
+        };
+        assert!(!grid_focus_target_live(
+            &drag, &rows, &columns, None, false, false
+        ));
+        let editor = GridFocus {
+            row: "a".into(),
+            lane: GridLane::Editor("status".into()),
+        };
+        assert!(!grid_focus_target_live(
+            &editor, &rows, &columns, None, false, true
+        ));
+        let session = edit_session("a", "status", "Normal", "Normal");
+        assert!(grid_focus_target_live(
+            &editor,
+            &rows,
+            &columns,
+            Some(&session),
+            false,
+            true
+        ));
+    }
+    #[derive(Clone, Default)]
+    struct GridEditorTransferFixture {
+        context: Rc<Cell<Option<GridMountContext>>>,
+        editing: Rc<Cell<Option<Signal<Option<GridEditSession>>>>>,
+    }
+    impl PartialEq for GridEditorTransferFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.context, &other.context)
+        }
+    }
+    fn editor_transfer_probe(fixture: GridEditorTransferFixture) -> Element {
+        let root = use_signal(|| None::<Rc<MountedData>>);
+        let state = use_signal(GridMountState::default);
+        let width = use_signal(|| 0.0);
+        let context = use_context_provider(|| GridMountContext { root, state, width });
+        use_context_provider(|| GridValidationContext {
+            id: "transfer-error".into(),
+        });
+        let editing = use_signal(|| Some(edit_session("row999", "status", "Normal", "Normal")));
+        let dragging = use_signal(|| None::<String>);
+        let drop_target = use_signal(|| None::<String>);
+        let focused = use_signal(|| None::<GridFocus>);
+        fixture.context.set(Some(context));
+        fixture.editing.set(Some(editing));
+        let records = Rc::new(vec![
+            DataGridRow::new("row999"),
+            DataGridRow::new("row1000"),
+        ]);
+        rsx! {
+            for id in ["row999", "row1000"] {
+                GridCell { key: "{id}", text: "Normal", tooltip: "", column: edit_column("status"),
+                    row_id: id, row_label: id, rows: records.clone(), state: Rc::new(DataGridState::default()),
+                    onstatechange: move |_| {}, dragging, drop_target, tooltip_delay_ms:500, focused,
+                    suppress_cell_focus:false, entry_cell:false, editing, edit_action:move |_| {}, editable:true,
+                }
+            }
+        }
+    }
+    #[test]
+    fn outgoing_editor_stays_mounted_until_next_editor_focus_or_outside_cancel() {
+        let fixture = GridEditorTransferFixture::default();
+        let mut dom = VirtualDom::new_with_props(editor_transfer_probe, fixture.clone());
+        dom.rebuild_in_place();
+        let context = fixture.context.get().unwrap();
+        let mut editing = fixture.editing.get().unwrap();
+        let editor = |row: &str| GridFocus {
+            row: row.into(),
+            lane: GridLane::Editor("status".into()),
+        };
+        assert_eq!(
+            dioxus_ssr::render(&dom).matches("data-select-all=").count(),
+            1
+        );
+        dom.in_runtime(|| {
+            context.focused(Some(editor("row999")));
+            context.request(Some(editor("row1000")), None);
+            editing.set(Some(edit_session("row1000", "status", "Normal", "Normal")));
+        });
+        settle_grid_focus(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(
+            html.matches("data-select-all=").count(),
+            2,
+            "the focused outgoing input must survive target mounting"
+        );
+        assert!(
+            html.contains("Edit status for row999") && html.contains("Edit status for row1000")
+        );
+        dom.in_runtime(|| context.focused(Some(editor("row1000"))));
+        settle_grid_focus(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(html.matches("data-select-all=").count(), 1);
+        assert!(!html.contains("Edit status for row999"));
+        dom.in_runtime(|| {
+            context.request(Some(editor("row999")), None);
+            editing.set(Some(edit_session("row999", "status", "Normal", "Normal")));
+        });
+        settle_grid_focus(&mut dom);
+        assert_eq!(
+            dioxus_ssr::render(&dom).matches("data-select-all=").count(),
+            2
+        );
+        dom.in_runtime(|| context.blurred());
+        settle_grid_focus(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(html.matches("data-select-all=").count(), 1);
+        assert!(!html.contains("Edit status for row1000"));
+        assert!(
+            context.state.peek().pending.is_none(),
+            "a real outside departure must still cancel the transfer"
+        );
+    }
     fn rows() -> Vec<DataGridRow> {
         vec![
             DataGridRow::new("a").cell("status", "Normal"),
