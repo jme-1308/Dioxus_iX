@@ -52,7 +52,6 @@ impl NodeHandle {
         handle: crate::dropdown::DropdownHandle,
         query_root: Rc<dyn Fn() -> Option<String>>,
         reset: Rc<dyn Fn()>,
-        trigger_click: Rc<dyn Fn()>,
     ) {
         if let Some(runtime) = self.runtime()
             && let Some(entry) = runtime
@@ -66,7 +65,6 @@ impl NodeHandle {
                 handle,
                 query_root,
                 reset,
-                trigger_click,
             });
         }
     }

@@ -7,8 +7,8 @@ fn ExitTrigger(dropdown: DropdownHandle) -> Element {
     let binding = use_dropdown_trigger_binding(dropdown);
     rsx! { button {
         id:"r0210-custom-trigger", r#type:"button", class:"ix-button ix-button-secondary",
-        onmounted:binding.onmounted,onvisible:binding.onvisible,onkeydown:binding.onkeydown, "aria-haspopup":"menu", "aria-expanded":dropdown.is_open().to_string(),
-        "Custom equipment actions"
+        onmounted:binding.onmounted,onvisible:binding.onvisible,onkeydown:binding.onkeydown,onclick:binding.onclick, "aria-haspopup":"menu", "aria-expanded":dropdown.is_open().to_string(),
+        ..binding.attributes(), "Custom equipment actions"
     } }
 }
 

@@ -1,6 +1,5 @@
-//! Configured native trigger admission through actual runtime form handlers.
+//! Registered submenu relationships, mounted return focus and typed owner dispatch.
 use super::*;
-use dioxus::core::current_scope_id;
 use std::cell::Cell;
 
 struct SerializedForm(String);
@@ -37,8 +36,6 @@ struct FixtureState {
     runtime: RefCell<Option<RuntimeHandle>>,
     node: RefCell<Option<NodeHandle>>,
     open: Cell<bool>,
-    calls: Cell<usize>,
-    applied: Cell<usize>,
     veto: Cell<bool>,
     resets: Cell<usize>,
 }
@@ -51,7 +48,6 @@ fn fixture_root(fixture: Fixture) -> Element {
     let handle = crate::dropdown::use_dropdown();
     let state = fixture.clone();
     let node = use_hook(move || {
-        let scope = current_scope_id();
         let read = state.clone();
         let before = state.clone();
         let apply = state.clone();
@@ -65,27 +61,15 @@ fn fixture_root(fixture: Fixture) -> Element {
                 before: Rc::new(move |_| !before.0.veto.get()),
                 apply: Rc::new(move |change| {
                     apply.0.open.set(change.open);
-                    apply.0.applied.set(apply.0.applied.get() + 1);
                 }),
                 key: None,
             },
         );
-        let clicked = state.clone();
         let reset = state.clone();
-        let click_node = node.clone();
         node.set_submenu_access(
             handle,
             Rc::new(|| None),
             Rc::new(move || reset.0.resets.set(reset.0.resets.get() + 1)),
-            Rc::new(move || {
-                assert_eq!(
-                    current_scope_id(),
-                    scope,
-                    "configured callback belongs to its registered owner"
-                );
-                clicked.0.calls.set(clicked.0.calls.get() + 1);
-                click_node.request(!clicked.0.open.get(), Reason::Trigger, false);
-            }),
         );
         *state.0.runtime.borrow_mut() = Some(runtime.clone());
         *state.0.node.borrow_mut() = Some(node.clone());
@@ -106,12 +90,7 @@ fn fixture() -> (VirtualDom, Fixture, RuntimeHandle, NodeHandle) {
 
 fn native_node() -> serde_json::Value {
     serde_json::json!({"id":"configured","generation":1,"connected":true,
-        "discovery_ready":true,"root_capture":"actual-root","trigger_capture":"actual-trigger",
-        "trigger_on_path":true,"on_trigger":true,"configured_trigger_listener":"actual-trigger"})
-}
-fn click(runtime: &RuntimeHandle, sequence: u64) -> serde_json::Value {
-    serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,"kind":"click",
-        "phase":"trigger","triggers":["configured"],"nodes":[native_node()]})
+        "discovery_ready":true,"root_capture":"actual-root"})
 }
 fn send(runtime: &RuntimeHandle, value: serde_json::Value) -> FormEvent {
     let event = form(value);
@@ -119,107 +98,12 @@ fn send(runtime: &RuntimeHandle, value: serde_json::Value) -> FormEvent {
     event
 }
 fn bind(runtime: &RuntimeHandle) {
-    let mut node = native_node();
-    node["configured_trigger_listener"] = serde_json::Value::Null;
+    let node = native_node();
     send(
         runtime,
         serde_json::json!({"owner":runtime.owner_id(),"sequence":1,
         "kind":"observe","nodes":[node]}),
     );
-}
-
-#[test]
-fn configured_receiver_click_toggles_once_while_path_only_and_invalid_reports_do_not() {
-    let (_dom, state, runtime, _) = fixture();
-    bind(&runtime);
-    let mut sequence = 1;
-    let mut deliver = |mut value: serde_json::Value| {
-        sequence += 1;
-        value["sequence"] = sequence.into();
-        send(&runtime, value)
-    };
-    let mut path_only = click(&runtime, 0);
-    path_only["nodes"][0]["configured_trigger_listener"] = serde_json::Value::Null;
-    deliver(path_only);
-    assert_eq!(
-        state.0.calls.get(),
-        0,
-        "ordinary/path-only trigger reports retain their existing component onclick route"
-    );
-    for (field, value) in [
-        ("connected", serde_json::json!(false)),
-        ("generation", serde_json::json!(2)),
-        ("trigger_capture", serde_json::json!("copied-trigger")),
-        (
-            "configured_trigger_listener",
-            serde_json::json!("another-listener-object"),
-        ),
-    ] {
-        let mut invalid = click(&runtime, 0);
-        invalid["nodes"][0][field] = value;
-        deliver(invalid);
-        assert_eq!(
-            state.0.calls.get(),
-            0,
-            "{field} cannot authorize the receiver"
-        );
-    }
-    let mut prevented = click(&runtime, 0);
-    prevented["default_prevented"] = true.into();
-    deliver(prevented);
-    assert_eq!(state.0.calls.get(), 0);
-    // Every new native event starts with document capture. It clears the prior
-    // prevented-event guard while preserving the report-specific protections.
-    let mut capture = click(&runtime, 0);
-    capture["phase"] = "capture".into();
-    deliver(capture.clone());
-    let mut accepted = click(&runtime, 0);
-    sequence += 1;
-    accepted["sequence"] = sequence.into();
-    send(&runtime, accepted.clone());
-    assert_eq!(state.0.calls.get(), 1);
-    assert_eq!(state.0.applied.get(), 1);
-    assert!(state.0.open.get());
-    send(&runtime, accepted);
-    assert_eq!(
-        state.0.calls.get(),
-        1,
-        "same native report replay cannot toggle back"
-    );
-    assert!(state.0.open.get());
-
-    // A foreign nearer trigger blocks this composed ancestor's callback.
-    sequence += 1;
-    capture["sequence"] = sequence.into();
-    capture["triggers"] = serde_json::json!(["foreign", "configured"]);
-    send(&runtime, capture.clone());
-    sequence += 1;
-    let mut blocked = click(&runtime, sequence);
-    blocked["triggers"] = serde_json::json!(["foreign", "configured"]);
-    send(&runtime, blocked);
-    assert_eq!(state.0.calls.get(), 1);
-    assert!(state.0.open.get());
-
-    sequence += 1;
-    capture["sequence"] = sequence.into();
-    capture["triggers"] = serde_json::json!(["configured"]);
-    send(&runtime, capture);
-    state.0.veto.set(true);
-    sequence += 1;
-    send(&runtime, click(&runtime, sequence));
-    assert_eq!(
-        state.0.calls.get(),
-        2,
-        "an own request veto still admits the trigger callback"
-    );
-    assert_eq!(state.0.applied.get(), 1);
-    assert!(state.0.open.get());
-    state.0.veto.set(false);
-    sequence += 1;
-    send(&runtime, click(&runtime, sequence));
-    assert_eq!(state.0.calls.get(), 3);
-    assert_eq!(state.0.applied.get(), 2);
-    assert!(!state.0.open.get());
 }
 
 #[test]
@@ -244,7 +128,6 @@ fn submenu_routing_marker_tracks_current_inventory_and_registered_owner() {
         parts: Vec::new(),
     };
     let mut observed = native_node();
-    observed["configured_trigger_listener"] = serde_json::Value::Null;
     observed["inventory"] = serde_json::json!({"items_host":"actual-items",
         "hosts":[host.clone()],"navigation_order":[host.item.clone()],"query_order":[host.item.clone()]});
     send(

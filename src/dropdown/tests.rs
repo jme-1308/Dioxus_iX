@@ -563,24 +563,6 @@ fn dioxus_submenu_open_veto_keeps_navigation_with_the_visible_owner() {
 }
 
 #[test]
-fn trigger_declaration_preserves_falsy_watchers_and_roundtrip_attempts() {
-    let mut declaration = TriggerDeclaration::default();
-    declaration.update(&None);
-    assert_eq!((declaration.version, declaration.dispose_version), (0, 0));
-    for (value, expected) in [
-        (Some("a"), (1, 1)),
-        (Some("a"), (1, 1)),
-        (Some("b"), (2, 2)),
-        (None, (3, 2)),
-        (Some(""), (4, 2)),
-        (Some("a"), (5, 3)),
-    ] {
-        declaration.update(&value.map(str::to_owned));
-        assert_eq!((declaration.version, declaration.dispose_version), expected);
-    }
-}
-
-#[test]
 fn directly_focused_dialog_navigates_but_blurred_dialog_preserves_nested_field_keys() {
     let _guard = crate::test_event_converter_guard();
     for mode in [
@@ -2306,25 +2288,182 @@ struct CustomTriggerState {
     dropdown: Cell<Option<DropdownHandle>>,
     first: Cell<Option<Signal<bool>>>,
     second: Cell<Option<Signal<bool>>>,
+    disabled: Cell<Option<Signal<bool>>>,
+    loading: Cell<Option<Signal<bool>>>,
+    veto: Cell<bool>,
+    requests: Cell<usize>,
 }
 #[component]
 fn CustomTriggerControl(dropdown: DropdownHandle, name: String) -> Element {
     let binding = use_dropdown_trigger_binding(dropdown);
-    rsx! { button { id: name.clone(), "data-ix-dropdown-label":name, onmounted:binding.onmounted, onvisible:binding.onvisible, onkeydown:binding.onkeydown, "Custom trigger" } }
+    rsx! { button { id: name.clone(), "data-ix-dropdown-label":name, onmounted:binding.onmounted, onvisible:binding.onvisible, onkeydown:binding.onkeydown, onclick:binding.onclick, ..binding.attributes(), "Custom trigger" } }
 }
 fn custom_trigger_fixture(fixture: CustomTriggerFixture) -> Element {
     let dropdown = use_dropdown();
     let first = use_signal(|| true);
     let second = use_signal(|| true);
+    let disabled = use_signal(|| false);
+    let loading = use_signal(|| false);
+    fixture.0.disabled.set(Some(disabled));
+    fixture.0.loading.set(Some(loading));
+    let before = fixture.clone();
     fixture.0.dropdown.set(Some(dropdown));
     fixture.0.first.set(Some(first));
     fixture.0.second.set(Some(second));
     rsx! {
         if first() { CustomTriggerControl { dropdown, name:"first" } }
         if second() { CustomTriggerControl { dropdown, name:"second" } }
-        Dropdown { controller:dropdown, trigger:Some("second".into()), label:"Custom popup", DropdownItem { label:"Custom child" } }
+        Dropdown { controller:dropdown, trigger:Some("second".into()), label:"Custom popup", disabled:disabled(),loading:loading(),
+            onbeforechange:move |event:DropdownChangeEvent|{before.0.requests.set(before.0.requests.get()+1);if before.0.veto.get(){event.prevent_default();}},
+            DropdownItem { label:"Custom child" } }
     }
 }
+#[test]
+fn explicit_custom_trigger_clicks_honor_current_mount_veto_disabled_loading_and_remount() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let fixture = CustomTriggerFixture::default();
+    let mut dom = VirtualDom::new_with_props(custom_trigger_fixture, fixture.clone());
+    let edits = dom.rebuild_to_vec();
+    let mut h = Harness {
+        dom,
+        config: Rc::new(RefCell::new(Fixture::default())),
+        attrs: BTreeMap::new(),
+        listeners: BTreeMap::new(),
+    };
+    h.collect(edits);
+    for target in h.listeners.get("mounted").cloned().unwrap_or_default() {
+        dispatch(&h.dom, "mounted", target, ());
+    }
+    h.settle();
+    let handle = fixture.0.dropdown.get().unwrap();
+    let context = handle.context();
+    let tag = item_tag(&h.html(), "second");
+    assert!(tag.contains(&format!(
+        "data-ix-overlay-trigger=\"{}\"",
+        context.node_id()
+    )));
+    assert!(
+        tag.contains("anchor-name")
+            && tag.contains(&format!("--ix-dropdown-anchor-{}", context.id))
+    );
+    assert!(!h.html().contains("data-ix-overlay-trigger-version"));
+    h.click("first");
+    assert!(!handle.is_open());
+    assert_eq!(
+        fixture.0.requests.get(),
+        0,
+        "an older mounted control cannot activate the current binding"
+    );
+    h.click("second");
+    assert!(handle.is_open());
+    h.click("second");
+    assert!(!handle.is_open());
+    assert_eq!(
+        fixture.0.requests.get(),
+        2,
+        "each original click delivers one visibility request"
+    );
+    fixture.0.veto.set(true);
+    h.click("second");
+    assert!(!handle.is_open());
+    assert_eq!(fixture.0.requests.get(), 3);
+    fixture.0.veto.set(false);
+    for loading in [false, true] {
+        h.dom.in_runtime(|| {
+            fixture.0.disabled.get().unwrap().set(!loading);
+            fixture.0.loading.get().unwrap().set(loading);
+        });
+        h.settle();
+        let before = fixture.0.requests.get();
+        h.click("second");
+        assert!(!handle.is_open());
+        assert_eq!(
+            fixture.0.requests.get(),
+            before,
+            "blocked controls do not request opening"
+        );
+    }
+    h.dom
+        .in_runtime(|| fixture.0.loading.get().unwrap().set(false));
+    h.settle();
+    mount_trigger_mock(&mut h, "second");
+    h.click("second");
+    assert!(
+        handle.is_open(),
+        "a fresh same-ID mounted handle activates normally"
+    );
+    let before = fixture.0.requests.get();
+    let data: Rc<dyn std::any::Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(())));
+    let event = Event::new(data, true);
+    event.prevent_default();
+    h.dom
+        .runtime()
+        .handle_event("click", event, h.target("second"));
+    h.settle();
+    assert!(handle.is_open());
+    assert_eq!(
+        fixture.0.requests.get(),
+        before,
+        "consumer prevention skips the binding's action"
+    );
+    h.dom
+        .in_runtime(|| fixture.0.first.get().unwrap().set(false));
+    h.settle();
+    h.click("second");
+    assert!(
+        !handle.is_open(),
+        "old-scope cleanup preserves the current click binding"
+    );
+    h.dom
+        .in_runtime(|| fixture.0.second.get().unwrap().set(false));
+    h.settle();
+    assert!(context.trigger.borrow().is_none());
+    assert!(
+        !h.html().contains("id=\"second\""),
+        "the removed control leaves the rendered tree"
+    );
+    h.dom
+        .in_runtime(|| fixture.0.second.get().unwrap().set(true));
+    h.settle();
+    let replacement = *h.listeners.get("mounted").unwrap().last().unwrap();
+    assert!(
+        context.trigger.borrow().is_none(),
+        "rendering metadata does not enroll a mounted focus/click owner"
+    );
+    assert!(
+        item_tag(&h.html(), "second").contains(&format!(
+            "data-ix-overlay-trigger=\"{}\"",
+            context.node_id()
+        )),
+        "the explicit binding renders current ancestry metadata before mounting"
+    );
+    let before = fixture.0.requests.get();
+    dispatch(&h.dom, "click", replacement, ());
+    h.settle();
+    assert!(
+        !handle.is_open(),
+        "a descriptive ID without its current mounted binding cannot activate"
+    );
+    assert_eq!(fixture.0.requests.get(), before);
+    dispatch(&h.dom, "mounted", replacement, ());
+    dispatch(&h.dom, "click", replacement, ());
+    h.settle();
+    assert!(
+        handle.is_open(),
+        "a remounted keyed scope gets its own current click handler"
+    );
+    assert_eq!(fixture.0.requests.get(), before + 1);
+    assert!(
+        context.trigger.borrow().is_some(),
+        "the remounted control owns the current handler"
+    );
+    assert!(item_tag(&h.html(), "second").contains(&format!(
+        "data-ix-overlay-trigger=\"{}\"",
+        context.node_id()
+    )));
+}
+
 #[test]
 fn registered_custom_trigger_paired_key_handler_opens_navigates_and_dismisses() {
     let _guard = crate::test_event_converter_guard();
@@ -2461,51 +2600,31 @@ fn custom_trigger_scope_cleanup_preserves_newer_registration_and_releases_remove
         runtime.mounted_focus_target("second").is_some(),
         "the custom trigger hook also registers outside-Tab focus"
     );
-    let previous_binding = {
-        let state = context.state.borrow();
-        (state.declaration.version, state.declaration.dispose_version)
-    };
+    let previous_node = context.trigger.borrow().as_ref().unwrap().node.clone();
     let previous_second = second;
     let second = mount_trigger_mock(&mut h, "second");
-    let replacement_binding = {
-        let state = context.state.borrow();
-        (state.declaration.version, state.declaration.dispose_version)
-    };
+    let current_node = context.trigger.borrow().as_ref().unwrap().node.clone();
     assert!(
-        replacement_binding.0 > previous_binding.0,
-        "a new mounted handle for the same declared ID must refresh native resolution"
+        !Rc::ptr_eq(&previous_node, &current_node),
+        "replacement admits the new mounted handle"
     );
-    assert!(
-        replacement_binding.1 > previous_binding.1,
-        "the replacement releases the old native event binding"
-    );
+    drop(previous_node);
     assert!(previous_second.calls.borrow().is_empty());
     let current = context.trigger.borrow().clone().unwrap();
     context.mount_trigger(current.node.clone(), current.blocked.clone());
     drop(current);
     h.settle();
-    assert_eq!(
-        {
-            let state = context.state.borrow();
-            (state.declaration.version, state.declaration.dispose_version)
-        },
-        replacement_binding,
-        "registering the same handle and rerendering must not cause an event rebind loop"
-    );
-    assert!(h.html().contains(&format!(
-        r#"data-ix-overlay-trigger-version="{}""#,
-        replacement_binding.0
-    )));
+    assert!(Rc::ptr_eq(
+        &context.trigger.borrow().as_ref().unwrap().node,
+        &current_node
+    ));
+    drop(current_node);
     h.dom
         .in_runtime(|| fixture.0.first.get().unwrap().set(false));
     h.settle();
-    assert_eq!(
-        {
-            let state = context.state.borrow();
-            (state.declaration.version, state.declaration.dispose_version)
-        },
-        replacement_binding,
-        "cleanup from the older trigger scope cannot dispose the newer binding"
+    assert!(
+        context.trigger.borrow().is_some(),
+        "old-scope cleanup preserves the current mount"
     );
     h.dom.in_runtime(|| {
         assert!(context.request(true, Reason::Trigger, false));
@@ -2530,14 +2649,6 @@ fn custom_trigger_scope_cleanup_preserves_newer_registration_and_releases_remove
         runtime.mounted_focus_target("second").is_none(),
         "removing the trigger component releases its Tab destination"
     );
-    assert_eq!(
-        context.state.borrow().declaration.version,
-        replacement_binding.0
-    );
-    assert!(
-        context.state.borrow().declaration.dispose_version > replacement_binding.1,
-        "removal of the current scope disposes the native listener without a new missing-ID lookup"
-    );
     assert!(
         target.upgrade().is_none(),
         "removed custom scope releases its current handle"
@@ -2549,9 +2660,9 @@ fn custom_trigger_scope_cleanup_preserves_newer_registration_and_releases_remove
         assert!(context.request(false, Reason::Trigger, true));
     });
     assert_eq!(
-        runtime.pending_completions(),
-        2,
-        "an ID-only trigger queues changed notifications but no trigger focus effect"
+        runtime.pending_item_focus_count(),
+        0,
+        "an unmounted descriptive ID cannot enroll focus"
     );
     h.settle();
     assert_eq!(second.calls.borrow().len(), 1);

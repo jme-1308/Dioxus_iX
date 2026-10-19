@@ -8,9 +8,9 @@ fn CustomAnchor(dropdown: DropdownHandle) -> Element {
     let mut visible = use_signal(|| false);
     rsx! { button {
         id:"r0219-custom-trigger",r#type:"button",class:"ix-button ix-button-secondary",
-        onmounted:binding.onmounted,onkeydown:binding.onkeydown,"data-visible":visible().to_string(),onvisible:move |event:VisibleEvent|{if let Ok(value)=event.is_intersecting(){visible.set(value);}binding.onvisible.call(event);},
+        onmounted:binding.onmounted,onkeydown:binding.onkeydown,onclick:binding.onclick,"data-visible":visible().to_string(),onvisible:move |event:VisibleEvent|{if let Ok(value)=event.is_intersecting(){visible.set(value);}binding.onvisible.call(event);},
         "aria-haspopup":"menu","aria-expanded":dropdown.is_open().to_string(),
-        "Custom Dioxus anchor"
+        ..binding.attributes(), "Custom Dioxus anchor"
     } }
 }
 

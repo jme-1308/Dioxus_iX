@@ -37,19 +37,9 @@ fn report(
     serde_json::json!({"owner":runtime.owner_id(),"sequence":sequence,
         "document":document,"kind":"observe","nodes":nodes})
 }
-fn observed(
-    id: &str,
-    generation: u64,
-    live: &[&str],
-    emissions: &[(u64, &[&str])],
-) -> serde_json::Value {
-    let emissions = emissions
-        .iter()
-        .map(|(sequence, ancestors)| serde_json::json!({"sequence":sequence,"ancestors":ancestors}))
-        .collect::<Vec<_>>();
+fn observed(id: &str, generation: u64, ancestors: &[&str]) -> serde_json::Value {
     serde_json::json!({"id":id,"generation":generation,"connected":true,
-        "discovery_ready":true,"trigger_ancestors":live,"assignment_ancestors":live,
-        "assignment_emissions":emissions})
+        "discovery_ready":true,"trigger_ancestors":ancestors,"assignment_ancestors":ancestors})
 }
 
 struct Registered {
@@ -93,52 +83,37 @@ fn register(runtime: &RuntimeHandle, id: &str, generation: u64) -> Registered {
 }
 
 #[test]
-fn assignment_input_rebind_preserves_old_cache_until_new_parent_reopens() {
+fn current_ancestry_binds_nested_lifetimes_without_requesting_visibility() {
     let runtime = RuntimeHandle::new();
-    let a = register(&runtime, "a", 1);
-    let b = register(&runtime, "b", 1);
-    let _c = register(&runtime, "c", 1);
+    let root = register(&runtime, "root", 1);
     let child = register(&runtime, "child", 1);
-    let mut nodes = vec![
-        observed("a", 1, &[], &[]),
-        observed("b", 1, &[], &[]),
-        observed("c", 1, &[], &[]),
-        observed("child", 1, &["a"], &[(1, &["a"])]),
-    ];
-    input(&runtime, report(&runtime, 1, "", &nodes));
+    let facts = [observed("root", 1, &[]), observed("child", 1, &["root"])];
+    input(&runtime, report(&runtime, 1, "", &facts));
+    assert_eq!(
+        runtime.0.borrow().registry.assigned_children("root"),
+        ["child"]
+    );
     assert_eq!(
         child.before.get(),
         0,
-        "observation is not a visibility request"
+        "read-only ancestry does not open a child"
     );
-    assert!(a.node.request(true, Reason::Trigger, false));
-    assert!(b.node.request(true, Reason::Trigger, false));
+    assert!(root.node.request(true, Reason::Trigger, false));
     assert!(child.node.request(true, Reason::Trigger, false));
-    assert_eq!(runtime.0.borrow().registry.cached_children("a"), ["child"]);
-    assert!(runtime.0.borrow().registry.cached_children("b").is_empty());
-
-    nodes[3] = observed("child", 1, &["b"], &[(2, &["b"])]);
-    let mut foreign = report(&runtime, 2, "", &nodes);
-    foreign["owner"] = serde_json::json!("unrelated-transport-owner");
+    input(&runtime, report(&runtime, 2, "", &facts));
+    assert_eq!(
+        child.before.get(),
+        1,
+        "an unchanged observation is not another user action"
+    );
+    let mut foreign = report(
+        &runtime,
+        3,
+        "",
+        &[observed("root", 1, &[]), observed("child", 1, &[])],
+    );
+    foreign["owner"] = "foreign-owner".into();
     input(&runtime, foreign);
-    assert!(
-        runtime
-            .0
-            .borrow()
-            .registry
-            .assigned_children("b")
-            .is_empty()
-    );
-    input(&runtime, report(&runtime, 2, "", &nodes));
-    assert_eq!(
-        runtime.0.borrow().registry.assigned_children("a"),
-        ["child"]
-    );
-    assert_eq!(
-        runtime.0.borrow().registry.assigned_children("b"),
-        ["child"]
-    );
-    assert!(runtime.0.borrow().registry.cached_children("b").is_empty());
     assert_eq!(
         runtime
             .0
@@ -146,168 +121,94 @@ fn assignment_input_rebind_preserves_old_cache_until_new_parent_reopens() {
             .registry
             .cached_parent("child")
             .as_deref(),
-        Some("a")
+        Some("root")
     );
-
-    nodes[3] = observed("child", 1, &["c"], &[(2, &["c"])]);
-    input(&runtime, report(&runtime, 3, "", &nodes));
-    assert!(
-        runtime
-            .0
-            .borrow()
-            .registry
-            .assigned_children("c")
-            .is_empty()
-    );
-    assert_eq!(
-        child.before.get(),
-        1,
-        "replayed discovery never calls before"
-    );
-    assert!(b.node.request(false, Reason::Trigger, false));
-    assert!(child.open.get(), "already-open B had no captured child");
-    assert!(b.node.request(true, Reason::Trigger, false));
-    assert_eq!(runtime.0.borrow().registry.cached_children("b"), ["child"]);
-    assert!(b.node.request(false, Reason::Trigger, false));
-    assert!(
-        !child.open.get(),
-        "B's next accepted presentation captures it"
-    );
-    assert!(child.node.request(true, Reason::Trigger, false));
-    assert!(a.node.request(false, Reason::Trigger, false));
-    assert!(
-        !child.open.get(),
-        "old A's captured assignment was retained"
-    );
-    assert_eq!(*child.applied.borrow(), [true, false, true, false]);
+    assert!(root.node.request(false, Reason::Trigger, false));
+    assert!(!child.open.get());
+    assert_eq!(*child.applied.borrow(), [true, false]);
 }
 
 #[test]
-fn assignment_input_retries_ordered_captured_paths_and_rejects_retired_generation() {
+fn current_ancestry_rejects_retired_generation_and_rebinds_the_live_registration() {
     let runtime = RuntimeHandle::new();
-    let _b = register(&runtime, "b", 1);
-    let _c = register(&runtime, "c", 1);
+    let root = register(&runtime, "root", 1);
     let old = register(&runtime, "child", 1);
-    let mut nodes = vec![
-        observed("b", 1, &[], &[]),
-        observed("c", 1, &[], &[]),
-        observed("child", 1, &["b"], &[(1, &["late"]), (2, &["b"])]),
-    ];
-    input(&runtime, report(&runtime, 1, "", &nodes));
-    assert!(
-        runtime
-            .0
-            .borrow()
-            .registry
-            .assigned_children("b")
-            .is_empty()
-    );
-    nodes[2] = observed("child", 1, &["c"], &[(1, &["c"]), (2, &["c"])]);
-    input(&runtime, report(&runtime, 2, "", &nodes));
-    let late = register(&runtime, "late", 1);
-    nodes.push(observed("late", 1, &[], &[]));
-    nodes[2] = observed("child", 1, &["c"], &[]);
-    input(&runtime, report(&runtime, 3, "", &nodes));
-    assert_eq!(
-        runtime.0.borrow().registry.assigned_children("late"),
-        ["child"]
+    input(
+        &runtime,
+        report(
+            &runtime,
+            1,
+            "",
+            &[observed("root", 1, &[]), observed("child", 1, &["root"])],
+        ),
     );
     assert_eq!(
-        runtime.0.borrow().registry.assigned_children("b"),
+        runtime.0.borrow().registry.assigned_children("root"),
         ["child"]
     );
-    assert!(
-        runtime
-            .0
-            .borrow()
-            .registry
-            .assigned_children("c")
-            .is_empty()
-    );
-    assert!(late.node.request(true, Reason::Trigger, false));
-    assert_eq!(
-        runtime.0.borrow().registry.cached_children("late"),
-        ["child"]
-    );
-
     let current = register(&runtime, "child", 2);
-    nodes[2] = observed("child", 1, &["b"], &[(99, &["b"])]);
-    input(&runtime, report(&runtime, 4, "", &nodes));
-    assert!(
-        runtime
-            .0
-            .borrow()
-            .registry
-            .assigned_children("b")
-            .is_empty()
+    input(
+        &runtime,
+        report(
+            &runtime,
+            2,
+            "",
+            &[observed("root", 1, &[]), observed("child", 1, &["root"])],
+        ),
     );
     assert!(
         runtime
             .0
             .borrow()
             .registry
-            .cached_children("late")
+            .assigned_children("root")
             .is_empty()
     );
     assert!(!old.node.request(true, Reason::Trigger, false));
-    nodes[2] = observed("child", 2, &["c"], &[(1, &["c"])]);
-    input(&runtime, report(&runtime, 5, "", &nodes));
+    input(
+        &runtime,
+        report(
+            &runtime,
+            3,
+            "",
+            &[observed("root", 1, &[]), observed("child", 2, &["root"])],
+        ),
+    );
     assert_eq!(
-        runtime.0.borrow().registry.assigned_children("c"),
+        runtime.0.borrow().registry.assigned_children("root"),
         ["child"]
     );
+    assert!(root.node.request(true, Reason::Trigger, false));
     assert!(current.node.request(true, Reason::Trigger, false));
-    assert_eq!(current.before.get(), 1);
+    assert!(root.node.request(false, Reason::Trigger, false));
+    assert!(!current.open.get());
     assert_eq!(old.before.get(), 0);
+    assert_eq!(*current.applied.borrow(), [true, false]);
 }
 
 #[test]
-fn assignment_input_foreign_owner_parent_readiness_releases_domain_pending_events() {
+fn current_ancestry_coordinates_foreign_owner_children_in_the_same_document() {
     let parents = RuntimeHandle::new();
     let children = RuntimeHandle::new();
-    let document = format!("assignment-domain-{}", parents.owner_id());
-    let b = register(&parents, "b", 1);
+    let document = format!("current-ancestry-domain-{}", parents.owner_id());
+    let root = register(&parents, "root", 1);
     let child = register(&children, "child", 1);
     input(
         &parents,
-        report(&parents, 1, &document, &[observed("b", 1, &[], &[])]),
+        report(&parents, 1, &document, &[observed("root", 1, &[])]),
     );
     input(
         &children,
-        report(
-            &children,
-            1,
-            &document,
-            &[observed("child", 1, &["b"], &[(1, &["late"]), (2, &["b"])])],
-        ),
+        report(&children, 1, &document, &[observed("child", 1, &["root"])]),
     );
     let domain = parents.domain().unwrap();
-    assert!(b.node.request(true, Reason::Trigger, false));
-    assert!(domain.cached_children("b").is_empty());
-
-    let late = register(&parents, "late", 1);
-    // A foreign owner's new readiness report releases the child's stored
-    // emissions without fabricating another child observation or binding.
-    input(
-        &parents,
-        report(
-            &parents,
-            2,
-            &document,
-            &[observed("b", 1, &[], &[]), observed("late", 1, &[], &[])],
-        ),
-    );
-    assert!(late.node.request(true, Reason::Trigger, false));
-    assert_eq!(domain.cached_children("late"), ["child"]);
-    assert!(domain.cached_children("b").is_empty());
-    assert!(b.node.request(false, Reason::Trigger, false));
-    assert!(b.node.request(true, Reason::Trigger, false));
-    assert_eq!(domain.cached_children("b"), ["child"]);
+    assert!(root.node.request(true, Reason::Trigger, false));
+    assert_eq!(domain.cached_children("root"), ["child"]);
     assert!(child.node.request(true, Reason::Trigger, false));
-    assert!(late.node.request(false, Reason::Trigger, false));
+    assert!(root.node.request(false, Reason::Trigger, false));
     assert!(
         !child.open.get(),
-        "domain cascade dispatches to the child's owner"
+        "parent close dispatches to the registered child's owner"
     );
     assert_eq!(*child.applied.borrow(), [true, false]);
     assert!(
@@ -315,15 +216,14 @@ fn assignment_input_foreign_owner_parent_readiness_releases_domain_pending_event
             .0
             .borrow()
             .registry
-            .assigned_children("b")
-            .is_empty()
+            .assigned_children("root")
+            .is_empty(),
+        "foreign ownership stays in the shared Domain"
     );
+    child.node.unregister();
+    assert!(root.node.request(true, Reason::Trigger, false));
     assert!(
-        parents
-            .0
-            .borrow()
-            .registry
-            .assigned_children("late")
-            .is_empty()
+        domain.cached_children("root").is_empty(),
+        "unmounted children leave the next current snapshot"
     );
 }

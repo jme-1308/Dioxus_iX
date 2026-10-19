@@ -2285,8 +2285,8 @@ fn linked_roving_trigger_owns_tab_before_enclosing_active_descendant_host() {
 type OthersJournal = Rc<RefCell<Vec<(String, &'static str, Change)>>>;
 
 #[test]
-fn native_trigger_default_fact_blocks_only_current_nearest_trigger_and_preserves_capture_guards() {
-    let child = Fixture::new("native-prevented-child", 763);
+fn shared_capture_protects_nearest_trigger_and_rejects_foreign_or_stale_guards() {
+    let child = Fixture::new("native-capture-child", 763);
     let (dom, fixture) = build_header_exit_fixture(&child);
     let runtime = child.runtime();
     let root = dom.in_scope(child.scope(), || {
@@ -2299,98 +2299,99 @@ fn native_trigger_default_fact_blocks_only_current_nearest_trigger_and_preserves
             callbacks,
         )
     });
-    let document = "native original trigger prevention document";
+    let document = "shared trigger capture document";
     attach(&dom, &child, document);
     let nodes = serde_json::json!([
         {"id":root.id(),"generation":1,"connected":true,"discovery_ready":true},
         {"id":child.node().id(),"generation":1,"connected":true,"discovery_ready":true,
-         "trigger_ancestors":[root.id()],"on_trigger":true}
+            "trigger_ancestors":[root.id()]}
     ]);
-    let report = |sequence, phase, prevented| {
+    let capture = |sequence, triggers: serde_json::Value| {
         serde_json::json!({
-            "owner":runtime.owner_id(),"document":document,"sequence":sequence,
-            "kind":"click","phase":phase,"default_prevented":prevented,
-            "hosts":[root.id()],"triggers":[child.node().id(),root.id()],"nodes":nodes
+            "owner":runtime.owner_id(),"document":document,"sequence":sequence,"kind":"click","phase":"capture",
+            "hosts":[root.id()],"triggers":triggers,"nodes":nodes
         })
     };
-    assert!(deliver_trap(&dom, &child, report(1, "capture", false)).default_action_enabled());
+    deliver_trap(
+        &dom,
+        &child,
+        capture(1, serde_json::json!([child.node().id(), root.id()])),
+    );
     assert!(child.node().trigger_click_allowed());
     assert!(
         !root.trigger_click_allowed(),
-        "capture protects the enclosing foreign trigger"
+        "capture guards only the enclosing trigger's Dioxus toggle"
     );
-    assert!(deliver_trap(&dom, &child, report(2, "trigger", false)).default_action_enabled());
-    assert!(child.node().trigger_click_allowed());
-    assert!(
-        !root.trigger_click_allowed(),
-        "an unprevented target fact must retain capture's ancestor guard"
-    );
-
-    let mut foreign = report(3, "trigger", true);
+    let mut foreign = capture(2, serde_json::json!([child.node().id()]));
     foreign["owner"] = "wrong-runtime-owner".into();
     deliver_trap(&dom, &child, foreign);
-    let mut arbitrary = report(4, "trigger", true);
-    arbitrary["triggers"] = serde_json::json!(["not-a-registered-trigger"]);
-    deliver_trap(&dom, &child, arbitrary);
-    let mut stale = report(5, "trigger", true);
+    assert!(child.node().trigger_click_allowed());
+    assert!(
+        !root.trigger_click_allowed(),
+        "foreign facts cannot clear current capture guards"
+    );
+    let mut stale = capture(3, serde_json::json!(["foreign", child.node().id()]));
     stale["nodes"][1]["generation"] = 2.into();
-    stale["triggers"] = serde_json::json!([child.node().id()]);
     deliver_trap(&dom, &child, stale);
-    let mut disconnected = report(6, "trigger", true);
+    assert!(
+        child.node().trigger_click_allowed(),
+        "a stale generation cannot add a child guard"
+    );
+    let mut disconnected = capture(4, serde_json::json!(["foreign", child.node().id()]));
     disconnected["nodes"][1]["connected"] = false.into();
-    disconnected["triggers"] = serde_json::json!([child.node().id()]);
     deliver_trap(&dom, &child, disconnected);
     assert!(
         child.node().trigger_click_allowed(),
-        "foreign owner, unknown trigger, stale and disconnected facts do not block the child"
+        "a disconnected trigger cannot add a child guard"
     );
-    assert!(!root.trigger_click_allowed());
-    assert!(deliver_trap(&dom, &child, report(7, "trigger", true)).default_action_enabled());
-    assert!(!child.node().trigger_click_allowed());
-    assert!(!root.trigger_click_allowed());
-    assert!(!child.open() && !fixture.header_open.get());
-    assert!(
-        fixture.order.borrow().is_empty() && child.0.borrow().calls.is_empty(),
-        "raw native prevention changes only the Rust toggle guard, never own or others visibility"
+    deliver_trap(
+        &dom,
+        &child,
+        capture(5, serde_json::json!(["not-registered"])),
     );
-
-    let mut next = report(8, "capture", false);
-    next["triggers"] = serde_json::json!([child.node().id()]);
-    deliver_trap(&dom, &child, next);
-    assert!(
-        child.node().trigger_click_allowed() && root.trigger_click_allowed(),
-        "a new original capture clears prior target and ancestor guards"
+    assert!(child.node().trigger_click_allowed() && root.trigger_click_allowed());
+    deliver_trap(
+        &dom,
+        &child,
+        capture(6, serde_json::json!([root.id(), child.node().id()])),
     );
-    deliver_trap(&dom, &child, report(9, "trigger", true));
     let old = child.node();
-    assert!(!old.trigger_click_allowed());
+    assert!(
+        !old.trigger_click_allowed(),
+        "a current composed ancestor is guarded"
+    );
     dom.in_scope(child.scope(), || {
         let callbacks = runtime.entry(old.id()).unwrap().callbacks;
-        let replacement = runtime.register(
+        child.0.borrow_mut().node = Some(runtime.register(
             old.id().into(),
             2,
             OverlayKind::Dropdown,
             CloseBehavior::Both,
             callbacks,
-        );
-        child.0.borrow_mut().node = Some(replacement);
+        ));
     });
     assert!(
         child.node().trigger_click_allowed(),
-        "a generation-one guard cannot block its replacement"
+        "an old-generation guard cannot block the replacement"
     );
-    let mut stale = report(10, "trigger", true);
-    stale["triggers"] = serde_json::json!([old.id()]);
-    deliver_trap(&dom, &child, stale);
+    deliver_trap(
+        &dom,
+        &child,
+        capture(7, serde_json::json!([root.id(), old.id()])),
+    );
     assert!(
         child.node().trigger_click_allowed(),
-        "old native generation cannot add a replacement guard"
+        "late old-generation capture cannot guard the replacement"
     );
     assert!(
         !old.trigger_click_allowed(),
-        "old NodeHandle remains rejected"
+        "the retired NodeHandle remains rejected"
     );
-    assert!(fixture.order.borrow().is_empty() && child.0.borrow().calls.is_empty());
+    assert!(!child.open() && !fixture.header_open.get());
+    assert!(
+        fixture.order.borrow().is_empty() && child.0.borrow().calls.is_empty(),
+        "shared capture supplies guards without running a trigger action or changing visibility"
+    );
 }
 
 #[test]

@@ -411,45 +411,6 @@ struct FocusRequest {
     last: bool,
     allow_checked: bool,
 }
-/// Source watcher decisions are Rust state. The native bridge only resolves
-/// each committed declaration and holds the actual objects it receives.
-#[derive(Default)]
-struct TriggerDeclaration {
-    value: Option<String>,
-    version: u64,
-    dispose_version: u64,
-}
-impl TriggerDeclaration {
-    fn update(&mut self, value: &Option<String>) {
-        if self.value == *value {
-            return;
-        }
-        self.version = self.version.wrapping_add(1).max(1);
-        if value.as_ref().is_some_and(|value| !value.is_empty()) {
-            self.dispose_version = self.dispose_version.wrapping_add(1).max(1);
-        }
-        self.value = value.clone();
-    }
-    fn refresh_mounted(&mut self) -> bool {
-        if !self.value.as_ref().is_some_and(|value| !value.is_empty()) {
-            return false;
-        }
-        // The ID may be unchanged while a keyed Dioxus control was replaced.
-        // Refresh both resolution and listener ownership for that new mount.
-        self.version = self.version.wrapping_add(1).max(1);
-        self.dispose_version = self.dispose_version.wrapping_add(1).max(1);
-        true
-    }
-    fn dispose_mounted(&mut self) -> bool {
-        if !self.value.as_ref().is_some_and(|value| !value.is_empty()) {
-            return false;
-        }
-        // Removal releases listeners without resolving the now-missing ID.
-        // A later explicit mount publishes its own fresh resolution version.
-        self.dispose_version = self.dispose_version.wrapping_add(1).max(1);
-        true
-    }
-}
 struct MenuState {
     alive: bool,
     surface: bool,
@@ -467,7 +428,7 @@ struct MenuState {
     placement: DropdownPlacement,
     fallback_placement: Option<DropdownPlacement>,
     anchor_in_dropdown_item: bool,
-    declaration: TriggerDeclaration,
+    trigger_id: Option<String>,
 }
 #[derive(Clone)]
 struct TriggerMount {
@@ -640,10 +601,7 @@ impl DropdownContext {
             visibility,
         });
         if changed {
-            let refresh = self.state.borrow_mut().declaration.refresh_mounted();
-            if refresh {
-                self.notify();
-            }
+            self.notify();
         }
     }
     fn unmount_trigger(&self, node: &Rc<MountedData>) {
@@ -655,10 +613,7 @@ impl DropdownContext {
         if owns {
             self.trigger.borrow_mut().take();
             self.invalidate_focus();
-            let dispose = self.state.borrow_mut().declaration.dispose_mounted();
-            if dispose {
-                self.notify();
-            }
+            self.notify();
         }
     }
     fn observe_trigger_visibility(&self, node: &Rc<MountedData>, visibility: TriggerVisibility) {
@@ -1551,7 +1506,7 @@ pub fn use_dropdown() -> DropdownHandle {
                 placement: DropdownPlacement::default(),
                 fallback_placement: None,
                 anchor_in_dropdown_item: false,
-                declaration: TriggerDeclaration::default(),
+                trigger_id: None,
             }))
         }),
         entries: use_hook(|| Rc::new(RefCell::new(BTreeMap::new()))),
@@ -1661,24 +1616,53 @@ impl PartialEq for DropdownContext {
     }
 }
 
-/// Mounted-element, visibility and keyboard handlers for a custom Dropdown trigger.
+/// Dioxus handlers and attributes for a custom Dropdown trigger.
 ///
-/// Attach all three handlers to the same stable Dioxus element. The framework owns
+/// Attach all four handlers and spread [`Self::attributes`] on the same stable
+/// Dioxus element. The framework owns
 /// its visibility observer and releases it when that element is removed.
 #[derive(Clone, Copy)]
 pub struct DropdownTriggerBinding {
     pub onmounted: EventHandler<MountedEvent>,
     pub onvisible: EventHandler<VisibleEvent>,
     pub onkeydown: EventHandler<KeyboardEvent>,
+    pub onclick: EventHandler<MouseEvent>,
+    identity: Option<usize>,
+}
+impl DropdownTriggerBinding {
+    /// Spread on the bound trigger after its other attributes. Dioxus owns the
+    /// overlay relationship and CSS anchor property throughout this element's
+    /// lifetime. The style namespace preserves the control's other CSS styles.
+    pub fn attributes(self) -> Vec<Attribute> {
+        self.identity.map_or_else(Vec::new, |id| {
+            vec![
+                Attribute::new(
+                    "data-ix-overlay-trigger",
+                    format!("ix-dropdown-node-{id}"),
+                    None,
+                    false,
+                ),
+                Attribute::new(
+                    "anchor-name",
+                    format!("--ix-dropdown-anchor-{id}"),
+                    Some("style"),
+                    false,
+                ),
+            ]
+        })
+    }
 }
 
 /// Register a custom Dioxus trigger for focus restoration, automatic placement
 /// and dismissal when its anchor leaves the viewport.
 ///
-/// Attach `onmounted`, `onvisible` and `onkeydown` to the element referenced by
+/// Attach `onmounted`, `onvisible`, `onkeydown` and `onclick`, and spread
+/// `..binding.attributes()` on the element referenced by
 /// `Dropdown.trigger`. Use a new component key when replacing that control or
-/// its controller. ID-only controls do not support programmatic trigger focus
-/// anchor visibility or keyboard navigation; no JavaScript fallback is used.
+/// its controller. Use one live bound trigger per controller. An ID alone does
+/// not bind a control: activation, anchor styling,
+/// visibility, keyboard and programmatic focus require the Dioxus binding. No
+/// JavaScript fallback is used.
 pub fn use_dropdown_trigger_binding(dropdown: DropdownHandle) -> DropdownTriggerBinding {
     use_trigger_binding(dropdown.try_context(), false, None, false)
 }
@@ -1686,12 +1670,11 @@ pub fn use_dropdown_trigger_binding(dropdown: DropdownHandle) -> DropdownTrigger
 /// Register a custom Dioxus trigger for Dropdown focus restoration only.
 ///
 /// Attach this handler to the stable element referenced by `Dropdown.trigger`.
-/// Its ID still supplies legacy click assignment; this hook supplies the mounted
-/// focus handle and releases it with the calling component's scope. Use a new
-/// component key when replacing the trigger or its controller. ID-only triggers
-/// remain usable for discovery but do not receive programmatic trigger focus.
-/// This mount-only hook does not observe anchor visibility or clipping; use
-/// [`use_dropdown_trigger_binding`] for focus, visibility and keyboard support.
+/// This hook supplies the mounted focus handle and releases it with the calling
+/// component's scope. Use a new
+/// component key when replacing the trigger or its controller. This mount-only
+/// hook does not supply click/keyboard events, anchor metadata or visibility; use
+/// [`use_dropdown_trigger_binding`] for a complete custom trigger.
 pub fn use_dropdown_trigger_mount(dropdown: DropdownHandle) -> EventHandler<MountedEvent> {
     use_trigger_binding(dropdown.try_context(), false, None, false).onmounted
 }
@@ -1701,6 +1684,7 @@ fn use_trigger_binding(
     focus_id: Option<String>,
     in_dropdown_item: bool,
 ) -> DropdownTriggerBinding {
+    let identity = context.as_ref().map(|context| context.id);
     let focus_binding = use_item_host("native-opt-in");
     let blocked = use_hook(|| Rc::new(Cell::new(disabled)));
     blocked.set(disabled);
@@ -1729,6 +1713,7 @@ fn use_trigger_binding(
     });
     let visible_owner = owned.clone();
     let key_owner = owned.clone();
+    let click_owner = owned.clone();
     let onmounted = use_callback(move |event: MountedEvent| {
         let node = event.data();
         if let Some((previous, mounted)) = owned.borrow_mut().take() {
@@ -1743,8 +1728,7 @@ fn use_trigger_binding(
                 context
                     .state
                     .borrow()
-                    .declaration
-                    .value
+                    .trigger_id
                     .clone()
                     .unwrap_or_else(|| context.trigger_id())
             });
@@ -1805,10 +1789,33 @@ fn use_trigger_binding(
             direct_key(&context, event, true, None, false);
         }
     });
+    let onclick = use_callback(move |event: MouseEvent| {
+        if !event.default_action_enabled() {
+            return;
+        }
+        let Some((context, node)) = click_owner.borrow().clone() else {
+            return;
+        };
+        let current = context
+            .trigger
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(&current.node, &node) && !current.blocked.get());
+        if !current || context.state.borrow().blocked || !context.trigger_click_allowed() {
+            return;
+        }
+        let previous = *context.open.peek();
+        context.request_from_trigger(!previous, Reason::Trigger, context.keyboard_mode());
+        // Keep the original event available to shared outside coordination,
+        // while preventing a composed ancestor trigger from toggling too.
+        event.prevent_default();
+    });
     DropdownTriggerBinding {
         onmounted,
         onvisible,
         onkeydown,
+        onclick,
+        identity,
     }
 }
 
@@ -1833,7 +1840,6 @@ pub fn DropdownTrigger(
         Some(context.trigger_id()),
         false,
     );
-    let click = context.clone();
     let id = context.node_id();
     let trigger_id = context.trigger_id();
     let host_id = context.host_id();
@@ -1844,7 +1850,7 @@ pub fn DropdownTrigger(
         "aria-haspopup":"menu","aria-expanded":dropdown.is_open().to_string(),"aria-controls":host_id,"aria-activedescendant":active_id,
         "data-ix-overlay-trigger":id,style:"anchor-name:--ix-dropdown-anchor-{context.id}",
         onmounted:binding.onmounted,onvisible:binding.onvisible,
-        onclick:move |event:MouseEvent| {if !blocked&&!click.state.borrow().blocked&&event.default_action_enabled()&&click.trigger_click_allowed(){let previous=*click.open.peek();click.request_from_trigger(!previous,Reason::Trigger,click.keyboard_mode());}},
+        onclick:binding.onclick,
         onkeydown:binding.onkeydown,
         if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
         else if let Some(icon)=icon {Icon {name:icon,size:20}}
@@ -1854,16 +1860,16 @@ pub fn DropdownTrigger(
 
 /// Persistent source-default Dropdown. `controller` or `trigger` omits the
 /// built-in trigger; use DropdownTrigger, a linked DropdownItem or an existing
-/// element ID. Ordinary native click ancestry is preserved by the built-in trigger surrounding its
+/// explicitly bound Dioxus control ID. Ordinary native click ancestry is preserved by the built-in trigger surrounding its
 /// surface. Children keep their scopes and native nodes while closed.
 #[component]
 pub fn Dropdown(
     label: String,
     controller: Option<DropdownHandle>,
-    /// ID of an existing native trigger, matching the source string reference.
+    /// ID of an explicitly bound Dioxus trigger. An ID alone installs no listeners.
     /// The actual host remains the trigger; no wrapper is inserted. Custom
     /// controls attach [`use_dropdown_trigger_binding`] for mounted focus and
-    /// visibility support.
+    /// visibility and click support, and spread its returned attributes.
     trigger: Option<String>,
     #[props(default)] placement: DropdownPlacement,
     #[props(default)] disabled: bool,
@@ -1934,7 +1940,7 @@ fn DropdownSurface(
         state.external = external;
         state.blocked = blocked;
         state.placement = placement;
-        state.declaration.update(&trigger);
+        state.trigger_id = trigger.clone();
     }
     let node = use_hook({
         let context = context.clone();
@@ -1987,23 +1993,12 @@ fn DropdownSurface(
             *context.node.borrow_mut() = Some(node.clone());
             let query = context.clone();
             let reset = context.clone();
-            let trigger_click = context.clone();
             node.set_submenu_access(
                 handle,
                 Rc::new(move || Some(query.navigation_owner(false).node_id())),
                 Rc::new(move || {
                     reset.state.borrow_mut().forward = None;
                     reset.notify();
-                }),
-                Rc::new(move || {
-                    if !trigger_click.state.borrow().blocked {
-                        let previous = *trigger_click.open.peek();
-                        trigger_click.request_from_trigger(
-                            !previous,
-                            Reason::Trigger,
-                            trigger_click.keyboard_mode(),
-                        );
-                    }
                 }),
             );
             let shape_context = context.clone();
@@ -2119,9 +2114,6 @@ fn DropdownSurface(
     ));
     let state = context.state.borrow();
     let generation = state.generation;
-    let trigger_version =
-        (state.declaration.version > 0).then(|| state.declaration.version.to_string());
-    let trigger_dispose_version = state.declaration.dispose_version.to_string();
     let effective_placement = if state.anchor_in_dropdown_item {
         DropdownPlacement::RightStart
     } else if !settings.suppress_trigger_visibility_check {
@@ -2170,8 +2162,6 @@ fn DropdownSurface(
     rsx! { div {
         id:if external {format!("ix-dropdown-surface-owner-{}",context.id)}else{trigger_id},
         class:"ix-dropdown {class}",role:root_role,tabindex:(!external).then_some(if blocked {-1}else{0}),
-        "data-ix-overlay-trigger-id":trigger,"data-ix-overlay-anchor-name":format!("--ix-dropdown-anchor-{}",context.id),
-        "data-ix-overlay-trigger-version":trigger_version,"data-ix-overlay-trigger-dispose-version":trigger_dispose_version,
         "aria-label":(!external).then_some(aria_name.clone()),"aria-disabled":(!external).then_some(blocked.to_string()),"aria-busy":(!external).then_some(loading.to_string()),
         "aria-haspopup":(!external).then_some("menu"),"aria-expanded":(!external).then_some(open.to_string()),
         "aria-controls":(!external).then_some(host_id.clone()),

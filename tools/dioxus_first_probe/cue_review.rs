@@ -5,9 +5,9 @@ use dioxus_ix::*;
 #[component]
 fn CustomCueTrigger(dropdown: DropdownHandle) -> Element {
     let binding = use_dropdown_trigger_binding(dropdown);
-    rsx! { button { id:"r0213-custom-trigger", class:"ix-button ix-button-secondary", r#type:"button", onmounted:binding.onmounted,onvisible:binding.onvisible,onkeydown:binding.onkeydown,
+    rsx! { button { id:"r0213-custom-trigger", class:"ix-button ix-button-secondary", r#type:"button", onmounted:binding.onmounted,onvisible:binding.onvisible,onkeydown:binding.onkeydown,onclick:binding.onclick,
         "aria-haspopup":"menu", "aria-expanded":dropdown.is_open().to_string(), aria_activedescendant:dropdown.active_descendant(),
-        "Custom equipment actions"
+        ..binding.attributes(), "Custom equipment actions"
     } }
 }
 

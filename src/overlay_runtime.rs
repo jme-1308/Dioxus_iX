@@ -1,5 +1,6 @@
-//! Owner-scoped dispatch with document-scoped Rust overlay coordination. Native code only reports current DOM
-//! facts and executes an acknowledged default/stop/activation or focus intent.
+//! Owner-scoped dispatch with document-scoped Rust overlay coordination.
+//! Native code reports current DOM facts and applies acknowledged event defaults
+//! or propagation. Dioxus controls own activation and mounted focus.
 use crate::dropdown_inventory::{
     HostFacts, HostPartFacts, HostPartKind, InventoryFacts, ItemKind, ItemRef,
 };
@@ -224,7 +225,6 @@ struct SubmenuAccess {
     handle: crate::dropdown::DropdownHandle,
     query_root: Rc<dyn Fn() -> Option<String>>,
     reset: Rc<dyn Fn()>,
-    trigger_click: Rc<dyn Fn()>,
 }
 
 #[derive(Clone, Copy)]
@@ -2021,7 +2021,7 @@ impl RuntimeHandle {
                     connected: node.is_some(),
                     discovery_ready: node.is_some_and(|node| node.discovery_ready),
                     assignment_ancestors: node.and_then(|node| node.assignment_ancestors.clone()),
-                    assignment_emissions: node.and_then(|node| node.assignment_emissions.clone()),
+                    assignment_emissions: None,
                     trigger_ancestors: node
                         .map_or_else(Vec::new, |node| node.trigger_ancestors.clone()),
                 }
@@ -2039,38 +2039,13 @@ impl RuntimeHandle {
                         connected: node.connected,
                         discovery_ready: node.discovery_ready,
                         assignment_ancestors: node.assignment_ancestors.clone(),
-                        assignment_emissions: node.assignment_emissions.clone(),
+                        assignment_emissions: None,
                         trigger_ancestors: node.trigger_ancestors.clone(),
                     })
                     .collect::<Vec<_>>();
                 domain.observe_all(&all);
             } else {
                 domain.observe_owner(&report.owner, &facts);
-            }
-        }
-        // Both registries now own the immutable records, including ancestry
-        // awaiting a foreign owner's readiness. Native may release its copies
-        // only after this admission, never merely after sending a report.
-        for node in &report.nodes {
-            if !node.connected
-                || !self
-                    .entry(&node.id)
-                    .is_some_and(|entry| entry.generation == node.generation)
-            {
-                continue;
-            }
-            let Some(sequence) = node
-                .assignment_emissions
-                .as_ref()
-                .and_then(|records| records.iter().map(|record| record.sequence).max())
-                .filter(|sequence| *sequence > 0)
-            else {
-                continue;
-            };
-            if let Some(bridge) = self.0.borrow().bridge.as_ref() {
-                let _ = bridge.send(serde_json::json!({"assignment_ack":{
-                    "root":node.id,"generation":node.generation,"sequence":sequence
-                }}));
             }
         }
         if report.kind == "modality" {
@@ -2547,67 +2522,7 @@ impl RuntimeHandle {
     }
 
     fn click(&self, report: &Report) -> KeyDecision {
-        if report.phase == "trigger" {
-            if !report.default_prevented {
-                for node in &report.nodes {
-                    let installed = node
-                        .trigger_listener_capture
-                        .as_deref()
-                        .unwrap_or(&node.trigger_capture);
-                    if installed.is_empty()
-                        || node.configured_trigger_listener.as_deref() != Some(installed)
-                    {
-                        continue;
-                    }
-                    let access = self
-                        .entry(&node.id)
-                        .filter(|entry| {
-                            node.connected
-                                && entry.generation == node.generation
-                                && !node.root_capture.is_empty()
-                                && self
-                                    .0
-                                    .borrow()
-                                    .item_root_captures
-                                    .get(&node.id)
-                                    .is_some_and(|(generation, root, _)| {
-                                        *generation == node.generation && *root == node.root_capture
-                                    })
-                                && !self
-                                    .0
-                                    .borrow()
-                                    .capture_block
-                                    .contains(&(node.id.clone(), node.generation))
-                        })
-                        .and_then(|entry| entry.submenu);
-                    if let Some(access) = access {
-                        self.with_owner(&node.id, node.generation, || (access.trigger_click)());
-                    }
-                }
-            }
-            // Native default prevention can be established at the target,
-            // after document capture but before Dioxus's delegated callback.
-            // Preserve the existing ancestor-toggle guards; this fact alone
-            // must neither toggle the owner nor dismiss another registration.
-            if report.default_prevented
-                && let Some((id, generation)) = report.triggers.iter().find_map(|id| {
-                    let entry = self
-                        .entry(id)
-                        .filter(|entry| entry.kind == OverlayKind::Dropdown)?;
-                    report
-                        .nodes
-                        .iter()
-                        .any(|node| {
-                            node.id == *id && node.connected && node.generation == entry.generation
-                        })
-                        .then(|| (id.clone(), entry.generation))
-                })
-            {
-                let mut state = self.0.borrow_mut();
-                if !state.capture_block.contains(&(id.clone(), generation)) {
-                    state.capture_block.push((id, generation));
-                }
-            }
+        if !matches!(report.phase.as_str(), "" | "capture" | "bubble") {
             return KeyDecision::default();
         }
         if report.phase == "capture" {
@@ -2624,7 +2539,7 @@ impl RuntimeHandle {
                 let child_path = self.child_path(id, &report.hosts, &report.triggers);
                 // Block only the composed ancestor's Rust toggle. Preventing
                 // the original event here would veto the nearest child before
-                // that child's own trigger listener had a chance to run.
+                // that child's direct Dioxus click handler can run.
                 if index > 0
                     || child_path
                     || (entry.behavior == CloseBehavior::Outside
@@ -3376,9 +3291,9 @@ impl NodeHandle {
     pub(crate) fn with_owner<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
         self.runtime()?.with_owner(&self.id, self.generation, f)
     }
-    /// Native default prevention is not copied into Dioxus web MouseEvent
-    /// metadata. The component consults Rust's capture and actual-trigger facts
-    /// before toggling, after running its own consumer callback.
+    /// Shared native capture supplies composed-ancestor guards before the
+    /// current Dioxus trigger acts. The component also honors its own consumer
+    /// callback's default prevention before toggling.
     pub(crate) fn trigger_click_allowed(&self) -> bool {
         self.runtime().is_some_and(|runtime| {
             let state = runtime.0.borrow();
@@ -3618,15 +3533,11 @@ struct NodeFacts {
     #[serde(default)]
     trigger_capture: String,
     #[serde(default)]
-    trigger_listener_capture: Option<String>,
-    #[serde(default)]
     discovery_ready: bool,
     #[serde(default)]
     trigger_ancestors: Vec<String>,
     #[serde(default)]
     assignment_ancestors: Option<Vec<String>>,
-    #[serde(default)]
-    assignment_emissions: Option<Vec<crate::overlay_registry::AssignmentEmission>>,
     #[serde(default)]
     trigger_id: String,
     #[serde(default)]
@@ -3639,8 +3550,6 @@ struct NodeFacts {
     inventory: Option<InventoryFacts>,
     #[serde(default)]
     own_inventory: Option<InventoryFacts>,
-    #[serde(default)]
-    configured_trigger_listener: Option<String>,
     #[serde(default)]
     focus_count: usize,
     #[serde(default)]
