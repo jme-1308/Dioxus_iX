@@ -954,10 +954,15 @@ struct WorkflowSettings {
     vertical: bool,
 }
 
+struct WorkflowMember {
+    update: Arc<dyn Fn() + Send + Sync>,
+    order: Option<usize>,
+    sequence: usize,
+}
 struct WorkflowModel {
     settings: WorkflowSettings,
-    order: Vec<String>,
-    members: BTreeMap<String, Arc<dyn Fn() + Send + Sync>>,
+    members: BTreeMap<String, WorkflowMember>,
+    next_sequence: usize,
     selected: Option<String>,
     onstepselected: Option<EventHandler<WorkflowStepSelectedEvent>>,
     alive: bool,
@@ -966,8 +971,8 @@ impl Default for WorkflowModel {
     fn default() -> Self {
         Self {
             settings: WorkflowSettings::default(),
-            order: Vec::new(),
             members: BTreeMap::new(),
+            next_sequence: 0,
             selected: None,
             onstepselected: None,
             alive: true,
@@ -975,31 +980,25 @@ impl Default for WorkflowModel {
     }
 }
 impl WorkflowModel {
+    fn order(&self) -> Vec<String> {
+        let mut members: Vec<_> = self.members.iter().collect();
+        members.sort_by_key(|(_, member)| {
+            (
+                member.order.is_none(),
+                member.order.unwrap_or(member.sequence),
+                member.sequence,
+            )
+        });
+        members.into_iter().map(|(id, _)| id.clone()).collect()
+    }
     fn reset_selection(&mut self) {
         self.selected = usize::try_from(self.settings.selected_index)
             .ok()
-            .and_then(|index| self.order.get(index))
-            .cloned();
-    }
-    #[cfg(any(test, feature = "web", feature = "desktop"))]
-    fn set_order(&mut self, order: Vec<String>) -> bool {
-        let mut seen = BTreeSet::new();
-        let order: Vec<_> = order
-            .into_iter()
-            .filter(|id| self.members.contains_key(id) && seen.insert(id.clone()))
-            .collect();
-        if !self.alive || self.order == order {
-            return false;
-        }
-        self.order = order;
-        self.reset_selection();
-        true
+            .and_then(|index| self.order().get(index).cloned());
     }
     fn position(&self, id: &str) -> &'static str {
-        match (
-            self.order.iter().position(|entry| entry == id),
-            self.order.len(),
-        ) {
+        let order = self.order();
+        match (order.iter().position(|entry| entry == id), order.len()) {
             (Some(_), 1) => "single",
             (Some(0), _) => "first",
             (Some(index), length) if index + 1 == length => "last",
@@ -1017,20 +1016,32 @@ impl WorkflowContext {
             if !model.alive {
                 return;
             }
-            model.members.values().cloned().collect()
+            model
+                .members
+                .values()
+                .map(|member| member.update.clone())
+                .collect()
         };
         for callback in callbacks {
             callback();
         }
     }
-    fn register(&self, id: String, update: Arc<dyn Fn() + Send + Sync>) {
+    fn register(&self, id: String, order: Option<usize>, update: Arc<dyn Fn() + Send + Sync>) {
         {
             let mut model = self.0.borrow_mut();
             if !model.alive {
                 return;
             }
-            model.members.insert(id.clone(), update);
-            model.order.push(id);
+            let sequence = model.next_sequence;
+            model.next_sequence = model.next_sequence.wrapping_add(1);
+            model.members.insert(
+                id,
+                WorkflowMember {
+                    update,
+                    order,
+                    sequence,
+                },
+            );
             model.reset_selection();
         }
         self.notify();
@@ -1038,18 +1049,29 @@ impl WorkflowContext {
     fn unregister(&self, id: &str) {
         {
             let mut model = self.0.borrow_mut();
-            model.members.remove(id);
-            model.order.retain(|entry| entry != id);
+            if !model.alive || model.members.remove(id).is_none() {
+                return;
+            }
             model.reset_selection();
         }
         self.notify();
     }
-    #[cfg(any(test, feature = "web", feature = "desktop"))]
-    fn observe_order(&self, order: Vec<String>) {
-        let changed = self.0.borrow_mut().set_order(order);
-        if changed {
-            self.notify();
+    fn update_order(&self, id: &str, order: Option<usize>) {
+        {
+            let mut model = self.0.borrow_mut();
+            if !model.alive {
+                return;
+            }
+            let Some(member) = model.members.get_mut(id) else {
+                return;
+            };
+            if member.order == order {
+                return;
+            }
+            member.order = order;
+            model.reset_selection();
         }
+        self.notify();
     }
     fn apply(
         &self,
@@ -1081,7 +1103,8 @@ fn request_workflow_selection(
         if !model.alive || disabled || !model.settings.clickable {
             return false;
         }
-        let Some(index) = model.order.iter().position(|entry| entry == id) else {
+        let order = model.order();
+        let Some(index) = order.iter().position(|entry| entry == id) else {
             return false;
         };
         WorkflowStepSelectedEvent {
@@ -1089,7 +1112,7 @@ fn request_workflow_selection(
             previous: model
                 .selected
                 .as_ref()
-                .and_then(|selected| model.order.iter().position(|entry| entry == selected)),
+                .and_then(|selected| order.iter().position(|entry| entry == selected)),
             prevented: Default::default(),
         }
     };
@@ -1099,8 +1122,7 @@ fn request_workflow_selection(
     }
     {
         let mut model = context.0.borrow_mut();
-        if !model.alive || !model.settings.clickable || !model.order.iter().any(|entry| entry == id)
-        {
+        if !model.alive || !model.settings.clickable || !model.members.contains_key(id) {
             return false;
         }
         model.selected = Some(id.to_string());
@@ -1109,37 +1131,14 @@ fn request_workflow_selection(
     true
 }
 
-// Pinned Dioxus alpha.2 has no mounted tree/document-order API (html events/
-// mounted.rs). Core VComponent internals are private; keyed children can move
-// without rerendering or remounting (core diff/{component,iterator}.rs), so
-// registration/effect order cannot recover wrapped or reordered steps. Keep
-// this narrow topology observer; Rust owns selection, veto and activation.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const WORKFLOW_ORDER_BRIDGE: &str = r#"
-const rootId = await dioxus.recv();
-const root = document.getElementById(rootId);
-if (!root) return;
-let previous = '';
-const report = () => {
-  const order = Array.from(root.querySelectorAll('[data-workflow-mount]'))
-    .filter(node => node.closest('[data-workflow-root]') === root)
-    .map(node => node.dataset.workflowMount);
-  const serialized = JSON.stringify(order);
-  if (serialized !== previous) { previous = serialized; dioxus.send(order); }
-};
-const observer = new MutationObserver(report);
-observer.observe(root, {childList:true,subtree:true});
-report();
-try { await dioxus.recv(); } finally { observer.disconnect(); }
-"#;
-
 /// Ordered workflow with parent-authoritative settings and cancelable navigation.
 /// Accepted activation selects a step locally without changing `selected_index`;
 /// a later render of this component or topology change reapplies that prop.
 /// Negative and out-of-range indices select nothing; Rust indices exclude the
 /// JavaScript fractional/NaN domain. Descendants may be wrapped in components.
-/// Native DOM observation supplies current order; SSR uses registration order
-/// after pending descendant renders settle. Nested workflows form independent
+/// Dynamic/reordered lists supply the `WorkflowStep` `order` prop;
+/// omitted orders preserve stable registration order for static compositions.
+/// Nested workflows form independent
 /// ownership boundaries, so an outer workflow does not own inner steps.
 #[component]
 pub fn WorkflowSteps(
@@ -1163,39 +1162,18 @@ pub fn WorkflowSteps(
         },
         onstepselected,
     );
-    let transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let drop_context = context.clone();
-    let drop_transport = transport.clone();
     use_drop(move || {
-        drop_context.0.borrow_mut().alive = false;
-        if let Some(task) = drop_transport.borrow_mut().take() {
-            let _ = task.send("finish");
-        }
+        let mut model = drop_context.0.borrow_mut();
+        model.alive = false;
+        model.members.clear();
+        model.selected = None;
     });
-    let observe_id = id.clone();
     rsx! {
         div { id, class: "ix-workflow-steps {class}", role: "group", "aria-label": label,
-            "data-workflow-root": "true", "data-vertical": vertical,
+            "data-vertical": vertical,
             onclick: move |event| event.stop_propagation(),
             onkeydown: move |event| if event.key() == Key::Enter || event.key() == Key::Character(" ".into()) { event.stop_propagation(); },
-            onmounted: move |_| {
-                #[cfg(any(feature = "web", feature = "desktop"))]
-                {
-                    let id = observe_id.clone(); let context = context.clone(); let transport = transport.clone();
-                    spawn(async move {
-                        if !context.0.borrow().alive { return; }
-                        let mut stream = dioxus::document::eval(WORKFLOW_ORDER_BRIDGE);
-                        if stream.send(id).is_err() { return; }
-                        *transport.borrow_mut() = Some(stream);
-                        while let Ok(order) = stream.recv::<Vec<String>>().await {
-                            if !context.0.borrow().alive { break; }
-                            context.observe_order(order);
-                        }
-                    });
-                }
-                #[cfg(not(any(feature = "web", feature = "desktop")))]
-                { let _ = (&observe_id, &context, &transport); }
-            },
             {children}
         }
     }
@@ -1207,6 +1185,8 @@ pub fn WorkflowSteps(
 /// `custom_icon` replaces both built-in icon layers. `children` supplies arbitrary
 /// default content, replacing `label`; `label` is the plain-text fallback.
 /// Standalone steps retain the legacy accepted `onselect` callback.
+/// Enumerate `order` for dynamic/keyed lists, including wrapped steps. Explicit
+/// orders sort first; equal orders and omitted orders retain registration order.
 #[component]
 pub fn WorkflowStep(
     #[props(default)] label: String,
@@ -1218,6 +1198,10 @@ pub fn WorkflowStep(
     #[props(default)] disabled: bool,
     #[props(default)] clickable: bool,
     #[props(default)] vertical: bool,
+    /// Zero-based visual order within the nearest workflow. Supply this for
+    /// dynamically inserted or reordered lists; static compositions may omit it.
+    #[props(default)]
+    order: Option<usize>,
     #[props(default)] onselect: EventHandler<()>,
 ) -> Element {
     let context = try_use_context::<WorkflowContext>();
@@ -1226,7 +1210,7 @@ pub fn WorkflowStep(
     let mount_id = use_hook(move || {
         let id = workflow_mount_id();
         if let Some(context) = registration_context {
-            context.register(id.clone(), update);
+            context.register(id.clone(), order, update);
         }
         id
     });
@@ -1237,6 +1221,9 @@ pub fn WorkflowStep(
             context.unregister(&drop_id);
         }
     });
+    if let Some(context) = &context {
+        context.update_order(&mount_id, order);
+    }
     let (selected, clickable, vertical, position, index) = if let Some(context) = &context {
         let model = context.0.borrow();
         (
@@ -1244,12 +1231,11 @@ pub fn WorkflowStep(
             model.settings.clickable,
             model.settings.vertical,
             model.position(&mount_id),
-            model.order.iter().position(|id| id == &mount_id),
+            model.order().iter().position(|id| id == &mount_id),
         )
     } else {
         (selected, clickable, vertical, "single", None)
     };
-    let marker_id = mount_id.clone();
     let activate = use_callback(move |_| {
         if disabled || !clickable {
             return;
@@ -1269,10 +1255,8 @@ pub fn WorkflowStep(
     });
     let icon_name = status.icon(selected);
     let icon_label = status.icon_label(selected);
-    // Caller IDs never participate in native registry identity.
     rsx! {
         div { id, class: "ix-workflow-step ix-workflow-{status.class()}",
-            "data-workflow-mount": marker_id,
             "data-selected": selected, "data-disabled": disabled, "data-vertical": vertical, "data-clickable": clickable,
             "data-position": position, "data-index": index.map(|index| index.to_string()),
             div { class: "ix-workflow-step-content", role: clickable.then_some("button"),
@@ -1345,7 +1329,7 @@ mod tests {
         let context = WorkflowContext::default();
         context.0.borrow_mut().settings.clickable = true;
         for id in ["a", "b", "c"] {
-            context.register(id.to_string(), Arc::new(|| {}));
+            context.register(id.to_string(), None, Arc::new(|| {}));
         }
         context
     }
@@ -1393,7 +1377,9 @@ mod tests {
         assert_eq!(context.0.borrow().position("b"), "undefined");
         assert_eq!(context.0.borrow().position("c"), "last");
         assert!(request_workflow_selection(&context, "c", false, |_| {}));
-        context.observe_order(vec!["b".into(), "c".into(), "a".into()]);
+        context.update_order("b", Some(0));
+        context.update_order("c", Some(1));
+        context.update_order("a", Some(2));
         assert_eq!(
             context.0.borrow().selected.as_deref(),
             Some("b"),
@@ -1422,14 +1408,36 @@ mod tests {
             |_| panic!("unmounted event")
         ));
         context.0.borrow_mut().alive = false;
-        context.observe_order(vec![]);
-        assert_eq!(context.0.borrow().order, ["a"]);
+        context.update_order("a", Some(0));
+        assert_eq!(context.0.borrow().order(), ["a"]);
         assert!(!request_workflow_selection(
             &context,
             "a",
             false,
             |_| panic!("stale event")
         ));
+    }
+
+    #[test]
+    fn workflow_explicit_order_ties_and_static_fallback_are_stable() {
+        let context = workflow_model_fixture();
+        context.update_order("b", Some(4));
+        assert_eq!(context.0.borrow().order(), ["b", "a", "c"]);
+        context.update_order("a", Some(4));
+        assert_eq!(
+            context.0.borrow().order(),
+            ["a", "b", "c"],
+            "equal explicit positions retain registration order"
+        );
+        context.register("d".into(), None, Arc::new(|| {}));
+        assert_eq!(context.0.borrow().order(), ["a", "b", "c", "d"]);
+        context.unregister("a");
+        context.register("e".into(), Some(4), Arc::new(|| {}));
+        assert_eq!(
+            context.0.borrow().order(),
+            ["b", "e", "c", "d"],
+            "omitted positions retain static registration order after explicit positions"
+        );
     }
 
     #[derive(Clone, Default)]
@@ -1445,8 +1453,8 @@ mod tests {
         children
     }
     #[component]
-    fn WrappedWorkflowStep(label: String) -> Element {
-        rsx! { WorkflowStep { id: label.clone(), label, selected: true, clickable: false, vertical: false } }
+    fn WrappedWorkflowStep(label: String, #[props(default)] order: Option<usize>) -> Element {
+        rsx! { WorkflowStep { id: label.clone(), label, order, selected: true, clickable: false, vertical: false } }
     }
     #[derive(Clone)]
     struct WorkflowTestConfig {
@@ -1461,7 +1469,7 @@ mod tests {
         rsx! { WorkflowSteps { id: "test-workflow", selected_index: config.index,
             clickable: config.clickable, vertical: config.vertical,
             CaptureWorkflow { capture: config.capture,
-                for label in config.steps { WrappedWorkflowStep { key: "{label}", label } }
+                for (index,label) in config.steps.into_iter().enumerate() { WrappedWorkflowStep { key: "{label}", label,order:Some(index) } }
             }
         } }
     }
@@ -1479,11 +1487,11 @@ mod tests {
         }));
         let mut dom = VirtualDom::new_with_props(workflow_reactive_fixture, config.clone());
         dom.rebuild_in_place();
-        // SSR registration cannot inspect opaque component props. Settle the
-        // registered children before inspecting order-dependent output.
+        // Settle registered children and their explicit order props before
+        // inspecting the shared order-dependent presentation.
         dom.render_immediate_to_vec();
         let context = capture.0.borrow().clone().unwrap();
-        let original = context.0.borrow().order.clone();
+        let original = context.0.borrow().order();
         let html = dioxus_ssr::render(&dom);
         assert_eq!(html.matches("role=\"button\"").count(), 3);
         assert_eq!(
@@ -1520,14 +1528,6 @@ mod tests {
         config.borrow_mut().steps = vec!["Gamma".into(), "Alpha".into(), "Beta".into()];
         dom.mark_dirty(ScopeId::APP);
         dom.render_immediate_to_vec();
-        // A native observer reports rendered keyed order without caller indices.
-        dom.in_runtime(|| {
-            context.observe_order(vec![
-                original[2].clone(),
-                original[0].clone(),
-                original[1].clone(),
-            ])
-        });
         dom.render_immediate_to_vec();
         assert_eq!(context.0.borrow().selected.as_ref(), original.first());
         assert_eq!(context.0.borrow().position(&original[2]), "first");
@@ -1542,6 +1542,93 @@ mod tests {
         assert_eq!(html.matches("data-selected=true").count(), 1);
         assert!(!html.contains("role=\"button\""));
         assert_eq!(html.matches("tabindex=-1").count(), 1);
+    }
+
+    #[test]
+    fn workflow_keyed_reverse_insert_remove_keeps_members_and_reports_current_indices() {
+        let capture = WorkflowCapture::default();
+        let config = Rc::new(RefCell::new(WorkflowTestConfig {
+            capture: capture.clone(),
+            index: 1,
+            clickable: true,
+            vertical: false,
+            steps: vec!["Alpha".into(), "Beta".into(), "Gamma".into()],
+        }));
+        let mut dom = VirtualDom::new_with_props(workflow_reactive_fixture, config.clone());
+        dom.rebuild_in_place();
+        dom.render_immediate_to_vec();
+        let context = capture.0.borrow().clone().unwrap();
+        let original = context.0.borrow().order();
+        config.borrow_mut().steps.reverse();
+        dom.mark_dirty(ScopeId::APP);
+        for _ in 0..3 {
+            dom.render_immediate_to_vec();
+        }
+        assert_eq!(
+            context.0.borrow().order(),
+            [
+                original[2].clone(),
+                original[1].clone(),
+                original[0].clone()
+            ]
+        );
+        assert_eq!(context.0.borrow().position(&original[2]), "first");
+        assert_eq!(context.0.borrow().position(&original[0]), "last");
+        dom.in_runtime(|| {
+            assert!(request_workflow_selection(
+                &context,
+                &original[2],
+                false,
+                |event| assert_eq!(event.index, 0)
+            ))
+        });
+        config.borrow_mut().steps.insert(1, "Inserted".into());
+        dom.mark_dirty(ScopeId::APP);
+        for _ in 0..3 {
+            dom.render_immediate_to_vec();
+        }
+        let inserted = context.0.borrow().order()[1].clone();
+        assert_eq!(
+            context.0.borrow().selected.as_ref(),
+            Some(&inserted),
+            "topology reapplies selected_index to the inserted member"
+        );
+        dom.in_runtime(|| {
+            assert!(!request_workflow_selection(
+                &context,
+                &original[1],
+                false,
+                |event| {
+                    assert_eq!((event.index, event.previous), (2, Some(1)));
+                    event.prevent_default();
+                }
+            ))
+        });
+        assert_eq!(context.0.borrow().selected.as_ref(), Some(&inserted));
+        config.borrow_mut().steps.remove(0);
+        dom.mark_dirty(ScopeId::APP);
+        for _ in 0..3 {
+            dom.render_immediate_to_vec();
+        }
+        assert_eq!(
+            context.0.borrow().order(),
+            [inserted, original[1].clone(), original[0].clone()]
+        );
+        assert!(!request_workflow_selection(
+            &context,
+            &original[2],
+            false,
+            |_| panic!("removed member cannot emit")
+        ));
+        drop(dom);
+        assert!(!context.0.borrow().alive);
+        assert!(context.0.borrow().members.is_empty());
+        assert!(!request_workflow_selection(
+            &context,
+            &original[1],
+            false,
+            |_| panic!("dropped owner cannot emit")
+        ));
     }
 
     fn nested_workflow_fixture(captures: (WorkflowCapture, WorkflowCapture)) -> Element {
@@ -1571,8 +1658,8 @@ mod tests {
         dom.render_immediate_to_vec();
         let outer = outer.0.borrow().clone().unwrap();
         let inner = inner.0.borrow().clone().unwrap();
-        assert_eq!(outer.0.borrow().order.len(), 2);
-        assert_eq!(inner.0.borrow().order.len(), 1);
+        assert_eq!(outer.0.borrow().order().len(), 2);
+        assert_eq!(inner.0.borrow().order().len(), 1);
         assert!(outer.0.borrow().settings.vertical);
         assert!(!inner.0.borrow().settings.vertical);
         assert!(
@@ -1580,7 +1667,7 @@ mod tests {
             "nearest parent overrides child props"
         );
         assert_eq!(
-            inner.0.borrow().position(&inner.0.borrow().order[0]),
+            inner.0.borrow().position(&inner.0.borrow().order()[0]),
             "single"
         );
         let html = dioxus_ssr::render(&dom);

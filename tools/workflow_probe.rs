@@ -59,7 +59,7 @@ try {
  const wait=async(test,label)=>{const end=performance.now()+3000;while(!test()){if(performance.now()>end)throw Error(label);await sleep(20)}};
  const events=()=>JSON.parse(get('g04-events').textContent);
  const state=()=>JSON.parse(get('g04-state').textContent);
- const current=root=>[...get(root).querySelectorAll('.ix-workflow-step[data-selected=true]')].filter(node=>node.closest('[data-workflow-root]')===get(root)).map(node=>node.id);
+ const current=root=>[...get(root).querySelectorAll('.ix-workflow-step[data-selected=true]')].filter(node=>node.closest('.ix-workflow-steps')===get(root)).map(node=>node.id);
  const action=id=>get(id).querySelector('.ix-workflow-step-content')||get(id);
  const assert=(ok,label)=>{if(!ok)throw Error(label+'; events='+JSON.stringify(events())+'; selected='+JSON.stringify(current('g04-workflow')))};
  await wait(()=>get('g04-step-prepare')&&current('g04-workflow')[0]==='g04-step-prepare','initial index zero');

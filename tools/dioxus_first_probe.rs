@@ -38,6 +38,10 @@ mod upload_interaction_review;
 mod virtual_navigation_review;
 #[path = "dioxus_first_probe/visibility_review.rs"]
 mod visibility_review;
+#[path = "dioxus_first_probe/workflow_order_review.rs"]
+mod workflow_order_review;
+#[path = "../examples/gallery/workflow_review.rs"]
+mod workflow_review;
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 fn main() {
@@ -105,6 +109,9 @@ fn Preview() -> Element {
     }
     if scope == "?customvalidation" {
         return rsx! { custom_validation_review::CustomValidationReview {} };
+    }
+    if scope == "?workflow" {
+        return rsx! { workflow_order_review::WorkflowOrderReview {} };
     }
     if scope == "?filterlayout" {
         return rsx! { filter_layout_review::FilterLayoutReview {} };

@@ -31,9 +31,9 @@ fn record_request(
 
 /// A component boundary intentionally sits between the workflow and this step.
 #[component]
-fn WrappedReviewStep() -> Element {
+fn WrappedReviewStep(order: Option<usize>) -> Element {
     rsx! {
-        WorkflowStep { id: "g04-step-inspect", label: "Inspection", status: WorkflowStatus::Success,
+        WorkflowStep { id: "g04-step-inspect", label: "Inspection", status: WorkflowStatus::Success, order,
             span { "Inspection" }
         }
     }
@@ -101,16 +101,16 @@ pub fn WorkflowReview() -> Element {
                 WorkflowSteps { id: "g04-workflow", label: "Review workflow", clickable: clickable(), vertical: vertical(),
                     selected_index: selected(), class: format!("g04-render-{}", tick()),
                     onstepselected: move |event| record_request(events, "main", event, veto()),
-                    for step in keys() {
+                    for (index, step) in keys().into_iter().enumerate() {
                         if step == "inspect" {
-                            WrappedReviewStep { key: "{step}" }
+                            WrappedReviewStep { key: "{step}", order: Some(index) }
                         } else if step == "finish" {
-                            WorkflowStep { key: "{step}", id: "g04-step-finish", label: "Release", status: WorkflowStatus::Done,
+                            WorkflowStep { key: "{step}", id: "g04-step-finish", label: "Release", status: WorkflowStatus::Done, order: Some(index),
                                 custom_icon: rsx! { Icon { name: "rocket", size: 24 } },
                                 span { id: "g04-custom-content", "Release " strong { "ready" } }
                             }
                         } else {
-                            WorkflowStep { key: "{step}", id: format!("g04-step-{step}"),
+                            WorkflowStep { key: "{step}", id: format!("g04-step-{step}"), order: Some(index),
                                 label: if step == "prepare" { "Preparation".to_string() } else if step == "disabled" { "Disabled review".to_string() } else { format!("Added {}", step.trim_start_matches("added-")) },
                                 disabled: step == "disabled",
                                 status: if step == "prepare" && error() { WorkflowStatus::Error } else if step == "disabled" { WorkflowStatus::Warning } else { WorkflowStatus::Open }
@@ -133,6 +133,9 @@ pub fn WorkflowReview() -> Element {
                 }
                 button { id: "g04-select-out-of-range", r#type: "button", class: "ix-button ix-button-secondary",
                     onclick: move |_| selected.set(99), "Select index 99"
+                }
+                button { id: "g04-select-negative", r#type: "button", class: "ix-button ix-button-secondary",
+                    onclick: move |_| selected.set(-1), "Select index −1"
                 }
                 button { id: "g04-rerender", r#type: "button", class: "ix-button ix-button-secondary",
                     onclick: move |_| tick += 1, "Restore programmatic index"
