@@ -1,4 +1,4 @@
-// Category flyout cleanup through the rendered Menu transports.
+// Category flyout cleanup through Rust lifecycle ownership.
 use super::*;
 use crate::dropdown_inventory::{HostFacts, HostPartKind, ItemKind};
 use crate::overlay_runtime::{Reason, RuntimeHandle};
@@ -71,7 +71,7 @@ fn mark_rendered_child(h: &MenuHarness, runtime: &RuntimeHandle, label: &str) ->
 }
 
 #[test]
-fn logical_disconnect_clears_child_cue_and_preserves_completed_focus_and_inventories() {
+fn logical_close_clears_child_cue_and_preserves_completed_focus_and_inventories() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
@@ -103,12 +103,17 @@ fn logical_disconnect_clears_child_cue_and_preserves_completed_focus_and_invento
     let tabs = h.tabs();
     let cue = mark_rendered_child(&h, &runtime, "Child");
 
-    assert_eq!(
-        h.raw(serde_json::json!({"owner": category.0.owner,
-            "kind": "category-disconnect", "category": category.0.id,
-            "sequence": 3, "connected": false, "category_items": [], "items": []})),
-        (false, true)
+    category.0.model.borrow_mut().focus_containment = Some(CategoryFocusContainment {
+        connected: true,
+        inside: false,
+    });
+    menu_dispatch(
+        &h.dom,
+        "focusout",
+        h.category_surface("Category", "host"),
+        (),
     );
+    h.settle();
     assert!(!category.is_open());
     assert!(!runtime.item_visual_matches(&cue));
     assert_eq!(runtime.item_visual_key(), None);
@@ -135,7 +140,7 @@ fn logical_disconnect_clears_child_cue_and_preserves_completed_focus_and_invento
 }
 
 #[test]
-fn closed_disconnect_and_inline_panel_close_preserve_the_current_cue() {
+fn closed_owner_and_inline_panel_close_preserve_the_current_cue() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
@@ -145,9 +150,13 @@ fn closed_disconnect_and_inline_panel_close_preserve_the_current_cue() {
     h.click("Second category");
     assert!(!category.is_open() && other.is_open());
     let other_cue = mark_rendered_child(&h, &runtime, "Solo");
-    h.raw(serde_json::json!({"owner": category.0.owner,
-        "kind": "category-disconnect", "category": category.0.id,
-        "sequence": 1, "connected": false, "category_items": [], "items": []}));
+    menu_dispatch(
+        &h.dom,
+        "focusout",
+        h.category_surface("Category", "host"),
+        (),
+    );
+    h.settle();
     assert!(other.is_open());
     assert!(runtime.item_visual_matches(&other_cue));
     assert_eq!(runtime.item_visual_key(), Some(other_cue.registration_key));

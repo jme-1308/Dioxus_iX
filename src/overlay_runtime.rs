@@ -15,23 +15,6 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-thread_local! {
-    // Native focus facts scoped to the synchronous Window dispatch. A nested
-    // event restores the outer capture rather than replacing its authorization.
-    static WINDOW_CAPTURE: RefCell<Option<Vec<usize>>> = const { RefCell::new(None) };
-}
-struct WindowCapture(Option<Vec<usize>>);
-impl WindowCapture {
-    fn enter(categories: &[usize]) -> Self {
-        Self(WINDOW_CAPTURE.with(|slot| slot.replace(Some(categories.to_vec()))))
-    }
-}
-impl Drop for WindowCapture {
-    fn drop(&mut self) {
-        WINDOW_CAPTURE.with(|slot| slot.replace(self.0.take()));
-    }
-}
-
 static NEXT_RUNTIME: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1274,13 +1257,6 @@ impl RuntimeHandle {
             }
         }
     }
-    pub(crate) fn category_close_capture(&self) -> (bool, Vec<usize>) {
-        WINDOW_CAPTURE.with(|slot| {
-            slot.borrow()
-                .clone()
-                .map_or_else(|| (false, Vec::new()), |active| (true, active))
-        })
-    }
     pub(crate) fn register_category(&self, id: usize, callback: CategoryCallback) {
         let owner = dioxus::core::Runtime::try_current().and_then(|runtime| {
             runtime
@@ -1308,12 +1284,6 @@ impl RuntimeHandle {
             domain.register_category(self.owner_id(), id, guarded);
         }
     }
-    pub(crate) fn window_keyboard_mode(&self) -> Option<bool> {
-        WINDOW_CAPTURE
-            .with(|slot| slot.borrow().is_some())
-            .then(|| self.document_keyboard_mode())
-            .flatten()
-    }
     pub(crate) fn document_keyboard_mode(&self) -> Option<bool> {
         self.domain().and_then(|domain| domain.keyboard_mode())
     }
@@ -1326,10 +1296,22 @@ impl RuntimeHandle {
     pub(crate) fn broadcast_category(&self, source: usize, active: &[usize]) -> bool {
         if let Some(domain) = self.domain() {
             domain.broadcast_category(source, active);
-            true
         } else {
-            false
+            // Components can open before the document transport attaches. Reuse
+            // their guarded Rust registrations without a second coordinator.
+            let callbacks = self
+                .0
+                .borrow()
+                .categories
+                .iter()
+                .filter(|(id, _)| **id != source)
+                .map(|(_, callback)| callback.clone())
+                .collect::<Vec<_>>();
+            for callback in callbacks {
+                callback(source, active);
+            }
         }
+        true
     }
     fn sync_domain_open(&self, id: &str, generation: u64, open: bool) {
         if let Some(domain) = self.domain() {
@@ -2237,7 +2219,6 @@ impl RuntimeHandle {
                 .domain()
                 .filter(|domain| domain.accept_event(report.window_sequence))
             {
-                let _capture = WindowCapture::enter(&report.active_categories);
                 domain.refresh();
                 match report.kind.as_str() {
                     "key" if report.key == "Escape" => {
@@ -3737,8 +3718,6 @@ struct Report {
     #[serde(default)]
     window_sequence: u64,
     #[serde(default)]
-    active_categories: Vec<usize>,
-    #[serde(default)]
     anchors: Vec<String>,
     #[serde(default)]
     phase: String,
@@ -3876,6 +3855,27 @@ mod tests {
     use super::*;
     use dioxus::core::current_scope_id;
     use std::cell::Cell;
+
+    #[test]
+    fn category_coordination_before_document_attach_allows_reentrant_removal() {
+        let runtime = RuntimeHandle::new();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let source_calls = calls.clone();
+        runtime.register_category(1, Rc::new(move |_, _| source_calls.borrow_mut().push(1)));
+        let recipient_calls = calls.clone();
+        let owner = runtime.clone();
+        runtime.register_category(
+            2,
+            Rc::new(move |source, active| {
+                assert_eq!((source, active), (1, &[1][..]));
+                recipient_calls.borrow_mut().push(2);
+                owner.unregister_category(2);
+            }),
+        );
+        assert!(runtime.broadcast_category(1, &[1]));
+        assert!(runtime.broadcast_category(1, &[1]));
+        assert_eq!(*calls.borrow(), [2]);
+    }
 
     #[derive(Clone)]
     struct RequestTaskFixture(Rc<RequestTaskState>);

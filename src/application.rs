@@ -64,17 +64,7 @@ struct MenuObservation {
     #[serde(default)]
     category: Option<usize>,
     #[serde(default)]
-    sequence: u64,
-    #[serde(default)]
     category_items: Vec<CategoryDomItem>,
-    #[serde(default)]
-    inside: bool,
-    #[serde(default)]
-    connected: bool,
-    #[serde(default)]
-    active_categories: Vec<usize>,
-    #[serde(default)]
-    outside_cause: String,
 }
 
 struct MenuMember {
@@ -432,7 +422,6 @@ struct CategoryModel {
     children: BTreeMap<usize, CategoryChild>,
     observed: Vec<CategoryDomItem>,
     parent: Option<Rc<MountedData>>,
-    newest_sequence: u64,
     previous_expanded: bool,
     previous_flyout: Option<usize>,
     initialized: bool,
@@ -440,313 +429,27 @@ struct CategoryModel {
     focus_task: Option<dioxus::core::Task>,
     entry_focus: Option<usize>,
     hover_epoch: u64,
-    hover_sequence: u64,
+    containment_epoch: u64,
+    focus_inside: bool,
+    keyboard: bool,
     hide_task: Option<dioxus::core::Task>,
-    capture_task: Option<dioxus::core::Task>,
-    return_serial: u64,
-    return_tasks: BTreeMap<String, Option<dioxus::core::Task>>,
+    containment_task: Option<dioxus::core::Task>,
     #[cfg(test)]
-    focus_test: Option<CategoryFocusTest>,
+    focus_containment: Option<CategoryFocusContainment>,
     #[cfg(test)]
     hover_clock: Option<CategoryHoverClock>,
     #[cfg(test)]
     requested: Option<Option<usize>>,
 }
-// Document input policy belongs to the VDOM root, including intervals with no
-// Menu. The native journal contains only unacknowledged raw facts; Rust owns
-// key membership, modality and sequence acceptance. Separate VDOMs remain an
-// explicit scope adaptation to the source module's document-global detector.
-struct CategoryModality {
-    keyboard: bool,
-    owners: BTreeMap<String, u64>,
-    document_owner: String,
-    document_sequence: u64,
-    #[cfg(any(feature = "web", feature = "desktop", test))]
-    document_started: bool,
-}
-impl Default for CategoryModality {
-    fn default() -> Self {
-        Self {
-            keyboard: false,
-            owners: BTreeMap::new(),
-            document_owner: format!(
-                "ix-document-input-{}",
-                NAV_ID.fetch_add(1, Ordering::Relaxed)
-            ),
-            document_sequence: 0,
-            #[cfg(any(feature = "web", feature = "desktop", test))]
-            document_started: false,
-        }
-    }
-}
-#[derive(serde::Deserialize)]
-struct CategoryDocumentInput {
-    sequence: u64,
-    kind: String,
-    #[serde(default)]
-    key: String,
-}
-#[derive(serde::Deserialize)]
-struct CategoryDocumentBatch {
-    owner: String,
-    entries: Vec<CategoryDocumentInput>,
-}
-#[derive(Clone, Default)]
-struct CategoryHoverCoordinator(
-    Rc<RefCell<BTreeMap<usize, std::rc::Weak<CategoryCore>>>>,
-    Rc<RefCell<CategoryModality>>,
-);
-impl CategoryHoverCoordinator {
-    fn keyboard(&self) -> bool {
-        self.1.borrow().keyboard
-    }
-    fn register_owner(&self, owner: &str) {
-        self.1
-            .borrow_mut()
-            .owners
-            .entry(owner.to_string())
-            .or_insert(0);
-    }
-    fn unregister_owner(&self, owner: &str) {
-        self.1.borrow_mut().owners.remove(owner);
-    }
-    fn notify_categories(&self) {
-        let categories = self.0.borrow().values().cloned().collect::<Vec<_>>();
-        for category in categories
-            .into_iter()
-            .filter_map(|category| category.upgrade())
-        {
-            CategoryNavigation(category).notify();
-        }
-    }
-    fn broadcast(&self, source: usize, active_categories: &[usize]) {
-        let categories = self.0.borrow().values().cloned().collect::<Vec<_>>();
-        for category in categories
-            .into_iter()
-            .filter_map(|category| category.upgrade())
-        {
-            CategoryNavigation(category).hide_for_other(source, active_categories);
-        }
-    }
-    fn document_observation(&self, batch: CategoryDocumentBatch) -> Option<u64> {
-        let (changed, sequence) = {
-            let mut modality = self.1.borrow_mut();
-            if batch.owner != modality.document_owner {
-                return None;
-            }
-            let previous = modality.keyboard;
-            for input in batch.entries {
-                if input.sequence <= modality.document_sequence
-                    || !matches!(input.kind.as_str(), "keydown" | "mousedown" | "touchstart")
-                {
-                    continue;
-                }
-                modality.document_sequence = input.sequence;
-                match input.kind.as_str() {
-                    "mousedown" | "touchstart" => modality.keyboard = false,
-                    "keydown"
-                        if matches!(
-                            input.key.as_str(),
-                            "Tab"
-                                | "ArrowDown"
-                                | "Space"
-                                | "Escape"
-                                | " "
-                                | "Shift"
-                                | "Enter"
-                                | "ArrowLeft"
-                                | "ArrowRight"
-                                | "ArrowUp"
-                                | "Home"
-                                | "End"
-                        ) =>
-                    {
-                        modality.keyboard = true
-                    }
-                    _ => {}
-                }
-            }
-            (previous != modality.keyboard, modality.document_sequence)
-        };
-        if changed {
-            self.notify_categories();
-        }
-        Some(sequence)
-    }
-    fn observation(&self, owner: &str, event: FormEvent) {
-        // A live Menu remains the synchronous event bridge, but does not own
-        // the document sequence. The same journal also arrives on the root
-        // stream; rejecting duplicates prevents an older async batch rollback.
-        if let Ok(batch) = serde_json::from_str::<CategoryDocumentBatch>(&event.value()) {
-            if self.1.borrow().owners.contains_key(owner) {
-                self.document_observation(batch);
-            }
-            return;
-        }
-        let Ok(message) = serde_json::from_str::<CategoryHoverReport>(&event.value()) else {
-            return;
-        };
-        if message.owner != owner {
-            return;
-        }
-        let category = self
-            .0
-            .borrow()
-            .get(&message.category)
-            .and_then(std::rc::Weak::upgrade);
-        let Some(category) =
-            category.filter(|core| core.owner == owner && core.model.borrow().alive)
-        else {
-            return;
-        };
-        {
-            let mut modality = self.1.borrow_mut();
-            let Some(previous) = modality.owners.get_mut(owner) else {
-                return;
-            };
-            if message.sequence <= *previous {
-                return;
-            }
-            *previous = message.sequence;
-        }
-        CategoryNavigation(category).hover(message);
-    }
-    #[cfg(any(feature = "web", feature = "desktop", test))]
-    fn start_document_input(&self) {
-        let owner = {
-            let mut modality = self.1.borrow_mut();
-            if modality.document_started {
-                return;
-            }
-            modality.document_started = true;
-            modality.document_owner.clone()
-        };
-        let categories = Rc::downgrade(&self.0);
-        let modality = Rc::downgrade(&self.1);
-        // Desktop alpha.2 provides its Document below ROOT (Window/Portal).
-        // Capture the renderer provider here, allocate its Eval in the root task.
-        let document = dioxus::document::document();
-        // The receiver task belongs to ROOT so Menu removal cannot cancel it.
-        // Its owned guard releases the renderer's Eval when that task ends.
-        dioxus::core::spawn_forever(async move {
-            let owner =
-                serde_json::to_string(&owner).expect("document input identity serialization");
-            let script =
-                crate::menu_hover_dom::MENU_DOCUMENT_INPUT.replace("__DOCUMENT_OWNER__", &owner);
-            let mut guard = CategoryDocumentEval(document.eval(script));
-            while let Ok(batch) = guard.0.recv::<CategoryDocumentBatch>().await {
-                let (Some(categories), Some(modality)) = (categories.upgrade(), modality.upgrade())
-                else {
-                    break;
-                };
-                let coordinator = CategoryHoverCoordinator(categories, modality);
-                if let Some(sequence) = coordinator.document_observation(batch) {
-                    let _ = guard.0.send(serde_json::json!({"ack":sequence}));
-                }
-            }
-            if let Some(modality) = modality.upgrade() {
-                modality.borrow_mut().document_started = false;
-            }
-        });
-    }
-}
-#[cfg(any(feature = "web", feature = "desktop", test))]
-struct CategoryDocumentEval(dioxus::document::Eval);
-#[cfg(any(feature = "web", feature = "desktop", test))]
-impl Drop for CategoryDocumentEval {
-    fn drop(&mut self) {
-        // Eval is Copy and has no Drop cleanup. Release native listeners when
-        // the root task ends, including renderer teardown or channel failure.
-        let _ = self.0.send("finish");
-    }
-}
-fn use_category_hover_coordinator() -> CategoryHoverCoordinator {
-    let coordinator = use_root_context(CategoryHoverCoordinator::default);
-    #[cfg(any(feature = "web", feature = "desktop"))]
-    use_effect({
-        let coordinator = coordinator.clone();
-        move || coordinator.start_document_input()
-    });
-    coordinator
-}
-#[derive(serde::Deserialize)]
-struct CategoryHoverReport {
-    owner: String,
-    category: usize,
-    surface: String,
-    kind: String,
-    #[serde(default)]
-    pointer_type: String,
-    #[serde(default)]
-    related_is_node: bool,
-    #[serde(default)]
-    related_host: bool,
-    #[serde(default)]
-    related_host_shadow: bool,
-    #[serde(default)]
-    related_flyout: bool,
-    #[serde(default)]
-    related_flyout_shadow: bool,
-    sequence: u64,
-    #[serde(default)]
-    active_categories: Vec<usize>,
-}
-#[derive(Clone, Default, serde::Deserialize)]
-struct CategoryCloseCapture {
+/// FocusData has no relatedTarget/active element across pinned renderers.
+/// A one-shot read against this explicit Rust Category ID resolves focusout
+/// handoff; it cannot discover scopes or focus an unregistered control.
+#[derive(Clone, Copy, Default, serde::Deserialize)]
+struct CategoryFocusContainment {
     connected: bool,
-    #[serde(default)]
-    active_categories: Vec<usize>,
+    inside: bool,
 }
-#[cfg(test)]
-#[derive(Clone, Default)]
-struct CategoryFocusTest {
-    capture: CategoryFocusGate,
-    execution: CategoryFocusGate,
-    active_categories: Rc<RefCell<Vec<usize>>>,
-    connected: Rc<Cell<bool>>,
-}
-#[cfg(test)]
-#[derive(Clone, Default)]
-struct CategoryFocusGate {
-    ready: Rc<Cell<bool>>,
-    started: Rc<Cell<usize>>,
-    canceled: Rc<Cell<usize>>,
-    wakes: Rc<RefCell<Vec<std::task::Waker>>>,
-}
-#[cfg(test)]
-struct CategoryFocusWait {
-    gate: CategoryFocusGate,
-    started: bool,
-    complete: bool,
-}
-#[cfg(test)]
-impl std::future::Future for CategoryFocusWait {
-    type Output = ();
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-        if !self.started {
-            self.started = true;
-            self.gate.started.set(self.gate.started.get() + 1);
-        }
-        if self.gate.ready.get() {
-            self.complete = true;
-            std::task::Poll::Ready(())
-        } else {
-            self.gate.wakes.borrow_mut().push(context.waker().clone());
-            std::task::Poll::Pending
-        }
-    }
-}
-#[cfg(test)]
-impl Drop for CategoryFocusWait {
-    fn drop(&mut self) {
-        if self.started && !self.complete {
-            self.gate.canceled.set(self.gate.canceled.get() + 1);
-        }
-    }
-}
+
 #[cfg(test)]
 #[derive(Clone, Default)]
 struct CategoryHoverClock {
@@ -797,10 +500,9 @@ struct CategoryCore {
     panel: Signal<bool>,
     flyout: Signal<Option<usize>>,
     revision: Signal<u64>,
-    hover_coordinator: CategoryHoverCoordinator,
+    host_id: RefCell<String>,
     model: RefCell<CategoryModel>,
     overlay: RefCell<Option<crate::overlay_runtime::NodeHandle>>,
-    close_capture: RefCell<Option<CategoryCloseCapture>>,
 }
 #[derive(Clone)]
 struct CategoryNavigation(Rc<CategoryCore>);
@@ -817,7 +519,6 @@ impl CategoryNavigation {
         panel: Signal<bool>,
         flyout: Signal<Option<usize>>,
         revision: Signal<u64>,
-        hover_coordinator: CategoryHoverCoordinator,
     ) -> Self {
         Self(Rc::new(CategoryCore {
             id,
@@ -826,9 +527,8 @@ impl CategoryNavigation {
             panel,
             flyout,
             revision,
-            hover_coordinator,
+            host_id: RefCell::new(String::new()),
             overlay: RefCell::new(None),
-            close_capture: RefCell::new(None),
             model: RefCell::new(CategoryModel {
                 alive: true,
                 native: false,
@@ -836,7 +536,6 @@ impl CategoryNavigation {
                 children: BTreeMap::new(),
                 observed: vec![],
                 parent: None,
-                newest_sequence: 0,
                 previous_expanded: *expanded.peek(),
                 previous_flyout: *flyout.peek(),
                 initialized: false,
@@ -844,13 +543,13 @@ impl CategoryNavigation {
                 focus_task: None,
                 entry_focus: None,
                 hover_epoch: 0,
-                hover_sequence: 0,
+                containment_epoch: 0,
+                focus_inside: false,
+                keyboard: false,
                 hide_task: None,
-                capture_task: None,
-                return_serial: 0,
-                return_tasks: BTreeMap::new(),
+                containment_task: None,
                 #[cfg(test)]
-                focus_test: None,
+                focus_containment: None,
                 #[cfg(test)]
                 hover_clock: None,
                 #[cfg(test)]
@@ -970,7 +669,7 @@ impl CategoryNavigation {
             self.clear_flyout_visual();
         }
         if transitioned {
-            self.cancel_return_jobs();
+            self.clear_hover();
             self.notify();
         }
         if let Some(desired) = desired {
@@ -991,6 +690,7 @@ impl CategoryNavigation {
         }
     }
     fn invalidate(&self) {
+        self.clear_hover();
         let pending = {
             let mut model = self.0.model.borrow_mut();
             model.entry_focus = None;
@@ -1004,7 +704,6 @@ impl CategoryNavigation {
     fn set_panel(&self, value: bool) {
         let mut panel = self.0.panel;
         if *panel.peek() != value {
-            self.cancel_return_jobs();
             self.invalidate();
             panel.set(value);
             self.notify();
@@ -1021,8 +720,8 @@ impl CategoryNavigation {
         let mut flyout = self.0.flyout;
         if *flyout.peek() == Some(self.0.id) {
             self.invalidate();
-            // This owner already invalidated its own close; the reactive
-            // ownership-loss observer must not invalidate its return ACK again.
+            // Own close already invalidates focus; the reactive ownership-loss
+            // observer must not invalidate the newly queued parent return.
             self.0.model.borrow_mut().previous_flyout = None;
             flyout.set(None);
             self.clear_flyout_visual();
@@ -1046,215 +745,152 @@ impl CategoryNavigation {
             }
         }
     }
-    fn authorize_dismiss_return(&self, connected: bool, active_categories: &[usize]) {
-        if !self.0.model.borrow().alive
-            || !self
-                .0
-                .flyout
-                .try_peek()
-                .is_ok_and(|open| *open == Some(self.0.id))
-        {
+    fn keyboard_mode(&self) -> bool {
+        self.0
+            .overlay
+            .borrow()
+            .as_ref()
+            .and_then(|node| node.runtime())
+            .and_then(|runtime| runtime.document_keyboard_mode())
+            .unwrap_or_else(|| self.0.model.borrow().keyboard)
+    }
+    fn pointer_down(&self) {
+        self.0.model.borrow_mut().keyboard = false;
+    }
+    fn keyboard_input(&self, key: &str) {
+        if matches!(
+            key,
+            "Tab"
+                | "ArrowDown"
+                | "ArrowUp"
+                | "ArrowLeft"
+                | "ArrowRight"
+                | "Home"
+                | "End"
+                | "Enter"
+                | " "
+                | "Escape"
+                | "Shift"
+        ) {
+            self.0.model.borrow_mut().keyboard = true;
+        }
+    }
+    fn focus_enter(&self) {
+        if !self.0.model.borrow().alive {
             return;
         }
-        if connected
-            && self
-                .0
-                .overlay
-                .borrow()
-                .as_ref()
-                .and_then(crate::overlay_runtime::NodeHandle::runtime)
-                .and_then(|runtime| runtime.window_keyboard_mode())
-                .unwrap_or_else(|| self.0.hover_coordinator.keyboard())
-            && active_categories.contains(&self.0.id)
-        {
-            let mut model = self.0.model.borrow_mut();
-            model.return_serial = model.return_serial.wrapping_add(1);
-            let job = model.return_serial.to_string();
-            model.return_tasks.insert(job, None);
-        }
+        self.cancel_containment();
+        self.0.model.borrow_mut().focus_inside = true;
     }
-    fn dismiss_captured(&self, connected: bool, active_categories: &[usize]) {
-        let node = self.0.overlay.borrow().clone();
-        if let Some(node) = node {
-            let previous = self.0.close_capture.replace(Some(CategoryCloseCapture {
-                connected,
-                active_categories: active_categories.to_vec(),
-            }));
-            node.request(false, crate::overlay_runtime::Reason::Outside, false);
-            self.0.close_capture.replace(previous);
-        } else {
-            self.authorize_dismiss_return(connected, active_categories);
-            self.close_flyout_state();
+    fn focus_leave(&self) {
+        if !self.0.model.borrow().alive {
+            return;
         }
-    }
-    // A native roundtrip captures actual focus before the Rust dismissal write;
-    // desktop IPC adds latency after the source 250ms deadline.
-    fn capture_timer_close(&self, epoch: u64) {
+        self.0.model.borrow_mut().focus_inside = false;
+        if self.is_expanded() || !self.is_open() {
+            return;
+        }
+        self.cancel_containment();
+        let (epoch, generation, parent) = {
+            let model = self.0.model.borrow();
+            (
+                model.containment_epoch,
+                model.generation,
+                model.parent.clone(),
+            )
+        };
+        let Some(parent) = parent else {
+            return;
+        };
+        let host_id = self.0.host_id.borrow().clone();
         let weak = Rc::downgrade(&self.0);
-        let owner = self.0.owner.clone();
-        let id = self.0.id;
-        let native = self.0.model.borrow().native;
         #[cfg(test)]
-        let test = self.0.model.borrow().focus_test.clone();
+        let facts = self.0.model.borrow().focus_containment;
         let task = spawn(async move {
-            let capture;
             #[cfg(test)]
-            if let Some(test) = test {
-                CategoryFocusWait {
-                    gate: test.capture.clone(),
-                    started: false,
-                    complete: false,
-                }
-                .await;
-                capture = CategoryCloseCapture {
-                    connected: test.connected.get(),
-                    active_categories: test.active_categories.borrow().clone(),
-                };
-            } else if native {
-                capture = Self::native_close_capture(&owner, id).await;
-            } else {
-                capture = CategoryCloseCapture {
-                    connected: true,
-                    active_categories: vec![],
-                };
-            }
+            let facts = match facts {
+                Some(facts) => Some(facts),
+                None => Self::native_focus_containment(&host_id).await,
+            };
             #[cfg(not(test))]
-            {
-                capture = if native {
-                    Self::native_close_capture(&owner, id).await
-                } else {
-                    CategoryCloseCapture {
-                        connected: true,
-                        active_categories: vec![],
-                    }
-                };
-            }
+            let facts = Self::native_focus_containment(&host_id).await;
             let Some(core) = weak.upgrade() else {
                 return;
             };
-            {
-                let mut model = core.model.borrow_mut();
-                if !model.alive || model.hover_epoch != epoch {
-                    return;
-                }
-                model.capture_task = None;
+            let valid = {
+                let model = core.model.borrow();
+                model.alive
+                    && model.generation == generation
+                    && model.containment_epoch == epoch
+                    && *core.host_id.borrow() == host_id
+                    && model
+                        .parent
+                        .as_ref()
+                        .is_some_and(|current| Rc::ptr_eq(current, &parent))
+            };
+            if !valid {
+                return;
             }
-            if capture.connected {
-                CategoryNavigation(core).dismiss_captured(true, &capture.active_categories);
+            core.model.borrow_mut().containment_task = None;
+            if let Some(facts) = facts {
+                core.model.borrow_mut().focus_inside = facts.connected && facts.inside;
+                if !facts.connected || !facts.inside {
+                    // The destination already owns focus. Closing does not return it.
+                    CategoryNavigation(core).close_flyout();
+                }
             }
         });
-        self.0.model.borrow_mut().capture_task = Some(task);
+        self.0.model.borrow_mut().containment_task = Some(task);
     }
-    async fn native_close_capture(owner: &str, id: usize) -> CategoryCloseCapture {
+    async fn native_focus_containment(host_id: &str) -> Option<CategoryFocusContainment> {
         #[cfg(any(feature = "web", feature = "desktop"))]
         {
-            let eval = crate::dom_query::eval(crate::menu_hover_dom::CATEGORY_CLOSE_CAPTURE);
-            if eval.send((owner, id)).is_ok() {
-                if let Ok(capture) = eval.join::<CategoryCloseCapture>().await {
-                    return capture;
-                }
+            let eval = crate::dom_query::eval(crate::menu_hover_dom::CATEGORY_FOCUS_CONTAINMENT);
+            if eval.send(host_id).is_ok() {
+                eval.join::<CategoryFocusContainment>().await.ok()
+            } else {
+                None
             }
-            CategoryCloseCapture::default()
         }
         #[cfg(not(any(feature = "web", feature = "desktop")))]
         {
-            let _ = (owner, id);
-            CategoryCloseCapture {
-                connected: true,
-                active_categories: vec![],
-            }
+            let _ = host_id;
+            None
         }
     }
-    fn cancel_return_jobs(&self) {
-        let tasks = self.0.model.borrow_mut().return_tasks.split_off("");
-        for task in tasks.into_values().flatten() {
+    fn cancel_containment(&self) {
+        let task = {
+            let mut model = self.0.model.borrow_mut();
+            model.containment_epoch = model.containment_epoch.wrapping_add(1);
+            model.containment_task.take()
+        };
+        if let Some(task) = task {
             task.cancel();
         }
     }
-    fn start_return_jobs(&self) {
-        let jobs = {
-            let model = self.0.model.borrow();
-            if !model.alive {
-                return;
-            }
-            model
-                .return_tasks
-                .iter()
-                .filter(|(_, task)| task.is_none())
-                .map(|(job, _)| job.clone())
-                .collect::<Vec<_>>()
-        };
-        for job in jobs {
-            let (generation, parent) = {
-                let model = self.0.model.borrow();
-                (model.generation, model.parent.clone())
-            };
-            let Some(parent) = parent else {
-                self.0.model.borrow_mut().return_tasks.remove(&job);
-                continue;
-            };
-            let expanded = self.is_expanded();
-            let weak = Rc::downgrade(&self.0);
-            let owned_job = job.clone();
-            #[cfg(test)]
-            let test = self.0.model.borrow().focus_test.clone();
-            // This effect runs after the accepted close has rendered. Only its
-            // still-current mounted parent may receive the authorized return.
-            let task = spawn(async move {
-                #[cfg(test)]
-                if let Some(test) = test {
-                    CategoryFocusWait {
-                        gate: test.execution,
-                        started: false,
-                        complete: false,
-                    }
-                    .await;
-                }
-                let current = weak.upgrade().filter(|core| {
-                    let model = core.model.borrow();
-                    model.alive
-                        && model.generation == generation
-                        && model.return_tasks.contains_key(&owned_job)
-                        && *core.expanded.peek() == expanded
-                        && model
-                            .parent
-                            .as_ref()
-                            .is_some_and(|node| Rc::ptr_eq(node, &parent))
-                });
-                if current.is_some() {
-                    let _ = parent.set_focus(true).await;
-                }
-                if let Some(core) = weak.upgrade() {
-                    let alive = core.model.borrow().alive;
-                    core.model.borrow_mut().return_tasks.remove(&owned_job);
-                    if alive {
-                        CategoryNavigation(core).notify();
-                    }
-                }
-            });
-            self.0
-                .model
-                .borrow_mut()
-                .return_tasks
-                .insert(job, Some(task));
-        }
-    }
     fn clear_hover(&self) {
+        self.cancel_containment();
         let pending = {
             let mut model = self.0.model.borrow_mut();
             model.hover_epoch = model.hover_epoch.wrapping_add(1);
-            (model.hide_task.take(), model.capture_task.take())
+            model.hide_task.take()
         };
-        for pending in [pending.0, pending.1].into_iter().flatten() {
+        if let Some(pending) = pending {
             pending.cancel();
         }
     }
-    fn hide_for_other(&self, source: usize, active_categories: &[usize]) {
+    fn hide_for_other(&self, source: usize, _active_categories: &[usize]) {
         if source == self.0.id || !self.0.model.borrow().alive {
             return;
         }
         self.clear_hover();
-        self.dismiss_captured(true, active_categories);
+        let restore = self.keyboard_mode() && self.0.model.borrow().focus_inside;
+        self.close_flyout();
+        // A click/focus handoff already clears ownership; keyboard focus still
+        // inside the old flyout returns to its live parent before it hides.
+        if restore {
+            self.focus(None);
+        }
     }
     fn schedule_hover_hide(&self) {
         self.clear_hover();
@@ -1289,67 +925,48 @@ impl CategoryNavigation {
                 }
                 model.hide_task = None;
             }
-            // No expanded guard: source retains a pending timeout across mode writes.
-            CategoryNavigation(core).capture_timer_close(epoch);
+            let category = CategoryNavigation(core);
+            if category.is_expanded() || !category.is_open() {
+                return;
+            }
+            let restore = category.keyboard_mode() && category.0.model.borrow().focus_inside;
+            category.close_flyout();
+            if restore {
+                category.focus(None);
+            }
         });
         self.0.model.borrow_mut().hide_task = Some(task);
     }
-    fn hover(&self, message: CategoryHoverReport) {
-        {
-            let mut model = self.0.model.borrow_mut();
-            if !model.alive
-                || message.owner != self.0.owner
-                || message.category != self.0.id
-                || message.sequence <= model.hover_sequence
-            {
-                return;
-            }
-            if !matches!(
-                (message.surface.as_str(), message.kind.as_str()),
-                ("host", "enter" | "leave") | ("flyout", "enter")
-            ) {
-                return;
-            }
-            model.hover_sequence = message.sequence;
+    fn pointer_enter(&self, _pointer_type: &str) {
+        if !self.0.model.borrow().alive {
+            return;
         }
-        match (message.surface.as_str(), message.kind.as_str()) {
-            ("host", "enter") => {
-                self.clear_hover();
-                if !self.is_expanded() {
-                    self.present(&message.active_categories);
-                }
-            }
-            ("flyout", "enter") => self.clear_hover(),
-            ("host", "leave") => {
-                if message.pointer_type == "touch" {
-                    return;
-                }
-                let inside = message.related_is_node
-                    && (message.related_host
-                        || message.related_host_shadow
-                        || message.related_flyout
-                        || message.related_flyout_shadow);
-                if !inside {
-                    self.schedule_hover_hide();
-                }
-            }
-            _ => {}
+        self.clear_hover();
+        if !self.is_expanded() {
+            self.present(&[]);
+        }
+    }
+    fn flyout_enter(&self) {
+        self.clear_hover();
+    }
+    fn pointer_leave(&self, pointer_type: &str) {
+        if self.0.model.borrow().alive
+            && pointer_type != "touch"
+            && !self.is_expanded()
+            && self.is_open()
+        {
+            self.schedule_hover_hide();
         }
     }
     fn present(&self, active_categories: &[usize]) -> bool {
         self.clear_hover();
-        let shared_broadcast = self
+        let _ = self
             .0
             .overlay
             .borrow()
             .as_ref()
             .and_then(crate::overlay_runtime::NodeHandle::runtime)
             .is_some_and(|runtime| runtime.broadcast_category(self.0.id, active_categories));
-        if !shared_broadcast {
-            self.0
-                .hover_coordinator
-                .broadcast(self.0.id, active_categories);
-        }
         let opening = *self.0.flyout.peek() != Some(self.0.id);
         if let Some(node) = self.0.overlay.borrow().clone() {
             node.request(true, crate::overlay_runtime::Reason::Trigger, false);
@@ -1361,7 +978,6 @@ impl CategoryNavigation {
         let mut flyout = self.0.flyout;
         let opening = *flyout.peek() != Some(self.0.id);
         if opening {
-            self.cancel_return_jobs();
             self.invalidate();
             self.0.model.borrow_mut().previous_flyout = Some(self.0.id);
             flyout.set(Some(self.0.id));
@@ -1518,7 +1134,7 @@ impl CategoryNavigation {
                     };
                     let target = target.copied();
                     if let Some(target) = target {
-                        self.focus_dropdown_item(target);
+                        self.focus(Some(target));
                     }
                     return (target.is_some(), false);
                 }
@@ -1567,38 +1183,8 @@ impl CategoryNavigation {
                 .map(|index| (index + items.len() - 1) % items.len())
                 .unwrap_or(items.len() - 1),
         };
-        if expanded {
-            self.focus(Some(items[index]));
-        } else {
-            self.focus_dropdown_item(items[index]);
-        }
+        self.focus(Some(items[index]));
         (true, false)
-    }
-    fn focus_dropdown_item(&self, target: usize) {
-        if !self.0.model.borrow().alive {
-            return;
-        }
-        #[cfg(test)]
-        {
-            self.0.model.borrow_mut().requested = Some(Some(target));
-        }
-        let node = self.0.overlay.borrow().clone();
-        if let Some(node) = node {
-            // Only collapsed Dropdown navigation uses source focusItem. Entry,
-            // expanded panel arrows and focus return keep their own helpers.
-            let host_id = self
-                .0
-                .model
-                .borrow()
-                .children
-                .get(&target)
-                .and_then(|child| child.host_id.clone())
-                .unwrap_or_else(|| format!("ix-menu-category-child-{}-{target}", self.0.id));
-            node.queue_item_focus(host_id, true, Rc::new(|| {}));
-        } else {
-            // Isolated renderer/test adapters without a registered popup.
-            self.focus(Some(target));
-        }
     }
     fn focus(&self, target: Option<usize>) {
         if !self.0.model.borrow().alive {
@@ -1608,7 +1194,6 @@ impl CategoryNavigation {
         {
             self.0.model.borrow_mut().requested = Some(target);
         }
-        self.cancel_return_jobs();
         self.invalidate();
         let expanded = self.is_expanded();
         let (generation, node) = {
@@ -1657,9 +1242,36 @@ impl CategoryNavigation {
             let Some(owner) = owner.upgrade() else {
                 return;
             };
+            let weak = Rc::downgrade(&category.0);
             let task = owner.in_scope(scope, || {
                 spawn(async move {
                     let _ = node.set_focus(true).await;
+                    if target.is_some() && !expanded {
+                        let live = weak.upgrade().is_some_and(|core| {
+                            let model = core.model.borrow();
+                            model.alive
+                                && model.generation == generation
+                                && *core.flyout.peek() == Some(core.id)
+                                && target.and_then(|id| model.children.get(&id)).is_some_and(
+                                    |child| {
+                                        !child.hidden
+                                            && child
+                                                .node
+                                                .as_ref()
+                                                .is_some_and(|current| Rc::ptr_eq(current, &node))
+                                    },
+                                )
+                        });
+                        if live {
+                            let _ = node
+                                .scroll_to_with_options(dioxus::html::ScrollToOptions {
+                                    behavior: dioxus::html::ScrollBehavior::Instant,
+                                    vertical: dioxus::html::ScrollLogicalPosition::Nearest,
+                                    horizontal: dioxus::html::ScrollLogicalPosition::Nearest,
+                                })
+                                .await;
+                        }
+                    }
                 })
             });
             category.0.model.borrow_mut().focus_task = Some(task);
@@ -1678,6 +1290,7 @@ impl CategoryNavigation {
         {
             return false;
         }
+        self.keyboard_input(&event.key().to_string());
         if matches!(event.key().to_string().as_str(), "Enter" | " ") {
             event.prevent_default();
             event.stop_propagation();
@@ -1700,6 +1313,7 @@ impl CategoryNavigation {
         {
             return false;
         }
+        self.keyboard_input(&event.key().to_string());
         let (prevent, stop) = self.navigate(
             &event.key().to_string(),
             child,
@@ -1737,36 +1351,12 @@ impl CategoryNavigation {
         if !self.0.model.borrow().alive
             || message.category != Some(self.0.id)
             || message.owner != self.0.owner
-            || !matches!(
-                message.kind.as_str(),
-                "category-order" | "category-outside" | "category-disconnect"
-            )
+            || message.kind != "category-order"
         {
             return;
         }
-        if (message.kind == "category-order") != (message.sequence == 0) {
-            return;
-        }
         self.ensure_initialized();
-        if message.sequence > 0 {
-            let mut model = self.0.model.borrow_mut();
-            if message.sequence <= model.newest_sequence {
-                return;
-            }
-            model.newest_sequence = message.sequence;
-        }
-        if message.kind == "category-disconnect" {
-            self.dismiss_captured(message.connected, &message.active_categories);
-            return;
-        }
         self.observe(message.category_items);
-        if message.kind == "category-outside" && !message.inside {
-            if message.outside_cause == "click" {
-                self.dismiss_captured(true, &message.active_categories);
-            } else {
-                self.close_flyout();
-            }
-        }
     }
 }
 
@@ -2875,12 +2465,7 @@ pub fn Menu(
     let roving_bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let cleanup_roving = roving_bridge.clone();
     let lifetime_roving = roving.clone();
-    let hover_coordinator = use_category_hover_coordinator();
-    hover_coordinator.register_owner(&menu_id);
-    let cleanup_hover = hover_coordinator.clone();
-    let cleanup_owner = menu_id.clone();
     use_drop(move || {
-        cleanup_hover.unregister_owner(&cleanup_owner);
         lifetime_roving.cancel_focus();
         {
             let mut model = lifetime_roving.model.borrow_mut();
@@ -2893,8 +2478,6 @@ pub fn Menu(
     });
     let roving_mount = menu_id.clone();
     let input_roving = roving.clone();
-    let hover_owner = menu_id.clone();
-    let document_owner = hover_coordinator.1.borrow().document_owner.clone();
     let focus_roving = roving.clone();
     let blur_roving = roving.clone();
     let _ = (roving.revision)();
@@ -2909,7 +2492,6 @@ pub fn Menu(
     rsx! {
         nav { id: menu_id.clone(), class: "ix-menu", "aria-label": application_name.clone(), "data-menu-root":"", "data-expanded": expanded().to_string(),
             input {r#type:"hidden","data-menu-observer":menu_id.clone(),oninput:move |event|input_roving.observation(event)},
-            input {r#type:"hidden","data-menu-hover-observer":menu_id.clone(),"data-menu-document-owner":document_owner,oninput:move |event|hover_coordinator.observation(&hover_owner,event)},
             if let Some(name) = application_name.clone() { div { class: "ix-menu-app-name", "{name}" } }
             button { class: "ix-menu-toggle ix-menu-item", r#type: "button", "data-menu-expansion-control":menu_id.clone(), "aria-label": if expanded() { "Collapse" } else { "Expand" }, "aria-expanded": expanded().to_string(),
                 onclick: move |_| request_expansion.call(None),
@@ -3230,9 +2812,9 @@ pub fn MenuItem(
 /// A newer navigation intent or dismissal cancels obsolete work; scope teardown
 /// releases its handles. Entry, expanded-panel navigation and return use mounted
 /// controls after the owning Dioxus render.
-/// Hover leave grace is a Rust-owned 250ms task. Collapsed popups participate in
-/// the shared overlay coordinator, with source category broadcast kept distinct
-/// from global topmost Escape and outside-click arbitration.
+/// Dioxus pointer events own the cancelable hover grace. Collapsed popups use
+/// shared overlay coordination; focusout preserves independently focused outside
+/// controls, and component teardown releases the retained surface and tasks.
 /// Category handles its own accepted keys and stops propagation, so outer Menu
 /// navigation cannot compete with its mounted child focus.
 /// Collapsed flyouts use a manual native popover and a unique CSS anchor for
@@ -3296,21 +2878,13 @@ pub fn MenuCategory(
     let category_owner = owner
         .clone()
         .unwrap_or_else(|| format!("ix-menu-category-standalone-{id}"));
-    let hover_coordinator = use_category_hover_coordinator();
     let category = use_hook(|| {
-        CategoryNavigation::new(
-            id,
-            category_owner,
-            expanded_signal,
-            panel,
-            flyout,
-            revision,
-            hover_coordinator.clone(),
-        )
+        CategoryNavigation::new(id, category_owner, expanded_signal, panel, flyout, revision)
     });
     let overlay_runtime = crate::overlay_runtime::use_overlay_runtime();
     let overlay_id = format!("ix-menu-category-overlay-{id}");
     let host_id = crate::dropdown::item_host_id(&attributes, &overlay_id);
+    *category.0.host_id.borrow_mut() = host_id.clone();
     let overlay_node = use_hook({
         let category = category.clone();
         let runtime = overlay_runtime.clone();
@@ -3344,35 +2918,10 @@ pub fn MenuCategory(
                             .ok()
                             .map(|value| *value == Some(core.id))
                     }),
-                    before: Rc::new(move |change| {
-                        let Some(core) = before.upgrade() else {
-                            return false;
-                        };
-                        if !core.model.borrow().alive {
-                            return false;
-                        }
-                        if !change.open {
-                            let capture =
-                                core.close_capture.borrow().clone().unwrap_or_else(|| {
-                                    let capture = core
-                                        .overlay
-                                        .borrow()
-                                        .as_ref()
-                                        .and_then(crate::overlay_runtime::NodeHandle::runtime)
-                                        .map(|runtime| runtime.category_close_capture());
-                                    let (connected, active_categories) =
-                                        capture.unwrap_or_default();
-                                    CategoryCloseCapture {
-                                        connected,
-                                        active_categories,
-                                    }
-                                });
-                            CategoryNavigation(core).authorize_dismiss_return(
-                                capture.connected,
-                                &capture.active_categories,
-                            );
-                        }
-                        true
+                    before: Rc::new(move |_| {
+                        before
+                            .upgrade()
+                            .is_some_and(|core| core.model.borrow().alive)
                     }),
                     apply: Rc::new(move |change| {
                         if let Some(core) = apply.upgrade() {
@@ -3380,7 +2929,17 @@ pub fn MenuCategory(
                             if change.open {
                                 category.present_state();
                             } else {
+                                let restore = category.keyboard_mode()
+                                    && category.0.model.borrow().focus_inside
+                                    && !matches!(
+                                        change.reason,
+                                        crate::overlay_runtime::Reason::Drop
+                                            | crate::overlay_runtime::Reason::Configuration
+                                    );
                                 category.close_flyout_state();
+                                if restore {
+                                    category.focus(None);
+                                }
                             }
                         }
                     }),
@@ -3399,10 +2958,6 @@ pub fn MenuCategory(
         category_cleanup.unregister_category(id);
         overlay_cleanup.unregister();
     });
-    hover_coordinator
-        .0
-        .borrow_mut()
-        .insert(id, Rc::downgrade(&category.0));
     if let Some(roving) = &root_roving {
         roving
             .model
@@ -3414,18 +2969,22 @@ pub fn MenuCategory(
     let cleanup_root = root_roving.clone();
     use_drop(move || {
         cleanup.clear_hover();
-        cleanup.0.hover_coordinator.0.borrow_mut().remove(&id);
+        // Dropping a Category releases its shared open state without trying to
+        // focus a parent that is being unmounted with this component.
+        if cleanup
+            .0
+            .flyout
+            .try_peek()
+            .is_ok_and(|open| *open == Some(id))
+        {
+            cleanup.close_flyout_state();
+        }
         let pending = {
             let mut model = cleanup.0.model.borrow_mut();
             model.alive = false;
             model.entry_focus = None;
             model.generation = model.generation.wrapping_add(1);
-            let mut pending = model
-                .return_tasks
-                .split_off("")
-                .into_values()
-                .flatten()
-                .collect::<Vec<_>>();
+            let mut pending = Vec::new();
             pending.extend(model.focus_task.take());
             pending
         };
@@ -3440,11 +2999,6 @@ pub fn MenuCategory(
     use_effect(move || {
         let _ = revision();
         reconcile.reconcile(expanded_signal(), flyout());
-    });
-    let return_jobs = category.clone();
-    use_effect(move || {
-        let _ = revision();
-        return_jobs.start_return_jobs();
     });
     let _ = revision();
     let expanded = expanded_signal();
@@ -3501,8 +3055,21 @@ pub fn MenuCategory(
     let dropdown_parent_key = item_host.clone();
     let mounted_id = host_id.clone();
     let mounted_parent_id = parent_id.clone();
+    let pointer_enter = category.clone();
+    let pointer_leave = category.clone();
+    let pointer_down = category.clone();
+    let focus_enter = category.clone();
+    let focus_leave = category.clone();
+    let flyout_enter = category.clone();
+    let popup_enter = category.clone();
     rsx! {
-        div { id:host_id.clone(),class:host_class,hidden,style:host_style,"data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
+        div { id:host_id.clone(),class:host_class,hidden,style:host_style,
+            onpointerenter:move |event|pointer_enter.pointer_enter(&event.pointer_type()),
+            onpointerleave:move |event|pointer_leave.pointer_leave(&event.pointer_type()),
+            onpointerdown:move |_|pointer_down.pointer_down(),
+            onfocusin:move |_|focus_enter.focus_enter(),
+            onfocusout:move |_|focus_leave.focus_leave(),
+            "data-menu-entry":owner.as_ref().map(|_|id.to_string()),"data-menu-owner":owner,
             "data-ix-item-kind":"category","data-ix-item-key":item_host.key,"data-ix-item-runtime":item_host.runtime.owner_id(),"data-ix-item-focusable":"true",
             "data-ix-overlay-root":overlay_id.clone(),"data-ix-overlay-owner":overlay_runtime.owner_id(),
             "data-ix-overlay-generation":"1","data-ix-overlay-open":popup_open.to_string(),"data-ix-overlay-anchor-id":host_id.clone(),"data-ix-overlay-items-host-id":host_id,"data-ix-overlay-native-surface":"category",
@@ -3522,7 +3089,6 @@ pub fn MenuCategory(
                 onmounted:move |event|{
                     mounted_host.mount_control(&mounted_id,&mounted_parent_id,event.data());
                     parent_mount.invalidate();
-                    parent_mount.cancel_return_jobs();
                     parent_mount.0.model.borrow_mut().parent=Some(event.data());
                     if let Some(roving)=&mount_roving {roving.mount(id,event.data());}
                     if let Some(context)=&mount_context {let mut order=context.prefix.clone();order.push(id);context.entries.borrow_mut().push(NavigationEntry{id,node:event.data(),enabled:Rc::new(Cell::new(true)),order});}
@@ -3547,6 +3113,7 @@ pub fn MenuCategory(
             div {id:content_id,role:"menu","aria-labelledby":parent_id.clone(),class:if panel_open{"ix-menu-category-items"}else{"ix-menu-category-flyout"},hidden:!is_open,
                 "data-ix-overlay-host":(!panel_open).then(||overlay_id.clone()),
                 "data-menu-category-panel":id.to_string(),"data-menu-category-popup":(!panel_open).then(||id.to_string()),"popover":(!panel_open).then_some("manual"),style:(!panel_open).then(||flyout_style.clone()),
+                onpointerenter:move |_|flyout_enter.flyout_enter(),
                 onkeydown:move |event|{child_key.key(event,false);},
                 div {class:"ix-menu-category-heading",hidden:panel_open,"{label}"}
                 div {"data-menu-category-body":id.to_string(),
@@ -3556,6 +3123,7 @@ pub fn MenuCategory(
             div {id:popup_id,role:"menu","aria-labelledby":parent_id,class:"ix-menu-category-flyout",hidden:!(panel_open&&popup_open),
                 "data-ix-overlay-host":panel_open.then(||overlay_id.clone()),
                 "data-menu-category-empty-popup":id.to_string(),"data-menu-category-popup":panel_open.then(||id.to_string()),"popover":"manual",style:flyout_style,
+                onpointerenter:move |_|popup_enter.flyout_enter(),
                 onkeydown:move |event|{popup_key.key(event,false);},
                 div {class:"ix-menu-category-heading","{label}"}
             }
@@ -3861,10 +3429,6 @@ pub(crate) const STYLES: &str = r#"
 @media(max-width:48em){.ix-theme .ix-pane-layout,.ix-theme .ix-pane-layout[data-layout=full-horizontal]{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto auto;grid-template-areas:'top' 'left' 'content' 'right' 'bottom'}.ix-theme .ix-pane-slot{position:static}.ix-theme .ix-pane-slot:is(.ix-pane-slot-left,.ix-pane-slot-right,.ix-pane-slot-top,.ix-pane-slot-bottom){width:auto;height:auto;min-height:48px}.ix-theme .ix-pane-slot:has(>.ix-pane[data-hide-on-collapse=true]){min-height:0}}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-menu{transition:none}}
 "#;
-
-#[cfg(test)]
-#[path = "application_document_tests.rs"]
-mod document_tests;
 
 #[cfg(test)]
 mod tests;

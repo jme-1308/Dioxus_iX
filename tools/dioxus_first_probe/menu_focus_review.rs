@@ -60,6 +60,10 @@ pub fn MenuFocusPreview() -> Element {
                                     }
                                     MenuItem { id:"r0215-last", label:"Equipment settings", icon:"cogwheel", close_on_select:false,
                                         onclick:move |_|last_action.set("Equipment settings".into()) }
+                                    MenuCategory { id:"r0218-secondary", label:"Maintenance group", icon:"cogwheel",
+                                        MenuItem { id:"r0218-secondary-child", label:"Review maintenance", close_on_select:false,
+                                            onclick:move |_|last_action.set("Review maintenance".into()) }
+                                    }
                                     if expanded() {
                                         div {class:"menu-focus-editing",
                                             label {r#for:"r0217-note","Navigation note"}
@@ -103,7 +107,7 @@ const STYLES: &str = "body{margin:0}.menu-focus-review{min-height:100vh;box-sizi
 const NATIVE_MENU_CHECK: &str = r#"
 await dioxus.recv();
 const byId=id=>document.getElementById(id),active=()=>document.activeElement;
-const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id);};
+const wait=async(label,predicate)=>{for(let n=0;n<220;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error(label+' focus='+active()?.id+' facts='+JSON.stringify(Array.from(document.querySelectorAll('#r0215-category [data-menu-category-child]')).map(n=>({id:n.id,hidden:n.hidden,tab:n.getAttribute('tabindex'),open:n.closest('[data-menu-category-root]')?.dataset.menuCategoryPopupOpen}))) );};
 const key=(node,value)=>{const event=new KeyboardEvent('keydown',{key:value,code:value,bubbles:true,cancelable:true});node.dispatchEvent(event);return event;};
 const root=()=>byId('r0215-stage').querySelector('[data-menu-root]'),bar=()=>root().querySelector('[role="menubar"]'),category=()=>byId('r0215-category'),parent=()=>category().querySelector('[data-ix-item-part="category-parent"]');
 const popup=()=>category().getAttribute('data-menu-category-popup-open')==='true',panel=()=>category().getAttribute('data-menu-category-panel-open')==='true';
@@ -119,7 +123,8 @@ byId('r0217-reorder').click();await wait('keyed root order published',()=>byId('
 bar().focus();key(bar(),'Home');await wait('Home follows keyed current order',()=>focused('r0215-history'));
 byId('r0217-reorder').click();await wait('root order restored',()=>byId('r0215-first').getAttribute('aria-posinset')==='1');
 bar().focus();key(bar(),'Home');await wait('Home follows restored order',()=>focused('r0215-first'));
-key(active(),'End');await wait('root End mounted focus',()=>focused('r0215-last'));
+key(active(),'End');await wait('root End mounted focus',()=>active()===byId('r0218-secondary').querySelector('[data-ix-item-part="category-parent"]'));
+key(active(),'ArrowUp');await wait('root previous item focus',()=>focused('r0215-last'));
 key(active(),'ArrowUp');await wait('root Category parent focus',()=>active()===parent());
 key(parent(),'Enter');await wait('collapsed Category entry',()=>popup()&&focused('r0215-child-one'));
 key(active(),'ArrowDown');await wait('collapsed child disabled skip',()=>focused('r0215-child-two'));
@@ -131,12 +136,29 @@ key(active(),' ');await wait('child Space returns mounted parent',()=>!popup()&&
 key(parent(),'Enter');await wait('Escape return setup',()=>popup()&&focused('r0215-child-one'));
 key(active(),'Escape');await wait('collapsed Escape returns parent',()=>!popup()&&active()===parent());
 await wait('Category keyboard cue',parentCue);
-category().dispatchEvent(new PointerEvent('pointerenter',{pointerType:'mouse',relatedTarget:byId('r0215-outside')}));
-await wait('collapsed hover opens flyout',popup);
+const pointer=(node,type,pointerType='mouse')=>node.dispatchEvent(new PointerEvent(type,{pointerType}));
+const flyout=()=>category().querySelector('[popover]');
+pointer(category(),'pointerenter');await wait('collapsed hover opens flyout',popup);
+pointer(category(),'pointerleave');pointer(flyout(),'pointerenter');
+await new Promise(resolve=>setTimeout(resolve,400));
+if(!popup())throw new Error('host to flyout handoff lost surface');
+pointer(flyout(),'pointerleave');pointer(category(),'pointerenter');
+await new Promise(resolve=>setTimeout(resolve,400));
+if(!popup())throw new Error('host reentry lost surface');
 key(parent(),'ArrowDown');await wait('hover return eligible child focus',()=>focused('r0215-child-one'));
 category().dispatchEvent(new PointerEvent('pointerleave',{pointerType:'mouse',relatedTarget:byId('r0215-outside')}));
 await wait('hover dismissal returns eligible mounted parent',()=>!popup()&&active()===parent());
-key(parent(),'F2');await wait('expanded mode',()=>root().getAttribute('data-expanded')==='true'&&!popup());
+pointer(category(),'pointerenter');await wait('sibling setup hover',popup);
+const secondary=byId('r0218-secondary'),secondaryOpen=()=>secondary.getAttribute('data-menu-category-popup-open')==='true';
+pointer(secondary,'pointerenter');await wait('sibling ownership closes old Category',()=>!popup()&&secondaryOpen());
+pointer(secondary,'pointerleave');await wait('sibling hover closes',()=>!secondaryOpen());
+pointer(category(),'pointerenter','touch');await wait('touch opens collapsed Category',popup);pointer(category(),'pointerleave','touch');
+await new Promise(resolve=>setTimeout(resolve,400));
+if(!popup())throw new Error('touch leave depended on hover grace');
+key(parent(),'ArrowDown');await wait('keyboard still enters after touch',()=>popup()&&focused('r0215-child-one'));
+key(active(),'Escape');await wait('keyboard closes after touch',()=>!popup()&&active()===parent());
+pointer(category(),'pointerenter');await wait('mode change pending hover setup',popup);pointer(category(),'pointerleave');
+byId('r0215-mode').click();await wait('expanded mode',()=>root().getAttribute('data-expanded')==='true'&&!popup());
 parent().click();await wait('expanded Category panel open',panel);
 parent().focus();key(parent(),'ArrowDown');await wait('expanded panel entry',()=>panel()&&focused('r0215-child-one'));
 key(active(),'ArrowUp');await wait('expanded child wrap Up',()=>focused('r0215-child-two'));
@@ -155,5 +177,5 @@ byId('r0215-remount').click();outside.focus();
 await wait('fresh mounted Menu and Category',()=>root()!==oldRoot&&parent()!==oldParent&&+byId('r0215-state').dataset.generation===generation+1&&ready());
 if(active()!==outside)throw new Error('remount stole independent focus');
 bar().focus();key(bar(),'Home');await wait('fresh root navigation uses current mount',()=>focused('r0215-first'));
-return {ok:true,root:{home:true,end:true,upDown:true,disabledHiddenSkip:true,keyedCurrentOrder:true,nativeFieldDefaults:true},collapsed:{entry:true,childNavigation:true,enterReturn:true,spaceReturn:true,escapeReturn:true},expanded:{entry:true,wrap:true,escapeReturn:true},hoverEligibleReturn:true,categoryCue:true,childRemovalRemount:true,ownerRemount:true,cueWrites:0,rootOutline:getComputedStyle(active()).outlineWidth};
+return {ok:true,root:{home:true,end:true,upDown:true,disabledHiddenSkip:true,keyedCurrentOrder:true,nativeFieldDefaults:true},collapsed:{entry:true,childNavigation:true,enterReturn:true,spaceReturn:true,escapeReturn:true},expanded:{entry:true,wrap:true,escapeReturn:true},hoverEligibleReturn:true,hoverHandoffReentry:true,siblingOwnership:true,touchKeyboard:true,pendingHoverModeChange:true,categoryCue:true,childRemovalRemount:true,ownerRemount:true,cueWrites:0,rootOutline:getComputedStyle(active()).outlineWidth};
 "#;

@@ -18,7 +18,6 @@ struct FixtureState {
     open: Option<Signal<bool>>,
     calls: Vec<(String, bool)>,
     applied: Vec<Change>,
-    captures: Vec<Option<Vec<usize>>>,
 }
 
 #[derive(Clone)]
@@ -43,7 +42,6 @@ impl Fixture {
             open: None,
             calls: Vec::new(),
             applied: Vec::new(),
-            captures: Vec::new(),
         })))
     }
 
@@ -102,13 +100,11 @@ fn owner_root(fixture: Fixture) -> Element {
                 }),
                 before: Rc::new(move |change| {
                     assert_owner(&before_owner, scope, token);
-                    let capture = WINDOW_CAPTURE.with(|slot| slot.borrow().clone());
                     let fixture = before_fixture
                         .upgrade()
                         .expect("registered fixture is live");
                     let mut state = fixture.borrow_mut();
                     state.calls.push(("before".into(), change.open));
-                    state.captures.push(capture);
                     !veto.get()
                 }),
                 apply: Rc::new(move |change| {
@@ -169,7 +165,6 @@ fn observe(
         "phase": if window_sequence == 0 { "" } else { "window" },
         "key": "Escape",
         "default_prevented": prevented,
-        "active_categories": [73],
         "hosts": [],
         "triggers": [],
         "nodes": ids.iter().map(|id| serde_json::json!({
@@ -190,7 +185,6 @@ fn present(dom: &VirtualDom, fixture: &Fixture) {
         assert!(fixture.node().request(true, Reason::Trigger, false));
     });
     fixture.0.borrow_mut().calls.clear();
-    fixture.0.borrow_mut().captures.clear();
 }
 
 #[test]
@@ -336,7 +330,6 @@ fn window_escape_deduplicates_across_real_roots_ignores_prevention_and_retains_v
         b.0.borrow().calls,
         [("before".into(), false), ("apply".into(), false)]
     );
-    assert_eq!(b.0.borrow().captures, [Some(vec![73])]);
     observe(
         &dom_b,
         &b,
@@ -362,12 +355,7 @@ fn window_escape_deduplicates_across_real_roots_ignores_prevention_and_retains_v
     );
     assert!(a.open() && !b.open() && c.open());
     assert_eq!(a.0.borrow().calls, [("before".into(), false)]);
-    assert_eq!(a.0.borrow().captures, [Some(vec![73])]);
     assert!(c.0.borrow().calls.is_empty());
-    assert!(
-        WINDOW_CAPTURE.with(|slot| slot.borrow().is_none()),
-        "synchronous capture is released after routing"
-    );
 
     let domain = a.runtime().domain().unwrap();
     let weak_b = Rc::downgrade(&b.runtime().0);

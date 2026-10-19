@@ -50,6 +50,71 @@ impl dioxus::html::HasMouseData for MenuTestMouse {
         self
     }
 }
+struct MenuTestPointer(String);
+impl dioxus::html::InteractionLocation for MenuTestPointer {
+    fn client_coordinates(&self) -> dioxus::html::geometry::ClientPoint {
+        Default::default()
+    }
+    fn page_coordinates(&self) -> dioxus::html::geometry::PagePoint {
+        Default::default()
+    }
+    fn screen_coordinates(&self) -> dioxus::html::geometry::ScreenPoint {
+        Default::default()
+    }
+}
+impl dioxus::html::InteractionElementOffset for MenuTestPointer {
+    fn element_coordinates(&self) -> dioxus::html::geometry::ElementPoint {
+        Default::default()
+    }
+}
+impl dioxus::html::ModifiersInteraction for MenuTestPointer {
+    fn modifiers(&self) -> Modifiers {
+        Modifiers::empty()
+    }
+}
+impl dioxus::html::PointerInteraction for MenuTestPointer {
+    fn trigger_button(&self) -> Option<dioxus::html::input_data::MouseButton> {
+        None
+    }
+    fn held_buttons(&self) -> dioxus::html::input_data::MouseButtonSet {
+        Default::default()
+    }
+}
+impl dioxus::html::HasPointerData for MenuTestPointer {
+    fn pointer_id(&self) -> i32 {
+        1
+    }
+    fn width(&self) -> f64 {
+        1.0
+    }
+    fn height(&self) -> f64 {
+        1.0
+    }
+    fn pressure(&self) -> f32 {
+        0.0
+    }
+    fn tangential_pressure(&self) -> f32 {
+        0.0
+    }
+    fn tilt_x(&self) -> i32 {
+        0
+    }
+    fn tilt_y(&self) -> i32 {
+        0
+    }
+    fn twist(&self) -> i32 {
+        0
+    }
+    fn pointer_type(&self) -> String {
+        self.0.clone()
+    }
+    fn is_primary(&self) -> bool {
+        true
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 struct MenuTestForm(String);
 impl dioxus::html::HasFileData for MenuTestForm {
     fn files(&self) -> Vec<dioxus::html::FileData> {
@@ -230,6 +295,7 @@ macro_rules! menu_test_converter {
             let (key,modifiers)=match $event.downcast::<(Key,Modifiers)>() {Some((key,modifiers))=>(key.clone(),*modifiers),None=>($event.downcast::<Key>().unwrap().clone(),Modifiers::empty())};
             dioxus::html::KeyboardData::new(MenuTestKeyboard(key,modifiers))
         }};
+        (@data Pointer,$event:ident) => {dioxus::html::PointerData::new(MenuTestPointer($event.downcast::<String>().unwrap().clone()))};
         (@data Form,$event:ident) => {dioxus::html::FormData::new(MenuTestForm($event.downcast::<String>().unwrap().clone()))};
         (@data Focus,$event:ident) => {dioxus::html::FocusData::new(MenuTestFocus)};
         (@data Toggle,$event:ident) => {dioxus::html::ToggleData::new(AppSwitchTestToggle)};
@@ -246,7 +312,13 @@ fn menu_dispatch(
     let data: Rc<dyn std::any::Any> =
         Rc::new(dioxus::html::PlatformEventData::new(Box::new(payload)));
     // Native focus and mounted notifications do not bubble.
-    let event = Event::new(data, !matches!(name, "focus" | "blur" | "mounted"));
+    let event = Event::new(
+        data,
+        !matches!(
+            name,
+            "focus" | "blur" | "mounted" | "pointerenter" | "pointerleave"
+        ),
+    );
     dom.runtime().handle_event(name, event.clone(), id);
     (!event.default_action_enabled(), event.propagates())
 }
@@ -541,7 +613,6 @@ struct MenuHarness {
     config: Rc<RefCell<MenuFixtureConfig>>,
     context: MenuRoving,
     input: dioxus::core::ElementId,
-    hover_inputs: BTreeMap<String, dioxus::core::ElementId>,
     bar: dioxus::core::ElementId,
     toggle: dioxus::core::ElementId,
     controls: BTreeMap<String, (dioxus::core::ElementId, usize)>,
@@ -612,18 +683,6 @@ impl MenuHarness {
                     .is_some_and(|attrs| attrs.contains_key("data-menu-observer"))
             })
             .unwrap();
-        let hover_inputs = inputs
-            .iter()
-            .filter_map(|id| {
-                Some((
-                    attributes
-                        .get(&id.raw())?
-                        .get("data-menu-hover-observer")?
-                        .clone(),
-                    *id,
-                ))
-            })
-            .collect();
         let target = |label: &str| {
             attributes
                 .iter()
@@ -656,7 +715,6 @@ impl MenuHarness {
             config,
             context,
             input,
-            hover_inputs,
             bar,
             toggle,
             controls,
@@ -887,65 +945,49 @@ impl MenuHarness {
         let owner = self.context.model.borrow().owner.clone();
         self.raw(serde_json::json!({"owner":owner,"kind":kind,"key":key,"category":self.id(category),"child":child.map(|label|self.id(label)),"category_parent":child.is_none(),"sequence":sequence,"shift":false,"category_items":items,"items":[]}))
     }
-    fn hover(
-        &mut self,
-        label: &str,
-        surface: &str,
-        kind: &str,
-        sequence: u64,
-        pointer: &str,
-        related: &[&str],
-    ) -> (bool, bool) {
-        let category = self.hover_category(label);
-        let mut message = serde_json::json!({"owner":category.0.owner,"category":category.0.id,"surface":surface,"kind":kind,"sequence":sequence,"pointer_type":pointer});
-        for name in related {
-            message[*name] = serde_json::Value::Bool(true);
-        }
-        let target = self.hover_inputs[&category.0.owner];
-        let flags = menu_dispatch(&self.dom, "input", target, message.to_string());
+    fn category_surface(&self, label: &str, surface: &str) -> dioxus::core::ElementId {
+        let id = self.id(label).to_string();
+        let attribute = if surface == "host" {
+            "data-menu-category-root"
+        } else {
+            "data-menu-category-panel"
+        };
+        self.attributes
+            .iter()
+            .find(|(_, attributes)| attributes.get(attribute) == Some(&id))
+            .map(|(target, _)| dioxus::core::ElementId::from_raw(*target))
+            .unwrap()
+    }
+    fn pointer(&mut self, label: &str, surface: &str, event: &str, pointer: &str) -> (bool, bool) {
+        let target = self.category_surface(label, surface);
+        let flags = menu_dispatch(&self.dom, event, target, pointer.to_string());
         self.settle();
         flags
     }
-    fn document_mode(&mut self, kind: &str, key: &str, sequence: u64) {
-        let owner = self.context.model.borrow().owner.clone();
-        let target = self.hover_inputs[&owner];
-        let coordinator = self
-            .dom
-            .in_scope(ScopeId::ROOT, consume_context::<CategoryHoverCoordinator>);
-        let document_owner = coordinator.1.borrow().document_owner.clone();
-        menu_dispatch(&self.dom, "input", target, serde_json::json!({"owner":document_owner,"entries":[{"kind":kind,"key":key,"sequence":sequence}]}).to_string());
+    fn focus_control(&mut self, label: &str) {
+        menu_dispatch(&self.dom, "focus", self.target(label), ());
+        menu_dispatch(&self.dom, "focusin", self.target(label), ());
         self.settle();
     }
-    fn hover_active(&mut self, label: &str, kind: &str, sequence: u64, active: &[usize]) {
-        let category = self.hover_category(label);
-        let target = self.hover_inputs[&category.0.owner];
-        menu_dispatch(&self.dom, "input", target, serde_json::json!({"owner":category.0.owner,"category":category.0.id,"surface":"host","kind":kind,"pointer_type":"mouse","sequence":sequence,"active_categories":active}).to_string());
-        self.settle();
-    }
-    fn focus_boundary(&self, label: &str) -> CategoryFocusTest {
-        let test = CategoryFocusTest::default();
-        test.connected.set(true);
-        test.capture.ready.set(true);
-        self.category(label).0.model.borrow_mut().focus_test = Some(test.clone());
-        test
-    }
-    fn release_focus_gate(&mut self, gate: &CategoryFocusGate) {
-        gate.ready.set(true);
-        let wakes = std::mem::take(&mut *gate.wakes.borrow_mut());
-        for wake in wakes {
-            wake.wake();
-        }
-        self.settle();
-    }
-    fn hover_category(&self, label: &str) -> CategoryNavigation {
-        let coordinator = self.category("Category").0.hover_coordinator.clone();
-        let core = coordinator
-            .0
-            .borrow()
-            .get(&self.id(label))
-            .and_then(std::rc::Weak::upgrade)
+    fn shared_modality(&mut self, label: &str, keyboard: bool) {
+        let category = self.category(label);
+        let node = category.0.overlay.borrow().as_ref().unwrap().clone();
+        let runtime = node.runtime().unwrap();
+        let owner = runtime.owner_id();
+        let transport = self
+            .attributes
+            .iter()
+            .find(|(_, attributes)| attributes.get("data-ix-overlay-transport") == Some(&owner))
+            .map(|(id, _)| dioxus::core::ElementId::from_raw(*id))
             .unwrap();
-        CategoryNavigation(core)
+        menu_dispatch(&self.dom, "input", transport, serde_json::json!({
+            "owner": owner, "document": format!("category-fixture-{owner}"),
+            "sequence": 1, "kind":"modality", "input_kind":if keyboard {"keydown"} else {"mousedown"},
+            "key":if keyboard {"Tab"} else {""},
+            "nodes":[{"id":node.id(),"generation":node.generation(),"connected":true}]
+        }).to_string());
+        self.settle();
+        assert_eq!(runtime.keyboard_mode(), keyboard);
     }
     fn hover_clock(&self, label: &str) -> CategoryHoverClock {
         let clock = CategoryHoverClock::default();
@@ -1364,340 +1406,6 @@ fn menu_navigation_pending_focus_is_invalidated_by_newer_key_removal_and_unmount
 }
 
 #[test]
-fn menu_category_hover_focus_document_mode_uses_exact_bubble_keys_and_owner_sequences() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    let category = h.category("Category");
-    let coordinator = category.0.hover_coordinator.clone();
-    assert!(!coordinator.keyboard());
-    let mut sequence = 0;
-    for key in [
-        "Tab",
-        "ArrowDown",
-        "Space",
-        "Escape",
-        " ",
-        "Shift",
-        "Enter",
-        "ArrowLeft",
-        "ArrowRight",
-        "ArrowUp",
-        "Home",
-        "End",
-    ] {
-        sequence += 1;
-        h.document_mode("keydown", key, sequence);
-        assert!(coordinator.keyboard(), "{key}");
-        sequence += 1;
-        h.document_mode("mousedown", "", sequence);
-        assert!(!coordinator.keyboard());
-    }
-    sequence += 1;
-    h.document_mode("keydown", "Enter", sequence);
-    h.document_mode("touchstart", "", sequence - 1);
-    assert!(coordinator.keyboard(), "old reports cannot reset mode");
-    sequence += 1;
-    h.document_mode("keydown", "x", sequence);
-    assert!(coordinator.keyboard(), "ordinary keys do not reset mode");
-    sequence += 1;
-    h.document_mode("touchstart", "", sequence);
-    assert!(!coordinator.keyboard());
-    let owner = category.0.owner.clone();
-    h.config.borrow_mut().visible = false;
-    h.update();
-    assert!(!coordinator.1.borrow().owners.contains_key(&owner));
-    h.document_mode("keydown", "Enter", sequence + 1);
-    assert!(
-        !coordinator.keyboard(),
-        "disposed owner reports are rejected"
-    );
-}
-
-#[test]
-fn menu_category_document_journal_preserves_gap_keys_before_later_ignored_inputs_and_replays() {
-    let coordinator = CategoryHoverCoordinator::default();
-    let owner = coordinator.1.borrow().document_owner.clone();
-    let batch = |owner: &str, entries: &[(u64, &str, &str)]| CategoryDocumentBatch {
-        owner: owner.to_string(),
-        entries: entries
-            .iter()
-            .map(|&(sequence, kind, key)| CategoryDocumentInput {
-                sequence,
-                kind: kind.into(),
-                key: key.into(),
-            })
-            .collect(),
-    };
-    assert!(coordinator.1.borrow().owners.is_empty());
-    // A live bootstrap may overtake the async root stream. It carries the
-    // unacknowledged gap key as well as the newer irrelevant key.
-    assert_eq!(
-        coordinator.document_observation(batch(
-            &owner,
-            &[(1, "keydown", "Tab"), (2, "keydown", "x"),]
-        )),
-        Some(2)
-    );
-    assert!(coordinator.keyboard());
-    coordinator.document_observation(batch(&owner, &[(1, "mousedown", "")]));
-    assert!(
-        coordinator.keyboard(),
-        "late async replay cannot undo newer state"
-    );
-    coordinator.document_observation(batch(
-        &owner,
-        &[
-            (2, "keydown", "x"),
-            (3, "touchstart", ""),
-            (4, "keydown", "x"),
-        ],
-    ));
-    assert!(
-        !coordinator.keyboard(),
-        "later ignored key must not erase earlier reset"
-    );
-    assert_eq!(
-        coordinator.document_observation(batch("wrong-root", &[(99, "keydown", "Tab")])),
-        None
-    );
-    assert_eq!(coordinator.1.borrow().document_sequence, 4);
-    coordinator.document_observation(batch(&owner, &[(99, "pointermove", "")]));
-    assert_eq!(
-        coordinator.1.borrow().document_sequence,
-        4,
-        "unrecognized transport kind cannot supersede input"
-    );
-    coordinator.document_observation(batch(&owner, &[(5, "keydown", "Home")]));
-    assert!(coordinator.keyboard());
-}
-
-#[test]
-fn menu_category_document_mode_survives_zero_owners_and_is_inherited_by_fresh_menu() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    let original = h.category("Category");
-    let coordinator = original.0.hover_coordinator.clone();
-    let owner = coordinator.1.borrow().document_owner.clone();
-    h.config.borrow_mut().visible = false;
-    h.update();
-    assert!(coordinator.1.borrow().owners.is_empty());
-    assert!(coordinator.0.borrow().is_empty());
-    assert!(!original.0.model.borrow().alive);
-    let ack = coordinator.document_observation(CategoryDocumentBatch {
-        owner: owner.clone(),
-        entries: vec![
-            CategoryDocumentInput {
-                sequence: 1,
-                kind: "keydown".into(),
-                key: "Tab".into(),
-            },
-            CategoryDocumentInput {
-                sequence: 2,
-                kind: "keydown".into(),
-                key: "x".into(),
-            },
-        ],
-    });
-    assert_eq!(ack, Some(2));
-    h.config.borrow_mut().visible = true;
-    h.update();
-    let new_root = h
-        .dom
-        .in_scope(ScopeId::ROOT, consume_context::<CategoryHoverCoordinator>);
-    assert!(Rc::ptr_eq(&coordinator.1, &new_root.1));
-    assert!(new_root.keyboard());
-    assert_eq!(new_root.1.borrow().document_owner, owner);
-    let fresh = new_root
-        .0
-        .borrow()
-        .values()
-        .filter_map(std::rc::Weak::upgrade)
-        .collect::<Vec<_>>();
-    assert_eq!(fresh.len(), 2);
-    assert!(
-        fresh
-            .iter()
-            .all(|category| category.model.borrow().alive && category.id != original.0.id)
-    );
-    assert!(
-        fresh
-            .iter()
-            .all(|category| category.hover_coordinator.keyboard())
-    );
-}
-
-#[test]
-fn menu_category_document_sequence_is_independent_of_pointer_transport_and_menu_owners() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    let category = h.category("Category");
-    let coordinator = category.0.hover_coordinator.clone();
-    h.document_mode("keydown", "Tab", 1);
-    h.hover("Category", "host", "enter", 500, "mouse", &[]);
-    h.document_mode("mousedown", "", 2);
-    assert!(
-        !coordinator.keyboard(),
-        "a larger pointer sequence cannot block document reset"
-    );
-    h.document_mode("keydown", "Enter", 3);
-    assert!(coordinator.keyboard());
-    let owner = category.0.owner.clone();
-    let target = h.hover_inputs[&owner];
-    let doc_owner = coordinator.1.borrow().document_owner.clone();
-    coordinator.unregister_owner(&owner);
-    menu_dispatch(
-        &h.dom,
-        "input",
-        target,
-        serde_json::json!({"owner":doc_owner,"entries":[{"sequence":4,"kind":"touchstart"}]})
-            .to_string(),
-    );
-    assert!(
-        coordinator.keyboard(),
-        "a disposed live Menu transport cannot modify root state"
-    );
-    coordinator.document_observation(CategoryDocumentBatch {
-        owner: doc_owner,
-        entries: vec![CategoryDocumentInput {
-            sequence: 4,
-            kind: "touchstart".into(),
-            key: String::new(),
-        }],
-    });
-    assert!(
-        !coordinator.keyboard(),
-        "root stream remains authorized without that Menu owner"
-    );
-}
-
-#[test]
-fn menu_category_hover_focus_timer_captures_current_dom_before_dismissal_and_reentry_cancels_read()
-{
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let clock = h.hover_clock("Category");
-    let test = h.focus_boundary("Category");
-    test.capture.ready.set(false);
-    test.active_categories.borrow_mut().push(category.0.id);
-    h.document_mode("keydown", "Enter", 1);
-    h.hover("Category", "host", "enter", 2, "mouse", &[]);
-    h.hover("Category", "host", "leave", 3, "mouse", &[]);
-    h.advance_hover(&clock, 250);
-    assert_eq!(test.capture.started.get(), 1);
-    assert!(
-        category.is_open(),
-        "do not hide before fresh native capture"
-    );
-    test.active_categories.borrow_mut().clear();
-    h.release_focus_gate(&test.capture);
-    assert!(!category.is_open());
-    assert!(
-        category.0.model.borrow().return_tasks.is_empty(),
-        "outside at capture cannot request focus return"
-    );
-    test.capture.ready.set(false);
-    h.hover("Category", "host", "enter", 4, "mouse", &[]);
-    h.hover("Category", "host", "leave", 5, "mouse", &[]);
-    h.advance_hover(&clock, 250);
-    assert_eq!(test.capture.started.get(), 2);
-    h.hover("Category", "host", "enter", 6, "mouse", &[]);
-    assert_eq!(
-        test.capture.canceled.get(),
-        1,
-        "reentry releases pending native read"
-    );
-    test.active_categories.borrow_mut().push(category.0.id);
-    h.release_focus_gate(&test.capture);
-    assert!(category.is_open());
-    assert_eq!(test.execution.started.get(), 0);
-    test.capture.ready.set(false);
-    h.hover("Category", "host", "leave", 7, "mouse", &[]);
-    h.advance_hover(&clock, 250);
-    assert_eq!(test.capture.started.get(), 3);
-    h.config.borrow_mut().category_present = false;
-    h.update();
-    assert_eq!(
-        test.capture.canceled.get(),
-        2,
-        "category drop releases Menu-owned native read"
-    );
-    h.release_focus_gate(&test.capture);
-    assert_eq!(test.execution.started.get(), 0);
-}
-
-#[test]
-fn menu_category_hover_focus_return_is_cancelled_by_reopen_and_mode_change() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let clock = h.hover_clock("Category");
-    let test = h.focus_boundary("Category");
-    test.active_categories.borrow_mut().push(category.0.id);
-    h.document_mode("keydown", "Tab", 1);
-    h.hover("Category", "host", "enter", 2, "mouse", &[]);
-    h.hover("Category", "host", "leave", 3, "mouse", &[]);
-    h.advance_hover(&clock, 250);
-    assert!(!category.is_open());
-    assert_eq!(test.execution.started.get(), 1);
-    assert_eq!(category.0.model.borrow().return_tasks.len(), 1);
-    h.hover("Category", "host", "enter", 4, "mouse", &[]);
-    assert_eq!(test.execution.canceled.get(), 1);
-    assert!(category.0.model.borrow().return_tasks.is_empty());
-    h.hover("Category", "host", "leave", 5, "mouse", &[]);
-    h.advance_hover(&clock, 250);
-    assert_eq!(test.execution.started.get(), 2);
-    h.toggle_expanded();
-    assert_eq!(test.execution.canceled.get(), 2);
-    h.focuses.borrow_mut().push(usize::MAX);
-    h.release_focus_gate(&test.execution);
-    assert_eq!(
-        h.focuses.borrow().last().copied(),
-        Some(usize::MAX),
-        "obsolete return cannot steal focus after a newer presentation"
-    );
-    assert!(category.0.model.borrow().return_tasks.is_empty());
-}
-
-#[test]
-fn menu_category_overlay_controller_close_authorizes_return_but_property_hide_does_not() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let test = h.focus_boundary("Category");
-    h.document_mode("keydown", "Enter", 1);
-    h.hover("Category", "host", "enter", 2, "mouse", &[]);
-    let node = category.0.overlay.borrow().clone().unwrap();
-    *category.0.close_capture.borrow_mut() = Some(CategoryCloseCapture {
-        connected: true,
-        active_categories: vec![category.0.id],
-    });
-    assert!(node.request(false, crate::overlay_runtime::Reason::Escape, false));
-    category.0.close_capture.borrow_mut().take();
-    h.settle();
-    assert!(!category.is_open());
-    assert_eq!(
-        test.execution.started.get(),
-        1,
-        "controller before phase authorizes one return"
-    );
-    h.release_focus_gate(&test.execution);
-    assert_eq!(h.focuses.borrow().last().copied(), Some(category.0.id));
-    h.hover("Category", "host", "enter", 3, "mouse", &[]);
-    category.close_flyout();
-    h.settle();
-    assert!(!category.is_open());
-    assert_eq!(
-        test.execution.started.get(),
-        1,
-        "property hide bypasses request observation"
-    );
-}
-
-#[test]
 fn menu_category_overlay_anchor_does_not_install_a_generic_trigger() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
@@ -1711,36 +1419,12 @@ fn menu_category_overlay_anchor_does_not_install_a_generic_trigger() {
     )));
     assert!(!html.contains(&format!("data-ix-overlay-trigger=\"{overlay_id}\"")));
     h.toggle_expanded();
-    h.hover("Category", "host", "enter", 1, "mouse", &[]);
+    h.pointer("Category", "host", "pointerenter", "mouse");
     assert!(category.is_open());
     assert!(
         h.html()
             .contains(&format!("data-ix-overlay-host=\"{overlay_id}\""))
     );
-}
-
-#[test]
-fn menu_category_hover_focus_sibling_captures_global_focus_before_overwrite_but_closed_owners_do_not_return()
- {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let test = h.focus_boundary("Category");
-    h.document_mode("keydown", "Enter", 1);
-    h.hover("Category", "host", "enter", 2, "mouse", &[]);
-    h.hover_active("Second category", "enter", 3, &[category.0.id]);
-    assert_eq!(test.execution.started.get(), 1);
-    assert!(h.category("Second category").is_open());
-    assert!(!category.is_open());
-    h.hover_active("Second category", "enter", 4, &[category.0.id]);
-    assert_eq!(
-        category.0.model.borrow().return_tasks.len(),
-        1,
-        "closed controller does not emit another false request"
-    );
-    h.release_focus_gate(&test.execution);
-    assert_eq!(h.focuses.borrow().last().copied(), Some(category.0.id));
 }
 
 #[test]
@@ -1782,337 +1466,6 @@ fn menu_category_collapsed_escape_closes_and_returns_through_one_dioxus_key() {
     assert_eq!(h.config.borrow().activations, 0);
 }
 
-#[test]
-fn menu_category_hover_focus_property_hide_has_no_return_and_owned_jobs_cancel_on_category_drop() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let test = h.focus_boundary("Category");
-    h.document_mode("keydown", "Enter", 1);
-    h.hover("Category", "host", "enter", 2, "mouse", &[]);
-    let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.raw(serde_json::json!({"owner":category.0.owner,"kind":"category-outside","category":category.0.id,"sequence":1,"inside":false,"outside_cause":"focusout","active_categories":[category.0.id],"category_items":facts,"items":[]}));
-    assert!(!category.is_open());
-    assert_eq!(
-        test.execution.started.get(),
-        0,
-        "property focusout hide is not controller dismissal"
-    );
-    h.hover("Category", "host", "enter", 3, "mouse", &[]);
-    let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.raw(serde_json::json!({"owner":category.0.owner,"kind":"category-outside","category":category.0.id,"sequence":2,"inside":false,"outside_cause":"click","active_categories":[category.0.id],"category_items":facts,"items":[]}));
-    assert_eq!(
-        test.execution.started.get(),
-        1,
-        "outside click uses controller request path"
-    );
-    h.config.borrow_mut().category_present = false;
-    h.update();
-    assert_eq!(
-        test.execution.canceled.get(),
-        1,
-        "Menu-owned return future released on category-only drop"
-    );
-    assert!(category.0.model.borrow().return_tasks.is_empty());
-    h.focuses.borrow_mut().clear();
-    h.release_focus_gate(&test.execution);
-    assert!(h.focuses.borrow().is_empty());
-}
-
-#[test]
-fn menu_category_hover_outside_deadline_restart_and_reentry_are_owned() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let clock = h.hover_clock("Category");
-    let focus_before = h.focuses.borrow().len();
-    assert_eq!(
-        h.hover("Category", "host", "enter", 1, "mouse", &[]),
-        (false, true)
-    );
-    assert!(category.is_open());
-    assert_eq!(
-        h.focuses.borrow().len(),
-        focus_before,
-        "hover presentation does not request focus"
-    );
-    h.hover("Category", "host", "leave", 2, "mouse", &[]);
-    assert_eq!(clock.started.get(), 1);
-    h.advance_hover(&clock, 104);
-    assert!(category.is_open());
-    h.hover("Category", "host", "enter", 3, "mouse", &[]);
-    assert_eq!(
-        clock.canceled.get(),
-        1,
-        "reentry drops already-started delay"
-    );
-    h.advance_hover(&clock, 400);
-    assert!(category.is_open());
-    h.hover("Category", "host", "leave", 4, "mouse", &[]);
-    h.advance_hover(&clock, 130);
-    h.hover("Category", "host", "leave", 5, "mouse", &[]);
-    assert_eq!(
-        clock.canceled.get(),
-        2,
-        "true outside leave replaces older delay"
-    );
-    h.advance_hover(&clock, 120);
-    assert!(
-        category.is_open(),
-        "old deadline must not close restarted timer"
-    );
-    h.advance_hover(&clock, 130);
-    assert!(!category.is_open());
-    assert!(category.0.model.borrow().hide_task.is_none());
-}
-#[test]
-fn menu_category_hover_internal_and_touch_leave_retain_old_timer_but_flyout_entry_clears() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let clock = h.hover_clock("Category");
-    h.hover("Category", "host", "enter", 1, "touch", &[]);
-    assert!(category.is_open(), "touch opening is not exempt");
-    h.hover("Category", "host", "leave", 2, "touch", &[]);
-    assert!(category.0.model.borrow().hide_task.is_none());
-    h.hover("Category", "host", "leave", 3, "mouse", &[]);
-    h.advance_hover(&clock, 80);
-    let epoch = category.0.model.borrow().hover_epoch;
-    let key_generation = category.0.model.borrow().generation;
-    for (sequence, membership) in [
-        (4, "related_host"),
-        (5, "related_host_shadow"),
-        (6, "related_flyout"),
-        (7, "related_flyout_shadow"),
-    ] {
-        h.hover(
-            "Category",
-            "host",
-            "leave",
-            sequence,
-            "mouse",
-            &["related_is_node", membership],
-        );
-        assert_eq!(category.0.model.borrow().hover_epoch, epoch);
-    }
-    h.hover("Category", "host", "leave", 8, "touch", &[]);
-    assert_eq!(category.0.model.borrow().hover_epoch, epoch);
-    assert_eq!(
-        category.0.model.borrow().generation,
-        key_generation,
-        "pointer membership does not mutate keyboard generation"
-    );
-    h.advance_hover(&clock, 170);
-    assert!(
-        !category.is_open(),
-        "inside and touch leave must not cancel an old mouse timeout"
-    );
-    h.hover("Category", "host", "enter", 9, "mouse", &[]);
-    h.hover("Category", "host", "leave", 10, "mouse", &[]);
-    h.advance_hover(&clock, 80);
-    h.hover("Category", "flyout", "enter", 11, "mouse", &[]);
-    h.advance_hover(&clock, 400);
-    assert!(category.is_open());
-    assert!(category.0.model.borrow().hide_task.is_none());
-    h.hover("Category", "host", "leave", 12, "mouse", &["related_host"]);
-    assert!(
-        category.0.model.borrow().hide_task.is_some(),
-        "non-Node related target is outside despite forged membership bit"
-    );
-}
-#[test]
-fn menu_category_hover_own_id_sibling_and_category_drop_do_not_leak_menu_owned_task() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let clock = h.hover_clock("Category");
-    h.hover("Category", "host", "enter", 1, "mouse", &[]);
-    h.hover("Category", "host", "leave", 2, "mouse", &[]);
-    let epoch = category.0.model.borrow().hover_epoch;
-    h.dom
-        .in_runtime(|| category.0.hover_coordinator.broadcast(category.0.id, &[]));
-    assert_eq!(
-        category.0.model.borrow().hover_epoch,
-        epoch,
-        "own-ID skip happens before clear"
-    );
-    h.advance_hover(&clock, 250);
-    assert!(!category.is_open());
-    h.hover("Category", "host", "enter", 3, "mouse", &[]);
-    h.hover("Category", "host", "leave", 4, "mouse", &[]);
-    let canceled = clock.canceled.get();
-    h.hover("Second category", "host", "enter", 5, "mouse", &[]);
-    assert_eq!(clock.canceled.get(), canceled + 1);
-    assert!(h.category("Second category").is_open());
-    h.advance_hover(&clock, 300);
-    assert!(
-        h.category("Second category").is_open(),
-        "stale losing timer never closes current sibling"
-    );
-    h.hover("Category", "host", "enter", 6, "mouse", &[]);
-    h.hover("Category", "host", "leave", 7, "mouse", &[]);
-    let canceled = clock.canceled.get();
-    h.config.borrow_mut().category_present = false;
-    h.update();
-    assert_eq!(
-        clock.canceled.get(),
-        canceled + 1,
-        "category-only removal cancels task spawned from Menu input"
-    );
-    assert!(!category.0.model.borrow().alive);
-    assert!(category.0.model.borrow().hide_task.is_none());
-    h.advance_hover(&clock, 300);
-    assert!(
-        !category
-            .0
-            .hover_coordinator
-            .0
-            .borrow()
-            .contains_key(&category.0.id)
-    );
-}
-#[test]
-fn menu_category_hover_root_coordinator_closes_other_menu_without_borrowing_its_registry() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::unsettled_with_peer(false, true);
-    h.settle();
-    let category = h.category("Category");
-    let peer = h.hover_category("Other category");
-    h.dom.in_runtime(|| {
-        let mut expanded = category.0.expanded;
-        expanded.set(false);
-        let mut other = peer.0.expanded;
-        other.set(false);
-    });
-    h.settle();
-    let clock = h.hover_clock("Category");
-    h.hover("Category", "host", "enter", 1, "mouse", &[]);
-    h.hover("Category", "host", "leave", 2, "mouse", &[]);
-    assert_eq!(clock.started.get(), 1);
-    h.hover("Other category", "host", "enter", 1, "mouse", &[]);
-    assert_eq!(clock.canceled.get(), 1);
-    assert_ne!(category.0.owner, peer.0.owner);
-    assert_eq!(*category.0.flyout.peek(), None);
-    assert_eq!(*peer.0.flyout.peek(), Some(peer.0.id));
-    h.advance_hover(&clock, 400);
-    assert_eq!(*peer.0.flyout.peek(), Some(peer.0.id));
-}
-#[test]
-fn menu_category_hover_mode_write_retains_popup_and_expanded_entry_cancels_before_guard() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::new();
-    h.toggle_expanded();
-    let category = h.category("Category");
-    let clock = h.hover_clock("Category");
-    h.hover("Category", "host", "enter", 1, "mouse", &[]);
-    h.hover("Category", "host", "leave", 2, "mouse", &[]);
-    h.advance_hover(&clock, 72);
-    h.dom.in_runtime(|| {
-        let mut expanded = category.0.expanded;
-        expanded.set(true);
-    });
-    h.settle();
-    assert!(category.is_expanded());
-    assert!(!*category.0.panel.peek());
-    assert_eq!(
-        *category.0.flyout.peek(),
-        Some(category.0.id),
-        "mode write preserves popup state independently"
-    );
-    assert!(category.0.model.borrow().hide_task.is_some());
-    assert!(h.html().contains("data-menu-category-popup-open=\"true\""));
-    h.advance_hover(&clock, 178);
-    assert_eq!(
-        *category.0.flyout.peek(),
-        None,
-        "expiry has no expanded guard"
-    );
-    h.dom.in_runtime(|| {
-        let mut expanded = category.0.expanded;
-        expanded.set(false);
-    });
-    h.settle();
-    h.hover("Category", "host", "enter", 3, "mouse", &[]);
-    h.hover("Category", "host", "leave", 4, "mouse", &[]);
-    h.advance_hover(&clock, 74);
-    h.dom.in_runtime(|| {
-        let mut expanded = category.0.expanded;
-        expanded.set(true);
-    });
-    h.settle();
-    let generation = category.0.model.borrow().generation;
-    h.hover("Category", "host", "enter", 5, "mouse", &[]);
-    assert!(category.0.model.borrow().hide_task.is_none());
-    assert_eq!(
-        category.0.model.borrow().generation,
-        generation,
-        "expanded entry only cancels timer"
-    );
-    h.advance_hover(&clock, 400);
-    assert_eq!(*category.0.flyout.peek(), Some(category.0.id));
-    assert!(!*category.0.panel.peek());
-}
-#[test]
-fn menu_category_hover_public_mode_keeps_both_shell_states_and_one_body_when_active() {
-    let _guard = crate::test_event_converter_guard();
-    let mut h = MenuHarness::with_active(true);
-    let category = h.category("Category");
-    let child = h.target("Child");
-    h.toggle_expanded();
-    h.hover("Category", "host", "enter", 1, "mouse", &[]);
-    h.dom.in_runtime(|| {
-        let mut expanded = category.0.expanded;
-        expanded.set(true);
-    });
-    h.settle();
-    assert!(*category.0.panel.peek());
-    assert_eq!(*category.0.flyout.peek(), Some(category.0.id));
-    let html = h.html();
-    let root_id = format!("data-menu-category-root=\"{}\"", category.0.id);
-    let root = html
-        .split('<')
-        .filter_map(|part| part.split('>').next())
-        .find(|tag| tag.contains(&root_id))
-        .unwrap();
-    assert!(root.contains("data-menu-category-panel-open=\"true\""));
-    assert!(root.contains("data-menu-category-popup-open=\"true\""));
-    assert!(root.contains("data-menu-category-body-surface=\"panel\""));
-    assert_eq!(
-        html.matches(&format!("data-menu-category-body=\"{}\"", category.0.id))
-            .count(),
-        1
-    );
-    assert_eq!(h.target("Child"), child);
-    let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.raw(serde_json::json!({"owner":category.0.owner,"kind":"category-outside","category":category.0.id,"sequence":1,"inside":false,"category_items":facts,"items":[]}));
-    assert!(
-        *category.0.panel.peek(),
-        "outside close dismisses latent popup independently from expanded panel"
-    );
-    assert_eq!(*category.0.flyout.peek(), None);
-    // Current visibility facts do not bypass the actual typed key listener.
-    assert_eq!(
-        h.category_event(
-            "category-key",
-            "Escape",
-            "Category",
-            Some("Child"),
-            2,
-            facts
-        ),
-        (true, false)
-    );
-    assert!(!*category.0.panel.peek());
-    assert_eq!(
-        *category.0.flyout.peek(),
-        None,
-        "expanded category dismissal clears both states without clearing hover policy"
-    );
-}
 #[test]
 fn menu_category_observation_and_actual_key_initialize_current_active_baseline() {
     let _event_converter_guard = crate::test_event_converter_guard();
@@ -2424,9 +1777,6 @@ fn menu_category_collapsed_arrows_filter_disabled_but_tab_and_repeated_present_s
     }
     harness.click("Second category");
     assert!(second.is_open() && !first.is_open());
-    let returns = harness.focus_boundary("Second category");
-    returns.execution.ready.set(true);
-    harness.document_mode("keydown", "ArrowDown", 1);
     let facts = harness.category_facts(&["Solo"]);
     assert_eq!(
         harness.category_event(
@@ -2758,9 +2108,6 @@ fn menu_category_open_parent_endpoints_and_escape_use_separate_collapsed_scope()
         );
         assert!(category.is_open());
     }
-    let returns = harness.focus_boundary("Category");
-    returns.execution.ready.set(true);
-    harness.document_mode("keydown", "ArrowDown", 1);
     assert_eq!(
         harness.category_event("category-key", "Escape", "Category", None, 5, facts.clone()),
         (false, false)
@@ -2770,7 +2117,6 @@ fn menu_category_open_parent_endpoints_and_escape_use_separate_collapsed_scope()
         harness.focuses.borrow().last().copied(),
         Some(category.0.id)
     );
-    assert!(category.0.model.borrow().return_tasks.is_empty());
 
     assert_eq!(
         harness.category_event(

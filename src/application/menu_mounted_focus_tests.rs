@@ -221,11 +221,7 @@ fn native_category_collapsed_end_and_accepted_dismissal_use_live_mounted_control
         before,
         "collapsed Tab keeps its native default"
     );
-    h.document_mode("keydown", "ArrowDown", 1);
-    h.dom.in_scope(ScopeId::ROOT, || {
-        category.dismiss_captured(true, &[category.0.id])
-    });
-    h.settle();
+    assert_eq!(h.key(h.target("Two"), Key::Escape), (false, false));
     assert!(!category.is_open());
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Category")));
 }

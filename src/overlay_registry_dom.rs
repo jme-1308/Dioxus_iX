@@ -394,8 +394,6 @@ function collectFacts(kind,event,phase=''){
   if(target)addCand(target);
   if(active)addCand(active);
   for(const p of path)if(p instanceof HTMLElement)addCand(p);
-  const active_categories=[];
-  for(let c=active;c;c=stepParent(c))if(c instanceof Element&&c.hasAttribute('data-menu-category-root')){const id=Number(c.getAttribute('data-menu-category-root'));if(Number.isSafeInteger(id)&&id>0&&!active_categories.includes(id))active_categories.push(id);}
   const nodes=[],anchors=[];
   for(const root of registryElements('[data-ix-overlay-root]')){
     if(!(root instanceof HTMLElement)||!root.isConnected)continue;
@@ -445,7 +443,7 @@ function collectFacts(kind,event,phase=''){
     key:event?.key||'',shift:!!event?.shiftKey,alt:!!event?.altKey,ctrl:!!event?.ctrlKey,meta:!!event?.metaKey,
     default_prevented:!!event?.defaultPrevented,
     target_id:nativeId(target),active_id:nativeId(active),
-    hosts,triggers,enclosing_triggers,anchors,nodes,click_sites,active_categories,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
+    hosts,triggers,enclosing_triggers,anchors,nodes,click_sites,document_tab_candidates,tab_order:document_tab_candidates.map(candidate=>candidate.target),candidate_ids,
     active_hosts:hostAncestors(active),active_popover:nearestPopover(active)?.getAttribute('data-ix-overlay-host')||''
   };
 }
