@@ -56,7 +56,8 @@ fn mark_rendered_child(h: &MenuHarness, runtime: &RuntimeHandle, label: &str) ->
     runtime.register_item_cue(host.registration_key.clone(), ItemKind::Menu);
     h.dom.in_scope(ScopeId::ROOT, || {
         runtime.register_item_mount(
-            &host.registration_key, &host.target,
+            &host.registration_key,
+            &host.target,
             Rc::new(MountedData::new(MenuTestMount::default())),
         );
         runtime.mark_item_visual(&host);
@@ -246,21 +247,56 @@ fn logical_return_clears_old_child_cue_and_keeps_the_parent_cue_after_rerender()
     let category = h.category("Category");
     let runtime = cue_runtime(&mut h, &category);
     let children = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event("category-key", "Enter", "Category", None, 1, children.clone());
+    h.category_event(
+        "category-key",
+        "Enter",
+        "Category",
+        None,
+        1,
+        children.clone(),
+    );
     let before_return = mark_rendered_child(&h, &runtime, "Child");
-    assert_eq!(h.category_event("category-return", "Enter", "Category", Some("Child"), 2, children), (true, true));
+    assert_eq!(
+        h.category_event(
+            "category-key",
+            "Enter",
+            "Category",
+            Some("Child"),
+            2,
+            children
+        ),
+        (true, false)
+    );
     assert!(!category.is_open());
     assert!(!runtime.item_visual_matches(&before_return));
     assert_eq!(h.focuses.borrow().last().copied(), Some(category.0.id));
     menu_dispatch(&h.dom, "focus", h.target("Category"), ());
     h.settle();
     let html = h.html();
-    let outer = html.split('>').find(|tag| tag.contains(&format!("data-menu-category-root=\"{}\"",category.0.id))).unwrap();
-    let key = outer.split("data-ix-item-key=\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+    let outer = html
+        .split('>')
+        .find(|tag| tag.contains(&format!("data-menu-category-root=\"{}\"", category.0.id)))
+        .unwrap();
+    let key = outer
+        .split("data-ix-item-key=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string();
     assert!(runtime.part_active(&key, HostPartKind::CategoryParent));
-    assert_eq!(runtime.item_visual_key(), None, "Category outer has no active descendant cue");
+    assert_eq!(
+        runtime.item_visual_key(),
+        None,
+        "Category outer has no active descendant cue"
+    );
     let focused = h.focuses.borrow().clone();
     h.update();
     assert!(runtime.part_active(&key, HostPartKind::CategoryParent));
-    assert_eq!(*h.focuses.borrow(), focused, "rerender cannot refocus a closed child");
+    assert_eq!(
+        *h.focuses.borrow(),
+        focused,
+        "rerender cannot refocus a closed child"
+    );
 }

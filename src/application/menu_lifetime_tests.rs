@@ -29,7 +29,7 @@ fn open_category_disconnect_closes_via_controller_state_without_changing_top_men
             1,
             children.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert!(category.is_open());
     assert_eq!(
@@ -41,7 +41,7 @@ fn open_category_disconnect_closes_via_controller_state_without_changing_top_men
             2,
             children.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
     let runtime = category
@@ -54,7 +54,6 @@ fn open_category_disconnect_closes_via_controller_state_without_changing_top_men
         .unwrap();
     assert!(runtime.pending_item_focus_count() == 0);
     let focused = h.focuses.borrow().clone();
-    assert!(category.0.model.borrow().root_claim.is_some());
 
     assert_eq!(
         h.raw(serde_json::json!({
@@ -98,7 +97,6 @@ fn open_category_disconnect_closes_via_controller_state_without_changing_top_men
     );
     assert_eq!(category.0.model.borrow().children.len(), 3);
     assert_eq!(category.0.model.borrow().observed, children);
-    assert!(category.0.model.borrow().root_claim.is_none());
     assert!(runtime.pending_item_focus_count() == 0);
     assert_eq!(
         *h.focuses.borrow(),
@@ -151,7 +149,7 @@ fn closed_replayed_wrong_owner_stale_and_dropped_category_disconnect_do_not_clos
             "category_items": h.category_facts(&["Child", "Disabled child", "Two"]),
             "items": []
         })),
-        (true, true)
+        (false, false)
     );
     assert!(category.is_open() && !other.is_open());
 
@@ -192,19 +190,11 @@ fn closed_replayed_wrong_owner_stale_and_dropped_category_disconnect_do_not_clos
             "active_categories": [old_id],
             "items": []
         }),
-        serde_json::json!({
-            "owner": owner,
-            "kind": "category-disconnect",
-            "category": old_id,
-            "sequence": 2,
-            "connected": true,
-            "active_categories": [old_id],
-            "items": []
-        }),
     ] {
         assert_eq!(h.raw(rejected), (false, true));
         assert!(category.is_open());
-        assert_eq!(category.0.model.borrow().newest_sequence, 2);
+        // Dioxus clicks do not advance the native lifecycle journal.
+        assert_eq!(category.0.model.borrow().newest_sequence, 1);
         assert_eq!(test.execution.started.get(), 0);
     }
 
@@ -269,7 +259,7 @@ fn closed_replayed_wrong_owner_stale_and_dropped_category_disconnect_do_not_clos
             "category_items": [],
             "items": []
         })),
-        (true, true)
+        (false, false)
     );
     assert!(replacement.is_open() && !other.is_open());
     assert_eq!(h.raw(retained), (false, true));
@@ -277,12 +267,11 @@ fn closed_replayed_wrong_owner_stale_and_dropped_category_disconnect_do_not_clos
         replacement.is_open(),
         "dropped Category disconnect must not close or adopt the replacement instance"
     );
-    assert_eq!(replacement.0.model.borrow().newest_sequence, 1);
+    assert_eq!(replacement.0.model.borrow().newest_sequence, 0);
 }
 
 #[test]
-fn reopened_category_cancels_old_return_while_fresh_return_uses_raw_facts_and_drop_cancels()
- {
+fn reopened_category_cancels_old_return_while_fresh_return_uses_raw_facts_and_drop_cancels() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();

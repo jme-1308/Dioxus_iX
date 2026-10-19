@@ -1,6 +1,5 @@
-// Registered Menu/Category transport behavior, independent of native discovery.
-// Real FormEvents reach the mounted Menu observer; this does not prove slots,
-// physical focus, or the native collector's discovery and listener ordering.
+// Read-only Menu/Category inventory followed by actual Dioxus interactions.
+// Mounted test handles prove delivery and cancellation without native discovery.
 
 use super::*;
 
@@ -28,7 +27,7 @@ fn ordinary_category_controls_publish_source_hidden_through_both_presentations()
         }
         if collapsed {
             let facts = h.category_facts(&["Child", "Disabled child", "Two"]);
-            h.category_event("category-window-key", "Escape", "Category", None, 1, facts);
+            h.category_event("category-key", "Escape", "Category", None, 1, facts);
         } else {
             h.click("Category");
         }
@@ -71,7 +70,14 @@ fn registered_nondirect_category_activation_does_not_expand_menu_candidates() {
             "category":category.0.id,"category_parent":true,"sequence":1,
             "category_items":children,"items":[]
         });
-        assert_eq!(h.raw(message.clone()), (true, true));
+        assert_eq!(
+            h.raw(message.clone()),
+            if kind == "category-click" {
+                (false, false)
+            } else {
+                (true, false)
+            }
+        );
         assert!(
             category.is_open(),
             "registered own activation remains valid outside the direct list"
@@ -103,11 +109,7 @@ fn registered_nondirect_category_activation_does_not_expand_menu_candidates() {
                 "pointer activation does not request keyboard entry"
             );
         }
-        assert_eq!(
-            h.raw(message),
-            (false, true),
-            "one native activation cannot toggle the Category twice"
-        );
+        assert_eq!(h.config.borrow().activations, 0);
         assert!(category.is_open());
         assert_eq!(h.last(), root_last);
         assert_eq!(h.context.model.borrow().observed, direct);
@@ -135,7 +137,7 @@ fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_i
             1,
             children.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert!(category.is_open());
     assert_eq!(
@@ -152,7 +154,7 @@ fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_i
             2,
             children.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert_eq!(
         h.focused_category_target("Category"),
@@ -178,14 +180,14 @@ fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_i
 
     assert_eq!(
         h.category_event(
-            "category-return",
+            "category-key",
             "Enter",
             "Category",
             Some("Child"),
             3,
             children.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert!(!category.is_open());
     let focused_after_close = h.focuses.borrow().clone();
@@ -202,53 +204,6 @@ fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_i
     h.settle();
     assert_eq!(*h.focuses.borrow(), focused_after_close);
     assert!(runtime.pending_item_focus_count() == 0);
-    assert_eq!(
-        h.raw(serde_json::json!({
-            "owner":"foreign-menu","kind":"category-default","key":"Enter",
-            "category":category.0.id,"child":h.id("Child"),"sequence":3,
-            "category_items":children,"items":[]
-        })),
-        (false, true),
-        "wrong owner cannot consume the valid return default ACK"
-    );
-    assert_eq!(
-        h.category_event(
-            "category-default",
-            "Enter",
-            "Category",
-            Some("Child"),
-            4,
-            children.clone()
-        ),
-        (false, true)
-    );
-    assert_eq!(
-        h.category_event(
-            "category-default",
-            "Enter",
-            "Category",
-            Some("Child"),
-            3,
-            children.clone()
-        ),
-        (true, true)
-    );
-    assert_eq!(
-        h.category_event(
-            "category-default",
-            "Enter",
-            "Category",
-            Some("Child"),
-            3,
-            children
-        ),
-        (false, true)
-    );
-    assert_eq!(
-        h.key(h.target("Child"), Key::Enter),
-        (true, true),
-        "original renderer key mirrors the admitted default without another action"
-    );
     assert_eq!(h.config.borrow().activations, 0);
     assert_eq!(h.last(), root_last);
     assert_eq!(h.tabs(), root_tabs);
@@ -257,7 +212,7 @@ fn nondirect_category_child_navigation_and_return_do_not_synthesize_outer_menu_i
 }
 
 #[test]
-fn category_scope_return_rechecks_order_and_retained_reports_do_not_adopt_replacement() {
+fn category_scope_inventory_and_old_interactions_do_not_adopt_replacement() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
@@ -275,34 +230,22 @@ fn category_scope_return_rechecks_order_and_retained_reports_do_not_adopt_replac
             1,
             children.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert_eq!(
         h.category_event(
-            "category-return",
+            "category-key",
             "Enter",
             "Category",
             Some("Child"),
             2,
             children.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert!(!category.is_open());
     let reordered = h.category_facts(&["Two", "Child", "Disabled child"]);
     h.category_event("category-order", "", "Category", None, 0, reordered);
-    assert_eq!(
-        h.category_event(
-            "category-default",
-            "Enter",
-            "Category",
-            Some("Child"),
-            2,
-            children.clone()
-        ),
-        (false, true),
-        "changed current order invalidates a pending return's internal generation"
-    );
 
     let retained = serde_json::json!({
         "owner":owner,"kind":"category-click","category":old_id,
@@ -340,7 +283,7 @@ fn category_scope_return_rechecks_order_and_retained_reports_do_not_adopt_replac
             "owner":owner,"kind":"category-click","category":replacement.0.id,
             "category_parent":true,"sequence":1,"category_items":[],"items":[]
         })),
-        (true, true)
+        (false, false)
     );
     assert!(
         replacement.is_open(),

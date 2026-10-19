@@ -4639,6 +4639,13 @@ mod tests {
             .find(|tag| publication_attr(tag, "id").as_deref() == Some(id))
             .unwrap_or_else(|| panic!("Missing rendered source host {id}"))
     }
+    fn publication_category_parent(html: &str) -> &str {
+        html.split('>')
+            .find(|tag| {
+                publication_attr(tag, "data-ix-item-part").as_deref() == Some("category-parent")
+            })
+            .expect("rendered Category parent control")
+    }
     fn publication_cues(html: &str, expected: Option<&str>, category_active: bool) {
         assert!(
             publication_attr(publication_tag(html, "publication-select"), "class").is_some_and(
@@ -4695,12 +4702,7 @@ mod tests {
                 .is_some_and(|class| class.split_whitespace().any(|name| name == "ix-focused")),
             expected == Some("publication-select")
         );
-        let category_parent_id = publication_attr(
-            publication_tag(html, "publication-category"),
-            "data-menu-category-return-target",
-        )
-        .unwrap();
-        let category_parent = publication_tag(html, &category_parent_id);
+        let category_parent = publication_category_parent(html);
         assert_eq!(
             publication_attr(category_parent, "data-active").as_deref(),
             Some(if category_active { "true" } else { "false" })
@@ -4787,7 +4789,7 @@ mod tests {
                 "kind":kind,"target":id,"registration_key":publication_attr(tag,"data-ix-item-key").unwrap(),
                 "source_focusable":kind != "category",
                 "parts":if kind == "category" { vec![serde_json::json!({
-                    "kind":"category-parent", "capture":publication_attr(tag,"data-menu-category-return-target").unwrap(),
+                    "kind":"category-parent", "capture":publication_attr(publication_category_parent(&html),"id").unwrap(),
                     "source_focusable":true
                 })] } else { Vec::new() }})
         }).collect::<Vec<_>>();

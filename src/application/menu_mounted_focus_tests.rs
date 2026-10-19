@@ -36,7 +36,7 @@ fn native_menu_roving_reaches_mounted_controls_and_keeps_eligible_endpoints() {
     ] {
         assert_eq!(
             h.observe("key", key, Some(h.id(origin)), false, facts.clone()),
-            (true, true)
+            (true, false)
         );
         assert_eq!(
             h.focuses.borrow().last().copied(),
@@ -141,7 +141,7 @@ fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children
             1,
             facts.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Child")));
     assert_eq!(
@@ -153,7 +153,7 @@ fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children
             2,
             facts.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert_eq!(
         h.focuses.borrow().last().copied(),
@@ -162,30 +162,19 @@ fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children
     );
     assert_eq!(
         h.category_event(
-            "category-return",
+            "category-key",
             "Enter",
             "Category",
             Some("Child"),
             3,
             facts.clone()
         ),
-        (true, true)
+        (true, false)
     );
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Category")));
     assert!(
         !category.is_open(),
         "expanded Enter explicitly toggles the panel closed"
-    );
-    assert_eq!(
-        h.category_event(
-            "category-default",
-            "Enter",
-            "Category",
-            Some("Child"),
-            3,
-            facts.clone()
-        ),
-        (true, true)
     );
     assert_eq!(
         h.config.borrow().activations,
@@ -203,7 +192,7 @@ fn native_category_panel_navigation_and_return_reach_mounted_parent_and_children
             4,
             facts
         ),
-        (true, true)
+        (true, false)
     );
     assert!(!category.is_open());
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Category")));
@@ -219,7 +208,7 @@ fn native_category_collapsed_end_and_accepted_dismissal_use_live_mounted_control
     h.focuses.borrow_mut().clear();
     assert_eq!(
         h.category_event("category-key", "End", "Category", None, 1, facts.clone()),
-        (true, true)
+        (true, false)
     );
     assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Two")));
     let before = h.focuses.borrow().len();

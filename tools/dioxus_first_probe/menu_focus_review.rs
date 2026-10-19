@@ -8,6 +8,8 @@ pub fn MenuFocusPreview() -> Element {
     let mut generation = use_signal(|| 1_usize);
     let mut second_child = use_signal(|| true);
     let mut last_action = use_signal(|| "None".to_string());
+    let mut reversed = use_signal(|| false);
+    let mut note = use_signal(|| "Keep editing".to_string());
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     rsx! {
@@ -21,6 +23,7 @@ pub fn MenuFocusPreview() -> Element {
                 Button { id:"r0215-child-toggle", variant:ButtonVariant::Secondary, onclick:move |_|second_child.toggle(),
                     if second_child(){"Remove second child"}else{"Restore second child"} }
                 Button { id:"r0215-remount", variant:ButtonVariant::Secondary, onclick:move |_|generation.set(generation()+1), "Remount menu" }
+                Button { id:"r0217-reorder", variant:ButtonVariant::Secondary, onclick:move |_|reversed.toggle(), "Reorder root actions" }
             }
             section {
                 h2 { "Equipment navigation" }
@@ -38,12 +41,16 @@ pub fn MenuFocusPreview() -> Element {
                         menu:rsx! {
                             for current in [generation()] {
                                 Menu { key:"{current}", label:"Equipment navigation", application_name:"Equipment", start_expanded:expanded(), pinned:true,
-                                    MenuItem { id:"r0215-first", label:"Equipment overview", icon:"home", close_on_select:false,
-                                        onclick:move |_|last_action.set("Equipment overview".into()) }
+                                    for (action_id,action_label,action_icon) in if reversed() {
+                                        [("r0215-history","Service history","calendar"),("r0215-first","Equipment overview","home")]
+                                    } else {
+                                        [("r0215-first","Equipment overview","home"),("r0215-history","Service history","calendar")]
+                                    } {
+                                        MenuItem { key:"{action_id}",id:action_id,label:action_label,icon:action_icon,close_on_select:false,
+                                            onclick:move |_|last_action.set(action_label.into()) }
+                                    }
                                     MenuItem { id:"r0215-disabled", label:"Unavailable action", icon:"lock", disabled:true }
                                     MenuItem { id:"r0215-hidden", label:"Hidden action", hidden:true }
-                                    MenuItem { id:"r0215-history", label:"Service history", icon:"calendar", close_on_select:false,
-                                        onclick:move |_|last_action.set("Service history".into()) }
                                     MenuCategory { id:"r0215-category", label:"Equipment group", icon:"folder",
                                         MenuItem { id:"r0215-child-one", label:"Inspect equipment", close_on_select:false,
                                             onclick:move |_|last_action.set("Inspect equipment".into()) }
@@ -53,6 +60,12 @@ pub fn MenuFocusPreview() -> Element {
                                     }
                                     MenuItem { id:"r0215-last", label:"Equipment settings", icon:"cogwheel", close_on_select:false,
                                         onclick:move |_|last_action.set("Equipment settings".into()) }
+                                    if expanded() {
+                                        div {class:"menu-focus-editing",
+                                            label {r#for:"r0217-note","Navigation note"}
+                                            input {id:"r0217-note",value:note(),oninput:move |event|note.set(event.value())}
+                                        }
+                                    }
                                 }
                             }
                         },
@@ -65,7 +78,7 @@ pub fn MenuFocusPreview() -> Element {
                     }
                 }
                 output { id:"r0215-state", "data-expanded":expanded().to_string(), "data-generation":generation(),
-                    "data-second-child":second_child().to_string(), "Last action: {last_action()}" }
+                    "data-second-child":second_child().to_string(),"data-reversed":reversed().to_string(), "Last action: {last_action()}" }
             }
             div { onmounted:move |_| {
                 #[cfg(all(feature="desktop",not(target_arch="wasm32")))]
@@ -81,7 +94,7 @@ pub fn MenuFocusPreview() -> Element {
     }
 }
 
-const STYLES: &str = "body{margin:0}.menu-focus-review{min-height:100vh;box-sizing:border-box;padding:24px}.menu-focus-review>h1{font-size:28px;margin:0 0 16px}.menu-focus-review p{max-width:65ch;line-height:1.5}.menu-focus-review section{max-width:980px;margin:28px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.menu-focus-review h2{font-size:20px}.menu-focus-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:16px 0}.menu-focus-review output{display:block;margin-top:12px}.r0215-app{height:480px;min-height:480px;border:1px solid var(--ix-color-border)}.r0215-app .ix-application-main{padding:20px}.r0215-app h3{margin:0 0 12px;font-size:18px}.r0215-app .ix-application-main p{max-width:50ch}@media(max-width:600px){.menu-focus-review{padding:16px}.r0215-app .ix-application-main{padding:12px}.menu-focus-review .r0215-app[data-menu-expanded=true]{height:740px;min-height:740px}.menu-focus-review .r0215-app[data-menu-expanded=true] .ix-application-body{flex-direction:column}.menu-focus-review.ix-theme .r0215-app[data-menu-pinned=true][data-menu-expanded=true] .ix-application-menu-slot{width:100%;height:330px;position:relative}.menu-focus-review .r0215-app[data-menu-expanded=true] .ix-application-menu-slot .ix-menu{width:100%;position:relative;height:100%}}";
+const STYLES: &str = "body{margin:0}.menu-focus-review{min-height:100vh;box-sizing:border-box;padding:24px}.menu-focus-review>h1{font-size:28px;margin:0 0 16px}.menu-focus-review p{max-width:65ch;line-height:1.5}.menu-focus-review section{max-width:980px;margin:28px 0;padding-bottom:24px;border-bottom:1px solid var(--ix-color-border)}.menu-focus-review h2{font-size:20px}.menu-focus-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:16px 0}.menu-focus-editing{padding:12px;min-width:0}.menu-focus-editing label{display:block;margin-bottom:8px}.menu-focus-editing input{box-sizing:border-box;width:100%;padding:4px;background:var(--ix-color-component-1);color:inherit;border:1px solid var(--ix-color-border)}.menu-focus-review output{display:block;margin-top:12px}.r0215-app{height:480px;min-height:480px;border:1px solid var(--ix-color-border)}.r0215-app .ix-application-main{padding:20px}.r0215-app h3{margin:0 0 12px;font-size:18px}.r0215-app .ix-application-main p{max-width:50ch}@media(max-width:600px){.menu-focus-review{padding:16px}.r0215-app .ix-application-main{padding:12px}.menu-focus-review .r0215-app[data-menu-expanded=true]{height:740px;min-height:740px}.menu-focus-review .r0215-app[data-menu-expanded=true] .ix-application-body{flex-direction:column}.menu-focus-review.ix-theme .r0215-app[data-menu-pinned=true][data-menu-expanded=true] .ix-application-menu-slot{width:100%;height:330px;position:relative}.menu-focus-review .r0215-app[data-menu-expanded=true] .ix-application-menu-slot .ix-menu{width:100%;position:relative;height:100%}}";
 
 // Excluded synthetic Linux workflow. Native key and pointer events exercise the
 // existing observations; only Dioxus production code moves focus or writes cues.
@@ -98,8 +111,14 @@ const focused=id=>active()===byId(id),ready=()=>root()?.getAttribute('data-menu-
 const parentCue=()=>parent().getAttribute('data-active')==='true'&&parent().classList.contains('ix-focused');
 await wait('native Menu observations ready',ready);
 bar().scrollIntoView({block:'center'});bar().focus();key(bar(),'Home');await wait('root Home mounted focus',()=>focused('r0215-first'));
-key(active(),'ArrowDown');await wait('root disabled and hidden skip',()=>focused('r0215-history'));
+key(active(),'ArrowDown');await wait('root Down mounted focus',()=>focused('r0215-history'));
+key(active(),'ArrowDown');await wait('root disabled and hidden skip',()=>active()===parent());
+key(active(),'ArrowUp');await wait('root reverse disabled and hidden skip',()=>focused('r0215-history'));
 key(active(),'ArrowUp');await wait('root Up mounted focus',()=>focused('r0215-first'));
+byId('r0217-reorder').click();await wait('keyed root order published',()=>byId('r0215-history').getAttribute('aria-posinset')==='1');
+bar().focus();key(bar(),'Home');await wait('Home follows keyed current order',()=>focused('r0215-history'));
+byId('r0217-reorder').click();await wait('root order restored',()=>byId('r0215-first').getAttribute('aria-posinset')==='1');
+bar().focus();key(bar(),'Home');await wait('Home follows restored order',()=>focused('r0215-first'));
 key(active(),'End');await wait('root End mounted focus',()=>focused('r0215-last'));
 key(active(),'ArrowUp');await wait('root Category parent focus',()=>active()===parent());
 key(parent(),'Enter');await wait('collapsed Category entry',()=>popup()&&focused('r0215-child-one'));
@@ -123,6 +142,10 @@ parent().focus();key(parent(),'ArrowDown');await wait('expanded panel entry',()=
 key(active(),'ArrowUp');await wait('expanded child wrap Up',()=>focused('r0215-child-two'));
 key(active(),'ArrowDown');await wait('expanded child wrap Down',()=>focused('r0215-child-one'));
 key(active(),'Escape');await wait('expanded Escape closes panel and returns parent',()=>!panel()&&active()===parent());
+const field=byId('r0217-note');field.focus();
+for(const value of ['Home','End','ArrowLeft','ArrowDown'])if(key(field,value).defaultPrevented)throw new Error('Menu intercepted native field '+value);
+field.value='Native editing retained';field.dispatchEvent(new Event('input',{bubbles:true}));
+await wait('native field editing',()=>field.value==='Native editing retained'&&active()===field);
 parent().click();await wait('removal setup panel',panel);parent().focus();key(parent(),'ArrowDown');await wait('removal setup child',()=>focused('r0215-child-one'));
 key(active(),'ArrowUp');await wait('second child removal setup',()=>focused('r0215-child-two'));
 key(active(),'F3');await wait('focused child removal',()=>!byId('r0215-child-two'));
@@ -132,5 +155,5 @@ byId('r0215-remount').click();outside.focus();
 await wait('fresh mounted Menu and Category',()=>root()!==oldRoot&&parent()!==oldParent&&+byId('r0215-state').dataset.generation===generation+1&&ready());
 if(active()!==outside)throw new Error('remount stole independent focus');
 bar().focus();key(bar(),'Home');await wait('fresh root navigation uses current mount',()=>focused('r0215-first'));
-return {ok:true,root:{home:true,end:true,upDown:true,disabledHiddenSkip:true},collapsed:{entry:true,childNavigation:true,enterReturn:true,spaceReturn:true,escapeReturn:true},expanded:{entry:true,wrap:true,escapeReturn:true},hoverEligibleReturn:true,categoryCue:true,childRemovalRemount:true,ownerRemount:true,cueWrites:0,rootOutline:getComputedStyle(active()).outlineWidth};
+return {ok:true,root:{home:true,end:true,upDown:true,disabledHiddenSkip:true,keyedCurrentOrder:true,nativeFieldDefaults:true},collapsed:{entry:true,childNavigation:true,enterReturn:true,spaceReturn:true,escapeReturn:true},expanded:{entry:true,wrap:true,escapeReturn:true},hoverEligibleReturn:true,categoryCue:true,childRemovalRemount:true,ownerRemount:true,cueWrites:0,rootOutline:getComputedStyle(active()).outlineWidth};
 "#;
