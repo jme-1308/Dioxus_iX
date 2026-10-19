@@ -216,35 +216,3 @@ return { connected, active_categories };
 } finally { directory.release(lease); }
 "#
 );
-
-/// Execute one independently authorized return; no late modality/focus guard.
-/// Rust's job authorization and connected-node checks are lifetime adapters,
-/// not guards claimed to exist in the source's queued focus callback.
-#[cfg(any(feature = "web", feature = "desktop"))]
-pub(crate) const CATEGORY_DISMISS_RETURN: &str = concat!(
-    crate::menu_scope_dom::menu_scope_directory!(),
-    r#"
-const [owner, id, job] = await dioxus.recv();
-const directory = menuScopeDirectory(), lease = directory.acquire();
-try {
-const root = directory.elementById(owner);
-const category = directory.categories(owner, id)[0];
-const targetId = 'ix-menu-category-parent-' + id;
-const target = category?.querySelector(':scope > [data-ix-item-part="category-parent"]');
-await new Promise(requestAnimationFrame);
-await new Promise(requestAnimationFrame);
-if (!directory.sameNodeById(root, owner) ||
-    !root.matches('[data-menu-root]') || !category?.isConnected ||
-    directory.categories(owner, id)[0] !== category || category.dataset.menuOwner !== owner ||
-    !(target instanceof HTMLElement) || !target.isConnected || target.id !== targetId || category.querySelector(':scope > [data-ix-item-part="category-parent"]') !== target ||
-    target.closest('[data-menu-category-root]') !== category) return false;
-let jobs;
-try { jobs = JSON.parse(category.getAttribute('data-menu-category-return-jobs') ?? '[]'); }
-catch { return false; }
-if (typeof job !== 'string' || !Array.isArray(jobs) || !jobs.includes(job)) return false;
-target.focus();
-// The physical control reports focus through its Dioxus handler.
-return document.activeElement === target;
-} finally { directory.release(lease); }
-"#
-);

@@ -12,6 +12,8 @@ mod descendant_review;
 mod dom_query;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
+#[path = "dioxus_first_probe/menu_focus_review.rs"]
+mod menu_focus_review;
 #[path = "dioxus_first_probe/modal_focus_review.rs"]
 mod modal_focus_review;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
@@ -78,6 +80,9 @@ fn Preview() -> Element {
     }
     if scope == "?cues" {
         return rsx! { cue_review::CuePreview {} };
+    }
+    if scope == "?menufocus" {
+        return rsx! { menu_focus_review::MenuFocusPreview {} };
     }
     if scope == "?modal" {
         return rsx! { modal_focus_review::ModalFocusPreview {} };

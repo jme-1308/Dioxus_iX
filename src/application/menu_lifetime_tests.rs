@@ -138,7 +138,7 @@ fn closed_replayed_wrong_owner_stale_and_dropped_category_disconnect_do_not_clos
         other.is_open() && !category.is_open(),
         "closed Category disconnect must not dismiss another open Category"
     );
-    assert_eq!(test.frames.started.get(), 0);
+    assert_eq!(test.execution.started.get(), 0);
     assert!(category.0.model.borrow().return_tasks.is_empty());
 
     assert_eq!(
@@ -205,7 +205,7 @@ fn closed_replayed_wrong_owner_stale_and_dropped_category_disconnect_do_not_clos
         assert_eq!(h.raw(rejected), (false, true));
         assert!(category.is_open());
         assert_eq!(category.0.model.borrow().newest_sequence, 2);
-        assert_eq!(test.frames.started.get(), 0);
+        assert_eq!(test.execution.started.get(), 0);
     }
 
     let disconnect_three = serde_json::json!({
@@ -281,7 +281,7 @@ fn closed_replayed_wrong_owner_stale_and_dropped_category_disconnect_do_not_clos
 }
 
 #[test]
-fn admitted_return_job_survives_same_scope_disconnect_while_fresh_return_uses_raw_facts_and_drop_cancels()
+fn reopened_category_cancels_old_return_while_fresh_return_uses_raw_facts_and_drop_cancels()
  {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
@@ -309,7 +309,7 @@ fn admitted_return_job_survives_same_scope_disconnect_while_fresh_return_uses_ra
         (false, true)
     );
     assert!(!category.is_open());
-    assert_eq!(test.frames.started.get(), 1);
+    assert_eq!(test.execution.started.get(), 1);
     assert_eq!(
         category
             .0
@@ -383,14 +383,14 @@ fn admitted_return_job_survives_same_scope_disconnect_while_fresh_return_uses_ra
         assert_eq!(h.raw(payload), (false, true));
         assert!(!category.is_open());
         assert_eq!(
-            test.frames.started.get(),
+            test.execution.started.get(),
             1,
             "ineligible disconnect facts must not authorize a fresh return job"
         );
         assert_eq!(
-            test.frames.canceled.get(),
-            0,
-            "same-Rust-scope disconnect must not cancel an already admitted return job"
+            test.execution.canceled.get(),
+            1,
+            "reopening cancels the obsolete return before new disconnect facts are checked"
         );
     }
 
@@ -410,8 +410,8 @@ fn admitted_return_job_survives_same_scope_disconnect_while_fresh_return_uses_ra
         (false, true)
     );
     assert!(!category.is_open());
-    assert_eq!(test.frames.started.get(), 2);
-    assert_eq!(test.frames.canceled.get(), 0);
+    assert_eq!(test.execution.started.get(), 2);
+    assert_eq!(test.execution.canceled.get(), 1);
     assert_eq!(
         category
             .0
@@ -421,21 +421,21 @@ fn admitted_return_job_survives_same_scope_disconnect_while_fresh_return_uses_ra
             .keys()
             .cloned()
             .collect::<Vec<_>>(),
-        ["1", "2"]
+        ["2"]
     );
     h.focuses.borrow_mut().clear();
-    h.release_focus_gate(&test.frames);
+    h.release_focus_gate(&test.execution);
     assert_eq!(
         h.focuses
             .borrow()
             .iter()
             .filter(|focused| **focused == id)
             .count(),
-        2
+        1
     );
     assert!(category.0.model.borrow().return_tasks.is_empty());
 
-    test.frames.ready.set(false);
+    test.execution.ready.set(false);
     h.focuses.borrow_mut().clear();
     h.hover("Category", "host", "enter", 7, "mouse", &[]);
     assert!(category.is_open());
@@ -452,7 +452,7 @@ fn admitted_return_job_survives_same_scope_disconnect_while_fresh_return_uses_ra
         (false, true)
     );
     assert!(!category.is_open());
-    assert_eq!(test.frames.started.get(), 3);
+    assert_eq!(test.execution.started.get(), 3);
     assert_eq!(
         category
             .0
@@ -468,8 +468,8 @@ fn admitted_return_job_survives_same_scope_disconnect_while_fresh_return_uses_ra
     h.config.borrow_mut().category_present = false;
     h.update();
     assert!(!category.0.model.borrow().alive);
-    assert_eq!(test.frames.canceled.get(), 1);
+    assert_eq!(test.execution.canceled.get(), 2);
     assert!(category.0.model.borrow().return_tasks.is_empty());
-    h.release_focus_gate(&test.frames);
+    h.release_focus_gate(&test.execution);
     assert!(h.focuses.borrow().is_empty());
 }

@@ -1,6 +1,6 @@
 // Category flyout cleanup through the rendered Menu transports.
 use super::*;
-use crate::dropdown_inventory::{HostFacts, ItemKind};
+use crate::dropdown_inventory::{HostFacts, HostPartKind, ItemKind};
 use crate::overlay_runtime::{Reason, RuntimeHandle};
 
 fn cue_runtime(h: &mut MenuHarness, category: &CategoryNavigation) -> RuntimeHandle {
@@ -69,17 +69,8 @@ fn mark_rendered_child(h: &MenuHarness, runtime: &RuntimeHandle, label: &str) ->
     host
 }
 
-fn category_hidden(h: &mut MenuHarness, category: &CategoryNavigation, sequence: u64) {
-    assert_eq!(
-        h.raw(serde_json::json!({"owner": category.0.owner,
-            "kind": "category-hidden", "category": category.0.id,
-            "sequence": sequence, "category_items": [], "items": []})),
-        (false, true)
-    );
-}
-
 #[test]
-fn native_hidden_after_disconnect_clears_cue_and_preserves_completed_focus_and_inventories() {
+fn logical_disconnect_clears_child_cue_and_preserves_completed_focus_and_inventories() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
@@ -118,9 +109,7 @@ fn native_hidden_after_disconnect_clears_cue_and_preserves_completed_focus_and_i
         (false, true)
     );
     assert!(!category.is_open());
-    assert!(runtime.item_visual_matches(&cue));
-    assert_eq!(runtime.item_visual_key(), Some(cue.registration_key));
-    category_hidden(&mut h, &category, 4);
+    assert!(!runtime.item_visual_matches(&cue));
     assert_eq!(runtime.item_visual_key(), None);
     assert_eq!(runtime.item_visual_target(), None);
     assert_eq!(h.context.model.borrow().observed, direct);
@@ -158,7 +147,6 @@ fn closed_disconnect_and_inline_panel_close_preserve_the_current_cue() {
     h.raw(serde_json::json!({"owner": category.0.owner,
         "kind": "category-disconnect", "category": category.0.id,
         "sequence": 1, "connected": false, "category_items": [], "items": []}));
-    category_hidden(&mut h, &category, 2);
     assert!(other.is_open());
     assert!(runtime.item_visual_matches(&other_cue));
     assert_eq!(runtime.item_visual_key(), Some(other_cue.registration_key));
@@ -175,7 +163,6 @@ fn closed_disconnect_and_inline_panel_close_preserve_the_current_cue() {
     let inline_cue = mark_rendered_child(&inline, &inline_runtime, "Child");
     inline.click("Category");
     assert!(!inline_category.is_open());
-    category_hidden(&mut inline, &inline_category, 1);
     assert!(inline_runtime.item_visual_matches(&inline_cue));
     assert_eq!(
         inline_runtime.item_visual_key(),
@@ -184,7 +171,7 @@ fn closed_disconnect_and_inline_panel_close_preserve_the_current_cue() {
 }
 
 #[test]
-fn native_hidden_after_same_menu_ownership_loss_clears_cue_without_stealing_focus() {
+fn logical_same_menu_ownership_loss_clears_child_cue_without_stealing_focus() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
@@ -227,9 +214,7 @@ fn native_hidden_after_same_menu_ownership_loss_clears_cue_without_stealing_focu
 
     assert!(!category.is_open() && other.is_open());
     assert_eq!(*category.0.flyout.peek(), Some(other.0.id));
-    assert!(runtime.item_visual_matches(&cue));
-    assert_eq!(runtime.item_visual_key(), Some(cue.registration_key));
-    category_hidden(&mut h, &category, 3);
+    assert!(!runtime.item_visual_matches(&cue));
     assert_eq!(runtime.item_visual_key(), None);
     assert_eq!(runtime.item_visual_target(), None);
     assert_eq!(h.context.model.borrow().observed, direct);
@@ -254,56 +239,28 @@ fn native_hidden_after_same_menu_ownership_loss_clears_cue_without_stealing_focu
 }
 
 #[test]
-fn native_hidden_clears_a_new_focus_cue_published_after_logical_return_close() {
+fn logical_return_clears_old_child_cue_and_keeps_the_parent_cue_after_rerender() {
     let _guard = crate::test_event_converter_guard();
     let mut h = MenuHarness::new();
     h.toggle_expanded();
     let category = h.category("Category");
     let runtime = cue_runtime(&mut h, &category);
     let children = h.category_facts(&["Child", "Disabled child", "Two"]);
-    h.category_event(
-        "category-key",
-        "Enter",
-        "Category",
-        None,
-        1,
-        children.clone(),
-    );
-    assert!(category.is_open());
+    h.category_event("category-key", "Enter", "Category", None, 1, children.clone());
     let before_return = mark_rendered_child(&h, &runtime, "Child");
-
-    assert_eq!(
-        h.category_event(
-            "category-return",
-            "Enter",
-            "Category",
-            Some("Child"),
-            2,
-            children
-        ),
-        (true, true)
-    );
+    assert_eq!(h.category_event("category-return", "Enter", "Category", Some("Child"), 2, children), (true, true));
     assert!(!category.is_open());
-    assert!(runtime.item_visual_matches(&before_return));
-    // A separately reported focus cue can arrive after logical close.
-    // Native-hide cleanup clears the current cue while queued item focus
-    // remains cancelled for the closed owner.
-    let after_return = mark_rendered_child(&h, &runtime, "Two");
-    assert_ne!(before_return.capture, after_return.capture);
-    assert!(runtime.pending_item_focus_count() == 0);
+    assert!(!runtime.item_visual_matches(&before_return));
+    assert_eq!(h.focuses.borrow().last().copied(), Some(category.0.id));
+    menu_dispatch(&h.dom, "focus", h.target("Category"), ());
+    h.settle();
+    let html = h.html();
+    let outer = html.split('>').find(|tag| tag.contains(&format!("data-menu-category-root=\"{}\"",category.0.id))).unwrap();
+    let key = outer.split("data-ix-item-key=\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+    assert!(runtime.part_active(&key, HostPartKind::CategoryParent));
+    assert_eq!(runtime.item_visual_key(), None, "Category outer has no active descendant cue");
     let focused = h.focuses.borrow().clone();
-    category_hidden(&mut h, &category, 3);
-    assert_eq!(runtime.item_visual_key(), None);
-    assert_eq!(runtime.item_visual_target(), None);
-    assert!(runtime.pending_item_focus_count() == 0);
-    assert_eq!(
-        *h.focuses.borrow(),
-        focused,
-        "closing the flyout cannot refocus its hidden children"
-    );
-
-    let unrelated = mark_rendered_child(&h, &runtime, "Child");
-    category_hidden(&mut h, &category, 4);
-    assert!(runtime.item_visual_matches(&unrelated));
-    assert_eq!(runtime.item_visual_key(), Some(unrelated.registration_key));
+    h.update();
+    assert!(runtime.part_active(&key, HostPartKind::CategoryParent));
+    assert_eq!(*h.focuses.borrow(), focused, "rerender cannot refocus a closed child");
 }
