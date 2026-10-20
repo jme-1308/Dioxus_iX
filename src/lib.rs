@@ -79,6 +79,7 @@ mod input_styles;
 mod key_value;
 pub mod layout;
 mod localized_date;
+mod menu_avatar;
 mod menu_hover_dom;
 pub mod message_dialog;
 mod native_surface;

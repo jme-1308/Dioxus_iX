@@ -20,17 +20,7 @@ struct ApplicationContext {
 }
 
 #[derive(Clone)]
-struct NavigationEntry {
-    id: usize,
-    node: Rc<MountedData>,
-    enabled: Rc<Cell<bool>>,
-    order: Vec<usize>,
-}
-
-#[derive(Clone)]
 struct NavigationContext {
-    entries: Rc<RefCell<Vec<NavigationEntry>>>,
-    focused: Rc<Cell<Option<usize>>>,
     expanded: Signal<bool>,
     category: Signal<Option<usize>>,
     prefix: Vec<usize>,
@@ -1539,8 +1529,6 @@ impl MenuOverlayContext {
 
 fn navigation() -> NavigationContext {
     use_hook(|| NavigationContext {
-        entries: Rc::new(RefCell::new(vec![])),
-        focused: Rc::new(Cell::new(None)),
         expanded: Signal::new(false),
         category: Signal::new(None),
         prefix: vec![],
@@ -1550,45 +1538,12 @@ fn navigation() -> NavigationContext {
     })
 }
 
-fn navigation_key(event: KeyboardEvent, context: &NavigationContext) {
-    let mut entries: Vec<_> = context
-        .entries
-        .borrow()
-        .iter()
-        .filter(|entry| entry.enabled.get())
-        .cloned()
-        .collect();
-    entries.sort_by(|left, right| left.order.cmp(&right.order));
-    if entries.is_empty() {
-        return;
-    }
-    let current = entries
-        .iter()
-        .position(|entry| Some(entry.id) == context.focused.get())
-        .unwrap_or(0);
-    let index = match event.key() {
-        Key::ArrowDown => (current + 1) % entries.len(),
-        Key::ArrowUp => (current + entries.len() - 1) % entries.len(),
-        Key::Home => 0,
-        Key::End => entries.len() - 1,
-        _ => return,
-    };
-    event.prevent_default();
-    event.stop_propagation();
-    let mounted = entries[index].node.clone();
-    context.focused.set(Some(entries[index].id));
-    spawn(async move {
-        let _ = mounted.set_focus(true).await;
-    });
-}
-
 fn navigation_item() -> (usize, Option<NavigationContext>) {
     let id = use_hook(|| NAV_ID.fetch_add(1, Ordering::Relaxed));
     let context = try_consume_context::<NavigationContext>();
     let cleanup = context.clone();
     use_drop(move || {
         if let Some(context) = cleanup {
-            context.entries.borrow_mut().retain(|entry| entry.id != id);
             if let Some(nested) = &context.nested {
                 nested.unregister(id);
             }
@@ -2498,10 +2453,6 @@ pub fn MenuItem(
     let menu_role = context.as_ref().map(|_| "menuitem");
     let application = try_consume_context::<ApplicationContext>();
     let overlay = try_consume_context::<MenuOverlayContext>();
-    let enabled = use_hook(|| Rc::new(Cell::new(!disabled)));
-    enabled.set(!disabled);
-    let mount_enabled = enabled.clone();
-    let mount_context = context.clone();
     let mount_roving = root_roving.clone();
     let focus_context = context.clone();
     let click_context = context.clone();
@@ -2555,16 +2506,6 @@ pub fn MenuItem(
         if let Some(roving) = &mount_roving {
             roving.mount(id, event.data());
         }
-        if let Some(context) = &mount_context {
-            let mut order = context.prefix.clone();
-            order.push(id);
-            context.entries.borrow_mut().push(NavigationEntry {
-                id,
-                node: event.data(),
-                enabled: mount_enabled.clone(),
-                order,
-            });
-        }
     };
     let focus_host = item_host.clone();
     let blur_host = item_host.clone();
@@ -2573,7 +2514,6 @@ pub fn MenuItem(
             focus_host.focus(!disabled, None);
         }
         if let Some(context) = &focus_context {
-            context.focused.set(Some(id));
             if let Some(roving) = &context.roving {
                 roving.focus(Some(context.prefix.first().copied().unwrap_or(id)));
             }
@@ -2987,7 +2927,6 @@ pub fn MenuCategory(
         let _ = flyout();
         entry_ready.commit_entry_focus();
     });
-    let mount_context = context.clone();
     let focus_context = context.clone();
     let mount_roving = root_roving.clone();
     let key_roving = root_roving.clone();
@@ -3039,11 +2978,10 @@ pub fn MenuCategory(
                     parent_mount.invalidate();
                     parent_mount.0.model.borrow_mut().parent=Some(event.data());
                     if let Some(roving)=&mount_roving {roving.mount(id,event.data());}
-                    if let Some(context)=&mount_context {let mut order=context.prefix.clone();order.push(id);context.entries.borrow_mut().push(NavigationEntry{id,node:event.data(),enabled:Rc::new(Cell::new(true)),order});}
                 },
                 onfocus:move |event|{
                     focus_host.focus(true,Some(crate::dropdown_inventory::HostPartKind::CategoryParent));
-                    if let Some(context)=&focus_context {context.focused.set(Some(id));if let Some(roving)=&context.roving {roving.focus(Some(context.prefix.first().copied().unwrap_or(id)));}}
+                    if let Some(context)=&focus_context {if let Some(roving)=&context.roving {roving.focus(Some(context.prefix.first().copied().unwrap_or(id)));}}
                     onfocus.call(event);
                 },
                 onblur:move |event|{blur_host.blur();onblur.call(event);},
@@ -3101,98 +3039,7 @@ fn MenuCategoryContent(
     rsx! {crate::dropdown::ItemOrderContent{parent_key,{children}}}
 }
 
-#[derive(Clone, Copy)]
-struct AvatarMenuContext {
-    open: Signal<bool>,
-}
-
-/// Avatar dropdown for user-specific actions and logout.
-#[component]
-pub fn MenuAvatar(
-    #[props(default = "User".to_string())] top: String,
-    #[props(default)] bottom: Option<String>,
-    #[props(default)] initials: Option<String>,
-    #[props(default)] image: Option<String>,
-    #[props(default)] children: Option<Element>,
-    #[props(default)] hide_logout_button: bool,
-    #[props(default)] onlogout: EventHandler<MouseEvent>,
-) -> Element {
-    let mut open = use_signal(|| false);
-    let mut trigger = use_signal(|| None::<Rc<MountedData>>);
-    let mut was_open = use_signal(|| false);
-    let mut restore_focus = use_signal(|| true);
-    use_effect(move || {
-        let next = open();
-        if *was_open.peek() && !next && *restore_focus.peek() {
-            let node = trigger.peek().clone();
-            spawn(async move {
-                if let Some(node) = node {
-                    let _ = node.set_focus(true).await;
-                }
-            });
-        }
-        if !*was_open.peek() && next {
-            restore_focus.set(true);
-        }
-        was_open.set(next);
-    });
-    use_context_provider(|| AvatarMenuContext { open });
-    let nav = navigation();
-    let nav_keys = nav.clone();
-    use_context_provider(|| nav);
-    let initials = initials.unwrap_or_else(|| {
-        top.split_whitespace()
-            .take(2)
-            .filter_map(|word| word.chars().next())
-            .collect()
-    });
-    rsx! {
-        div { class: "ix-menu-avatar", onkeydown: move |event| {
-            if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); }
-            else if event.key() == Key::Tab { restore_focus.set(false); open.set(false); }
-            else if open() { navigation_key(event, &nav_keys); }
-        },
-            button { class: "ix-menu-avatar-trigger", r#type: "button", title: top.clone(), "aria-label": top.clone(), "aria-haspopup": "menu", "aria-expanded": open().to_string(), onclick: move |_| open.set(!open()), onmounted: move |event| trigger.set(Some(event.data())),
-                span { class: "ix-menu-avatar-circle", if let Some(image) = image { img { src: image, alt: "" } } else { "{initials}" } }
-                span { class: "ix-menu-avatar-text", span { "{top}" } if let Some(bottom) = bottom { small { "{bottom}" } } }
-            }
-            if open() {
-                button { class: "ix-avatar-backdrop", r#type: "button", tabindex: "-1", "aria-label": "Close user menu", onclick: move |_| open.set(false) }
-                div { class: "ix-menu-avatar-popup", role: "menu", "aria-label": "User menu",
-                    {children}
-                    if !hide_logout_button { MenuAvatarItem { label: "Logout", icon: "log-out", onclick: onlogout } }
-                }
-            }
-        }
-    }
-}
-
-/// User-menu action; closes its owning avatar dropdown when activated.
-#[component]
-pub fn MenuAvatarItem(
-    label: String,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] disabled: bool,
-    #[props(default)] onclick: EventHandler<MouseEvent>,
-) -> Element {
-    let avatar = try_consume_context::<AvatarMenuContext>();
-    let (id, context) = navigation_item();
-    let enabled = use_hook(|| Rc::new(Cell::new(!disabled)));
-    enabled.set(!disabled);
-    let focus_context = context.clone();
-    rsx! {
-        button { class: "ix-menu-avatar-item", r#type: "button", role: "menuitem", disabled,
-            onmounted: move |event| if let Some(context) = &context {
-                let should_focus = enabled.get() && !context.entries.borrow().iter().any(|entry| entry.enabled.get());
-                let mut order = context.prefix.clone(); order.push(id); context.entries.borrow_mut().push(NavigationEntry { id, node: event.data(), enabled: enabled.clone(), order });
-                if should_focus && avatar.is_some() { spawn(async move { let _ = event.set_focus(true).await; }); }
-            },
-            onfocus: move |_| if let Some(context) = &focus_context { context.focused.set(Some(id)); },
-            onclick: move |event| { if let Some(mut avatar) = avatar { avatar.open.set(false); } onclick.call(event); },
-            if let Some(icon) = icon { crate::Icon { name: icon, size: 24 } } "{label}"
-        }
-    }
-}
+pub use crate::menu_avatar::{MenuAvatar, MenuAvatarItem, MenuAvatarItemProps, MenuAvatarProps};
 
 /// Settings content opened by the owning menu, or standalone with `show: true`.
 #[component]
@@ -3389,7 +3236,11 @@ pub(crate) const STYLES: &str = r#"
 @media(max-width:48em){.ix-theme .ix-application-header .ix-application-company-logo,.ix-theme .ix-application-header .ix-application-logo{display:none!important}}
 @media(max-width:48em){.ix-theme .ix-pane-layout,.ix-theme .ix-pane-layout[data-layout=full-horizontal]{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto auto;grid-template-areas:'top' 'left' 'content' 'right' 'bottom'}.ix-theme .ix-pane-slot{position:static}.ix-theme .ix-pane-slot:is(.ix-pane-slot-left,.ix-pane-slot-right,.ix-pane-slot-top,.ix-pane-slot-bottom){width:auto;height:auto;min-height:48px}.ix-theme .ix-pane-slot:has(>.ix-pane[data-hide-on-collapse=true]){min-height:0}}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-menu{transition:none}}
+.ix-theme .ix-menu-avatar-dropdown{display:block;position:static}.ix-theme .ix-menu-avatar-dropdown>.ix-dropdown-root-menu{width:16rem;min-width:0;max-width:calc(100vw - 16px);padding:.25rem 0;margin:0;border-radius:0;box-shadow:0 8px 24px #0004}
 "#;
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    include!("application/tests.rs");
+    include!("menu_avatar_tests.rs");
+}
