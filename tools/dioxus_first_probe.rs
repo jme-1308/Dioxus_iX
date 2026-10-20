@@ -30,6 +30,8 @@ mod filter_keyboard_review;
 mod filter_layout_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
+#[path = "dioxus_first_probe/grid_typed_editors_review.rs"]
+mod grid_typed_editors_review;
 #[path = "dioxus_first_probe/grid_worklist_review.rs"]
 mod grid_worklist_review;
 #[path = "dioxus_first_probe/header_choice_review.rs"]
@@ -166,6 +168,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridworklist" {
         return rsx! { grid_worklist_review::GridWorklistPreview {} };
+    }
+    if scope == "?grideditors" {
+        return rsx! { grid_typed_editors_review::GridTypedEditorsPreview {} };
     }
     if scope == "?chartworkflows" {
         return rsx! { chart_workflows_review::ChartWorkflowsPreview {} };

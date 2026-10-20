@@ -3,7 +3,7 @@
 //! This implements sorting, text filtering, filtered multi-selection, column
 //! resizing, content autosizing and stable-ID row/column movement. It is an independent Dioxus component;
 //! it does not embed the AG Grid JavaScript engine or implement its plugin API.
-use crate::Icon;
+use crate::{DataGridCellEditor, Icon};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -15,8 +15,8 @@ use std::{
 
 static GRID_ID: AtomicUsize = AtomicUsize::new(1);
 
-/// A text column. IDs must be unique and remain stable when rows change.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A string-valued column. IDs must remain unique and stable when rows change.
+#[derive(Clone, Debug, PartialEq)]
 pub struct DataGridColumn {
     pub id: String,
     pub title: String,
@@ -26,9 +26,12 @@ pub struct DataGridColumn {
     /// Allow header dragging and Alt+Left / Alt+Right column movement.
     pub reorderable: bool,
     pub row_drag: bool,
-    /// Opt in to the built-in text editor.
+    /// Opt in to built-in editing with controlled string change requests.
     pub editable: bool,
+    /// Shared required and maximum-length constraints, applied before kind validation.
     pub editor: DataGridTextEditor,
+    /// Native editor kind. Text is the backward-compatible default.
+    pub cell_editor: DataGridCellEditor,
     /// Minimum width in CSS pixels, excluding the separate selection column.
     pub min_width: u32,
     pub max_width: u32,
@@ -45,6 +48,7 @@ impl DataGridColumn {
             row_drag: false,
             editable: false,
             editor: DataGridTextEditor::default(),
+            cell_editor: DataGridCellEditor::default(),
             min_width: 80,
             max_width: 2000,
         }
@@ -217,6 +221,7 @@ fn finish_edit(
         return Err("This value changed while editing. Cancel and edit the latest value.".into());
     }
     column.editor.validate(&session.draft)?;
+    column.cell_editor.validate(&session.draft)?;
     Ok(
         (session.draft != session.original).then(|| DataGridCellValueChanged {
             row_id: session.row.clone(),
@@ -1172,7 +1177,8 @@ pub fn DataGrid(
     onstatechange: EventHandler<DataGridState>,
     /// Accepted edits are requests; apply them to the controlled `rows`.
     /// Updated rows are sorted/filtered again. Enter/F2, double-click and
-    /// printable characters start editing. Escape discards, Enter saves,
+    /// printable characters start text/number editing. Choice and checkbox
+    /// editors use Enter/F2 or double-click. Escape discards, Enter saves,
     /// Tab/Shift+Tab saves and edits the next/previous editable cell.
     /// At the first/last editable cell, Tab finishes editing in that cell.
     #[props(default)]
@@ -2116,6 +2122,8 @@ fn GridCell(
     let select_state = state.clone();
     let select_rows = rows.clone();
     let select_id = row_id.clone();
+    let text_entry = matches!(&column.cell_editor, DataGridCellEditor::Text);
+    let type_to_edit = text_entry || matches!(&column.cell_editor, DataGridCellEditor::Number(_));
     rsx! { div { onmounted: cell_mount, class: "ix-data-grid-cell", role: "gridcell", "data-column-id": column.id.clone(), "aria-readonly": (!editable).to_string(), "data-editing": session.is_some().to_string(), "aria-describedby": if show_tooltip() { Some(tooltip_id.clone()) } else { None },
         tabindex: if suppress_cell_focus { None } else { Some(if session.is_none() && (is_active || (entry_cell && !focused.read().as_ref().is_some_and(|focus| matches!(focus.lane, GridLane::Cell(_) | GridLane::Editor(_))))) { "0" } else { "-1" }) },
         onfocus: move |_| if !suppress_cell_focus {
@@ -2134,7 +2142,7 @@ fn GridCell(
         ondoubleclick: move |event: MouseEvent| if editable && !suppress_cell_focus { event.stop_propagation(); edit_action.call(GridEditAction::Start {row:double_row.clone(),column:double_column.clone(),initial:None}); },
         onkeydown: move |event: KeyboardEvent| {
             if editable && !suppress_cell_focus && !event.is_composing() && !event.modifiers().ctrl() && !event.modifiers().meta() && !event.modifiers().alt() && focused.peek().as_ref().is_some_and(|focus|matches!(focus.lane,GridLane::Cell(_))) {
-                let initial=match event.key() {Key::Enter|Key::F2=>Some(None),Key::Backspace=>Some(Some(String::new())),Key::Character(ref value) if value.chars().count()==1=>Some(Some(value.clone())),_=>None};
+                let initial=match event.key() {Key::Enter|Key::F2=>Some(None),Key::Backspace if type_to_edit=>Some(Some(String::new())),Key::Character(ref value) if type_to_edit && (text_entry || value != " ") && value.chars().count()==1=>Some(Some(value.clone())),_=>None};
                 if let Some(initial)=initial {event.prevent_default();event.stop_propagation();edit_action.call(GridEditAction::Start {row:edit_row.clone(),column:edit_column.clone(),initial});return;}
             }
             if event.key() == Key::Escape { let next = generation.peek().wrapping_add(1); generation.set(next); show_tooltip.set(false); }
@@ -2160,16 +2168,17 @@ fn GridCell(
             },
             Icon { name: "drag-gripper", size: 16 }
         } }
-        if let Some(session)=session.clone() { GridTextEditor {session,title:column.title.clone(),editing,edit_action,retiring} }
+        if let Some(session)=session.clone() { GridCellEditor {session,title:column.title.clone(),kind:column.cell_editor.clone(),editing,edit_action,retiring} }
         else { {grid_cell_text(&text,false)} }
         if editing.read().is_none() && show_tooltip() && !tooltip.is_empty() { span { id: tooltip_id.clone(), class: "ix-data-grid-tooltip", role: "tooltip", style: "--ix-grid-tip-x:{point().0}px;--ix-grid-tip-y:{point().1}px", "{tooltip}" } }
     } }
 }
 
 #[component]
-fn GridTextEditor(
+fn GridCellEditor(
     session: GridEditSession,
     title: String,
+    kind: DataGridCellEditor,
     mut editing: Signal<Option<GridEditSession>>,
     edit_action: EventHandler<GridEditAction>,
     #[props(default)] retiring: bool,
@@ -2182,22 +2191,133 @@ fn GridTextEditor(
             row: session.row.clone(),
             lane: GridLane::Editor(session.column.clone()),
         }),
-        Some((editor_id.clone(), session.select_all)),
+        // Native number/select/checkbox controls have no text selection range.
+        matches!(&kind, DataGridCellEditor::Text).then(|| (editor_id.clone(), session.select_all)),
     );
     let error_id = use_context::<GridValidationContext>().id;
     let row = session.row.clone();
     let column = session.column.clone();
-    rsx! {div {class:"ix-data-grid-editor-wrap",
-        input {id:editor_id,onmounted:editor_mount,class:"ix-data-grid-editor",r#type:"text",readonly:retiring,tabindex:retiring.then_some("-1"),value:session.draft,"data-select-all":session.select_all.to_string(),"aria-label":"Edit {title} for {session.row}","aria-invalid":session.error.is_some().to_string(),"aria-errormessage":if session.error.is_some(){Some(error_id.clone())}else{None},
-            onfocus:{let row=session.row.clone();let column=session.column.clone();move |_|focus_context.focused(Some(GridFocus {row:row.clone(),lane:GridLane::Editor(column.clone())}))},
-            oninput:move|event:FormEvent|{focus_context.cancel();if retiring{return;}let current=editing.peek().clone();if let Some(mut session)=current.filter(|session|session.row==row&&session.column==column){session.draft=event.value();session.error=None;session.select_all=false;editing.set(Some(session));}},
-            onkeydown:move|event:KeyboardEvent|{event.stop_propagation();if retiring {focus_context.cancel();return;}
-                if event.is_composing(){return;}match event.key(){
-                Key::Escape=>{event.prevent_default();edit_action.call(GridEditAction::Cancel);},
-                Key::Enter=>{event.prevent_default();edit_action.call(GridEditAction::Commit{tab:None,restore_focus:true});},
-                Key::Tab=>{event.prevent_default();edit_action.call(GridEditAction::Commit{tab:Some(event.modifiers().shift()),restore_focus:true});},_=>{}}},
+    let update = EventHandler::new(move |value: String| {
+        if retiring {
+            return;
         }
-    }}
+        focus_context.cancel();
+        let current = editing.peek().clone();
+        if let Some(mut session) =
+            current.filter(|session| session.row == row && session.column == column)
+        {
+            session.draft = value;
+            session.error = None;
+            session.select_all = false;
+            editing.set(Some(session));
+        }
+    });
+    let focus = {
+        let row = session.row.clone();
+        let column = session.column.clone();
+        EventHandler::new(move |_: FocusEvent| {
+            focus_context.focused(Some(GridFocus {
+                row: row.clone(),
+                lane: GridLane::Editor(column.clone()),
+            }))
+        })
+    };
+    let keydown = EventHandler::new(move |event: KeyboardEvent| {
+        event.stop_propagation();
+        if retiring {
+            // Keep the outgoing native control alive until its pending mounted
+            // target takes focus; stale input cannot cancel or alter that handoff.
+            event.prevent_default();
+            return;
+        }
+        if event.is_composing() {
+            return;
+        }
+        match event.key() {
+            Key::Escape => {
+                event.prevent_default();
+                edit_action.call(GridEditAction::Cancel);
+            }
+            Key::Enter => {
+                event.prevent_default();
+                edit_action.call(GridEditAction::Commit {
+                    tab: None,
+                    restore_focus: true,
+                });
+            }
+            Key::Tab => {
+                event.prevent_default();
+                edit_action.call(GridEditAction::Commit {
+                    tab: Some(event.modifiers().shift()),
+                    restore_focus: true,
+                });
+            }
+            _ => {}
+        }
+    });
+    let pointer_guard = EventHandler::new(move |event: MouseEvent| {
+        if retiring {
+            event.prevent_default();
+            event.stop_propagation();
+        }
+    });
+    let label = format!("Edit {title} for {}", session.row);
+    let invalid = session.error.is_some().to_string();
+    let error_message = session.error.as_ref().map(|_| error_id);
+    let control = match kind {
+        DataGridCellEditor::Text => rsx! {
+            input { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor", r#type: "text",
+                readonly: retiring, tabindex: retiring.then_some("-1"), value: session.draft,
+                "data-select-all": session.select_all.to_string(), "data-editor-kind": "text", "data-retiring": retiring.to_string(),
+                "aria-label": label, "aria-invalid": invalid, "aria-errormessage": error_message,
+                onfocus: focus, onkeydown: keydown, onclick: pointer_guard, onmousedown: pointer_guard,
+                oninput: move |event: FormEvent| update.call(event.value()),
+            }
+        },
+        DataGridCellEditor::Number(config) => rsx! {
+            input { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor", r#type: "number",
+                readonly: retiring, tabindex: retiring.then_some("-1"), value: session.draft,
+                min: config.min.map(|value| value.to_string()), max: config.max.map(|value| value.to_string()),
+                step: config.step.map_or_else(|| "any".to_string(), |value| value.to_string()),
+                "data-editor-kind": "number", "data-retiring": retiring.to_string(),
+                "aria-label": label, "aria-invalid": invalid, "aria-errormessage": error_message,
+                onfocus: focus, onkeydown: keydown, onclick: pointer_guard, onmousedown: pointer_guard,
+                oninput: move |event: FormEvent| update.call(event.value()),
+            }
+        },
+        DataGridCellEditor::Select(options) => {
+            let known = options.iter().any(|option| option.value == session.draft);
+            rsx! {
+                select { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor",
+                    tabindex: retiring.then_some("-1"), value: session.draft.clone(), "aria-disabled": retiring.to_string(),
+                    "data-editor-kind": "select", "data-retiring": retiring.to_string(),
+                    "aria-label": label, "aria-invalid": invalid, "aria-errormessage": error_message,
+                    onfocus: focus, onkeydown: keydown, onclick: pointer_guard, onmousedown: pointer_guard,
+                    onchange: move |event: FormEvent| { if retiring { event.prevent_default(); } else { update.call(event.value()); } },
+                    if !known {
+                        option { value: session.draft.clone(), disabled: true, selected: true,
+                            if session.draft.is_empty() { "Choose an option" } else { "Unavailable value: {session.draft}" }
+                        }
+                    }
+                    for option in options {
+                        option { key: "{option.value}", value: option.value.clone(), disabled: option.disabled,
+                            selected: option.value == session.draft, "{option.label}"
+                        }
+                    }
+                }
+            }
+        }
+        DataGridCellEditor::Checkbox => rsx! {
+            input { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor", r#type: "checkbox",
+                tabindex: retiring.then_some("-1"), checked: session.draft == "true", "aria-disabled": retiring.to_string(),
+                "data-editor-kind": "checkbox", "data-retiring": retiring.to_string(),
+                "aria-label": label, "aria-invalid": invalid, "aria-errormessage": error_message,
+                onfocus: focus, onkeydown: keydown, onclick: pointer_guard, onmousedown: pointer_guard,
+                onchange: move |event: FormEvent| { if retiring { event.prevent_default(); } else { update.call(event.checked().to_string()); } },
+            }
+        },
+    };
+    rsx! { div { class: "ix-data-grid-editor-wrap", {control} } }
 }
 
 pub(crate) const STYLES: &str = r#"
@@ -2239,6 +2359,7 @@ pub(crate) const STYLES: &str = r#"
 .ix-data-grid-editor{box-sizing:border-box;width:100%;min-width:0;height:32px;border:1px solid var(--ix-color-primary);border-radius:2px;background:var(--ix-color-surface-1);color:var(--ix-color-text);font:inherit;caret-color:var(--ix-color-primary);padding:4px 8px}
 .ix-data-grid-editor:focus-visible{outline:2px solid var(--ix-color-primary);outline-offset:1px}
 .ix-data-grid-editor[aria-invalid=true]{border-color:var(--ix-color-danger)}
+.ix-data-grid-editor[type=checkbox]{width:18px;height:18px;padding:0;vertical-align:middle;accent-color:var(--ix-color-primary)}
 .ix-data-grid-edit-error{position:absolute;inset:auto 0 0;box-sizing:border-box;min-width:0;max-height:50%;overflow:auto;padding:8px 12px;background:var(--ix-color-surface-2);color:var(--ix-color-text);white-space:normal;overflow-wrap:anywhere;z-index:4;border:1px solid var(--ix-color-danger);border-radius:2px}
 .ix-data-grid-cell-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ix-data-grid-drag{flex:none;display:flex;align-items:center;justify-content:center;padding:0;background:none;border:0;width:16px;height:24px;color:inherit;cursor:grab}.ix-data-grid-drag:active{cursor:grabbing}.ix-data-grid-drag:disabled{opacity:.3}
@@ -2527,6 +2648,174 @@ mod tests {
             select_all: true,
         }
     }
+    #[test]
+    fn typed_edit_validation_stays_atomic_and_preserves_shared_constraints() {
+        let records = vec![DataGridRow::new("part").cell("value", "2")];
+        let mut column = edit_column("value");
+        column.cell_editor = DataGridCellEditor::Number(crate::DataGridNumberEditor {
+            min: Some(0.0),
+            max: Some(10.0),
+            step: Some(0.5),
+        });
+        assert!(
+            finish_edit(
+                &edit_session("part", "value", "2", ""),
+                &records,
+                std::slice::from_ref(&column),
+                false
+            )
+            .unwrap_err()
+            .contains("Enter a value")
+        );
+        assert!(
+            finish_edit(
+                &edit_session("part", "value", "2", "2.25"),
+                &records,
+                std::slice::from_ref(&column),
+                false
+            )
+            .is_err()
+        );
+        let change = finish_edit(
+            &edit_session("part", "value", "2", "2.5"),
+            &records,
+            std::slice::from_ref(&column),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            records[0].value("value"),
+            "2",
+            "acceptance remains a controlled request"
+        );
+        let mut applied = records.clone();
+        assert!(change.apply_to(&mut applied));
+        assert_eq!(applied[0].value("value"), "2.5");
+        assert!(
+            !change.apply_to(&mut applied),
+            "stale typed requests still cannot overwrite changed data"
+        );
+
+        let mut disabled = crate::DataGridSelectOption::new("retired", "Retired");
+        disabled.disabled = true;
+        column.cell_editor = DataGridCellEditor::Select(vec![
+            crate::DataGridSelectOption::new("ready", "Ready"),
+            disabled,
+        ]);
+        for draft in ["unknown", "retired"] {
+            assert!(
+                finish_edit(
+                    &edit_session("part", "value", "2", draft),
+                    &records,
+                    std::slice::from_ref(&column),
+                    false
+                )
+                .is_err()
+            );
+        }
+        let change = finish_edit(
+            &edit_session("part", "value", "2", "ready"),
+            &records,
+            std::slice::from_ref(&column),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(change.new_value, "ready");
+        column.cell_editor = DataGridCellEditor::Checkbox;
+        assert!(
+            finish_edit(
+                &edit_session("part", "value", "2", "yes"),
+                &records,
+                std::slice::from_ref(&column),
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(
+            finish_edit(
+                &edit_session("part", "value", "2", "false"),
+                &records,
+                &[column],
+                false
+            )
+            .unwrap()
+            .unwrap()
+            .new_value,
+            "false"
+        );
+    }
+
+    #[derive(Clone, PartialEq)]
+    struct NativeEditorFixture {
+        kind: DataGridCellEditor,
+        draft: String,
+    }
+    fn native_editor_probe(fixture: NativeEditorFixture) -> Element {
+        let root = use_signal(|| None::<Rc<MountedData>>);
+        let state = use_signal(GridMountState::default);
+        let width = use_signal(|| 0.0);
+        use_context_provider(|| GridMountContext { root, state, width });
+        use_context_provider(|| GridValidationContext {
+            id: "typed-error".into(),
+        });
+        let session = edit_session("part", "value", &fixture.draft, &fixture.draft);
+        let editing = use_signal(|| Some(session.clone()));
+        rsx! { GridCellEditor { session, title: "Value", kind: fixture.kind, editing, edit_action: move |_| {} } }
+    }
+    #[test]
+    fn typed_editors_render_native_controls_and_preserve_unknown_choice_values() {
+        let render = |kind, draft: &str| {
+            let mut dom = VirtualDom::new_with_props(
+                native_editor_probe,
+                NativeEditorFixture {
+                    kind,
+                    draft: draft.into(),
+                },
+            );
+            dom.rebuild_in_place();
+            dioxus_ssr::render(&dom)
+        };
+        let number = render(
+            DataGridCellEditor::Number(crate::DataGridNumberEditor {
+                min: Some(0.0),
+                max: Some(10.0),
+                step: Some(0.5),
+            }),
+            "2.5",
+        );
+        assert!(
+            number.contains("type=\"number\"")
+                && number.contains("min=\"0\"")
+                && number.contains("max=\"10\"")
+                && number.contains("step=\"0.5\"")
+        );
+        let select = render(
+            DataGridCellEditor::Select(vec![crate::DataGridSelectOption::new("ready", "Ready")]),
+            "legacy",
+        );
+        assert!(select.contains("<select") && select.contains("Unavailable value: legacy"));
+        let unknown = select
+            .split("<option")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap();
+        assert!(unknown.contains("value=\"legacy\"") && unknown.contains("disabled"));
+        let checkbox = render(DataGridCellEditor::Checkbox, "true");
+        assert!(checkbox.contains("type=\"checkbox\"") && checkbox.contains("checked"));
+        for html in [&number, &select, &checkbox] {
+            assert!(html.contains("Edit Value for part"));
+            assert!(
+                !html.contains("data-select-all="),
+                "nontext controls do not request text selection"
+            );
+        }
+        assert!(render(DataGridCellEditor::Text, "text").contains("data-select-all="));
+    }
+
     #[test]
     fn controlled_edit_survives_reordering_and_preserves_selection_identity() {
         let mut records = rows();
