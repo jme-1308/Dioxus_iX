@@ -44,6 +44,7 @@ mod icon_toggle_button_review;
 mod input_review;
 mod layout;
 mod layout_scenarios;
+mod localized_dates;
 mod menu_category_review;
 mod menu_hover_review;
 mod menu_navigation_review;
@@ -219,6 +220,7 @@ fn Gallery() -> Element {
         style { {forms::STYLES} }
         style { {layout::STYLES} }
         style { {datetime::STYLES} }
+        style { {localized_dates::STYLES} }
         style { {dialogs::STYLES} }
         style { {tree::STYLES} }
         style { {toast_review::STYLES} }
@@ -272,7 +274,7 @@ fn Gallery() -> Element {
                         GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
-                        GalleryPage::DateTime => rsx! { date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
+                        GalleryPage::DateTime => rsx! { localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { grid_scenarios::GridExamples {} },
                         GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },

@@ -42,6 +42,8 @@ mod header_tab_review;
 mod icon_catalog_review;
 #[path = "dioxus_first_probe/item_order_review.rs"]
 mod item_order_review;
+#[path = "dioxus_first_probe/localized_date_review.rs"]
+mod localized_date_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
 mod menu_focus_review;
 #[path = "dioxus_first_probe/menu_order_review.rs"]
@@ -170,6 +172,9 @@ fn Preview() -> Element {
     }
     if scope == "?servicerequest" {
         return rsx! { service_request_review::ServiceRequestPreview {} };
+    }
+    if scope == "?localizeddates" {
+        return rsx! { localized_date_review::LocalizedDatesPreview {} };
     }
     if scope == "?chipworkflows" {
         return rsx! { chip_workflows_review::ChipWorkflowsPreview {} };

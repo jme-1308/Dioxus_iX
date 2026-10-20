@@ -273,6 +273,12 @@ pub enum DateFormat {
     DmyDot,
     DmySlash,
     MdySlash,
+    /// Day, localized full month name, and four-digit year.
+    LongMonth(CalendarLocale),
+    /// Day, localized abbreviated month name, and four-digit year.
+    ShortMonth(CalendarLocale),
+    /// Matching localized weekday, day, full month name, and year.
+    WeekdayLongMonth(CalendarLocale),
 }
 impl DateFormat {
     /// A placeholder describing the expected input.
@@ -283,6 +289,9 @@ impl DateFormat {
             Self::DmyDot => "DD.MM.YYYY",
             Self::DmySlash => "DD/MM/YYYY",
             Self::MdySlash => "MM/DD/YYYY",
+            Self::LongMonth(_) => "DD Month YYYY",
+            Self::ShortMonth(_) => "DD Mon YYYY",
+            Self::WeekdayLongMonth(_) => "Weekday, DD Month YYYY",
         }
     }
     /// Format a validated date.
@@ -294,14 +303,35 @@ impl DateFormat {
             Self::DmyDot => format!("{day:02}.{month:02}.{year:04}"),
             Self::DmySlash => format!("{day:02}/{month:02}/{year:04}"),
             Self::MdySlash => format!("{month:02}/{day:02}/{year:04}"),
+            Self::LongMonth(locale) => locale
+                .format_date(date, "dd MMMM yyyy")
+                .expect("supported full-month format"),
+            Self::ShortMonth(locale) => locale
+                .format_date(date, "dd MMM yyyy")
+                .expect("supported abbreviated-month format"),
+            Self::WeekdayLongMonth(locale) => locale
+                .format_date(date, "EEEE, dd MMMM yyyy")
+                .expect("supported weekday format"),
         }
     }
     /// Strictly parse this format; impossible dates are rejected.
     pub fn parse(self, value: &str) -> Option<IxDate> {
-        let separator = match self {
-            Self::Iso => '-',
-            Self::DmyDot => '.',
-            _ => '/',
+        use crate::localized_date::{NamedDateStyle, parse_named_date};
+        let (separator, year_index, month_index, day_index) = match self {
+            Self::YmdSlash => ('/', 0, 1, 2),
+            Self::Iso => ('-', 0, 1, 2),
+            Self::DmyDot => ('.', 2, 1, 0),
+            Self::DmySlash => ('/', 2, 1, 0),
+            Self::MdySlash => ('/', 2, 0, 1),
+            Self::LongMonth(locale) => {
+                return parse_named_date(value, locale, NamedDateStyle::Long);
+            }
+            Self::ShortMonth(locale) => {
+                return parse_named_date(value, locale, NamedDateStyle::Short);
+            }
+            Self::WeekdayLongMonth(locale) => {
+                return parse_named_date(value, locale, NamedDateStyle::WithWeekday);
+            }
         };
         let parts: Vec<_> = value.trim().split(separator).collect();
         if parts.len() != 3
@@ -311,11 +341,7 @@ impl DateFormat {
         {
             return None;
         }
-        let (year, month, day) = match self {
-            Self::YmdSlash | Self::Iso => (parts[0], parts[1], parts[2]),
-            Self::DmyDot | Self::DmySlash => (parts[2], parts[1], parts[0]),
-            Self::MdySlash => (parts[2], parts[0], parts[1]),
-        };
+        let (year, month, day) = (parts[year_index], parts[month_index], parts[day_index]);
         if year.len() != 4 || month.len() > 2 || day.len() > 2 {
             return None;
         }
@@ -1847,11 +1873,19 @@ impl IxDateTime {
         )
     }
     pub fn parse(value: &str, date_format: DateFormat, time_format: TimeFormat) -> Option<Self> {
-        let (date, time) = value.trim().split_once(' ')?;
-        Some(Self {
-            date: date_format.parse(date)?,
-            time: time_format.parse(time)?,
-        })
+        let value = value.trim();
+        // A named date and a twelve-hour clock can both contain spaces. Let
+        // each typed parser recognize its portion instead of splitting at the
+        // first space, which is part of a localized date.
+        value
+            .char_indices()
+            .filter(|(_, ch)| ch.is_whitespace())
+            .find_map(|(index, separator)| {
+                Some(Self {
+                    date: date_format.parse(&value[..index])?,
+                    time: time_format.parse(&value[index + separator.len_utf8()..])?,
+                })
+            })
     }
 }
 
@@ -2682,6 +2716,61 @@ mod tests {
         assert!(DateFormat::Iso.parse("2025-02-29").is_none());
         assert!(DateFormat::Iso.parse("2026-13-01").is_none());
         assert!(DateFormat::Iso.parse("-001-01-01").is_none());
+    }
+    #[test]
+    fn named_date_formats_and_spaced_datetime_inputs_roundtrip() {
+        let expected = IxDateTime {
+            date: date(2026, 10, 20),
+            time: time(13, 30, 0),
+        };
+        for locale in [
+            CalendarLocale::En,
+            CalendarLocale::De,
+            CalendarLocale::Fr,
+            CalendarLocale::Ja,
+        ] {
+            for format in [
+                DateFormat::LongMonth(locale),
+                DateFormat::ShortMonth(locale),
+                DateFormat::WeekdayLongMonth(locale),
+            ] {
+                assert_eq!(
+                    format.parse(&format.format(expected.date)),
+                    Some(expected.date)
+                );
+                for clock in [TimeFormat::Hm12, TimeFormat::Hms] {
+                    let text = expected.format(format, clock);
+                    assert_eq!(
+                        IxDateTime::parse(&text, format, clock),
+                        Some(expected),
+                        "{text}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            IxDateTime::parse(
+                "2026/10/20 01:30 PM",
+                DateFormat::YmdSlash,
+                TimeFormat::Hm12
+            ),
+            Some(expected)
+        );
+        for text in [
+            "Monday, 20 October 2026 01:30 PM",
+            "Tuesday, 31 October 2026 01:30 PM",
+            "Tuesday, 20 October 2026 13:30 PM",
+        ] {
+            assert!(
+                IxDateTime::parse(
+                    text,
+                    DateFormat::WeekdayLongMonth(CalendarLocale::En),
+                    TimeFormat::Hm12
+                )
+                .is_none(),
+                "{text}"
+            );
+        }
     }
     #[test]
     fn noon_midnight_milliseconds_and_range_validation() {

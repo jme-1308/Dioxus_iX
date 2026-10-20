@@ -63,6 +63,7 @@ pub mod icons;
 mod input_geometry;
 mod input_styles;
 pub mod layout;
+mod localized_date;
 mod menu_hover_dom;
 mod native_surface;
 pub mod notifications;
