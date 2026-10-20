@@ -17,3 +17,6 @@
  .ix-theme .ix-temporal-popover{inset:auto;transform:none;position-area:bottom span-right;margin:4px;position-try-fallbacks:flip-inline,flip-block,flip-inline flip-block,--ix-temporal-contained}
  @position-try --ix-temporal-contained{position-area:none;inset:16px;margin:auto;height:max-content;max-width:calc(100% - 32px);max-height:calc(100dvh - 32px)}
 }
+
+.ix-theme .ix-date-dropdown-surface>.ix-dropdown-root-menu{padding:0;min-width:0;max-width:min(660px,calc(100vw - 32px));max-height:calc(100dvh - 32px);box-shadow:0 6px 24px #0004}
+.ix-theme .ix-date-dropdown-surface .ix-date-preset[aria-pressed=true]{color:var(--ix-color-text)}

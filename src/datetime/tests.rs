@@ -158,6 +158,7 @@ macro_rules! date_dropdown_converter {
             }
         };
         (@data Mouse) => { MouseData::new(DateDropdownMouse) };
+        (@data Mounted) => { MountedData::new(()) };
         (@data $other:ident) => { panic!("Unexpected event in date dropdown regression") };
     }
 dioxus::html::with_html_event_groups!(date_dropdown_converter);
@@ -189,6 +190,9 @@ fn dropdown_event_fixture() -> Element {
         single_selection: false,
         disabled: false,
         loading: false,
+        enable_top_layer: false,
+        id: None,
+        class: String::new(),
         week_start_index: 0,
         show_week_numbers: false,
         variant: crate::ButtonVariant::default(),
@@ -198,7 +202,12 @@ fn dropdown_event_fixture() -> Element {
         onrangechange: EventHandler::new(move |event| events.borrow_mut().push(event)),
     })
 }
-fn dropdown_listener(node: &VNode, marker: &str) -> Option<dioxus::dioxus_core::ListenerCallback> {
+fn dropdown_listener(
+    dom: &VirtualDom,
+    node: dioxus::core::MountedVNode<'_>,
+    marker: &str,
+    event: &str,
+) -> Option<dioxus::dioxus_core::ListenerCallback> {
     for anchor in node.template().anchors() {
         // Dioxus can split one element's attributes between dynamic slots.
         // Join only slots belonging to this DOM anchor before identifying
@@ -209,24 +218,36 @@ fn dropdown_listener(node: &VNode, marker: &str) -> Option<dioxus::dioxus_core::
             .collect();
         if attributes.iter().any(|attribute| attribute.name == marker || matches!(&attribute.value, dioxus::dioxus_core::AttributeValue::Text(text) if text.starts_with(marker))) {
                 for attribute in attributes {
-                    if attribute.name == "onclick" {
+                    if attribute.name == event {
                         if let dioxus::dioxus_core::AttributeValue::Listener(listener) = &attribute.value { return Some(listener.clone()); }
                     }
                 }
             }
     }
-    node.dynamic_node_values()
-        .iter()
-        .find_map(|node| match node {
-            dioxus::dioxus_core::DynamicNode::Fragment(children) => children
-                .iter()
-                .find_map(|node| dropdown_listener(node, marker)),
+    node.dynamic_anchors()
+        .flat_map(|anchor| anchor.nodes())
+        .find_map(|slot| match &*slot {
+            dioxus::core::DynamicNode::Component(component) => component
+                .mounted_scope(slot, node, dom)
+                .and_then(|scope| scope.try_mounted_root_node())
+                .and_then(|child| dropdown_listener(dom, child, marker, event)),
+            dioxus::dioxus_core::DynamicNode::Fragment(_) => node
+                .mounted_fragment_children(slot, dom)
+                .into_iter()
+                .find_map(|child| dropdown_listener(dom, child, marker, event)),
             _ => None,
         })
 }
 fn click_dropdown(dom: &mut VirtualDom, marker: &str) {
-    let root = dom.get_scope(ScopeId::APP).unwrap().root_node();
-    let listener = dropdown_listener(root, marker).unwrap_or_else(|| {
+    call_dropdown_listener(dom, marker, "onclick");
+}
+fn call_dropdown_listener(dom: &mut VirtualDom, marker: &str, event: &str) {
+    let root = dom
+        .get_scope(ScopeId::APP)
+        .unwrap()
+        .try_mounted_root_node()
+        .unwrap();
+    let listener = dropdown_listener(dom, root, marker, event).unwrap_or_else(|| {
         panic!(
             "dropdown control listener {marker}: {:?}",
             root.dynamic_attr_values()
@@ -241,7 +262,13 @@ fn click_dropdown(dom: &mut VirtualDom, marker: &str) {
             .into_any(),
         )
     });
-    dom.render_immediate_to_vec();
+    settle_dropdown(dom);
+}
+fn settle_dropdown(dom: &mut VirtualDom) {
+    for _ in 0..8 {
+        dom.render_immediate_to_vec();
+        dom.process_events();
+    }
 }
 #[test]
 fn date_dropdown_presets_notify_while_open_and_repeated_dismissals_retain_the_range() {
@@ -266,6 +293,8 @@ fn date_dropdown_presets_notify_while_open_and_repeated_dismissals_retain_the_ra
     let mut dom = VirtualDom::new(dropdown_event_fixture).with_root_context(events.clone());
     dioxus::html::set_event_converter(Box::new(DateDropdownTestConverter));
     dom.rebuild_in_place();
+    settle_dropdown(&mut dom);
+    call_dropdown_listener(&mut dom, "aria-expanded", "onmounted");
     click_dropdown(&mut dom, "aria-expanded");
     assert!(events.borrow().is_empty());
     click_dropdown(&mut dom, "Last week:");
@@ -297,6 +326,19 @@ fn date_dropdown_presets_notify_while_open_and_repeated_dismissals_retain_the_ra
             .iter()
             .all(|event| event == &events.borrow()[0])
     );
+    click_dropdown(&mut dom, "aria-expanded");
+    click_dropdown(&mut dom, "Done");
+    assert_eq!(
+        events.borrow().len(),
+        6,
+        "Done publishes explicit selection and shared dismissal"
+    );
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .all(|event| event == &events.borrow()[0])
+    );
 }
 fn dropdown_scheduler_fixture() -> Element {
     let tick = use_signal(|| 0_u32);
@@ -322,6 +364,7 @@ fn date_dropdown_focus_effect_settles_and_does_not_starve_external_updates() {
         let mut dom =
             VirtualDom::new(dropdown_scheduler_fixture).with_root_context(capture.clone());
         dom.rebuild_in_place();
+        settle_dropdown(&mut dom);
         let mut context = Context::from_waker(Waker::noop());
         assert!(matches!(
             pin!(dom.wait_for_work()).poll(&mut context),
@@ -333,6 +376,7 @@ fn date_dropdown_focus_effect_settles_and_does_not_starve_external_updates() {
             Poll::Ready(())
         ));
         dom.render_immediate_to_vec();
+        settle_dropdown(&mut dom);
         assert!(dioxus_ssr::render(&dom).contains("External update 1"));
         assert!(matches!(
             pin!(dom.wait_for_work()).poll(&mut context),

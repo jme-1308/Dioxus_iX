@@ -597,6 +597,7 @@ struct MenuEntry {
 }
 #[derive(Clone, PartialEq, Default)]
 struct Settings {
+    surface_role: DropdownSurfaceRole,
     mode: DropdownNavigationMode,
     behavior: DropdownCloseBehavior,
     disable_focus_handling: bool,
@@ -2188,10 +2189,11 @@ pub fn DropdownTrigger(
     let trigger_id = context.trigger_id();
     let host_id = context.host_id();
     let active_id = dropdown.active_descendant();
+    let surface_role = context.state.borrow().settings.surface_role;
     rsx! { button {
         id:trigger_id, class:"ix-dropdown-external-trigger ix-button ix-button-{variant.as_str()} {class}",
         r#type:"button",disabled:blocked,"aria-label":aria_label,"aria-describedby":aria_describedby,"aria-busy":loading.to_string(),
-        "aria-haspopup":"menu","aria-expanded":dropdown.is_open().to_string(),"aria-controls":host_id,"aria-activedescendant":active_id,
+        "aria-haspopup":surface_role.as_str(),"aria-expanded":dropdown.is_open().to_string(),"aria-controls":host_id,"aria-activedescendant":active_id,
         "data-ix-overlay-trigger":id,style:"anchor-name:--ix-dropdown-anchor-{context.id}",
         onmounted:binding.onmounted,onvisible:binding.onvisible,
         onclick:binding.onclick,
@@ -2200,6 +2202,25 @@ pub fn DropdownTrigger(
         else if let Some(icon)=icon {Icon {name:icon,size:20}}
         {children}
     } }
+}
+
+/// Semantic role for a shared Dropdown surface and its native trigger.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DropdownSurfaceRole {
+    /// Ordinary menu surface and trigger semantics.
+    #[default]
+    Menu,
+    /// Composed dialog content with its own keyboard interaction.
+    Dialog,
+}
+impl DropdownSurfaceRole {
+    /// Native ARIA role and `aria-haspopup` value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Menu => "menu",
+            Self::Dialog => "dialog",
+        }
+    }
 }
 
 /// Persistent source-default Dropdown. `controller` or `trigger` omits the
@@ -2227,6 +2248,10 @@ pub fn Dropdown(
     icon_only: bool,
     aria_label: Option<String>,
     #[props(default)] class: String,
+    /// Semantic surface type; use Dialog for composed calendars/forms and
+    /// disable menu focus handling when their controls own keyboard navigation.
+    #[props(default)]
+    surface_role: DropdownSurfaceRole,
     #[props(default)] navigation_mode: DropdownNavigationMode,
     #[props(default)] close_behavior: DropdownCloseBehavior,
     #[props(default)] enable_top_layer: bool,
@@ -2249,6 +2274,7 @@ pub fn Dropdown(
     let context = handle.context();
     let key = context.node_id();
     let settings = Settings {
+        surface_role,
         mode: navigation_mode,
         behavior: close_behavior,
         disable_focus_handling,
@@ -2258,7 +2284,7 @@ pub fn Dropdown(
         before: onbeforechange,
         changed: onchange,
     };
-    rsx! { DropdownSurface {key:"{key}",context,handle,label,external:controller.is_some()||trigger.is_some(),trigger,placement,blocked:disabled||loading,loading,variant,icon,button_label,icon_only,aria_label,class,settings,enable_top_layer,suppress_automatic_placement,{children}} }
+    rsx! { DropdownSurface {key:"{key}",context,handle,label,external:controller.is_some()||trigger.is_some(),trigger,placement,blocked:disabled||loading,loading,variant,icon,button_label,icon_only,aria_label,class,surface_role,settings,enable_top_layer,suppress_automatic_placement,{children}} }
 }
 
 #[component]
@@ -2277,6 +2303,7 @@ fn DropdownSurface(
     icon_only: bool,
     aria_label: Option<String>,
     class: String,
+    surface_role: DropdownSurfaceRole,
     settings: Settings,
     enable_top_layer: bool,
     suppress_automatic_placement: bool,
@@ -2414,9 +2441,10 @@ fn DropdownSurface(
     let configure = context.clone();
     let configure_node = node.clone();
     let mode_sync = use_hook(|| Rc::new(Cell::new(settings.mode)));
+    let role_sync = use_hook(|| Rc::new(Cell::new(DropdownSurfaceRole::Menu)));
     use_effect(use_reactive(
-        (&blocked, &settings.mode),
-        move |(blocked, mode)| {
+        (&blocked, &settings.mode, &settings.surface_role),
+        move |(blocked, mode, surface_role)| {
             let mut flag = configure.blocked;
             flag.set(blocked);
             if blocked {
@@ -2442,6 +2470,9 @@ fn DropdownSurface(
                         configure.focus_trigger(true);
                     }
                 }
+                configure.notify();
+            }
+            if role_sync.replace(surface_role) != surface_role {
                 configure.notify();
             }
         },
@@ -2521,7 +2552,7 @@ fn DropdownSurface(
         id:if external {format!("ix-dropdown-surface-owner-{}",context.id)}else{trigger_id},
         class:"ix-dropdown {class}",role:root_role,tabindex:(!external).then_some(if blocked {-1}else{0}),
         "aria-label":(!external).then_some(aria_name.clone()),"aria-disabled":(!external).then_some(blocked.to_string()),"aria-busy":(!external).then_some(loading.to_string()),
-        "aria-haspopup":(!external).then_some("menu"),"aria-expanded":(!external).then_some(open.to_string()),
+        "aria-haspopup":(!external).then_some(surface_role.as_str()),"aria-expanded":(!external).then_some(open.to_string()),
         "aria-controls":(!external).then_some(host_id.clone()),
         "aria-activedescendant":if settings.mode==DropdownNavigationMode::ActiveDescendant&&open{active_id.clone()}else{None},
         "data-ix-overlay-root":id.clone(),"data-ix-overlay-owner":runtime_owner,"data-ix-overlay-trigger":trigger_marker,
@@ -2545,7 +2576,7 @@ fn DropdownSurface(
                 Icon {name:"chevron-down-small",size:16}
             }
         }}
-        dialog {id:host_id,class:"ix-dropdown-menu ix-dropdown-root-menu",role:"menu","aria-label":label,
+        dialog {id:host_id,class:"ix-dropdown-menu ix-dropdown-root-menu",role:surface_role.as_str(),"aria-label":label,
             "data-ix-overlay-host":id,"data-placement":effective_placement.as_str(),"data-configured-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
             popover:enable_top_layer.then_some("manual"),
             "data-ix-native-popover":native_popup.marker,

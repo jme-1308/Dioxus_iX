@@ -2053,6 +2053,8 @@ pub struct DateRangeChange {
 /// selection, matching upstream. Calendar edits publish when dismissed. An empty
 /// preset list displays only the calendar. Done publishes its explicit selection
 /// event followed by the dismissal event, as in the source component.
+/// The persistent shared Dropdown surface owns dismissal, focus restoration and
+/// cleanup. Enable its native top layer to escape a clipped parent layout.
 #[component]
 pub fn DateDropdown(
     today: IxDate,
@@ -2066,6 +2068,9 @@ pub fn DateDropdown(
     #[props(default)] single_selection: bool,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
+    #[props(default)] enable_top_layer: bool,
+    #[props(default)] id: Option<String>,
+    #[props(default)] class: String,
     #[props(default)] week_start_index: u8,
     #[props(default)] show_week_numbers: bool,
     #[props(default)] variant: crate::ButtonVariant,
@@ -2074,7 +2079,8 @@ pub fn DateDropdown(
     #[props(default = "Custom range".to_string())] custom_label: String,
     onrangechange: EventHandler<DateRangeChange>,
 ) -> Element {
-    let mut open = use_signal(|| false);
+    let dropdown = crate::use_dropdown();
+    let binding = crate::use_dropdown_trigger_binding(dropdown);
     let preset = options.iter().find(|option| option.id == date_range_id);
     let committed = DateSelection {
         from: from.or_else(|| preset.map(|option| option.from)),
@@ -2102,58 +2108,50 @@ pub fn DateDropdown(
         (Some(from), _) => format.format(from),
         _ => empty_label,
     };
-    let close = use_callback(move |_| {
-        onrangechange.call(DateRangeChange {
-            id: draft_id(),
-            dates: draft(),
-        });
-        open.set(false);
+    let changed = use_callback(move |open: bool| {
+        if open {
+            // A new opening presents the committed/current range's month,
+            // while the shared surface itself keeps its mounted identity.
+            picker_epoch += 1;
+        } else {
+            onrangechange.call(DateRangeChange {
+                id: draft_id(),
+                dates: draft(),
+            });
+        }
     });
     let done = use_callback(move |_| {
+        if disabled || loading {
+            return;
+        }
         onrangechange.call(DateRangeChange {
             id: draft_id(),
             dates: draft(),
         });
-        close.call(());
+        dropdown.close(true);
     });
-    let popup_id = use_hook(|| {
+    let trigger_id = use_hook(|| {
         format!(
-            "ix-date-dropdown-{}",
+            "ix-date-dropdown-trigger-{}",
             NEXT_DATE_ID.fetch_add(1, Ordering::Relaxed)
         )
     });
-    let mut trigger = use_signal(|| None::<Rc<MountedData>>);
-    let mut was_open = use_signal(|| false);
-    use_effect(move || {
-        let is_open = open();
-        if *was_open.peek() && !is_open {
-            let element = trigger.peek().clone();
-            spawn(async move {
-                if let Some(element) = element {
-                    let _ = element.set_focus(true).await;
-                }
-            });
-        }
-        if *was_open.peek() != is_open {
-            was_open.set(is_open);
-        }
-    });
-    let anchor = format!("--{popup_id}");
     let button_class = format!("ix-button ix-button-{} ix-align-center", variant.as_str());
-    rsx! { div { class: "ix-date-dropdown", style: "anchor-name:{anchor}",
-        onkeydown: move |event| { if event.key() == Key::Escape && open() { event.prevent_default(); event.stop_propagation(); close.call(()); } },
-        button { class: button_class, r#type: "button", disabled: disabled || loading,
-            aria_expanded: open(), aria_controls: popup_id.clone(), aria_haspopup: "dialog", aria_busy: loading,
-            onmounted: move |event| trigger.set(Some(event.data())),
-            onclick: move |_| { if open() { close.call(()); } else { open.set(true); } },
+    rsx! { div { id, class: "ix-date-dropdown {class}",
+        button { id: trigger_id.clone(), class: button_class, r#type: "button", disabled: disabled || loading,
+            aria_expanded: dropdown.is_open(), aria_controls: dropdown.menu_id(), aria_haspopup: "dialog", aria_busy: loading,
+            onmounted: binding.onmounted, onvisible: binding.onvisible, onkeydown: binding.onkeydown,
+            onclick: binding.onclick,
+            ..binding.attributes(),
             if loading { crate::Spinner { size: crate::SpinnerSize::Sm } }
             else { crate::Icon { name: "history".to_string(), size: 24 } }
             span { "{button_label}" }
             crate::Icon { name: "chevron-down-small".to_string(), size: 24 }
         }
-        if open() && !disabled && !loading {
-            button { class: "ix-temporal-backdrop", r#type: "button", tabindex: -1, aria_label: "Close date ranges", onclick: move |_| close.call(()) }
-            div { class: "ix-temporal-popover ix-date-dropdown-popover", style: "position-anchor:{anchor}", role: "dialog", id: popup_id.clone(), aria_label: "Date range",
+        crate::Dropdown { label: "Date range", controller: dropdown, trigger: trigger_id.clone(),
+            surface_role: crate::DropdownSurfaceRole::Dialog, close_behavior: crate::DropdownCloseBehavior::Outside,
+            disable_focus_handling: true, enable_top_layer, disabled, loading,
+            class: "ix-date-dropdown-surface", onchange: changed,
                 div { class: "ix-date-dropdown-content",
                     if options.len() > 1 { div { class: "ix-date-preset-list",
                         for option in options {
@@ -2162,6 +2160,7 @@ pub fn DateDropdown(
                                 aria_pressed: draft_id() == option.id,
                                 disabled: option.from > option.to || !option.from.within(min_date, max_date) || !option.to.within(min_date, max_date),
                                 onclick: move |_| {
+                                    if disabled || loading || !dropdown.is_open() { return; }
                                     let selection = DateSelection { from: Some(option.from), to: if single_selection { None } else { Some(option.to) } };
                                     draft_id.set(option.id.clone());
                                     draft.set(selection);
@@ -2177,15 +2176,18 @@ pub fn DateDropdown(
                     div { class: "ix-date-dropdown-calendar", aria_label: custom_label,
                         DatePicker { key: "{picker_epoch}", today, from: draft().from, to: draft().to, min_date, max_date, single_selection, week_start_index, show_week_numbers, labels: labels.clone(), embedded: true,
                             ondatechange: move |selection| { draft_id.set("custom".into()); draft.set(selection); } }
-                        div { class: "ix-date-card-footer", crate::Button { onclick: move |_| done.call(()), "{labels.done}" } }
+                        div { class: "ix-date-card-footer", crate::Button { aria_label: labels.done.clone(), onclick: move |_| done.call(()), "{labels.done}" } }
                     }
                 }
-            }
         }
     } }
 }
 
 pub(crate) const STYLES: &str = include_str!("styles/datetime.css");
+
+#[cfg(test)]
+#[path = "datetime/date_dropdown_surface_tests.rs"]
+mod date_dropdown_surface_tests;
 
 #[cfg(test)]
 mod tests;

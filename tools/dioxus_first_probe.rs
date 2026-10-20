@@ -94,6 +94,10 @@ mod header_tab_review;
 mod icon_catalog_review;
 #[path = "dioxus_first_probe/inspection_groups_review.rs"]
 mod inspection_groups_review;
+#[path = "../examples/gallery/inspection_report.rs"]
+mod inspection_report;
+#[path = "dioxus_first_probe/inspection_report_review.rs"]
+mod inspection_report_review;
 #[path = "dioxus_first_probe/item_order_review.rs"]
 mod item_order_review;
 #[path = "dioxus_first_probe/link_navigation_review.rs"]
@@ -450,6 +454,9 @@ fn Preview() -> Element {
     }
     if scope == "?badgealerts" {
         return rsx! { badge_alert_queue_review::BadgeAlertQueuePreview {} };
+    }
+    if scope == "?reportfilter" {
+        return rsx! { inspection_report_review::InspectionReportPreview {} };
     }
     if scope == "?releasepopover" {
         return rsx! { release_popover_review::ReleasePopoverPreview {} };
