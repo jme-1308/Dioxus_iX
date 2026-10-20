@@ -190,6 +190,13 @@ fn format_character_message(template: &str, current: usize, limit: usize) -> Str
 /// Shift+Enter for a new line). The consumer decides when to clear the value and
 /// how to transport the submitted prompt. Enter used
 /// during an input-method composition is left to the native textarea.
+///
+/// Set `name` and `form` to associate the native textarea with a form elsewhere
+/// in the document. `required` participates in native form validation; send/Enter
+/// still emit prompt callbacks rather than submitting that form automatically.
+/// Retain the `onmounted` event's `data()` handle and call its `set_focus(true)`
+/// from a Rust task for explicit focus. For controlled reset, the parent form's
+/// `onreset` should call `event.prevent_default()` and update its Rust-owned value.
 #[component]
 pub fn ChatInput(
     #[props(default)] value: String,
@@ -200,6 +207,10 @@ pub fn ChatInput(
     #[props(default = "Chat input".to_string())] textarea_label: String,
     name: Option<String>,
     id: Option<String>,
+    form: Option<String>,
+    #[props(default)] required: bool,
+    #[props(default = "Submit prompt".to_string())] submit_label: String,
+    #[props(default = "Stop processing".to_string())] processing_label: String,
     max_length: Option<usize>,
     character_limit: Option<usize>,
     #[props(default = 0.9)] character_limit_warning_threshold: f64,
@@ -265,7 +276,7 @@ pub fn ChatInput(
         if let Some(follow_up) = follow_up { div { class: "ix-chat-follow-up", {follow_up} } }
         fieldset { class: "ix-chat-input-surface", disabled, aria_label: textarea_label.clone(),
             if let Some(attachments) = attachments { div { class: "ix-chat-input-attachments", {attachments} } }
-            textarea { id, name, value, placeholder, disabled, readonly, maxlength: limit, rows,
+            textarea { id, name, form, required, value, placeholder, disabled, readonly, maxlength: limit, rows,
                 class: "ix-chat-textarea", style: "--ix-chat-min-rows:{min_rows};--ix-chat-max-rows:{max_rows}",
                 aria_label: textarea_label, aria_describedby: if limit_message.is_some() { Some(help_id.clone()) } else { None },
                 onmounted,
@@ -282,7 +293,7 @@ pub fn ChatInput(
                 div { class: "ix-chat-input-start", {start} }
                 div { class: "ix-chat-input-end", {end}
                     crate::IconButton { icon: if processing { "circle-stop" } else { "send-right-filled" },
-                        label: if processing { "Stop processing" } else { "Submit prompt" }, variant: crate::ButtonVariant::Tertiary,
+                        label: if processing { processing_label } else { submit_label }, variant: crate::ButtonVariant::Tertiary,
                         disabled: blocked, onclick: move |_| submit.call(()) }
                 }
             }
@@ -304,6 +315,10 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 #[path = "chat/composer_events.rs"]
 mod composer_events;
+
+#[cfg(test)]
+#[path = "chat/form_events.rs"]
+mod form_events;
 
 #[cfg(test)]
 mod tests {

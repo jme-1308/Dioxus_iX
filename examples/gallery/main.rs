@@ -18,6 +18,7 @@ mod chart_workflows;
 mod chat;
 mod chat_composer_review;
 mod chat_scenarios;
+mod chat_workspace;
 mod checkbox_review;
 mod chip_workflows;
 mod composition;
@@ -236,6 +237,7 @@ fn Gallery() -> Element {
         style { {application::STYLES} }
         style { {chat::STYLES} }
         style { {chat_composer_review::STYLES} }
+        style { {chat_workspace::STYLES} }
         style { {chip_workflows::STYLES} }
         style { {icon_catalog::STYLES} }
         style { {composition::STYLES} }
@@ -327,7 +329,7 @@ fn Gallery() -> Element {
                         GalleryPage::Application => rsx! { header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
                         GalleryPage::Feedback => rsx! { maintenance_notices::MaintenanceNoticesExample {} dropdown_review::DropdownOrderReview {} FeedbackExamples {} },
                         GalleryPage::Composition => rsx! { document_workspace::DocumentWorkspaceExample {} tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
-                        GalleryPage::Chat => rsx! { chat::ChatExamples {} },
+                        GalleryPage::Chat => rsx! { chat_workspace::ChatWorkspaceExample {} chat::ChatExamples {} },
                         GalleryPage::Patterns => rsx! { asset_flip_tile::AssetFlipTileExample {} filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
                         GalleryPage::Dialogs => rsx! { service_dialogs::ServiceDialogsExample {} dialogs::DialogExamples {} },
                         GalleryPage::Icons => rsx! { IconExamples {} },

@@ -21,6 +21,8 @@ mod chart_review;
 mod chart_workflows_review;
 #[path = "dioxus_first_probe/chat_composer_review.rs"]
 mod chat_composer_review;
+#[path = "dioxus_first_probe/chat_workspace_review.rs"]
+mod chat_workspace_review;
 #[path = "dioxus_first_probe/chip_workflows_review.rs"]
 mod chip_workflows_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
@@ -332,6 +334,9 @@ fn Preview() -> Element {
     }
     if scope == "?toastlifetime" {
         return rsx! { toast_lifetime_review::ToastLifetimePreview {} };
+    }
+    if scope == "?chatworkspace" {
+        return rsx! { chat_workspace_review::ChatWorkspacePreview {} };
     }
     if scope == "?chatcomposer" {
         return rsx! { chat_composer_review::ChatComposerPreview {} };
