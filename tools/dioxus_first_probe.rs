@@ -68,6 +68,8 @@ mod icon_catalog_review;
 mod inspection_groups_review;
 #[path = "dioxus_first_probe/item_order_review.rs"]
 mod item_order_review;
+#[path = "dioxus_first_probe/link_navigation_review.rs"]
+mod link_navigation_review;
 #[path = "dioxus_first_probe/localized_date_review.rs"]
 mod localized_date_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
@@ -215,6 +217,9 @@ fn Preview() -> Element {
     }
     if scope == "?disclosurepackage" {
         return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
+    }
+    if scope == "?linknavigation" {
+        return rsx! { link_navigation_review::NativeLinkNavigationPreview {} };
     }
     if scope == "?equipmentreadings" {
         return rsx! { equipment_readings_review::EquipmentReadingsPreview {} };

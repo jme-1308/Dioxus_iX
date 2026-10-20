@@ -311,22 +311,26 @@ pub fn IconButton(
     } }
 }
 
-/// A text link with disabled behavior and safe external-link defaults.
+/// A native text link with disabled behavior and safe external-link defaults.
+///
+/// Omit `url` for a destination-free link. Native anchor keyboard behavior is
+/// preserved; consumers can cancel navigation by calling `event.prevent_default()` in `onclick`.
 #[component]
 pub fn LinkButton(
     children: Element,
-    url: String,
+    url: Option<String>,
     #[props(default)] disabled: bool,
     #[props(default = "_self".to_string())] target: String,
     #[props(default)] class: String,
     onclick: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     rsx! { a {
-        class: "ix-link-button {class}", href: if disabled { None } else { Some(url) },
+        class: "ix-link-button {class}", href: if disabled { None } else { url },
         target, rel: "noopener noreferrer", aria_disabled: disabled,
-        tabindex: if disabled { -1 } else { 0 },
+        role: disabled.then_some("link"), tabindex: disabled.then_some(-1),
         onclick: move |event| { if disabled { event.prevent_default(); event.stop_propagation(); } else if let Some(handler) = onclick { handler.call(event); } },
-        {children}
+        crate::Icon {name:"chevron-right-small",size:16,class:"ix-link-button-icon"}
+        span {class:"ix-link-button-label",{children}}
     } }
 }
 
@@ -837,6 +841,11 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-avatar-menu-surface>.ix-dropdown-menu{min-width:min(280px,calc(100vw - 32px));max-width:calc(100vw - 32px)}
 .ix-theme .ix-avatar-profile{display:flex;align-items:center;gap:12px;padding:12px 16px;min-width:0;max-width:100%;box-sizing:border-box}.ix-theme .ix-avatar-profile-text{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}.ix-theme .ix-avatar-username{font-weight:600}.ix-theme .ix-avatar-extra{font-size:14px;line-height:20px;color:var(--ix-color-text-secondary)}.ix-theme .ix-avatar-divider>.ix-divider{margin:8px 0}
 
+.ix-theme .ix-link-button{display:inline-flex;align-items:center;min-width:0;max-width:100%;text-decoration:none}
+.ix-theme .ix-link-button-icon{flex-shrink:0}
+.ix-theme .ix-link-button-label{min-width:0;overflow-wrap:anywhere;text-decoration:underline;text-underline-offset:3px}
+.ix-theme .ix-link-button[aria-disabled=true]>.ix-link-button-label{text-decoration:none}
+
 "#;
 
 #[cfg(test)]
@@ -1280,3 +1289,7 @@ mod spinner_visual_tests;
 #[cfg(test)]
 #[path = "progress_tests.rs"]
 mod progress_tests;
+
+#[cfg(test)]
+#[path = "actions/link_button_tests.rs"]
+mod link_button_tests;
