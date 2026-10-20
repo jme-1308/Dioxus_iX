@@ -60,6 +60,7 @@ mod document_viewport;
 mod dom_query;
 mod dropdown;
 mod dropdown_inventory;
+mod event_list;
 mod expanding_search_styles;
 mod flip_tile;
 pub mod form_control;

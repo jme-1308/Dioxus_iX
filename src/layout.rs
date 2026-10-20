@@ -640,48 +640,9 @@ pub fn Kpi(
     } }
 }
 
-/// Default-density event row size or an explicit pixel height.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EventItemHeight {
-    #[default]
-    Small,
-    Large,
-    Pixels(u32),
-}
-impl EventItemHeight {
-    fn pixels(self) -> u32 {
-        match self {
-            Self::Small => 40,
-            Self::Large => 104,
-            Self::Pixels(value) => value.max(1),
-        }
-    }
-}
-/// Event collection with optional compact row spacing and shared row height.
-#[component]
-pub fn EventList(
-    children: Element,
-    #[props(default)] compact: bool,
-    #[props(default)] item_height: EventItemHeight,
-) -> Element {
-    rsx! { div { class: "ix-event-list", role: "list", "data-compact": compact, style: format!("--ix-event-height:{}px", item_height.pixels()), {children} } }
-}
-
-/// Selectable event row with a semantic status indicator.
-#[component]
-pub fn EventListItem(
-    children: Element,
-    #[props(default)] selected: bool,
-    #[props(default)] disabled: bool,
-    #[props(default)] chevron: bool,
-    #[props(default)] filled: bool,
-    #[props(default)] status: CardVariant,
-    #[props(default)] onselect: EventHandler<()>,
-) -> Element {
-    rsx! { div { role: "listitem", button { class: "ix-event-list-item ix-event-status-{status.class()}", r#type: "button", disabled, "aria-pressed": selected, "data-selected": selected, "data-filled": filled, onclick: move |_| onselect.call(()),
-        span { class: "ix-event-indicator", "aria-hidden": "true" } span { class: "ix-event-content", {children} } if chevron { Icon { name: "chevron-right" } }
-    } } }
-}
+pub use crate::event_list::{
+    EventItemHeight, EventList, EventListItem, EventListItemProps, EventListProps,
+};
 
 /// Workflow step status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1138,6 +1099,20 @@ pub(crate) const STYLES: &str = r#"
 .ix-blind.ix-card-neutral,.ix-card-accordion.ix-card-neutral{--ix-card-bg:var(--ix-color-secondary);--ix-card-fg:var(--ix-color-on-secondary,#000028)}
 .ix-blind.ix-card-primary,.ix-card-accordion.ix-card-primary{--ix-card-bg:var(--ix-color-primary);--ix-card-fg:var(--ix-color-on-primary)}
 .ix-blind-custom-header{display:block;min-width:0;flex:1;overflow-wrap:anywhere}.ix-blind-label{min-width:0;overflow-wrap:anywhere}
+
+.ix-event-list{--ix-event-row-radius:var(--ix-radius)}.ix-event-list[data-compact=true]{--ix-event-row-radius:0}
+.ix-event-row{position:relative;height:var(--ix-event-height,40px);min-height:var(--ix-event-height,40px);max-height:var(--ix-event-height,40px);min-width:0;border-radius:var(--ix-event-row-radius,var(--ix-radius));opacity:1}
+.ix-event-row>.ix-event-list-item{position:absolute;inset:0;width:100%;height:100%;min-height:100%;max-height:100%;box-sizing:border-box}
+.ix-event-row>.ix-event-row-body{position:relative;display:flex;align-items:center;gap:12px;box-sizing:border-box;width:100%;height:100%;min-width:0;padding:8px 12px 8px 24px;border-radius:inherit;pointer-events:none;overflow:hidden;color:var(--ix-color-text);font:inherit}
+.ix-event-row-body>.ix-event-indicator{inset-block:1px;left:1px;width:8px;border-radius:var(--ix-event-row-radius,var(--ix-radius)) 0 0 var(--ix-event-row-radius,var(--ix-radius))}
+.ix-event-row-body>.ix-event-content{height:100%;min-width:0}
+.ix-event-row-body :is(button,a[href],input,select,textarea,label,summary,[role=button],[tabindex]){position:relative;pointer-events:auto}
+.ix-event-row[data-disabled=true]>.ix-event-row-body{opacity:.4}
+.ix-event-row>.ix-event-list-item:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}
+.ix-event-list .ix-event-row>.ix-event-list-item{border-radius:inherit}
+.ix-event-row[data-animated=true]{animation:ix-event-row-enter .15s ease-out}
+@keyframes ix-event-row-enter{from{opacity:.6;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){.ix-event-row[data-animated=true]{animation:none}}
 
 "#;
 

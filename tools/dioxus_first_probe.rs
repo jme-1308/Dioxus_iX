@@ -30,6 +30,8 @@ mod disclosure_package_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
+#[path = "dioxus_first_probe/equipment_events_review.rs"]
+mod equipment_events_review;
 #[path = "../examples/gallery/filter_keyboard_review.rs"]
 mod filter_keyboard_review;
 #[path = "dioxus_first_probe/filter_layout_review.rs"]
@@ -201,6 +203,9 @@ fn Preview() -> Element {
     }
     if scope == "?disclosurepackage" {
         return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
+    }
+    if scope == "?equipmentevents" {
+        return rsx! { equipment_events_review::EquipmentEventsPreview {} };
     }
     if scope == "?gridnumeric" {
         return rsx! { grid_numeric_values_review::GridNumericValuesPreview {} };
