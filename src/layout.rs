@@ -402,77 +402,13 @@ pub use crate::groups::{
     Group, GroupChange, GroupChangeRequest, GroupEntry, GroupItem, GroupItemProps, GroupProps,
 };
 
-/// Empty state alignment and density.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EmptyStateLayout {
-    #[default]
-    Large,
-    Compact,
-    CompactBreak,
-}
-impl EmptyStateLayout {
-    fn class(self) -> &'static str {
-        match self {
-            Self::Large => "large",
-            Self::Compact => "compact",
-            Self::CompactBreak => "compact-break",
-        }
-    }
-}
-
-/// Explanation of an empty collection with an optional recovery action.
-#[component]
-pub fn EmptyState(
-    header: String,
-    #[props(default)] subheader: Option<String>,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] action: Option<String>,
-    #[props(default)] layout: EmptyStateLayout,
-    #[props(default)] onaction: EventHandler<()>,
-) -> Element {
-    rsx! { div { class: "ix-empty-state ix-empty-state-{layout.class()}",
-        if let Some(icon) = icon { Icon { name: icon, size: if layout == EmptyStateLayout::Large { 48 } else { 32 } } }
-        div { class: "ix-empty-state-labels", strong { "{header}" } if let Some(text) = subheader { p { "{text}" } } }
-        if let Some(text) = action { button { class: "ix-empty-state-action", r#type: "button", onclick: move |_| onaction.call(()), "{text}" } }
-    } }
-}
+pub use crate::information_states::{
+    EmptyState, EmptyStateLayout, EmptyStateProps, Kpi, KpiProps, KpiState,
+};
 
 pub use crate::key_value::{
     KeyValue, KeyValueLabelPosition, KeyValueList, KeyValueListProps, KeyValueProps,
 };
-
-/// KPI severity.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum KpiState {
-    #[default]
-    Neutral,
-    Warning,
-    Alarm,
-}
-impl KpiState {
-    fn class(self) -> &'static str {
-        match self {
-            Self::Neutral => "neutral",
-            Self::Warning => "warning",
-            Self::Alarm => "alarm",
-        }
-    }
-}
-
-/// Compact industrial measurement, with label, unit and alarm status.
-#[component]
-pub fn Kpi(
-    label: String,
-    value: String,
-    #[props(default)] unit: Option<String>,
-    #[props(default)] state: KpiState,
-    #[props(default)] vertical: bool,
-) -> Element {
-    rsx! { div { class: "ix-kpi ix-kpi-{state.class()}", "data-vertical": vertical,
-        div { class: "ix-kpi-label", if state != KpiState::Neutral { Icon { name: (if state == KpiState::Alarm { "error" } else { "warning" }).to_string(), size: 16, label: state.class().to_string() } } "{label}" }
-        div { class: "ix-kpi-measurement", strong { "{value}" } if let Some(unit) = unit { span { "{unit}" } } }
-    } }
-}
 
 pub use crate::event_list::{
     EventItemHeight, EventList, EventListItem, EventListItemProps, EventListProps,
@@ -961,6 +897,9 @@ pub(crate) const STYLES: &str = r#"
 .ix-key-value dl{flex:1}.ix-key-value dt,.ix-key-value dd{min-width:0;max-width:100%;overflow-wrap:anywhere}.ix-key-value[data-horizontal=true] dt{flex:0 1 100px;min-width:min(100px,100%)}.ix-key-value[data-horizontal=true] dd{flex:1}
 .ix-key-value-list[data-horizontal=true]>.ix-key-value{flex-basis:min(240px,100%)}
 .ix-key-value-custom{min-width:0;max-width:100%}.ix-key-value-custom[hidden]{display:none!important}.ix-key-value-custom :is(input,select,textarea,button){min-width:0;max-width:100%;box-sizing:border-box}
+
+.ix-kpi:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-kpi{max-width:100%}.ix-kpi-label,.ix-kpi-measurement,.ix-kpi-measurement>strong,.ix-kpi-measurement>span{min-width:0;overflow-wrap:anywhere}.ix-kpi-measurement{max-width:100%;flex-wrap:wrap}
+.ix-empty-state{min-width:0;box-sizing:border-box}.ix-empty-state-labels{overflow-wrap:anywhere}.ix-empty-state-action{max-width:100%;overflow-wrap:anywhere}.ix-empty-state-action:disabled{cursor:default;opacity:.55}.ix-empty-state-action:disabled:hover{background:transparent}.ix-empty-state-action[aria-busy=true]{gap:8px}
 
 "#;
 

@@ -36,6 +36,8 @@ mod disclosure_package_review;
 mod dom_query;
 #[path = "dioxus_first_probe/equipment_events_review.rs"]
 mod equipment_events_review;
+#[path = "dioxus_first_probe/equipment_readings_review.rs"]
+mod equipment_readings_review;
 #[path = "../examples/gallery/filter_keyboard_review.rs"]
 mod filter_keyboard_review;
 #[path = "dioxus_first_probe/filter_layout_review.rs"]
@@ -213,6 +215,9 @@ fn Preview() -> Element {
     }
     if scope == "?disclosurepackage" {
         return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
+    }
+    if scope == "?equipmentreadings" {
+        return rsx! { equipment_readings_review::EquipmentReadingsPreview {} };
     }
     if scope == "?equipmentevents" {
         return rsx! { equipment_events_review::EquipmentEventsPreview {} };
