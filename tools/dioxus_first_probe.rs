@@ -13,6 +13,10 @@ mod application_viewport_review;
 mod asset_properties_review;
 #[path = "dioxus_first_probe/asset_workspace_review.rs"]
 mod asset_workspace_review;
+#[path = "../examples/gallery/badge_alert_queue.rs"]
+mod badge_alert_queue;
+#[path = "dioxus_first_probe/badge_alert_queue_review.rs"]
+mod badge_alert_queue_review;
 #[path = "dioxus_first_probe/breadcrumb_workflow_review.rs"]
 mod breadcrumb_workflow_review;
 #[path = "dioxus_first_probe/bundled_images_review.rs"]
@@ -443,6 +447,9 @@ fn Preview() -> Element {
     }
     if scope == "?fieldtooltip" {
         return rsx! { field_tooltip_review::FieldTooltipPreview {} };
+    }
+    if scope == "?badgealerts" {
+        return rsx! { badge_alert_queue_review::BadgeAlertQueuePreview {} };
     }
     if scope == "?releasepopover" {
         return rsx! { release_popover_review::ReleasePopoverPreview {} };

@@ -129,9 +129,10 @@ pub fn ProgressTransferExample() -> Element {
     let progress_mount = use_focus_mount("transfer-progress");
     let current = queue();
     let processed = current.processed();
+    let completed_batches = current.completed.len();
     let total: usize = BATCHES.iter().map(|batch| batch.records).sum();
     let remaining = total - processed;
-    let remaining_batches = BATCHES.len() - current.completed.len();
+    let remaining_batches = BATCHES.len() - completed_batches;
     let complete = current.complete();
     let status = if current.failed {
         ProgressStatus::Error
@@ -152,10 +153,7 @@ pub fn ProgressTransferExample() -> Element {
     } else if current.paused {
         "Paused. Resume before processing the next batch.".to_string()
     } else {
-        format!(
-            "Ready to process {}.",
-            BATCHES[current.completed.len()].label
-        )
+        format!("Ready to process {}.", BATCHES[completed_batches].label)
     };
     let helper = if tooltip() {
         rsx! {
@@ -189,16 +187,16 @@ pub fn ProgressTransferExample() -> Element {
                 }
             }
             p { id: "transfer-status", class: "transfer-status", role: "status", "aria-live": "polite",
-                "data-processed": processed.to_string(), "data-total": total.to_string(), "data-completed": current.completed.len().to_string(),
+                "data-processed": processed.to_string(), "data-total": total.to_string(), "data-completed": completed_batches.to_string(),
                 "data-paused": current.paused.to_string(), "data-failed": current.failed.to_string(), "data-mode": if tooltip() { "tooltip" } else { "inline" },
                 "{processed} of {total} records processed. {summary}"
             }
             h3 { "Batch queue" }
             ol { class: "transfer-queue",
                 for (index, batch) in BATCHES.iter().enumerate() {
-                    li { key: "{batch.id}", id: "transfer-task-{batch.id}", "data-state": if index < current.completed.len() { "complete" } else if index == current.completed.len() { "next" } else { "pending" },
+                    li { key: "{batch.id}", id: "transfer-task-{batch.id}", "data-state": if index < completed_batches { "complete" } else if index == completed_batches { "next" } else { "pending" },
                         div { strong { "{batch.label}" } span { "{batch.records} records" } }
-                        span { class: "transfer-task-state", if index < current.completed.len() { "Transferred" } else if index == current.completed.len() { "Next batch" } else { "Waiting" } }
+                        span { class: "transfer-task-state", if index < completed_batches { "Transferred" } else if index == completed_batches { "Next batch" } else { "Waiting" } }
                     }
                 }
             }
@@ -206,7 +204,7 @@ pub fn ProgressTransferExample() -> Element {
                 caption { "Completed batches" }
                 thead { tr { th { scope: "col", "Batch" } th { scope: "col", "Records" } th { scope: "col", "Batch note" } } }
                 tbody {
-                    if current.completed.is_empty() {
+                    if completed_batches == 0 {
                         tr { td { colspan: "3", "No batch transferred yet." } }
                     }
                     for record in current.completed.iter() {

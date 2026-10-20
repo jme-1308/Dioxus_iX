@@ -565,7 +565,15 @@ pub fn format_badge_counter(label: &str) -> Option<String> {
 }
 
 /// Standalone or attached counter, dot, label, or status indicator.
-/// For attached badges give the anchor an accessible description in its own props.
+/// Attached indicators are decorative. Supply `description_id` to render a
+/// description target, then include that ID in the actual anchor's own
+/// `aria_describedby`; existing tokens and native attributes remain caller-owned.
+/// `tooltip` uses the shared styled tooltip, including for attached badges.
+/// Standalone badges can also derive help from their label with
+/// `tooltip_from_label` or an explicitly empty `tooltip`. Help makes their root
+/// keyboard focusable by default; `tabindex` overrides that choice. The focused
+/// root owns naming and role, including an explicitly named leading icon unless
+/// a full `aria_label` overrides the name.
 #[component]
 pub fn Badge(
     #[props(default)] badge_type: BadgeType,
@@ -583,6 +591,11 @@ pub fn Badge(
     background: Option<String>,
     color: Option<String>,
     tooltip: Option<String>,
+    #[props(default)] tooltip_from_label: bool,
+    #[props(default)] description_id: Option<String>,
+    #[props(default)] description: Option<String>,
+    #[props(default)] tabindex: Option<i64>,
+    #[props(default)] aria_describedby: Option<String>,
     role: Option<String>,
     aria_label_icon: Option<String>,
     #[props(default)] class: String,
@@ -613,17 +626,95 @@ pub fn Badge(
     let show = text.is_some() || matches!(badge_type, BadgeType::Dot | BadgeType::StatusIcon);
     let offset = if badge_type == BadgeType::Dot { 6 } else { 10 };
     let custom = custom_status_style(variant, background.as_deref(), color.as_deref());
+    static NEXT_BADGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    let root_id = use_hook(|| {
+        format!(
+            "ix-badge-root-{}",
+            NEXT_BADGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    let tooltip_id = format!("{root_id}-tooltip");
+    let tooltip_owner = crate::use_tooltip(tooltip_id.clone());
+    let binding = crate::use_tooltip_anchor(tooltip_owner.clone(), root_id.clone());
+    let explicit_tooltip = tooltip
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let tooltip_text = if attached {
+        explicit_tooltip
+    } else if show && (tooltip.is_some() || tooltip_from_label) {
+        explicit_tooltip.or_else(|| {
+            text.clone().or_else(|| {
+                aria_label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+        })
+    } else {
+        None
+    };
+    let root_tabindex = (!attached)
+        .then_some(tabindex.or_else(|| tooltip_text.as_ref().map(|_| 0)))
+        .flatten();
+    let root_focusable = root_tabindex.is_some();
+    let root_role = root_focusable.then(|| role.clone().unwrap_or_else(|| "status".into()));
+    let accessible_name = aria_label
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let name = text.clone().or_else(|| tooltip_text.clone());
+            let icon_name = (badge_type == BadgeType::Label && show && icon.is_some())
+                .then(|| {
+                    aria_label_icon
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                })
+                .flatten();
+            match (icon_name, name) {
+                (Some(icon), Some(name)) => Some(format!("{icon} {name}")),
+                (Some(icon), None) => Some(icon.to_string()),
+                (None, name) => name,
+            }
+        });
+    let root_description = if root_focusable {
+        binding.describedby(aria_describedby.as_deref().unwrap_or_default())
+    } else {
+        None
+    };
+    let attached_description = if attached {
+        description_id
+            .filter(|id| !id.trim().is_empty())
+            .and_then(|id| {
+                description
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| text.clone())
+                    .map(|value| (id, value))
+            })
+    } else {
+        None
+    };
     rsx! { span {
+        id: root_id, tabindex: root_tabindex,
+        role: root_role,
+        aria_label: root_focusable.then(|| accessible_name.clone()).flatten(),
+        aria_describedby: root_description,
+        onmounted: binding.onmounted, onresize: binding.onresize, onvisible: binding.onvisible,
+        onmouseenter: binding.onmouseenter, onmouseleave: binding.onmouseleave,
+        onfocusin: binding.onfocusin, onfocusout: binding.onfocusout, onkeydown: binding.onkeydown,
         class: "ix-badge ix-badge-{badge_type.as_str()} ix-status-{variant.as_str()} ix-badge-{position.as_str()} {class}",
         class: if attached { "ix-badge-attached" }, class: if outline { "ix-outline" },
         class: if border { "ix-badge-border" }, class: if enable_animation { "ix-badge-animated" },
         class: if align_left { "ix-align-start" },
         style: "{custom};--ix-badge-x:{offset_x - offset}px;--ix-badge-y:{offset_y - offset}px",
-        title: tooltip,
         if let Some(children) = children { {children} }
         if show { span {
-            class: "ix-badge-indicator", role: if attached { None } else { Some(role.unwrap_or_else(|| "status".into())) },
-            aria_label: if attached { None } else { aria_label }, aria_hidden: attached,
+            class: "ix-badge-indicator", role: if attached || root_focusable { None } else { Some(role.unwrap_or_else(|| "status".into())) },
+            aria_label: if attached || root_focusable { None } else { aria_label }, aria_hidden: attached || root_focusable,
+            aria_describedby: if attached || root_focusable { None } else { aria_describedby },
             if badge_type == BadgeType::StatusIcon {
                 if outline { crate::Icon { name: variant.status_icon(true).to_string(), size: 20 } }
                 else { span { class: "ix-badge-status-stack",
@@ -636,6 +727,10 @@ pub fn Badge(
                 if let Some(text) = text { span { class: "ix-badge-label-text", "{text}" } }
             }
         } }
+        if let Some((id, text)) = attached_description { span { id, class: "ix-sr-only", "{text}" } }
+        if let Some(text) = tooltip_text {
+            crate::TooltipFor { id: tooltip_id, controller: tooltip_owner, class: "ix-badge-tooltip", "{text}" }
+        }
     } }
 }
 
@@ -862,3 +957,7 @@ mod progress_tests;
 #[cfg(test)]
 #[path = "actions/link_button_tests.rs"]
 mod link_button_tests;
+
+#[cfg(test)]
+#[path = "actions/badge_composition_tests.rs"]
+mod badge_composition_tests;
