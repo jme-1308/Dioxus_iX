@@ -70,6 +70,7 @@ mod service_request;
 mod slider_review;
 mod source_examples;
 mod spinner_review;
+mod split_work_orders;
 mod tabs_review;
 mod text_commit_review;
 mod theme_review;
@@ -242,6 +243,7 @@ fn Gallery() -> Element {
         style { {grid_cell_renderers::STYLES} }
         style { {grid_numeric_values::STYLES} }
         style { {grid_custom_editors::STYLES} }
+        style { {split_work_orders::STYLES} }
         style { {chart_workflows::STYLES} }
         style { {service_request::STYLES} }
         IxTheme {
@@ -285,7 +287,7 @@ fn Gallery() -> Element {
                     }
                     p { class: "review-intro", "Interactive Rust ports of iX examples, with recognizable styling and useful core interactions. This independent port uses public theme fallbacks." }
                     match page {
-                        GalleryPage::Actions => rsx! { chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
+                        GalleryPage::Actions => rsx! { split_work_orders::SplitWorkOrdersExample {} chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
                         GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },

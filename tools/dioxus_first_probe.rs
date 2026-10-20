@@ -74,6 +74,8 @@ mod select_direction_review;
 mod select_method_review;
 #[path = "dioxus_first_probe/service_request_review.rs"]
 mod service_request_review;
+#[path = "dioxus_first_probe/split_actions_review.rs"]
+mod split_actions_review;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
 mod tab_exit_review;
 #[path = "dioxus_first_probe/text_control_method_review.rs"]
@@ -191,6 +193,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridcustomeditors" {
         return rsx! { grid_custom_editors_review::GridCustomEditorsPreview {} };
+    }
+    if scope == "?splitactions" {
+        return rsx! { split_actions_review::SplitActionsPreview {} };
     }
     if scope == "?gridnumeric" {
         return rsx! { grid_numeric_values_review::GridNumericValuesPreview {} };

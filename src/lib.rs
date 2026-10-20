@@ -91,6 +91,7 @@ mod select_item;
 mod select_visual_styles;
 mod slider_styles;
 mod spinner_styles;
+mod split_button;
 pub mod theme;
 mod toggle_button_styles;
 mod toggle_styles;

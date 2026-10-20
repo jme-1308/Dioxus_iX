@@ -2,7 +2,7 @@
 //!
 //! Behavioral reference: Siemens iX (MIT). No upstream JavaScript runtime is used.
 use dioxus::prelude::*;
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 macro_rules! action_enum {
     ($name:ident, $default:ident, $($variant:ident => $value:literal),+ $(,)?) => {
@@ -406,161 +406,7 @@ pub fn IconToggleButton(
     } }
 }
 
-/// An alternative action in a split button. `value` is returned to `onselect`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SplitButtonItem {
-    /// Stable action identifier.
-    pub value: String,
-    /// Visible action label.
-    pub label: String,
-    /// Optional leading icon.
-    pub icon: Option<String>,
-    /// Prevent activation of this item.
-    pub disabled: bool,
-}
-impl SplitButtonItem {
-    /// Construct an enabled action.
-    pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            value: value.into(),
-            label: label.into(),
-            icon: None,
-            disabled: false,
-        }
-    }
-}
-action_enum!(SplitCloseBehavior, Both, Both => "both", Inside => "inside", Outside => "outside", None => "none");
-
-/// Primary action plus a keyboard-accessible menu of alternative actions.
-#[component]
-pub fn SplitButton(
-    label: String,
-    items: Vec<SplitButtonItem>,
-    #[props(default)] variant: ButtonVariant,
-    #[props(default)] disabled: bool,
-    #[props(default)] disable_button: bool,
-    #[props(default)] disable_dropdown_button: bool,
-    #[props(default)] close_behavior: SplitCloseBehavior,
-    icon: Option<String>,
-    #[props(default = "chevron-down-small".to_string())] split_icon: String,
-    #[props(default = "More actions".to_string())] dropdown_label: String,
-    onclick: Option<EventHandler<MouseEvent>>,
-    onselect: EventHandler<String>,
-) -> Element {
-    let mut open = use_signal(|| false);
-    let mut focused = use_signal(|| 0usize);
-    let item_refs = use_hook(|| Rc::new(RefCell::new(BTreeMap::<usize, Rc<MountedData>>::new())));
-    let trigger_ref = use_hook(|| Rc::new(RefCell::new(None::<Rc<MountedData>>)));
-    let register_item = {
-        let item_refs = item_refs.clone();
-        use_callback(move |(index, element): (usize, Rc<MountedData>)| {
-            item_refs.borrow_mut().insert(index, element);
-        })
-    };
-    let focus_item = use_callback(move |index: usize| {
-        focused.set(index);
-        let element = item_refs.borrow().get(&index).cloned();
-        if let Some(element) = element {
-            spawn(async move {
-                let _ = element.set_focus(true).await;
-            });
-        }
-    });
-    let close_menu = {
-        let trigger_ref = trigger_ref.clone();
-        use_callback(move |_| {
-            open.set(false);
-            let element = trigger_ref.borrow().clone();
-            if let Some(element) = element {
-                spawn(async move {
-                    let _ = element.set_focus(true).await;
-                });
-            }
-        })
-    };
-    let enabled_indices: Vec<_> = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| (!item.disabled).then_some(index))
-        .collect();
-    let first = enabled_indices.first().copied().unwrap_or(0);
-    let last = enabled_indices.last().copied().unwrap_or(0);
-    let close_inside = matches!(
-        close_behavior,
-        SplitCloseBehavior::Both | SplitCloseBehavior::Inside
-    );
-    let close_outside = matches!(
-        close_behavior,
-        SplitCloseBehavior::Both | SplitCloseBehavior::Outside
-    );
-    rsx! { div {
-        class: "ix-split-button",
-        onkeydown: move |event| { if event.key() == Key::Escape { close_menu.call(()); event.stop_propagation(); } },
-        if label.is_empty() && icon.is_some() {
-            IconButton { variant, disabled: disabled || disable_button, icon: icon.clone().unwrap_or_default(), label: icon.as_deref().unwrap_or("Action").replace('-', " "),
-                onclick: move |event| { if let Some(handler) = onclick { handler.call(event); } } }
-        } else {
-            Button { variant, disabled: disabled || disable_button, icon, onclick: move |event| { if let Some(handler) = onclick { handler.call(event); } }, "{label}" }
-        }
-        button {
-            class: "ix-button ix-icon-button ix-split-trigger ix-button-{variant.as_str()}",
-            r#type: "button", disabled: disabled || disable_dropdown_button,
-            aria_label: dropdown_label, aria_haspopup: "menu", aria_expanded: open(),
-            onmounted: move |event| { *trigger_ref.borrow_mut() = Some(event.data()); },
-            onclick: move |_| { focused.set(first); open.toggle(); },
-            onkeydown: move |event| {
-                match event.key() {
-                    Key::ArrowDown => { event.prevent_default(); focused.set(first); open.set(true); },
-                    Key::ArrowUp => { event.prevent_default(); focused.set(last); open.set(true); },
-                    _ => {}
-                }
-            },
-            crate::Icon { name: split_icon, size: 20 }
-        }
-        if open() && !disabled {
-            if close_outside { button { class: "ix-split-backdrop", r#type: "button", tabindex: -1, aria_label: "Close actions", onclick: move |_| close_menu.call(()) } }
-            div { class: "ix-split-menu", role: "menu", aria_label: "Alternative actions",
-                onkeydown: move |event| {
-                    let target = match event.key() {
-                        Key::Home => Some(first), Key::End => Some(last),
-                        Key::ArrowDown => next_split_index(&enabled_indices, focused(), true),
-                        Key::ArrowUp => next_split_index(&enabled_indices, focused(), false),
-                        _ => None,
-                    };
-                    if let Some(target) = target { event.prevent_default(); focus_item.call(target); }
-                },
-                for (index, item) in items.into_iter().enumerate() {
-                    button {
-                        key: "{item.value}", class: "ix-split-item", role: "menuitem", r#type: "button", disabled: item.disabled,
-                        aria_label: if item.label.is_empty() { item.icon.as_ref().map(|name| name.replace('-', " ")) } else { None },
-                        tabindex: if index == focused() { 0 } else { -1 },
-                        onmounted: move |event| { register_item.call((index, event.data())); if index == focused() { focus_item.call(index); } },
-                        onfocus: move |_| focused.set(index),
-                        onclick: move |_| { onselect.call(item.value.clone()); if close_inside { close_menu.call(()); } },
-                        if let Some(name) = item.icon.clone() { crate::Icon { name, size: 20 } }
-                        "{item.label}"
-                    }
-                }
-            }
-        }
-    } }
-}
-
-fn next_split_index(enabled: &[usize], current: usize, forward: bool) -> Option<usize> {
-    if enabled.is_empty() {
-        return None;
-    }
-    let position = enabled
-        .iter()
-        .position(|index| *index == current)
-        .unwrap_or(0);
-    let next = if forward {
-        (position + 1) % enabled.len()
-    } else {
-        (position + enabled.len() - 1) % enabled.len()
-    };
-    Some(enabled[next])
-}
+pub use crate::split_button::{SplitButton, SplitButtonItem, SplitButtonProps, SplitCloseBehavior};
 
 /// Animated busy state using iX rotation and clip-mask recipes.
 /// Timing tokens can be overridden by the host's motion preference stylesheet.
@@ -1007,7 +853,7 @@ pub(crate) const STYLES: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::{cell::Cell, collections::BTreeMap};
     #[test]
     fn badge_counter_matches_upstream_numeric_rules() {
         for (input, expected) in [
@@ -1033,14 +879,6 @@ mod tests {
         assert_eq!(normalize_progress(200.0, 0.0, 100.0), 100.0);
         assert_eq!(normalize_progress(0.0, 1.0, 1.0), 0.0);
         assert_eq!(normalize_progress(f64::NAN, 0.0, 100.0), 0.0);
-    }
-    #[test]
-    fn split_menu_focus_wraps_and_skips_disabled_entries() {
-        let enabled = [0, 2, 4];
-        assert_eq!(next_split_index(&enabled, 0, true), Some(2));
-        assert_eq!(next_split_index(&enabled, 4, true), Some(0));
-        assert_eq!(next_split_index(&enabled, 0, false), Some(4));
-        assert_eq!(next_split_index(&[], 0, true), None);
     }
     #[test]
     fn badge_status_icons_preserve_distinct_alarm_error_and_critical_anatomies() {
