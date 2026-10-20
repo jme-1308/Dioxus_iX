@@ -14,3 +14,5 @@
 .ix-theme .ix-about-news-content { margin:12px 0; }
 .ix-theme .ix-about-news-footer { display:flex;justify-content:flex-end;margin-top:16px; }
 .ix-theme .ix-dropdown-quick-actions { display:flex;align-items:center;justify-content:space-evenly;gap:4px;padding:8px 12px; }
+
+.ix-theme .ix-about-news[hidden] { display:none; }

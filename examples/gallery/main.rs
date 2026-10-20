@@ -84,6 +84,7 @@ mod patterns;
 mod progress_review;
 mod progress_transfer;
 mod radio_review;
+mod release_news;
 mod select_visual_review;
 mod service_dialogs;
 mod service_package;
@@ -346,7 +347,7 @@ fn Gallery() -> Element {
                         GalleryPage::Composition => rsx! { composition::DropdownTaskActionsExample {} document_workspace::DocumentWorkspaceExample {} tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat_workspace::ChatWorkspaceExample {} chat::ChatExamples {} },
                         GalleryPage::Patterns => rsx! { asset_flip_tile::AssetFlipTileExample {} filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
-                        GalleryPage::Dialogs => rsx! { service_dialogs::ServiceDialogsExample {} dialogs::DialogExamples {} },
+                        GalleryPage::Dialogs => rsx! { release_news::ReleaseNewsExample {} service_dialogs::ServiceDialogsExample {} dialogs::DialogExamples {} },
                         GalleryPage::Icons => rsx! { IconExamples {} },
                         GalleryPage::Theme => rsx! { theme_review::ThemeReview {} },
                         GalleryPage::Coverage => rsx! { CoverageExamples { location } },

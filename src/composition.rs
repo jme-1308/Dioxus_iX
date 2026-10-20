@@ -158,11 +158,15 @@ pub fn TabPanel(
 
 /// Dismissible news banner associated with an about-menu tab.
 /// `show` is controlled; close and show-more callbacks are distinct events.
+/// Hiding retains composed child state. Unmount or key the owner to reset it.
 #[component]
 pub fn MenuAboutNews(
     label: String,
     #[props(default)] show: bool,
     #[props(default)] expanded: bool,
+    #[props(default)] id: Option<String>,
+    #[props(default)] class: String,
+    #[props(default = "Close news".to_string())] close_label: String,
     about_item_label: Option<String>,
     active_about_tab_key: Option<String>,
     #[props(default = "Show more".to_string())] show_more_label: String,
@@ -170,18 +174,16 @@ pub fn MenuAboutNews(
     #[props(default)] onclose: EventHandler<()>,
     children: Element,
 ) -> Element {
-    if !show {
-        return VNode::empty();
-    }
     rsx! {
-        aside { class: "ix-about-news", "data-expanded": expanded.to_string(), "aria-label": label.clone(),
+        aside { id, class: if class.is_empty() { "ix-about-news".to_string() } else { format!("ix-about-news {class}") }, hidden: !show,
+            "data-expanded": expanded.to_string(), "aria-label": label.clone(),
             div { class: "ix-about-news-banner", "aria-hidden": true,
                 svg { view_box: "0 0 48 56", polygon { points: "0 0 48 0 48 56 24 48 0 56" } }
                 Icon { name: "shout", size: 32 }
             }
             div { class: "ix-about-news-heading",
                 h3 { "{label}" }
-                button { r#type: "button", class: "ix-about-news-close", "aria-label": "Close news",
+                button { r#type: "button", class: "ix-about-news-close", "aria-label": close_label,
                     onclick: move |_| onclose.call(()), Icon { name: "close", size: 20 } }
             }
             if let Some(subtitle) = about_item_label { p { class: "ix-about-news-subtitle", "{subtitle}" } }
@@ -254,6 +256,10 @@ pub fn DropdownQuickActions(
 pub(crate) const STYLES: &str = include_str!("styles/composition.css");
 
 #[cfg(test)]
+#[path = "menu_about_news_tests.rs"]
+mod menu_about_news_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -269,9 +275,21 @@ mod tests {
         let mut dom = VirtualDom::new(app);
         dom.rebuild_in_place();
         let html = dioxus_ssr::render(&dom);
-        assert_eq!(html.matches("Show more").count(), 1);
-        assert_eq!(html.matches("ix-about-news-banner").count(), 2);
-        assert!(!html.contains("Hidden news"));
+        assert_eq!(html.matches("Show more").count(), 2);
+        assert_eq!(html.matches("ix-about-news-banner").count(), 3);
+        let hidden_news = html
+            .split("<aside")
+            .skip(1)
+            .find(|aside| {
+                aside
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .contains("aria-label=\"Hidden news\"")
+            })
+            .unwrap();
+        assert!(hidden_news.split('>').next().unwrap().contains("hidden"));
+        assert!(hidden_news.contains("Hidden"));
     }
 
     #[test]
