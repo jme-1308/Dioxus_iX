@@ -61,6 +61,7 @@ mod link_navigation;
 mod localized_dates;
 mod maintenance_launch;
 mod maintenance_notices;
+mod maintenance_schedule;
 mod menu_category_review;
 mod menu_hover_review;
 mod menu_navigation_review;
@@ -248,6 +249,7 @@ fn Gallery() -> Element {
         style { {paged_equipment::STYLES} }
         style { {datetime::STYLES} }
         style { {localized_dates::STYLES} }
+        style { {maintenance_schedule::STYLES} }
         style { {dialogs::STYLES} }
         style { {service_dialogs::STYLES} }
         style { {tree::STYLES} }
@@ -318,7 +320,7 @@ fn Gallery() -> Element {
                         GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { equipment_readings::EquipmentReadingsExample {} asset_properties::AssetPropertiesExample {} inspection_groups::InspectionGroupsExample {} asset_workspace::AssetWorkspaceExample {} maintenance_launch::MaintenanceLaunchExample {} equipment_events::EquipmentEventsExample {} service_package::ServicePackageExample {} asset_hierarchy::AssetHierarchyExample {} paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
-                        GalleryPage::DateTime => rsx! { localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
+                        GalleryPage::DateTime => rsx! { maintenance_schedule::MaintenanceScheduleExample {} localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { wide_equipment_grid::WideEquipmentGridExample {} grid_custom_editors::GridCustomEditorsExample {} grid_numeric_values::GridNumericValuesExample {} grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
                         GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },

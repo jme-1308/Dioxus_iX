@@ -178,6 +178,12 @@ pub fn LocalizedDatesExample() -> Element {
                         required: true,
                         calendar_labels: locale.labels(),
                         time_labels: locale.time_labels(),
+                        done_label: match locale {
+                            CalendarLocale::En => "Done",
+                            CalendarLocale::De => "Fertig",
+                            CalendarLocale::Fr => "Terminer",
+                            CalendarLocale::Ja => "完了",
+                        },
                         helper_text: format!("{} {}", long_format.pattern(), time_format.pattern()),
                         onvaluechange: move |next| drafts.write()[3] = next,
                     }

@@ -755,10 +755,25 @@ pub fn DatePicker(
             month.set(target.month_start());
         }
     });
-    use_effect(use_reactive!(|from, min_date, max_date| {
-        let anchor = from.unwrap_or(today);
+    let previous_dates = use_hook(|| Rc::new(Cell::new((from, to, min_date, max_date))));
+    use_effect(use_reactive!(|from, to, min_date, max_date| {
+        let previous = previous_dates.replace((from, to, min_date, max_date));
+        // Only newly supplied endpoints navigate the view. Clearing selection
+        // preserves browsing; simultaneous endpoint updates retain from priority.
+        let supplied = (previous.0 != from)
+            .then_some(from)
+            .flatten()
+            .or_else(|| (previous.1 != to).then_some(to).flatten());
+        let bounds_changed = previous.2 != min_date || previous.3 != max_date;
+        let Some(anchor) = supplied.or_else(|| bounds_changed.then_some(from.unwrap_or(today)))
+        else {
+            return;
+        };
         let anchor = min_date.map_or(anchor, |min| anchor.max(min));
         let anchor = max_date.map_or(anchor, |max| anchor.min(max));
+        // Owner synchronization changes the roving date, never native focus.
+        // Unchanged dates leave ordinary keyboard/header focus intents intact.
+        focus_requested.set(false);
         month.set(anchor.month_start());
         focused.set(anchor);
     }));
@@ -777,7 +792,7 @@ pub fn DatePicker(
         select { class: "ix-calendar-month", aria_label: labels.select_month.clone(), disabled,
             value: visible.month.to_string(),
             onchange: move |event| { if let Ok(value) = event.value().parse::<u8>() { if let Some(date) = IxDate::new(visible.year, value, 1) { change_month.call(date); } } },
-            for (index, name) in month_names.into_iter().enumerate() { option { value: (index + 1).to_string(), disabled: !month_selectable(IxDate::new(visible.year, index as u8 + 1, 1).unwrap(), min_date, max_date), "{name}" } }
+            for (index, name) in month_names.into_iter().enumerate() { option { value: (index + 1).to_string(), selected: index + 1 == usize::from(visible.month), disabled: !month_selectable(IxDate::new(visible.year, index as u8 + 1, 1).unwrap(), min_date, max_date), "{name}" } }
         }
         input { class: "ix-calendar-year", r#type: "number", value: visible.year.to_string(), min: min_date.map_or(1, |date| date.year), max: max_date.map_or(9999, |date| date.year),
             aria_label: labels.select_year.clone(), disabled,
@@ -1909,6 +1924,7 @@ pub fn DateTimeInput(
     #[props(default)] show_week_numbers: bool,
     #[props(default)] calendar_labels: CalendarLabels,
     #[props(default)] time_labels: TimeLabels,
+    #[props(default = "Done".to_string())] done_label: String,
     #[props(default = "Date and time".to_string())] label: String,
     #[props(default = "Toggle calendar".to_string())] calendar_button_label: String,
     id: Option<String>,
@@ -1973,7 +1989,7 @@ pub fn DateTimeInput(
                 if let Some(handler) = ondatetimechange { handler.call(if validity.valid() { IxDateTime::parse(&value, date_format, time_format) } else { None }); }
                 onvaluechange.call(value);
             },
-            DateTimePicker { today, from: draft_date(), time: draft_time(), single_selection: true, auto_focus: true, time_format, min_date, max_date, min_time, max_time, week_start_index, show_week_numbers, calendar_labels, time_labels,
+            DateTimePicker { today, from: draft_date(), time: draft_time(), single_selection: true, auto_focus: true, time_format, min_date, max_date, min_time, max_time, week_start_index, show_week_numbers, calendar_labels, time_labels, done_label,
                 ondatechange: move |selection: DateSelection| draft_date.set(selection.from),
                 ontimechange: move |time| draft_time.set(time),
                 onselect: move |selection: DateTimeSelection| {
@@ -3100,5 +3116,9 @@ mod tests {
         });
         assert!(valid.contains("name=\"service-date\""));
         assert!(!valid.contains("pattern="));
+    }
+    mod scheduling_tests {
+        use super::*;
+        include!("datetime_scheduling_tests.rs");
     }
 }
