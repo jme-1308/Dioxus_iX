@@ -2,7 +2,11 @@
 //! Copyright (c) 2023-2026 Siemens AG. SPDX-License-Identifier: MIT.
 use crate::Icon;
 use dioxus::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 pub use crate::dropdown::*;
 static MENU_ITEM_ID: AtomicUsize = AtomicUsize::new(1);
@@ -44,17 +48,50 @@ impl MessageType {
     }
 }
 
+/// A synchronous dismissal request. Clones share the same cancellation state.
+#[derive(Clone, Debug, Default)]
+pub struct MessageBarCloseRequest {
+    prevented: Rc<Cell<bool>>,
+}
+impl MessageBarCloseRequest {
+    /// Keep the message visible and suppress accepted/completed notifications.
+    pub fn prevent_default(&self) {
+        self.prevented.set(true);
+    }
+    pub fn default_prevented(&self) -> bool {
+        self.prevented.get()
+    }
+}
+
 /// Inline contextual message. A persistent message cannot be dismissed.
+///
+/// `oncloserequest` can veto dismissal. `onclose` reports accepted dismissal;
+/// `onclosecomplete` runs once after the closed Dioxus render. Completion is not
+/// an animation event, and is skipped if the parent unmounts this component.
 #[component]
 pub fn MessageBar(
     #[props(default)] message_type: MessageType,
     #[props(default)] persistent: bool,
     #[props(default)] onclose: Option<EventHandler<()>>,
+    #[props(default)] oncloserequest: Option<EventHandler<MessageBarCloseRequest>>,
+    #[props(default)] onclosecomplete: Option<EventHandler<()>>,
+    #[props(default = "Close message".to_string())] close_label: String,
     #[props(default)] class: String,
     children: Element,
 ) -> Element {
     let mut closed = use_signal(|| false);
-    if closed() {
+    let completed = use_hook(|| Rc::new(Cell::new(false)));
+    let is_closed = closed();
+    // Track the rendered snapshot, rather than observing the signal before its
+    // closed render. Pinned use_effect queues work after that render.
+    use_effect(use_reactive((&is_closed,), move |(is_closed,)| {
+        if is_closed && !completed.replace(true) {
+            if let Some(handler) = onclosecomplete {
+                handler.call(());
+            }
+        }
+    }));
+    if is_closed {
         return VNode::empty();
     }
     rsx! {
@@ -67,8 +104,15 @@ pub fn MessageBar(
             if !persistent {
                 button {
                     class: "ix-message-close", r#type: "button",
-                    "aria-label": "Close message",
-                    onclick: move |_| { closed.set(true); if let Some(handler) = onclose { handler.call(()); } },
+                    "aria-label": close_label,
+                    onclick: move |_| {
+                        if persistent || *closed.peek() { return; }
+                        let request = MessageBarCloseRequest::default();
+                        if let Some(handler) = oncloserequest { handler.call(request.clone()); }
+                        if request.default_prevented() { return; }
+                        closed.set(true);
+                        if let Some(handler) = onclose { handler.call(()); }
+                    },
                     Icon { name: "close", size: 20 }
                 }
             }
@@ -173,3 +217,7 @@ pub(crate) const STYLES: &str = r#"
 .ix-tooltip[data-placement=left]>.ix-tooltip-arrow { top:var(--ix-tooltip-arrow);right:-6px; }
 .ix-tooltip[data-placement=right]>.ix-tooltip-arrow { top:var(--ix-tooltip-arrow);left:-6px; }
 "#;
+
+#[cfg(test)]
+#[path = "overlays/message_bar_tests.rs"]
+mod message_bar_tests;

@@ -72,6 +72,8 @@ mod item_order_review;
 mod link_navigation_review;
 #[path = "dioxus_first_probe/localized_date_review.rs"]
 mod localized_date_review;
+#[path = "dioxus_first_probe/maintenance_notices_review.rs"]
+mod maintenance_notices_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
 mod menu_focus_review;
 #[path = "dioxus_first_probe/menu_order_review.rs"]
@@ -217,6 +219,9 @@ fn Preview() -> Element {
     }
     if scope == "?disclosurepackage" {
         return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
+    }
+    if scope == "?maintenancenotices" {
+        return rsx! { maintenance_notices_review::MaintenanceNoticesPreview {} };
     }
     if scope == "?linknavigation" {
         return rsx! { link_navigation_review::NativeLinkNavigationPreview {} };
