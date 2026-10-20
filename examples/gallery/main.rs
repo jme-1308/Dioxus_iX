@@ -47,6 +47,7 @@ mod grid_numeric_values;
 mod grid_scenarios;
 mod grid_typed_editors;
 mod grid_worklist;
+mod group_feedback;
 mod group_review;
 mod header_layout_review;
 mod header_nested_review;
@@ -266,6 +267,7 @@ fn Gallery() -> Element {
         style { {split_work_orders::STYLES} }
         style { {chart_workflows::STYLES} }
         style { {service_request::STYLES} }
+        style { {group_feedback::STYLES} }
         style { {service_package::STYLES} }
         style { {equipment_events::STYLES} }
         style { {maintenance_launch::STYLES} }
@@ -320,7 +322,7 @@ fn Gallery() -> Element {
                     match page {
                         GalleryPage::Actions => rsx! { link_navigation::MaintenanceReferencesExample {} operator_profile::OperatorProfileExample {} split_work_orders::SplitWorkOrdersExample {} chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
-                        GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
+                        GalleryPage::Forms => rsx! { group_feedback::GroupFeedbackExample {} service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { equipment_readings::EquipmentReadingsExample {} asset_properties::AssetPropertiesExample {} inspection_groups::InspectionGroupsExample {} asset_workspace::AssetWorkspaceExample {} maintenance_launch::MaintenanceLaunchExample {} equipment_events::EquipmentEventsExample {} service_package::ServicePackageExample {} asset_hierarchy::AssetHierarchyExample {} paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { maintenance_schedule::MaintenanceScheduleExample {} localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },

@@ -761,7 +761,12 @@ fn GroupLayout(
     state: FieldState,
     feedback: Option<FieldFeedback>,
     invalid_alert: bool,
+    feedback_id: String,
+    show_text_as_tooltip: bool,
 ) -> Element {
+    let tooltip = crate::use_tooltip(feedback_id.clone());
+    let anchor_id = format!("{feedback_id}-choices");
+    let anchor = crate::use_tooltip_anchor(tooltip.clone(), anchor_id.clone());
     rsx! {
         div { class: "ix-group-wrapper",
             role: invalid_alert.then_some("alert"),
@@ -779,19 +784,33 @@ fn GroupLayout(
                     }
                 }
             }
-            div { class: "ix-group-slot", {children} }
+            div { id:anchor_id,class: "ix-group-slot",
+                onmounted:anchor.onmounted,onresize:anchor.onresize,onvisible:anchor.onvisible,
+                onmouseenter:anchor.onmouseenter,onmouseleave:anchor.onmouseleave,
+                onfocusin:anchor.onfocusin,onfocusout:anchor.onfocusout,onkeydown:anchor.onkeydown,
+                {children}
+            }
             div { class: "ix-group-bottom",
-                if let Some(feedback) = feedback {
-                    GroupFeedback { feedback }
-                }
+                if !show_text_as_tooltip {if let Some(feedback) = feedback.clone() {
+                    GroupFeedback { feedback, id:Some(feedback_id.clone()) }
+                }}
                 div { class: "ix-group-bottom-right" }
             }
+            if show_text_as_tooltip {if let Some(feedback) = feedback {
+                crate::TooltipFor {id:feedback_id,controller:tooltip,placement:crate::TooltipPlacement::Bottom,show_delay:500,
+                    GroupFeedback {feedback,inherit_color:true}
+                }
+            }}
         }
     }
 }
 
 #[component]
-fn GroupFeedback(feedback: FieldFeedback) -> Element {
+fn GroupFeedback(
+    feedback: FieldFeedback,
+    id: Option<String>,
+    #[props(default)] inherit_color: bool,
+) -> Element {
     let (icon, color) = match feedback.state {
         FieldState::Default => (None, crate::TypographyColor::Soft),
         FieldState::Invalid => (Some("error"), crate::TypographyColor::Alarm),
@@ -800,8 +819,8 @@ fn GroupFeedback(feedback: FieldFeedback) -> Element {
         FieldState::Warning => (Some("warning"), crate::TypographyColor::Std),
     };
     rsx! {
-        crate::Typography { format: crate::TypographyFormat::BodyParagraph,
-            text_color: color, class: "ix-group-bottom-text {feedback.state.class()}",
+        crate::Typography { id, format: crate::TypographyFormat::BodyParagraph,
+            text_color: (!inherit_color).then_some(color), class: "ix-group-bottom-text {feedback.state.class()}",
             if let Some(icon) = icon {
                 crate::Icon { name: icon, size: 16, class: "ix-group-text-icon {feedback.state.class()}" }
             }
@@ -813,6 +832,8 @@ fn GroupFeedback(feedback: FieldFeedback) -> Element {
 /// Semantic fieldset for related checkboxes; each child controls its own value.
 /// `required` presents the group marker; children retain their own constraints.
 /// Descendant validation aggregation is not inferred from arbitrary children.
+/// Feedback is inline by default; `show_text_as_tooltip` uses the existing
+/// bottom tooltip on choice hover/focus without changing child keyboard behavior.
 #[component]
 pub fn CheckboxGroup(
     children: Element,
@@ -820,6 +841,9 @@ pub fn CheckboxGroup(
     #[props(default)] horizontal: bool,
     #[props(default)] disabled: bool,
     #[props(default)] required: bool,
+    /// Move current nonblank feedback from the inline row to a shared tooltip.
+    #[props(default)]
+    show_text_as_tooltip: bool,
     #[props(default)] helper_text: Option<String>,
     #[props(default)] invalid_text: Option<String>,
     #[props(default)] valid_text: Option<String>,
@@ -833,6 +857,7 @@ pub fn CheckboxGroup(
     crate::form_control::use_custom_field_state(crate::form_control::control_validation(
         state, &class,
     ));
+    let feedback_id = format!("{}-help", field_id(None));
     let accessible_label = aria_labelledby
         .is_none()
         .then(|| aria_label.unwrap_or_else(|| label.clone()))
@@ -847,10 +872,11 @@ pub fn CheckboxGroup(
         info_text,
         warning_text,
     );
+    let describedby = feedback.is_some().then(|| feedback_id.clone());
     rsx! {
         fieldset { class: "ix-group-native ix-checkbox-group {state.class()} {class}", disabled,
-            "aria-label": accessible_label, "aria-labelledby": aria_labelledby,
-            GroupLayout { label, required, state, feedback, invalid_alert,
+            "aria-label": accessible_label, "aria-labelledby": aria_labelledby,"aria-describedby":describedby,
+            GroupLayout { label, required, state, feedback, invalid_alert,feedback_id,show_text_as_tooltip,
                 div { class: if horizontal { "ix-group-choices ix-group-row" } else { "ix-group-choices" }, {children} }
             }
         }
@@ -941,6 +967,8 @@ impl SelectOption {
 }
 
 /// Controlled radio group with native form semantics and automatic shared control name.
+/// Explicit `state` selects feedback; `show_text_as_tooltip` moves it into the
+/// existing bottom tooltip. Native options keep their selection and constraints.
 #[component]
 pub fn RadioGroup(
     options: Vec<SelectOption>,
@@ -950,6 +978,9 @@ pub fn RadioGroup(
     #[props(default)] horizontal: bool,
     #[props(default)] disabled: bool,
     #[props(default)] required: bool,
+    /// Move current nonblank feedback from the inline row to a shared tooltip.
+    #[props(default)]
+    show_text_as_tooltip: bool,
     #[props(default)] helper_text: Option<String>,
     #[props(default)] invalid_text: Option<String>,
     #[props(default)] valid_text: Option<String>,
@@ -965,6 +996,7 @@ pub fn RadioGroup(
         state, &class,
     ));
     let name = field_id(name);
+    let feedback_id = format!("{}-help", field_id(None));
     let accessible_label = aria_labelledby
         .is_none()
         .then(|| aria_label.unwrap_or_else(|| label.clone()))
@@ -979,10 +1011,11 @@ pub fn RadioGroup(
         info_text,
         warning_text,
     );
+    let describedby = feedback.is_some().then(|| feedback_id.clone());
     rsx! {
         fieldset { class: "ix-group-native ix-radio-group {state.class()} {class}", disabled, role: "radiogroup",
-            "aria-label": accessible_label, "aria-labelledby": aria_labelledby,
-            GroupLayout { label, required, state, feedback, invalid_alert,
+            "aria-label": accessible_label, "aria-labelledby": aria_labelledby,"aria-describedby":describedby,
+            GroupLayout { label, required, state, feedback, invalid_alert,feedback_id,show_text_as_tooltip,
                 div { class: if horizontal { "ix-group-choices ix-group-row" } else { "ix-group-choices" },
                     for option in options {
                         Radio { key: "{option.value}", name: name.clone(), checked: option.value == value,
@@ -3566,6 +3599,9 @@ mod tests {
                 $(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data {let _=event;pane_forms_converter!(@data $group,event)})*
             }
         };
+        (@data Mouse,$event:ident) => {dioxus::html::MouseData::new(GroupFeedbackMouse)};
+        (@data Keyboard,$event:ident) => {dioxus::html::KeyboardData::new(GroupFeedbackKey($event.downcast::<Key>().unwrap().clone()))};
+        (@data Form,$event:ident) => {dioxus::html::FormData::new(GroupFeedbackForm($event.downcast::<String>().unwrap().clone()))};
         (@data Mounted,$event:ident) => {MountedData::new(PaneFormsMount)};
         (@data $other:ident,$event:ident) => {panic!("unexpected Pane form test event")};
     }
@@ -4956,4 +4992,5 @@ mod tests {
         assert_eq!(html.matches("data-hidden=\"true\"").count(), 3);
         assert_eq!(html.matches("data-hidden=\"false\"").count(), 1);
     }
+    include!("group_feedback_tests.rs");
 }
