@@ -110,6 +110,8 @@ mod select_method_review;
 mod service_dialogs_review;
 #[path = "dioxus_first_probe/service_request_review.rs"]
 mod service_request_review;
+#[path = "dioxus_first_probe/slider_content_review.rs"]
+mod slider_content_review;
 #[path = "dioxus_first_probe/split_actions_review.rs"]
 mod split_actions_review;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
@@ -286,6 +288,9 @@ fn Preview() -> Element {
     }
     if scope == "?bundledimages" {
         return rsx! { bundled_images_review::BundledImagesPreview {} };
+    }
+    if scope == "?slidercontent" {
+        return rsx! { slider_content_review::SliderContentPreview {} };
     }
     if scope == "?temporalforms" {
         return rsx! { temporal_work_order_review::TemporalWorkOrderPreview {} };

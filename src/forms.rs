@@ -1405,6 +1405,14 @@ pub fn Slider(
     #[props(default = true)] show_tooltip: bool,
     #[props(default)] label_start: Option<String>,
     #[props(default)] label_end: Option<String>,
+    /// Composed start endpoint, taking precedence over `label_start`, even when empty.
+    /// Consumers own events and disabled behavior of controls placed here.
+    #[props(default)]
+    label_start_content: Option<Element>,
+    /// Composed end endpoint, taking precedence over `label_end`, even when empty.
+    /// Consumers own events and disabled behavior of controls placed here.
+    #[props(default)]
+    label_end_content: Option<Element>,
     #[props(default)] helper_text: Option<String>,
     #[props(default)] invalid_text: Option<String>,
     #[props(default)] valid_text: Option<String>,
@@ -1427,7 +1435,10 @@ pub fn Slider(
     let reference = (bounded_slider_value(trace_reference, min, max) - min) / span;
     let start = fraction.min(reference);
     let end = fraction.max(reference);
-    let has_endpoints = label_start.is_some() || label_end.is_some();
+    let has_endpoints = label_start.is_some()
+        || label_end.is_some()
+        || label_start_content.is_some()
+        || label_end_content.is_some();
     let label_start = label_start.unwrap_or_default();
     let label_end = label_end.unwrap_or_default();
     let state = if state == FieldState::Default {
@@ -1504,7 +1515,16 @@ pub fn Slider(
                         }
                     }
                     if has_endpoints {
-                        div { class: "ix-slider-endpoints", div { span { "{label_start}" } } div { span { "{label_end}" } } }
+                        div { class: "ix-slider-endpoints",
+                            div {
+                                if let Some(content) = label_start_content { {content} }
+                                else { span { "{label_start}" } }
+                            }
+                            div {
+                                if let Some(content) = label_end_content { {content} }
+                                else { span { "{label_end}" } }
+                            }
+                        }
                     }
                     if !captions.is_empty() {
                         div { class: "ix-slider-marker-captions", "aria-hidden": "true",

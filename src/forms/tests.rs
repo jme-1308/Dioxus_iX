@@ -1442,3 +1442,8 @@ fn number_input_native_contract_defaults_to_zero_and_hides_unusable_steppers() {
 }
 include!("../group_feedback_tests.rs");
 include!("../external_form_tests.rs");
+
+mod slider_content_tests {
+    use super::*;
+    include!("slider_content_tests.rs");
+}
