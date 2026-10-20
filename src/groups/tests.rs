@@ -587,3 +587,241 @@ fn groups_legacy_custom_rows_and_disclosure_header_mode_keep_native_ownership() 
     }
     assert_eq!(depth, 0);
 }
+
+#[derive(Default)]
+struct ComposedItemFixture {
+    selected: Cell<bool>,
+    disabled: Cell<bool>,
+    suppressed: Cell<bool>,
+    hold: Cell<bool>,
+    requests: Cell<usize>,
+    actions: Cell<usize>,
+    mounts: Cell<usize>,
+    label: RefCell<Option<Signal<String>>>,
+}
+impl PartialEq for ComposedItemFixture {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+#[component]
+fn ComposedItemLabel(data: Rc<ComposedItemFixture>) -> Element {
+    use_hook(|| data.mounts.set(data.mounts.get() + 1));
+    let label = use_signal(|| String::from("Motor 001"));
+    *data.label.borrow_mut() = Some(label);
+    rsx! {span{id:String::from("composed-item-label"),"{label()}"}}
+}
+fn composed_item_fixture(data: Rc<ComposedItemFixture>) -> Element {
+    let request = data.clone();
+    let action = data.clone();
+    let legacy_request = data.clone();
+    let mut note = use_signal(|| String::from("Prepare tools"));
+    rsx! {
+        GroupItem {id:"composed-item",aria_label:"Select composed asset",text:"Source text",icon:"check",secondary_text:"Details",
+            selectable_children:true,selected:data.selected.get(),disabled:data.disabled.get(),suppress_selection:data.suppressed.get(),
+            onselect:move|_|{
+                request.requests.set(request.requests.get()+1);
+                if !request.hold.get(){request.selected.set(!request.selected.get());}
+            },
+            ComposedItemLabel{data:data.clone()}
+        }
+        GroupItem {id:"independent-item",aria_label:"Independent controls",selected:true,disabled:true,suppress_selection:true,
+            onselect:move|_|legacy_request.requests.set(legacy_request.requests.get()+1),
+            input{id:String::from("independent-item-note"),value:note(),oninput:move|event|note.set(event.value())}
+            button{id:String::from("independent-item-action"),r#type:"button",onclick:move|_|action.actions.set(action.actions.get()+1),"Save note"}
+        }
+        GroupItem {id:"plain-item",text:"Plain row",selected:true}
+        GroupItem {id:"plain-opt-in",text:"Plain opt-in",selectable_children:true}
+        GroupItem {id:"only-composed-item",selectable_children:true,span{"Only composed label"}}
+    }
+}
+fn composed_item_setup(data: Rc<ComposedItemFixture>) -> (VirtualDom, Targets) {
+    let mut dom = VirtualDom::new_with_props(composed_item_fixture, data);
+    let mut targets = Targets::default();
+    targets.collect(dom.rebuild_to_vec());
+    settle(&mut dom, &mut targets);
+    (dom, targets)
+}
+fn assert_composed_label_retained(dom: &VirtualDom, data: &ComposedItemFixture) {
+    assert!(dioxus_ssr::render(dom).contains("Motor 001 · inspected"));
+    assert_eq!(
+        data.mounts.get(),
+        1,
+        "controlled row props retain the composed label scope"
+    );
+}
+
+#[test]
+fn group_item_composed_labels_use_controlled_native_selection_and_retain_local_state() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = Rc::new(ComposedItemFixture::default());
+    data.hold.set(true);
+    let (mut dom, mut targets) = composed_item_setup(data.clone());
+    let html = dioxus_ssr::render(&dom);
+    let start = html.find("id=\"composed-item\"").unwrap();
+    let body = &html[start..start + html[start..].find("</button>").unwrap()];
+    assert!(tag(&html, "id", "composed-item").starts_with("button "));
+    assert!(body.find("ix-icon").unwrap() < body.find("Source text").unwrap());
+    assert!(body.find("Source text").unwrap() < body.find("Details").unwrap());
+    assert!(body.find("Details").unwrap() < body.find("Motor 001").unwrap());
+    assert_eq!(
+        attribute(tag(&html, "id", "composed-item"), "type"),
+        "button"
+    );
+    dom.in_scope(ScopeId::APP, || {
+        data.label
+            .borrow()
+            .unwrap()
+            .set("Motor 001 · inspected".into())
+    });
+    settle(&mut dom, &mut targets);
+    click(&mut dom, &mut targets, "Select composed asset");
+    assert_eq!(data.requests.get(), 1);
+    assert!(
+        !selected(&dom, "Select composed asset"),
+        "the caller can hold authoritative selection"
+    );
+    assert_composed_label_retained(&dom, &data);
+    data.hold.set(false);
+    click(&mut dom, &mut targets, "Select composed asset");
+    refresh(&mut dom, &mut targets);
+    assert_eq!(
+        data.requests.get(),
+        2,
+        "one request per accepted activation"
+    );
+    assert!(selected(&dom, "Select composed asset"));
+    data.selected.set(false);
+    refresh(&mut dom, &mut targets);
+    assert!(!selected(&dom, "Select composed asset"));
+    assert_eq!(data.requests.get(), 2, "owner updates do not emit requests");
+    assert_composed_label_retained(&dom, &data);
+}
+
+#[test]
+fn group_item_composed_disabled_and_suppressed_guards_preserve_native_key_defaults() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = Rc::new(ComposedItemFixture::default());
+    let (mut dom, mut targets) = composed_item_setup(data.clone());
+    dom.in_scope(ScopeId::APP, || {
+        data.label
+            .borrow()
+            .unwrap()
+            .set("Motor 001 · inspected".into())
+    });
+    data.disabled.set(true);
+    refresh(&mut dom, &mut targets);
+    let html = dioxus_ssr::render(&dom);
+    assert!(true_attribute(
+        tag(&html, "id", "composed-item"),
+        "disabled"
+    ));
+    click(&mut dom, &mut targets, "Select composed asset");
+    assert_eq!(
+        data.requests.get(),
+        0,
+        "synthetic clicks still honor the native disabled row guard"
+    );
+    data.disabled.set(false);
+    data.suppressed.set(true);
+    data.selected.set(true);
+    refresh(&mut dom, &mut targets);
+    let html = dioxus_ssr::render(&dom);
+    let row = tag(&html, "id", "composed-item");
+    assert!(!true_attribute(row, "disabled"));
+    assert!(!row.contains("aria-pressed"));
+    assert!(!true_attribute(row, "data-selected"));
+    assert!(
+        !row.contains("tabindex"),
+        "suppressed native button keeps its ordinary focusability"
+    );
+    let id = targets.attr("id", "composed-item");
+    for key in [Key::Enter, Key::Character(" ".into())] {
+        assert!(
+            dispatch(&dom, "keydown", id, Box::new(RawKey(key))),
+            "native button activation is not intercepted"
+        );
+    }
+    click(&mut dom, &mut targets, "Select composed asset");
+    assert_eq!(data.requests.get(), 0);
+    assert_composed_label_retained(&dom, &data);
+    data.suppressed.set(false);
+    refresh(&mut dom, &mut targets);
+    assert!(selected(&dom, "Select composed asset"));
+    click(&mut dom, &mut targets, "Select composed asset");
+    refresh(&mut dom, &mut targets);
+    assert_eq!(data.requests.get(), 1);
+    assert!(!selected(&dom, "Select composed asset"));
+    assert_composed_label_retained(&dom, &data);
+}
+
+#[test]
+fn group_item_default_custom_controls_stay_independent_and_plain_rows_keep_their_anatomy() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = Rc::new(ComposedItemFixture::default());
+    let (mut dom, mut targets) = composed_item_setup(data.clone());
+    let html = dioxus_ssr::render(&dom);
+    let legacy = tag(&html, "id", "independent-item");
+    assert!(legacy.starts_with("div "));
+    assert!(legacy.contains("ix-group-custom-item"));
+    assert!(!legacy.contains("aria-pressed"));
+    assert!(
+        !legacy.contains("disabled"),
+        "legacy arbitrary controls keep consumer-owned disabled behavior"
+    );
+    assert!(tag(&html, "id", "plain-item").starts_with("button "));
+    assert!(true_attribute(
+        tag(&html, "id", "plain-item"),
+        "aria-pressed"
+    ));
+    assert!(html.contains("<span>Plain row</span>"));
+    assert!(html.contains("<span>Plain opt-in</span>"));
+    let only = html.find("id=\"only-composed-item\"").unwrap();
+    let only_body = &html[only..only + html[only..].find("</button>").unwrap()];
+    assert!(
+        !only_body.contains("<span></span>"),
+        "content-only labels do not create an empty flex item"
+    );
+    let mut depth = 0;
+    for tag in html.split('<').skip(1) {
+        if tag.starts_with("button ") || tag.starts_with("button>") {
+            depth += 1;
+            assert_eq!(
+                depth, 1,
+                "independent native controls must never be nested in the selectable button"
+            );
+        } else if tag.starts_with("/button>") {
+            depth -= 1;
+        }
+    }
+    assert_eq!(depth, 0);
+    dispatch(
+        &dom,
+        "input",
+        targets.attr("id", "independent-item-note"),
+        Box::new(String::from("Tools staged")),
+    );
+    dispatch(
+        &dom,
+        "click",
+        targets.attr("id", "independent-item-action"),
+        Box::new(()),
+    );
+    settle(&mut dom, &mut targets);
+    assert_eq!(data.actions.get(), 1);
+    assert_eq!(
+        data.requests.get(),
+        0,
+        "independent controls do not invoke row selection"
+    );
+    assert_eq!(
+        attribute(
+            tag(&dioxus_ssr::render(&dom), "id", "independent-item-note"),
+            "value"
+        ),
+        "Tools staged"
+    );
+}

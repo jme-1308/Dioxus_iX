@@ -1,0 +1,21 @@
+.group-composition-example{min-width:0;max-width:100%}
+.group-composition-example .group-compose-intro{max-width:72ch;line-height:1.55}
+.group-composition-example .group-compose-toolbar{display:flex;flex-wrap:wrap;gap:12px;margin:20px 0 16px}
+.group-composition-example .group-compose-toolbar .ix-button{max-width:100%;white-space:normal}
+.group-composition-example .group-compose-options{display:flex;flex-wrap:wrap;gap:12px 20px;margin-bottom:24px}
+.group-composition-example .group-compose-options label{display:inline-flex;align-items:center;gap:8px;font-size:14px;line-height:20px}
+.group-composition-example .group-compose-options input{flex:none;width:16px;height:16px;margin:0;accent-color:var(--ix-color-primary)}
+.group-composition-example .group-compose-preparation{max-width:480px;margin-bottom:32px}
+.group-composition-example .group-compose-selectable{min-height:72px}
+.group-composition-example .group-compose-label{display:flex;flex-direction:column;gap:4px;min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:14px;line-height:20px;color:inherit}
+.group-composition-example .group-compose-name-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.group-composition-example .group-compose-name-line strong{font-weight:600;font-size:16px;line-height:24px}
+.group-composition-example .group-compose-editor{display:flex;flex-direction:column;align-items:flex-start;gap:16px;width:100%;min-width:0;padding:8px 0}
+.group-composition-example .group-compose-editor .ix-button{max-width:100%;white-space:normal}
+.group-composition-example .group-compose-result{display:flex;flex-direction:column;gap:8px;margin-top:24px;max-width:72ch;font-size:14px;line-height:20px;color:var(--ix-color-text);overflow-wrap:anywhere}
+.group-composition-example .group-compose-records{width:100%;max-width:720px;table-layout:fixed;border-collapse:collapse;margin-top:32px;font-size:14px;line-height:20px}
+.group-composition-example .group-compose-records caption{text-align:start;font-weight:600;padding-bottom:8px}
+.group-composition-example .group-compose-records th,.group-composition-example .group-compose-records td{padding:8px;text-align:start;vertical-align:top;border-bottom:1px solid var(--ix-color-border);overflow-wrap:anywhere}
+.group-composition-example .group-compose-records thead th{background:var(--ix-color-surface-1)}
+.group-composition-example .group-compose-records th:first-child{width:32%}
+.group-composition-example .group-compose-options input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}

@@ -263,13 +263,18 @@ pub fn Group(
     }}
 }
 
-/// Native selectable row, or a nonselectable custom-content row when `children`
-/// is supplied. Custom controls own their handlers and disabled state. Suppressed
-/// standard rows remain focusable but have no pressed state, cue or callback.
+/// Native selectable row, with independently owned custom controls by default.
+/// Opt into `selectable_children` for composed noninteractive button labels.
+/// Suppressed selectable rows remain focusable without pressed state, cue or callback.
 #[component]
 pub fn GroupItem(
     #[props(default)] text: String,
     #[props(default)] children: Option<Element>,
+    /// Place children inside the native selectable button as label content.
+    /// Children must be noninteractive: inputs, buttons, links and other focusable
+    /// controls belong in the default independent custom-content mode instead.
+    #[props(default)]
+    selectable_children: bool,
     #[props(default)] secondary_text: Option<String>,
     #[props(default)] icon: Option<String>,
     #[props(default)] selected: bool,
@@ -281,14 +286,17 @@ pub fn GroupItem(
     #[props(default)] aria_label_icon: Option<String>,
     #[props(default)] suppress_selection: bool,
 ) -> Element {
-    if let Some(children) = children {
+    if !selectable_children && let Some(children) = children {
         return rsx! {div{id,class:"ix-group-item ix-group-custom-item {class}","aria-label":aria_label,{children}}};
     }
+    let show_text = !selectable_children || children.is_none() || !text.is_empty();
     rsx! {button{id,class:"ix-group-item {class}",r#type:"button",disabled,
         "aria-label":aria_label,"aria-pressed":(!suppress_selection).then(||selected.to_string()),"data-selected":selected&&!suppress_selection,
         onclick:move|_|{if !disabled&&!suppress_selection{onselect.call(());}},
-        if let Some(icon)=icon{Icon{name:icon,label:aria_label_icon}}span{"{text}"}
+        if let Some(icon)=icon{Icon{name:icon,label:aria_label_icon}}
+        if show_text{span{"{text}"}}
         if let Some(text)=secondary_text{span{class:"ix-group-secondary","{text}"}}
+        if let Some(children)=children{{children}}
     }}
 }
 

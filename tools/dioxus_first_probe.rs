@@ -68,6 +68,8 @@ mod grid_numeric_values_review;
 mod grid_typed_editors_review;
 #[path = "dioxus_first_probe/grid_worklist_review.rs"]
 mod grid_worklist_review;
+#[path = "dioxus_first_probe/group_composition_review.rs"]
+mod group_composition_review;
 #[path = "dioxus_first_probe/group_feedback_review.rs"]
 mod group_feedback_review;
 #[path = "dioxus_first_probe/header_choice_review.rs"]
@@ -297,6 +299,9 @@ fn Preview() -> Element {
     }
     if scope == "?externalforms" {
         return rsx! { external_work_order_review::ExternalWorkOrderPreview {} };
+    }
+    if scope == "?groupcomposition" {
+        return rsx! { group_composition_review::GroupCompositionPreview {} };
     }
     if scope == "?groupfeedback" {
         return rsx! { group_feedback_review::GroupFeedbackPreview {} };
