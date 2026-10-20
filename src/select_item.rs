@@ -1,13 +1,14 @@
-//! Standalone source-host option; the options-driven Select model is separate.
+//! Composable listbox option; the options-driven Select model is separate.
 //!
 //! Copyright (c) 2023-2026 Siemens AG. SPDX-License-Identifier: MIT.
 use crate::dropdown::{ItemDescription, item_host_id, use_item_host};
 use dioxus::prelude::*;
 
-/// A rendered Select item can also participate in a generic Dropdown. Selection
-/// is controlled by `selected`; activation never toggles it automatically.
+/// A rendered option for a [`crate::DropdownSurfaceRole::Listbox`] Dropdown.
+/// Selection is controlled by `selected`; activation never toggles it automatically.
 ///
-/// The outer host and inner option are distinct. Enter/Space activation invokes
+/// The focusable host exposes the option name, selection and disabled state.
+/// The inner row supplies its visual content. Enter/Space activation invokes
 /// the semantic `onitemclick` notification with the current Rust value; generic
 /// Dropdown activation uses the same action and owns its dismissal.
 /// Pointer activation of the inner option invokes `onitemclick` with its Rust
@@ -53,6 +54,7 @@ pub fn SelectItem(
         &attributes,
         ItemDescription {
             disabled,
+            checked: selected,
             order,
             parts: vec![crate::dropdown_inventory::HostPartFacts {
                 kind: crate::dropdown_inventory::HostPartKind::SelectOption,
@@ -62,6 +64,11 @@ pub fn SelectItem(
             ..Default::default()
         },
     );
+    let text = label
+        .as_ref()
+        .filter(|label| !label.is_empty())
+        .unwrap_or(&value)
+        .clone();
     let aria_label = attributes
         .iter()
         .rev()
@@ -73,12 +80,7 @@ pub fn SelectItem(
             }
             None
         })
-        .or_else(|| label.clone());
-    let text = label
-        .as_ref()
-        .filter(|label| !label.is_empty())
-        .unwrap_or(&value)
-        .clone();
+        .unwrap_or_else(|| text.clone());
     let previous =
         use_hook(|| std::rc::Rc::new(std::cell::RefCell::new((value.clone(), label.clone()))));
     use_effect(use_reactive((&value, &label), move |(value, label)| {
@@ -128,11 +130,12 @@ pub fn SelectItem(
         div {
             id: host_id,
             class,
-            role: "presentation", "aria-hidden": "true", "aria-label": aria_label,
+            role: "option", "aria-label": aria_label,
+            "aria-selected": selected.to_string(), "aria-disabled": disabled.to_string(),
             "data-ix-item-kind": "select", "data-ix-item-key": binding.key,
             "data-ix-item-runtime": binding.runtime.owner_id(),
             "data-ix-item-focusable": "true", "data-active": active.to_string(),
-            "value": value, "label": label, "disabled": disabled,
+            "value": value, "label": label, "disabled": disabled, "checked": selected,
             tabindex: roving_tabindex,
             onmounted: move |event| mounted_host.mount(&mounted_id,event.data()),
             onfocus: move |event| { focus_host.focus(true,None); onfocus.call(event); },
@@ -146,7 +149,7 @@ pub fn SelectItem(
                 class: format!("ix-dropdown-item ix-select-item-option{}{}",
                     if selected { " select-item-checked" } else { "" },
                     if option_active { " ix-focused" } else { "" }),
-                role: "option", "aria-hidden": "true", "checked": selected, "disabled": disabled,
+                role: "presentation", "aria-hidden": "true", "checked": selected, "disabled": disabled,
                 "data-active": option_active.to_string(),
                 "data-ix-item-part": "select-option", "data-ix-descendant-kind": "dropdown", "data-ix-item-focusable": "false",
                 onfocus: move |_| focus_option.focus(true,Some(crate::dropdown_inventory::HostPartKind::SelectOption)),
@@ -290,37 +293,53 @@ mod tests {
     }
 
     #[test]
-    fn standalone_select_host_and_inner_option_keep_distinct_source_roles() {
+    fn select_item_exposes_one_named_option_with_controlled_selection_and_disabled_state() {
         fn app() -> Element {
             rsx! {
                 SelectItem { value: "value-only", label: "", selected: true, tabindex: "5", "data-consumer": "kept" }
                 SelectItem { value: "disabled-value", label: "Disabled label", disabled: true }
+                SelectItem { value: "explicit-value", label: "Visible label", "aria-label": "Accessible label" }
             }
         }
         let mut dom = VirtualDom::new(app);
         dom.rebuild_in_place();
         let html = dioxus_ssr::render(&dom);
-        assert_eq!(html.matches("data-ix-item-kind=\"select\"").count(), 2);
+        let hosts = html
+            .split('>')
+            .filter(|tag| tag.contains("data-ix-item-kind=\"select\""))
+            .collect::<Vec<_>>();
+        assert_eq!(hosts.len(), 3);
+        for host in &hosts {
+            assert!(host.contains("role=\"option\""));
+            assert!(
+                !host.contains("aria-hidden="),
+                "the focus target is accessible"
+            );
+        }
+        assert!(hosts[0].contains("aria-label=\"value-only\""));
+        assert!(hosts[0].contains("aria-selected=\"true\""));
+        assert!(hosts[0].contains("aria-disabled=\"false\""));
+        assert!(hosts[0].contains("checked"));
+        assert!(hosts[1].contains("aria-label=\"Disabled label\""));
+        assert!(hosts[1].contains("aria-selected=\"false\""));
+        assert!(hosts[1].contains("aria-disabled=\"true\""));
+        assert!(hosts[2].contains("aria-label=\"Accessible label\""));
+        assert_eq!(html.matches("role=\"option\"").count(), 3);
+        let visual_rows = html
+            .split('>')
+            .filter(|tag| tag.contains("ix-select-item-option"))
+            .collect::<Vec<_>>();
+        assert_eq!(visual_rows.len(), 3);
         assert!(
-            !html.contains("data-ix-item-kind=\"dropdown\""),
-            "generated inner options are not outer light-DOM DropdownItems"
+            visual_rows.iter().all(|tag| {
+                tag.contains("role=\"presentation\"") && tag.contains("aria-hidden=\"true\"")
+            }),
+            "visual rows cannot expose duplicate options or checkmark names"
         );
-        assert!(
-            html.split('>')
-                .filter(|tag| tag.contains("data-ix-item-kind=\"select\""))
-                .all(|tag| tag.contains("role=\"presentation\""))
-        );
-        assert_eq!(html.matches("role=\"option\"").count(), 2);
-        assert!(
-            html.contains("value-only</span>"),
-            "empty labels fall back to the submitted value"
-        );
+        assert!(html.contains("value-only</span>"));
+        assert!(html.contains("Visible label</span>"));
         assert!(html.contains("tabindex=\"5\"") && html.contains("data-consumer=\"kept\""));
         assert!(html.contains("select-item-checked"));
-        assert!(
-            !html.contains("aria-selected=\"true\""),
-            "selected and source visible focus are different"
-        );
     }
 
     type WatchState = Rc<RefCell<Option<Signal<(String, Option<String>)>>>>;

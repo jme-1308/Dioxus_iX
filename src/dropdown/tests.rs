@@ -3287,9 +3287,10 @@ impl PartialEq for OwnedMetadataFixture {
 fn owned_metadata_fixture(fixture: OwnedMetadataFixture) -> Element {
     let changed = fixture.changed.get();
     let authored = if changed { -1 } else { 2 };
-    rsx! { Dropdown { label:"Owned metadata",
+    rsx! { Dropdown { label:"Owned metadata",surface_role:DropdownSurfaceRole::Listbox,
         OwnedMetadataCapture {context:fixture.context.clone()}
         DropdownItem {id:"owned-typed",label:"Typed",disabled:changed,hidden:changed,checked:changed,tabindex:authored}
+        crate::SelectItem {id:"owned-select",value:"Option",disabled:changed,hidden:changed,selected:changed,tabindex:authored}
         OwnedMetadataCustom {changed}
         DropdownSubmenu {label:"Owned child",DropdownItem {id:"owned-nested",label:"Nested"}}
     } }
@@ -3303,6 +3304,9 @@ fn component_descriptions_follow_current_props_and_keep_exact_overlay_membership
     };
     let mut dom = VirtualDom::new_with_props(owned_metadata_fixture, fixture.clone());
     dom.rebuild_in_place();
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("role=\"listbox\""));
+    assert!(html.contains("aria-haspopup=\"listbox\""));
     let context = fixture.context.borrow().clone().unwrap();
     let node = context.node.borrow().clone().unwrap();
     let child = context
@@ -3323,8 +3327,8 @@ fn component_descriptions_follow_current_props_and_keep_exact_overlay_membership
             }
         }
         let inventory = node.inventory().unwrap();
-        assert_eq!(inventory.hosts.len(), 3);
-        for target in ["owned-typed", "owned-custom"] {
+        assert_eq!(inventory.hosts.len(), 4);
+        for target in ["owned-typed", "owned-custom", "owned-select"] {
             let host = inventory
                 .hosts
                 .iter()

@@ -43,3 +43,6 @@
 .ix-dropdown[aria-disabled=true]{cursor:default}
 
 .ix-theme .ix-dropdown-trigger.ix-dropdown-trigger-icon-only{box-sizing:border-box;width:var(--ix-control-height);height:var(--ix-control-height);min-width:0;justify-content:center;gap:0;padding:0}
+
+/* Composed options use a registered div host, not a native disabled button. */
+.ix-theme .ix-select-item[disabled]>.ix-select-item-option{opacity:.45}

@@ -2210,6 +2210,8 @@ pub enum DropdownSurfaceRole {
     /// Ordinary menu surface and trigger semantics.
     #[default]
     Menu,
+    /// Selectable options composed from [`crate::SelectItem`].
+    Listbox,
     /// Composed dialog content with its own keyboard interaction.
     Dialog,
 }
@@ -2218,6 +2220,7 @@ impl DropdownSurfaceRole {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Menu => "menu",
+            Self::Listbox => "listbox",
             Self::Dialog => "dialog",
         }
     }

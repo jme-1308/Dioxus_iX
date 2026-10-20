@@ -130,6 +130,8 @@ mod release_news_review;
 mod release_popover_review;
 #[path = "dioxus_first_probe/select_direction_review.rs"]
 mod select_direction_review;
+#[path = "dioxus_first_probe/select_item_review.rs"]
+mod select_item_review;
 #[path = "dioxus_first_probe/select_method_review.rs"]
 mod select_method_review;
 #[path = "dioxus_first_probe/service_dialogs_review.rs"]
@@ -424,6 +426,9 @@ fn Preview() -> Element {
     }
     if scope == "?selectmethods" {
         return rsx! { select_method_review::SelectMethodPreview {} };
+    }
+    if scope == "?selectitems" {
+        return rsx! { select_item_review::SelectItemPreview {} };
     }
     if scope == "?triggers" {
         return rsx! { trigger_review::TriggerPreview {} };
