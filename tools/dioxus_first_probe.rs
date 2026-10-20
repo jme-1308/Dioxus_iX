@@ -90,6 +90,8 @@ mod pane_layout_review;
 mod select_direction_review;
 #[path = "dioxus_first_probe/select_method_review.rs"]
 mod select_method_review;
+#[path = "dioxus_first_probe/service_dialogs_review.rs"]
+mod service_dialogs_review;
 #[path = "dioxus_first_probe/service_request_review.rs"]
 mod service_request_review;
 #[path = "dioxus_first_probe/split_actions_review.rs"]
@@ -221,6 +223,9 @@ fn Preview() -> Element {
     }
     if scope == "?disclosurepackage" {
         return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
+    }
+    if scope == "?servicedialogs" {
+        return rsx! { service_dialogs_review::ServiceDialogsPreview {} };
     }
     if scope == "?widegrid" {
         return rsx! { wide_equipment_grid_review::WideEquipmentGridPreview {} };

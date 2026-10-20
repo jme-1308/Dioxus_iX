@@ -674,13 +674,14 @@ pub fn ModalHeader(
     #[props(default)] hide_close: bool,
     #[props(default)] icon: Option<String>,
     #[props(default)] icon_color: Option<String>,
+    #[props(default)] icon_label: Option<String>,
     #[props(default = "Close modal".to_string())] close_label: String,
     #[props(default)] oncloseclick: Option<EventHandler<MouseEvent>>,
 ) -> Element {
     let modal = try_consume_context::<ModalHandle>();
     rsx! {
         header { class: "ix-modal-header",
-            if let Some(icon) = icon { span { class: "ix-modal-header-icon", style: icon_color.map(|name| format!("color:var({name})")), crate::Icon { name: icon, size: 24 } } }
+            if let Some(icon) = icon { span { class: "ix-modal-header-icon", style: icon_color.map(|name| format!("color:var({name})")), crate::Icon { name: icon, size: 24, label:icon_label } } }
             h2 { class: "ix-modal-title", {children} }
             if !hide_close {
                 button { class: "ix-dialog-close", r#type: "button", "aria-label": close_label, disabled: modal.is_none(),
@@ -1809,11 +1810,13 @@ pub fn PopoverImage(
     rsx! { if let Some(image) = image.filter(|value| !value.is_empty()) { img { class: "ix-popover-image", src: image, alt: image_alt } } }
 }
 
+// WebKit collapses auto-height dialog panels with a percentage max-height and
+// zero flex basis. Let the panel size from content; the dialog still caps height.
 pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-modal{display:none;position:fixed;box-sizing:border-box;left:50%;top:40px;transform:translateX(-50%);margin:0;padding:24px;border:0;border-radius:var(--ix-radius);background:var(--ix-color-surface-1);color:var(--ix-color-text);font:inherit;box-shadow:0 12px 40px #0005;width:360px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 80px);overflow:hidden}
 .ix-theme .ix-modal[open],.ix-theme .ix-modal:popover-open{display:flex;flex-direction:column}.ix-theme .ix-modal::backdrop{background:#0008}.ix-theme .ix-modal[data-hide-backdrop=true]::backdrop{background:transparent}.ix-theme .ix-modal[data-centered=true]{top:50%;transform:translate(-50%,-50%)}
 .ix-theme .ix-modal-size-480{width:480px}.ix-theme .ix-modal-size-600{width:600px}.ix-theme .ix-modal-size-720{width:720px}.ix-theme .ix-modal-size-840{width:840px}.ix-theme .ix-modal-size-full-width{width:95vw}.ix-theme .ix-modal-size-full-screen{inset:0;transform:none!important;width:100vw;height:100dvh;max-width:none;max-height:none;border-radius:0;box-shadow:none}
-.ix-theme .ix-modal-panel{display:flex;flex-direction:column;min-height:0;max-height:100%;overflow:hidden;flex:1}.ix-theme .ix-modal-header{display:flex;align-items:start;gap:16px;flex:none;margin-bottom:16px}.ix-theme .ix-modal-header-icon{display:flex;align-items:center;min-height:32px}.ix-theme .ix-modal-title{flex:1;min-width:0;font:600 1.25rem/1.5 var(--ix-font);margin:0;overflow-wrap:anywhere}.ix-theme .ix-dialog-close{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;flex:none;border:0;background:transparent;padding:4px;color:var(--ix-color-text-secondary);cursor:pointer;border-radius:var(--ix-radius)}.ix-theme .ix-dialog-close:hover{background:var(--ix-color-surface-2)}.ix-theme .ix-dialog-close:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-theme .ix-dialog-close:disabled{opacity:.45;cursor:not-allowed}
+.ix-theme .ix-modal-panel{display:flex;flex-direction:column;min-height:0;overflow:hidden;flex:1 1 auto}.ix-theme .ix-modal-header{display:flex;align-items:start;gap:16px;flex:none;margin-bottom:16px}.ix-theme .ix-modal-header-icon{display:flex;align-items:center;min-height:32px}.ix-theme .ix-modal-title{flex:1;min-width:0;font:600 1.25rem/1.5 var(--ix-font);margin:0;overflow-wrap:anywhere}.ix-theme .ix-dialog-close{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;flex:none;border:0;background:transparent;padding:4px;color:var(--ix-color-text-secondary);cursor:pointer;border-radius:var(--ix-radius)}.ix-theme .ix-dialog-close:hover{background:var(--ix-color-surface-2)}.ix-theme .ix-dialog-close:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-theme .ix-dialog-close:disabled{opacity:.45;cursor:not-allowed}
 .ix-theme .ix-modal-content{overflow:auto;min-height:0;flex:1;font-size:.875rem;line-height:1.5}.ix-theme .ix-modal-content>:first-child{margin-top:0}.ix-theme .ix-modal-content>:last-child{margin-bottom:0}.ix-theme .ix-modal-footer{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;flex:none;margin-top:24px}.ix-theme .ix-modal-loading{display:flex;align-items:center;gap:16px;min-height:48px;font-size:.875rem}.ix-theme .ix-modal:has(.ix-modal-header-icon) .ix-modal-content,.ix-theme .ix-modal:has(.ix-modal-header-icon) .ix-modal-footer{margin-inline-start:40px}
 .ix-theme .ix-popover{display:none;position:fixed;box-sizing:border-box;inset:auto;margin:12px;padding:0;border:0;border-radius:var(--ix-radius);background:var(--ix-color-surface-1);color:var(--ix-color-text);font:inherit;width:400px;min-width:min(240px,calc(100vw - 32px));max-width:min(600px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:visible;box-shadow:0 8px 28px #0004;position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline,--ix-popover-viewport}
 .ix-theme .ix-popover:popover-open{display:block}.ix-theme .ix-popover-body{display:flex;flex-direction:column;max-height:calc(100dvh - 32px);overflow:hidden;border-radius:inherit;position:relative;z-index:1;background:inherit}.ix-theme .ix-popover-header{display:flex;align-items:center;gap:8px;padding:16px;flex:none}.ix-theme .ix-popover-title{font:600 1rem/1.5 var(--ix-font);margin:0;flex:1;min-width:0;overflow-wrap:anywhere}.ix-theme .ix-popover-content{padding:16px;overflow:auto;font-size:.875rem;line-height:1.5;flex:1;min-height:0}.ix-theme .ix-popover-content[data-no-padding=true]{padding:0}.ix-theme .ix-popover-image{display:block;width:100%;height:auto;max-height:240px;object-fit:cover;flex:none}
@@ -2553,5 +2556,9 @@ mod tests {
                 ]
             );
         });
+    }
+    mod message_dialog_tests {
+        use super::*;
+        include!("message_dialog_tests.rs");
     }
 }

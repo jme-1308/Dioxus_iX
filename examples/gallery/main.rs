@@ -75,6 +75,7 @@ mod patterns;
 mod progress_review;
 mod radio_review;
 mod select_visual_review;
+mod service_dialogs;
 mod service_package;
 mod service_request;
 mod slider_review;
@@ -246,6 +247,7 @@ fn Gallery() -> Element {
         style { {datetime::STYLES} }
         style { {localized_dates::STYLES} }
         style { {dialogs::STYLES} }
+        style { {service_dialogs::STYLES} }
         style { {tree::STYLES} }
         style { {toast_review::STYLES} }
         style { {grid_scenarios::STYLES} }
@@ -323,7 +325,7 @@ fn Gallery() -> Element {
                         GalleryPage::Composition => rsx! { tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat::ChatExamples {} },
                         GalleryPage::Patterns => rsx! { asset_flip_tile::AssetFlipTileExample {} filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
-                        GalleryPage::Dialogs => rsx! { dialogs::DialogExamples {} },
+                        GalleryPage::Dialogs => rsx! { service_dialogs::ServiceDialogsExample {} dialogs::DialogExamples {} },
                         GalleryPage::Icons => rsx! { IconExamples {} },
                         GalleryPage::Theme => rsx! { theme_review::ThemeReview {} },
                         GalleryPage::Coverage => rsx! { CoverageExamples { location } },

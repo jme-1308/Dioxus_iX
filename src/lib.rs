@@ -80,6 +80,7 @@ mod key_value;
 pub mod layout;
 mod localized_date;
 mod menu_hover_dom;
+pub mod message_dialog;
 mod native_surface;
 pub mod notifications;
 mod number_input_styles;
@@ -131,6 +132,7 @@ pub use icons::{
     icon_names, use_icon_registry,
 };
 pub use layout::*;
+pub use message_dialog::*;
 pub use notifications::*;
 pub use overlays::*;
 pub use patterns::*;
