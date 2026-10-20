@@ -204,6 +204,9 @@ struct Fixture {
     native_clicks: usize,
     mounts: usize,
     drops: usize,
+    button_text: String,
+    button_content: Option<String>,
+    button_icon: Option<String>,
 }
 impl Default for Fixture {
     fn default() -> Self {
@@ -248,6 +251,9 @@ impl Default for Fixture {
             native_clicks: 0,
             mounts: 0,
             drops: 0,
+            button_text: "Task actions".into(),
+            button_content: None,
+            button_icon: None,
         }
     }
 }
@@ -4034,3 +4040,5 @@ fn surface_metadata_follows_current_registered_trigger_and_forwarded_items_host(
         parent.host_id()
     );
 }
+
+include!("../dropdown_button_tests.rs");

@@ -40,6 +40,8 @@ mod document_workspace_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
+#[path = "dioxus_first_probe/dropdown_button_review.rs"]
+mod dropdown_button_review;
 #[path = "dioxus_first_probe/equipment_events_review.rs"]
 mod equipment_events_review;
 #[path = "dioxus_first_probe/equipment_readings_review.rs"]
@@ -270,6 +272,9 @@ fn Preview() -> Element {
     }
     if scope == "?accountmenu" {
         return rsx! { account_menu_review::AccountMenuPreview {} };
+    }
+    if scope == "?dropdownbutton" {
+        return rsx! { dropdown_button_review::DropdownButtonPreview {} };
     }
     if scope == "?inspectiongroups" {
         return rsx! { inspection_groups_review::InspectionGroupsPreview {} };

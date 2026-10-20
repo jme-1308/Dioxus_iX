@@ -2220,6 +2220,11 @@ pub fn Dropdown(
     #[props(default)] loading: bool,
     #[props(default=crate::ButtonVariant::Secondary)] variant: crate::ButtonVariant,
     icon: Option<String>,
+    /// Presentational trigger content; `label`/`aria_label` still names the menu/control.
+    button_label: Option<Element>,
+    /// Compact trigger presentation. Ordinary Dropdown defaults remain unchanged.
+    #[props(default)]
+    icon_only: bool,
     aria_label: Option<String>,
     #[props(default)] class: String,
     #[props(default)] navigation_mode: DropdownNavigationMode,
@@ -2253,7 +2258,7 @@ pub fn Dropdown(
         before: onbeforechange,
         changed: onchange,
     };
-    rsx! { DropdownSurface {key:"{key}",context,handle,label,external:controller.is_some()||trigger.is_some(),trigger,placement,blocked:disabled||loading,loading,variant,icon,aria_label,class,settings,enable_top_layer,suppress_automatic_placement,{children}} }
+    rsx! { DropdownSurface {key:"{key}",context,handle,label,external:controller.is_some()||trigger.is_some(),trigger,placement,blocked:disabled||loading,loading,variant,icon,button_label,icon_only,aria_label,class,settings,enable_top_layer,suppress_automatic_placement,{children}} }
 }
 
 #[component]
@@ -2268,6 +2273,8 @@ fn DropdownSurface(
     loading: bool,
     variant: crate::ButtonVariant,
     icon: Option<String>,
+    button_label: Option<Element>,
+    icon_only: bool,
     aria_label: Option<String>,
     class: String,
     settings: Settings,
@@ -2529,10 +2536,14 @@ fn DropdownSurface(
         onfocus:move |_|focused_in.set(true), onblur:move |_|focused_out.set(false),
         onkeydown:move |event:KeyboardEvent|{if !external&&trigger_focused.get(){direct_key(&key_context,event,true,None,false);}},
         ..trigger_visibility,
-        if !external {button {class:"ix-dropdown-trigger ix-button ix-button-{variant.as_str()}",r#type:"button",disabled:blocked,"aria-hidden":"true",inert:true,tabindex:-1,
+        if !external {button {class:if icon_only{format!("ix-dropdown-trigger ix-button ix-button-{} ix-dropdown-trigger-icon-only",variant.as_str())}else{format!("ix-dropdown-trigger ix-button ix-button-{}",variant.as_str())},r#type:"button",disabled:blocked,"aria-hidden":"true",inert:true,tabindex:-1,
             if loading {crate::Spinner {size:crate::SpinnerSize::Sm,hide_track:true}}
             else if let Some(icon)=icon {Icon {name:icon,size:20}}
-            "{label}" Icon {name:"chevron-down-small",size:16}
+            else if icon_only {Icon {name:"chevron-down-small",size:20}}
+            if !icon_only {
+                if let Some(button_label)=button_label {{button_label}}else{"{label}"}
+                Icon {name:"chevron-down-small",size:16}
+            }
         }}
         dialog {id:host_id,class:"ix-dropdown-menu ix-dropdown-root-menu",role:"menu","aria-label":label,
             "data-ix-overlay-host":id,"data-placement":effective_placement.as_str(),"data-configured-placement":placement.as_str(),hidden:!open,inert:(!open).then_some(""),
@@ -2922,6 +2933,7 @@ pub(crate) const STYLES: &str = r#"
 .ix-dropdown-item[aria-disabled=true]{opacity:.45;pointer-events:none;cursor:default}
 .ix-dropdown[aria-disabled=true]{cursor:default}
 
+.ix-theme .ix-dropdown-trigger.ix-dropdown-trigger-icon-only{box-sizing:border-box;width:var(--ix-control-height);height:var(--ix-control-height);min-width:0;justify-content:center;gap:0;padding:0}
 "#;
 
 #[cfg(test)]

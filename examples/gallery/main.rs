@@ -329,7 +329,7 @@ fn Gallery() -> Element {
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
                         GalleryPage::Application => rsx! { account_workspace::AccountWorkspaceExample {} header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
                         GalleryPage::Feedback => rsx! { maintenance_notices::MaintenanceNoticesExample {} dropdown_review::DropdownOrderReview {} FeedbackExamples {} },
-                        GalleryPage::Composition => rsx! { document_workspace::DocumentWorkspaceExample {} tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
+                        GalleryPage::Composition => rsx! { composition::DropdownTaskActionsExample {} document_workspace::DocumentWorkspaceExample {} tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat_workspace::ChatWorkspaceExample {} chat::ChatExamples {} },
                         GalleryPage::Patterns => rsx! { asset_flip_tile::AssetFlipTileExample {} filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
                         GalleryPage::Dialogs => rsx! { service_dialogs::ServiceDialogsExample {} dialogs::DialogExamples {} },

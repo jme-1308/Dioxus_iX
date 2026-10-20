@@ -194,9 +194,15 @@ pub fn MenuAboutNews(
 }
 
 /// Combined button and dropdown with iX button variants and optional icon.
+/// Empty or omitted `label` uses a compact icon trigger. `button_label` supplies
+/// presentational Dioxus content instead of the visible text; provide `label` or
+/// `aria_label` for its accessible name. Menu children remain mounted as these
+/// presentation props change.
 #[component]
 pub fn DropdownButton(
-    label: String,
+    #[props(default)] label: String,
+    button_label: Option<Element>,
+    #[props(default)] placement: crate::DropdownPlacement,
     children: Element,
     icon: Option<String>,
     #[props(default = ButtonVariant::Primary)] variant: ButtonVariant,
@@ -213,7 +219,24 @@ pub fn DropdownButton(
     #[props(default)] onbeforechange: EventHandler<crate::DropdownChangeEvent>,
     #[props(default)] onchange: EventHandler<bool>,
 ) -> Element {
-    rsx! { Dropdown { label, disabled, loading, variant, icon, aria_label, class,
+    let icon_only = button_label.is_none() && label.trim().is_empty();
+    let unnamed = label.trim().is_empty();
+    let label = if unnamed {
+        aria_label
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Menu".into())
+    } else {
+        label
+    };
+    let aria_label = if unnamed {
+        aria_label
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| Some("Open dropdown".into()))
+    } else {
+        aria_label
+    };
+    rsx! { Dropdown { label, button_label, icon_only, placement, disabled, loading, variant, icon, aria_label, class,
         navigation_mode, close_behavior, enable_top_layer, disable_focus_handling,
         disable_focus_trap, focus_checked_item, onbeforechange, onchange, {children}
     } }
