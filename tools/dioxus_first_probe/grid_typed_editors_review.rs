@@ -156,6 +156,7 @@ try {
 
  await begin('part-1','approved');const text=await transfer('part-2','asset');
  assert(text.tagName==='INPUT'&&text.type==='text'&&text.value==='Valve kit'&&text.hasAttribute('data-select-all'),'Tab crosses row boundary into established text editor');
+ await wait('text edit selects its current value after mounted focus',()=>active()===text&&text.selectionStart===0&&text.selectionEnd===text.value.length);
  const secondNumber=await transfer('part-2','quantity');assert(secondNumber.type==='number'&&secondNumber.value==='10','Tab moves from text to native number editor');
  await cancel('part-2','quantity');await begin('part-2','approved');
  await transfer('part-3','asset');const skipped=await transfer('part-3','status');
@@ -163,6 +164,14 @@ try {
  const backwards=await transfer('part-3','asset','Tab',true);
  assert(backwards.type==='text'&&backwards.value==='Sensor kit','Shift+Tab skips readonly number cell in reverse');
  await cancel('part-3','asset');assert(count()===4,'unchanged cross-kind traversal does not emit edit requests');
+ await focus(cell('part-3','asset'),'type-to-edit text cell');key(active(),'P');
+ await wait('type-to-edit starts focused text with its caret at the end',()=>editorAt('part-3','asset')&&active()===editorAt('part-3','asset')&&editor().value==='P'&&editor().selectionStart===1&&editor().selectionEnd===1);
+ const typedText=editor();
+ // An untrusted key cannot type through the native default. Explicitly apply
+ // its follow-up draft through the real input path; trusted Chromium appends.
+ Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(typedText,'PQ');typedText.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
+ await wait('follow-up text draft stays with the current editor',()=>editor()===typedText&&active()===typedText&&typedText.value==='PQ');
+ await cancel('part-3','asset');assert(count()===4,'type-to-edit cancellation leaves stored data and request count unchanged');
  snapshots.traversed=snapshot();
 
  get('grid-typed-hold').click();await wait('host hold mode enabled',()=>checked(get('grid-typed-hold')));
@@ -195,7 +204,7 @@ try {
  assert(Math.abs(layout.height-240)<=1&&Math.abs(layout.rowHeight-42)<=1&&layout.pageScroll<=layout.pageClient+1,'typed editors preserve Grid height/row geometry and narrow page containment');
  await cancel('part-1','approved');assert(count()===0,'narrow boolean cancellation leaves restored source unchanged');
  return {ok:true,snapshots,layout,inputFocusFacts,
-  checks:['actual native number/select/checkbox editors','number min/max/half-step accepted and rejected edits','Escape preserves controlled data on invalid/canceled drafts','Tab number-to-select and cross-kind/cross-row transfer','disabled native choice and saved string payload','checkbox native Space permission/click/save/cancel without row selection','Tab/ShiftTab readonly number skip','valid held request recorded without applying data','whole Grid readonly blocks editing and preserves selection','Restore parts clears pending choice/modes/counters/data','mounted focus reveals rightmost typed editor in340px scrolling Grid'],
+  checks:['actual native number/select/checkbox editors','number min/max/half-step accepted and rejected edits','Escape preserves controlled data on invalid/canceled drafts','Tab number-to-select and cross-kind/cross-row transfer with actual text selection','disabled native choice and saved string payload','checkbox native Space permission/click/save/cancel without row selection','Tab/ShiftTab readonly number skip plus type-to-edit end caret and canceled draft','valid held request recorded without applying data','whole Grid readonly blocks editing and preserves selection','Restore parts clears pending choice/modes/counters/data','mounted focus reveals rightmost typed editor in340px scrolling Grid'],
   input:'synthetic input/change/key events and explicit native focus; checkbox toggled by one real DOM click per draft',
   trustedInput:'separate Chromium actual native-select keyboard navigation and checkbox Space defaults; no physical-device certification',renderer:navigator.userAgent};
 } catch(error){return {ok:false,error:String(error),snapshots,layout,inputFocusFacts,documentFocusedNow:document.hasFocus()}}

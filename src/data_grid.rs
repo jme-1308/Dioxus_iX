@@ -868,14 +868,7 @@ fn use_grid_focus_lane(
             }
             context.state.write().applying = false;
             if let Some((id, select_all)) = selection {
-                // MountedData and typed SelectionData expose no selection setter
-                // in alpha.2. This primary adapter touches only the unique,
-                // explicitly mounted current editor; it never focuses or waits.
-                let task = crate::dom_query::eval(
-                    r#"const [id,all]=await dioxus.recv();const input=document.getElementById(id);if(input instanceof HTMLInputElement&&input.isConnected&&document.activeElement===input){if(all)input.select();else input.setSelectionRange(input.value.length,input.value.length);}"#,
-                );
-                let _ = task.send((id, select_all));
-                let _ = task.await;
+                let _ = crate::input_selection::select_focused_input_text(&id, select_all).await;
                 if !valid() {
                     return;
                 }

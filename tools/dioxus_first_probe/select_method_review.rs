@@ -149,8 +149,11 @@ await wait('saved descriptor focuses current input',()=>document.activeElement==
 for(const pressed of ['Home','End','ArrowLeft','ArrowRight']){if(key(input(),pressed).defaultPrevented)throw new Error('closed native editing key blocked '+pressed);}
 key(input(),'ArrowDown');await wait('ordinary opening',()=>input().getAttribute('aria-expanded')==='true');
 key(input(),'Enter');await wait('ordinary selection',()=>output().getAttribute('data-value')==='pump'&&input().getAttribute('aria-expanded')==='false');
-key(input(),'ArrowDown');await wait('reopen for Escape',()=>input().getAttribute('aria-expanded')==='true');key(input(),'Escape');await wait('Escape closes options',()=>input().getAttribute('aria-expanded')==='false');
-input().value='Fa';input().dispatchEvent(new Event('input',{bubbles:true}));await wait('ordinary text editing',()=>output().getAttribute('data-query')==='Fa');
+key(input(),'ArrowDown');await wait('reopen selects current display',()=>input().getAttribute('aria-expanded')==='true'&&document.activeElement===input()&&input().value.length>0&&input().selectionStart===0&&input().selectionEnd===input().value.length);
+const displaySelection={value:input().value,start:input().selectionStart,end:input().selectionEnd};
+key(input(),'Escape');await wait('Escape closes options',()=>input().getAttribute('aria-expanded')==='false');
+input().value='Fa';input().dispatchEvent(new Event('input',{bubbles:true}));await wait('ordinary text editing retains dirty-query caret',()=>output().getAttribute('data-query')==='Fa'&&input().getAttribute('aria-expanded')==='true'&&document.activeElement===input()&&input().selectionStart===2&&input().selectionEnd===2);
+const dirtyQuerySelection={value:input().value,start:input().selectionStart,end:input().selectionEnd};
 key(input(),'ArrowDown');await wait('edited option keyboard target',()=>!!input().getAttribute('aria-activedescendant'));key(input(),'Enter');await wait('edited option selected',()=>output().getAttribute('data-value')==='fan');
 const form=byId('r0231-form');
 form.name='equipment-registration';form.method='post';form.setAttribute('action','/work-orders?fixture=select-methods');
@@ -180,5 +183,5 @@ key(outside,'F8');await wait('fresh remount',()=>input()&&input()!==old);
 await run(()=>byId('r0231-saved-focus').click(),'descriptor','NotMounted');
 if(document.activeElement!==outside)throw new Error('old descriptor retargeted fresh input');
 await run(()=>byId('r0231-focus').click(),'controller','Ok');await wait('current controller focuses fresh input',()=>document.activeElement===input());
-return {ok:true,controllerResultAndActualFocus:true,alreadyFocusedRepeat:true,savedDescriptorFocus:true,normalBlur:true,staleDescriptorNotMounted:true,noRetargetAfterRemount:true,newControllerFocus:true,ordinarySelection:true,escapeAndEditing:true,associatedFormMetadata:true,freshNoValidate:true,removedOwnerReturnsNone:true,formQueryHasNoInteractionSideEffects:true};
+return {ok:true,controllerResultAndActualFocus:true,alreadyFocusedRepeat:true,savedDescriptorFocus:true,normalBlur:true,staleDescriptorNotMounted:true,noRetargetAfterRemount:true,newControllerFocus:true,ordinarySelection:true,escapeAndEditing:true,associatedFormMetadata:true,freshNoValidate:true,removedOwnerReturnsNone:true,formQueryHasNoInteractionSideEffects:true,displaySelection,dirtyQuerySelection};
 "#;

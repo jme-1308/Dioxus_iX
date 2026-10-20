@@ -76,6 +76,7 @@ mod icon_button_styles;
 pub mod icons;
 mod information_states;
 mod input_geometry;
+mod input_selection;
 mod input_styles;
 mod key_value;
 pub mod layout;

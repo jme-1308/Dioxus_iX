@@ -2679,16 +2679,9 @@ pub fn Select(
                     if !alive.get() || !*open.peek() || !select_text {
                         return;
                     }
-                    // Pinned MountedData exposes focus and geometry but has no
-                    // input selection/select-range API on either renderer.
-                    // This exception only selects text; it never moves focus.
                     #[cfg(any(feature = "web", feature = "desktop"))]
                     {
-                        let task = crate::dom_query::eval(
-                            "const id = await dioxus.recv(); const input = document.getElementById(id); if (input === document.activeElement) input.select(); return null;",
-                        );
-                        let _ = task.send(id);
-                        let _ = task.await;
+                        let _ = crate::input_selection::select_focused_input_text(&id, true).await;
                     }
                     #[cfg(not(any(feature = "web", feature = "desktop")))]
                     let _ = id;
