@@ -553,6 +553,18 @@ pub struct TooltipAnchorBinding {
     token: u64,
 }
 impl TooltipAnchorBinding {
+    // Composed native controls can own interaction while a separately mounted
+    // proxy supplies geometry. These reuse the same registered-anchor lifecycle.
+    pub(crate) fn show(&self) {
+        self.controller.enter(self.token);
+    }
+    pub(crate) fn hide(&self) {
+        self.controller.leave(Some(self.token));
+    }
+    pub(crate) fn refresh(&self) {
+        self.controller.measure();
+    }
+
     /// Merge the live panel ID with caller-owned tokens. After panel drop this
     /// removes only the tooltip's token; other descriptions retain their order.
     pub fn describedby(&self, existing: &str) -> Option<String> {

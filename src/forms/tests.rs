@@ -362,7 +362,7 @@ fn changing_feedback_mode(config: Rc<std::cell::Cell<(bool, bool)>>) -> Element 
         Input {id:"mode-input",show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode input helper".to_string())}
         Textarea {id:"mode-textarea",show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode textarea helper".to_string())}
         Select {id:"mode-select",options:vec![SelectOption::new("a","A")],show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode select helper".to_string())}
-        Slider {show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode slider helper".to_string())}
+        Slider {show_tooltip:false,show_text_as_tooltip:tooltip,helper_text:feedback.then(||"Mode slider helper".to_string())}
     }
 }
 
@@ -1446,4 +1446,9 @@ include!("../external_form_tests.rs");
 mod slider_content_tests {
     use super::*;
     include!("slider_content_tests.rs");
+}
+
+mod slider_value_tooltip_tests {
+    use super::*;
+    include!("slider_value_tooltip_tests.rs");
 }

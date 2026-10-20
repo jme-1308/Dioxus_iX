@@ -42,6 +42,7 @@ pub fn SliderLimitsExample() -> Element {
     let mut value = use_signal(|| 25.0);
     let mut note = use_signal(|| INITIAL_NOTE.to_string());
     let mut disabled = use_signal(|| false);
+    let mut show_tooltip = use_signal(|| true);
     let mut saved = use_signal(|| None::<SavedSetpoint>);
     let mut payload = use_signal(BTreeMap::<String, String>::new);
     let mut saves = use_signal(|| 0_usize);
@@ -55,6 +56,10 @@ pub fn SliderLimitsExample() -> Element {
             label { class: "slider-limits-disable",
                 input { id: "slider-limits-disabled", r#type: "checkbox", checked: disabled(), onchange: move |event: FormEvent| disabled.set(event.checked()) }
                 "Disable setpoint form"
+            }
+            label { class: "slider-limits-disable",
+                input { id: "slider-limits-show-tooltip", r#type: "checkbox", checked: show_tooltip(), onchange: move |event: FormEvent| show_tooltip.set(event.checked()) }
+                "Show current value tooltip"
             }
             form { id: "slider-limits-form", class: "slider-limits-form",
                 onsubmit: move |event: FormEvent| {
@@ -72,7 +77,7 @@ pub fn SliderLimitsExample() -> Element {
                     let count = resets.peek().saturating_add(1); resets.set(count);
                     feedback.set("Setpoint and note reset. The saved local record is retained.".into());
                 },
-                Slider { label: "Fan setpoint (%)", name: "setpoint", min: 0.0, max: 100.0, step: 5.0, value: value(), disabled: disabled(), show_value: true,
+                Slider { label: "Fan setpoint (%)", name: "setpoint", min: 0.0, max: 100.0, step: 5.0, value: value(), disabled: disabled(), show_value: true, show_tooltip: show_tooltip(),
                     label_start: "Idle setpoint", label_end: "Rated setpoint",
                     label_start_content: rsx! {
                         div { class: "slider-limits-endpoint",

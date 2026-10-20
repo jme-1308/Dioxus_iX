@@ -1444,8 +1444,8 @@ fn slider_bounds(min: f64, max: f64) -> (f64, f64) {
 
 /// Native range slider with source track, trace and numeric tick presentation.
 /// Values remain controlled. Native disabled/submission, finite-bound safeguards,
-/// marker captions and optional value output are Rust adapters. The existing
-/// value-tooltip renderer does not certify upstream floating/drag chronology.
+/// marker captions and optional value output are Rust adapters. The floating
+/// value tooltip uses the shared Dioxus tooltip anchored to the moving thumb.
 #[component]
 pub fn Slider(
     #[props(default)] value: f64,
@@ -1486,10 +1486,10 @@ pub fn Slider(
     let id = field_id(None);
     let anchor_id = format!("{id}-anchor");
     let feedback_id = format!("{id}-feedback");
+    let value_tooltip_id = format!("{id}-value-tooltip");
+    let thumb_id = format!("{id}-thumb");
     let (min, max) = slider_bounds(min, max);
     let value = bounded_slider_value(value, min, max);
-    let mut focused = use_signal(|| false);
-    let mut hovered = use_signal(|| false);
     let span = (max - min).max(f64::EPSILON);
     let fraction = (value - min) / span;
     let reference = (bounded_slider_value(trace_reference, min, max) - min) / span;
@@ -1522,7 +1522,23 @@ pub fn Slider(
     let feedback_present = feedback.is_some();
     let tooltip = crate::use_tooltip(feedback_id.clone());
     let tooltip_anchor = crate::use_tooltip_anchor(tooltip.clone(), anchor_id.clone());
-    let describedby = feedback_present.then(|| feedback_id.clone());
+    let value_tooltip = crate::use_tooltip(value_tooltip_id.clone());
+    let value_anchor = crate::use_tooltip_anchor(value_tooltip.clone(), thumb_id.clone());
+    let describedby = value_anchor.describedby(if feedback_present { &feedback_id } else { "" });
+    let refreshed_value_anchor = value_anchor.clone();
+    use_effect(use_reactive!(|value, fraction| {
+        // The controlled value moves the proxy without resizing it. Refresh
+        // after Dioxus patches that position, rather than polling while idle.
+        let _ = (value, fraction);
+        refreshed_value_anchor.refresh();
+    }));
+    let pointer_enter = value_anchor.clone();
+    let pointer_leave = value_anchor.clone();
+    let pointer_down = value_anchor.clone();
+    let focused_value = value_anchor.clone();
+    let blurred_value = value_anchor.clone();
+    let input_value = value_anchor.clone();
+    let keyed_value = value_anchor.clone();
     let captions: Vec<_> = markers
         .iter()
         .filter(|marker| marker.value >= min && marker.value <= max && !marker.label.is_empty())
@@ -1542,9 +1558,10 @@ pub fn Slider(
                     onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
                     onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout, onkeydown: tooltip_anchor.onkeydown,
                     div { class: "ix-slider-control",
-                        onmouseenter: move |_| hovered.set(true), onmouseleave: move |_| hovered.set(false),
                         div { class: "ix-slider-track",
-                            div { class: "ix-slider-thumb-anchor", style: "left:calc({fraction} * (100% - var(--thumb-size)))" }
+                            div { id: thumb_id, class: "ix-slider-thumb-anchor", style: "left:calc({fraction} * (100% - var(--thumb-size)))", aria_hidden: true,
+                                onmounted: value_anchor.onmounted, onresize: value_anchor.onresize, onvisible: value_anchor.onvisible,
+                            }
                             svg { class: "ix-slider-ticks", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": "true",
                                 for marker in markers.iter().filter(|marker| marker.value >= min && marker.value <= max) {
                                     circle { class: "ix-slider-tick",
@@ -1567,11 +1584,24 @@ pub fn Slider(
                             "aria-describedby": describedby,
                             list: has_markers.then_some("markers"),
                             style: "--value:{fraction};--trace-reference:{reference};--trace-start:{start};--trace-end:{end}",
-                            oninput: move |event| if !disabled { if let Ok(value) = event.value().parse::<f64>() { onvaluechange.call(bounded_slider_value(value, min, max)); } },
-                            onfocus: move |_| focused.set(true), onblur: move |_| focused.set(false),
+                            oninput: move |event| if !disabled {
+                                if show_tooltip { input_value.show(); }
+                                if let Ok(value) = event.value().parse::<f64>() { onvaluechange.call(bounded_slider_value(value, min, max)); }
+                            },
+                            onfocus: move |_| { if show_tooltip && !disabled { focused_value.show(); } },
+                            onblur: move |_| blurred_value.hide(),
+                            onpointerenter: move |_| { if show_tooltip && !disabled { pointer_enter.show(); } },
+                            onpointerleave: move |_| pointer_leave.hide(),
+                            onpointerdown: move |_| { if show_tooltip && !disabled { pointer_down.show(); } },
+                            onkeydown: move |event: KeyboardEvent| {
+                                if show_tooltip && !disabled && matches!(event.key(), Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End | Key::PageUp | Key::PageDown) { keyed_value.show(); }
+                                keyed_value.onkeydown.call(event);
+                            },
                         }
-                        if show_tooltip && !disabled && (focused() || hovered()) {
-                            output { class: "ix-slider-tooltip", style: "left:calc({fraction} * (100% - var(--thumb-size)) + var(--thumb-size) / 2)", "aria-hidden": "true", "{value}" }
+                        if show_tooltip && !disabled {
+                            crate::TooltipFor { id: value_tooltip_id, controller: value_tooltip, placement: crate::TooltipPlacement::Top,
+                                show_delay: 0, hide_delay: 0, class: "ix-slider-value-tooltip", "{value}"
+                            }
                         }
                     }
                     if has_endpoints {
