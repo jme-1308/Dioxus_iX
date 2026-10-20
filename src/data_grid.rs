@@ -1,9 +1,9 @@
 //! A controlled Rust data grid for the iX AG Grid example's community features.
 //!
-//! This implements sorting, text filtering, filtered multi-selection, column
+//! This implements typed sorting/filtering, filtered multi-selection, column
 //! resizing, content autosizing and stable-ID row/column movement. It is an independent Dioxus component;
 //! it does not embed the AG Grid JavaScript engine or implement its plugin API.
-use crate::{DataGridCellContext, DataGridCellEditor, DataGridCellRender, Icon};
+use crate::{DataGridCellContext, DataGridCellEditor, DataGridCellRender, DataGridValueType, Icon};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -22,6 +22,8 @@ pub struct DataGridColumn {
     pub title: String,
     pub sortable: bool,
     pub filterable: bool,
+    /// Interpretation for sorting and filtering, independent of the editor kind.
+    pub value_type: DataGridValueType,
     pub resizable: bool,
     /// Allow header dragging and Alt+Left / Alt+Right column movement.
     pub reorderable: bool,
@@ -43,6 +45,7 @@ impl DataGridColumn {
             title: title.into(),
             sortable: false,
             filterable: false,
+            value_type: DataGridValueType::Text,
             resizable: true,
             reorderable: true,
             row_drag: false,
@@ -180,7 +183,7 @@ fn next_editable_cell(
     column: &str,
     backwards: bool,
 ) -> Option<(String, String)> {
-    let displayed = state.visible_rows(rows);
+    let displayed = state.visible_rows_with_columns(rows, columns);
     let columns = state.ordered_columns(columns);
     let current_row = displayed.iter().position(|item| item.id == row)?;
     let current_column = columns.iter().position(|item| item.id == column)?;
@@ -232,7 +235,7 @@ fn finish_edit(
     )
 }
 
-/// Case-insensitive text filter conditions, matching the source grid's text filter.
+/// Filter operations for text and explicitly numeric columns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DataGridFilterOperator {
     #[default]
@@ -242,6 +245,10 @@ pub enum DataGridFilterOperator {
     NotEqual,
     StartsWith,
     EndsWith,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
     Blank,
     NotBlank,
 }
@@ -256,6 +263,22 @@ impl DataGridFilterOperator {
         Self::Blank,
         Self::NotBlank,
     ];
+    const NUMBER: [Self; 8] = [
+        Self::Equals,
+        Self::NotEqual,
+        Self::LessThan,
+        Self::LessThanOrEqual,
+        Self::GreaterThan,
+        Self::GreaterThanOrEqual,
+        Self::Blank,
+        Self::NotBlank,
+    ];
+    fn choices(value_type: DataGridValueType) -> &'static [Self] {
+        match value_type {
+            DataGridValueType::Text => &Self::ALL,
+            DataGridValueType::Number => &Self::NUMBER,
+        }
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Contains => "Contains",
@@ -264,6 +287,10 @@ impl DataGridFilterOperator {
             Self::NotEqual => "Does not equal",
             Self::StartsWith => "Begins with",
             Self::EndsWith => "Ends with",
+            Self::LessThan => "Less than",
+            Self::LessThanOrEqual => "Less than or equal",
+            Self::GreaterThan => "Greater than",
+            Self::GreaterThanOrEqual => "Greater than or equal",
             Self::Blank => "Blank",
             Self::NotBlank => "Not blank",
         }
@@ -276,6 +303,10 @@ impl DataGridFilterOperator {
             Self::NotEqual => "notEqual",
             Self::StartsWith => "startsWith",
             Self::EndsWith => "endsWith",
+            Self::LessThan => "lessThan",
+            Self::LessThanOrEqual => "lessThanOrEqual",
+            Self::GreaterThan => "greaterThan",
+            Self::GreaterThanOrEqual => "greaterThanOrEqual",
             Self::Blank => "blank",
             Self::NotBlank => "notBlank",
         }
@@ -283,6 +314,7 @@ impl DataGridFilterOperator {
     fn from_token(value: &str) -> Self {
         Self::ALL
             .into_iter()
+            .chain(Self::NUMBER)
             .find(|operator| operator.token() == value)
             .unwrap_or_default()
     }
@@ -301,26 +333,18 @@ impl DataGridFilterCondition {
     pub fn is_active(&self) -> bool {
         !self.operator.needs_value() || !self.value.is_empty()
     }
+    /// Match using the backward-compatible case-insensitive text interpretation.
     pub fn matches(&self, value: &str) -> bool {
-        if !self.is_active() {
-            return true;
-        }
-        let text = value.to_lowercase();
-        let query = self.value.to_lowercase();
-        match self.operator {
-            DataGridFilterOperator::Contains => text.contains(&query),
-            DataGridFilterOperator::NotContains => !text.contains(&query),
-            DataGridFilterOperator::Equals => text == query,
-            DataGridFilterOperator::NotEqual => text != query,
-            DataGridFilterOperator::StartsWith => text.starts_with(&query),
-            DataGridFilterOperator::EndsWith => text.ends_with(&query),
-            DataGridFilterOperator::Blank => text.trim().is_empty(),
-            DataGridFilterOperator::NotBlank => !text.trim().is_empty(),
-        }
+        self.matches_with_type(value, DataGridValueType::Text)
+    }
+    /// Match using the column's explicit interpretation without changing stored values.
+    pub fn matches_with_type(&self, value: &str, value_type: DataGridValueType) -> bool {
+        value_type.matches(value, self)
     }
 }
 
 /// Two filter conditions combine with AND by default, or OR when `match_any` is true.
+/// The historical name is retained; `matches_with_type` also supports numeric columns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DataGridTextFilter {
     pub first: DataGridFilterCondition,
@@ -331,15 +355,23 @@ impl DataGridTextFilter {
     pub fn is_active(&self) -> bool {
         self.first.is_active() || self.second.is_active()
     }
+    /// Match using the backward-compatible text interpretation.
     pub fn matches(&self, value: &str) -> bool {
+        self.matches_with_type(value, DataGridValueType::Text)
+    }
+    pub fn matches_with_type(&self, value: &str, value_type: DataGridValueType) -> bool {
         match (self.first.is_active(), self.second.is_active()) {
             (false, false) => true,
-            (true, false) => self.first.matches(value),
-            (false, true) => self.second.matches(value),
+            (true, false) => self.first.matches_with_type(value, value_type),
+            (false, true) => self.second.matches_with_type(value, value_type),
             (true, true) if self.match_any => {
-                self.first.matches(value) || self.second.matches(value)
+                self.first.matches_with_type(value, value_type)
+                    || self.second.matches_with_type(value, value_type)
             }
-            (true, true) => self.first.matches(value) && self.second.matches(value),
+            (true, true) => {
+                self.first.matches_with_type(value, value_type)
+                    && self.second.matches_with_type(value, value_type)
+            }
         }
     }
 }
@@ -417,13 +449,30 @@ impl DataGridState {
         self.column_order = ids;
         true
     }
+    /// Legacy text projection. Use `visible_rows_with_columns` for typed columns.
     pub fn visible_rows<'a>(&self, rows: &'a [DataGridRow]) -> Vec<&'a DataGridRow> {
+        self.visible_rows_with_columns(rows, &[])
+    }
+    /// Filter and stably sort by the supplied columns' value types. Unknown column
+    /// IDs retain text semantics. Equal values retain the managed/input row order.
+    pub fn visible_rows_with_columns<'a>(
+        &self,
+        rows: &'a [DataGridRow],
+        columns: &[DataGridColumn],
+    ) -> Vec<&'a DataGridRow> {
+        let value_type = |id: &str| {
+            columns
+                .iter()
+                .find(|column| column.id == id)
+                .map(|column| column.value_type)
+                .unwrap_or_default()
+        };
         let mut visible: Vec<_> = rows
             .iter()
             .filter(|row| {
-                self.filters
-                    .iter()
-                    .all(|(column, filter)| filter.matches(row.value(column)))
+                self.filters.iter().all(|(column, filter)| {
+                    filter.matches_with_type(row.value(column), value_type(column))
+                })
             })
             .collect();
         let ranks: BTreeMap<_, _> = self
@@ -434,17 +483,9 @@ impl DataGridState {
             .collect();
         visible.sort_by_key(|row| ranks.get(row.id.as_str()).copied().unwrap_or(usize::MAX));
         if let Some((column, direction)) = &self.sort {
-            visible.sort_by(|a, b| {
-                let order = a
-                    .value(column)
-                    .to_lowercase()
-                    .cmp(&b.value(column).to_lowercase());
-                if *direction == DataGridSortDirection::Descending {
-                    order.reverse()
-                } else {
-                    order
-                }
-            });
+            let value_type = value_type(column);
+            visible
+                .sort_by(|a, b| value_type.compare(a.value(column), b.value(column), *direction));
         }
         visible
     }
@@ -459,8 +500,17 @@ impl DataGridState {
     }
     /// Select or deselect visible rows. Hidden selections remain unchanged.
     pub fn select_filtered(&mut self, rows: &[DataGridRow], checked: bool) {
+        self.select_filtered_with_columns(rows, &[], checked);
+    }
+    /// Select the typed filtered result, preserving selections hidden by filters.
+    pub fn select_filtered_with_columns(
+        &mut self,
+        rows: &[DataGridRow],
+        columns: &[DataGridColumn],
+        checked: bool,
+    ) {
         let ids: Vec<_> = self
-            .visible_rows(rows)
+            .visible_rows_with_columns(rows, columns)
             .into_iter()
             .map(|row| row.id.clone())
             .collect();
@@ -481,7 +531,18 @@ impl DataGridState {
         checked: bool,
         extend_range: bool,
     ) {
-        let visible = self.visible_rows(rows);
+        self.select_row_with_columns(rows, &[], id, checked, extend_range);
+    }
+    /// Select a row or range using the typed, displayed row order.
+    pub fn select_row_with_columns(
+        &mut self,
+        rows: &[DataGridRow],
+        columns: &[DataGridColumn],
+        id: &str,
+        checked: bool,
+        extend_range: bool,
+    ) {
+        let visible = self.visible_rows_with_columns(rows, columns);
         let Some(index) = visible.iter().position(|row| row.id == id) else {
             return;
         };
@@ -512,7 +573,15 @@ impl DataGridState {
     /// `(all, mixed)` describes only the currently visible rows. An empty result
     /// is unchecked and cannot be selected by the header control.
     pub fn filtered_selection(&self, rows: &[DataGridRow]) -> (bool, bool) {
-        let visible = self.visible_rows(rows);
+        self.filtered_selection_with_columns(rows, &[])
+    }
+    /// `(all, mixed)` for the typed filtered result, excluding hidden selections.
+    pub fn filtered_selection_with_columns(
+        &self,
+        rows: &[DataGridRow],
+        columns: &[DataGridColumn],
+    ) -> (bool, bool) {
+        let visible = self.visible_rows_with_columns(rows, columns);
         let checked = visible
             .iter()
             .filter(|row| self.selected.contains(&row.id))
@@ -1256,7 +1325,7 @@ pub fn DataGrid(
         .collect();
     let visible = Rc::new(
         state
-            .visible_rows(&rows)
+            .visible_rows_with_columns(&rows, &columns)
             .into_iter()
             .cloned()
             .collect::<Vec<_>>(),
@@ -1479,7 +1548,7 @@ pub fn DataGrid(
     let edit_state = state.clone();
     let edit_action = EventHandler::new(move |action: GridEditAction| {
         let reveal = |session: &GridEditSession, records: &[DataGridRow], editor: bool| {
-            let displayed = edit_state.visible_rows(records);
+            let displayed = edit_state.visible_rows_with_columns(records, &edit_columns);
             if let Some(index) = displayed.iter().position(|row| row.id == session.row) {
                 reveal_grid_row(
                     focus_context,
@@ -1579,7 +1648,7 @@ pub fn DataGrid(
                         if let Some((row, column)) = next {
                             if let Some(record) = projected.iter().find(|record| record.id == row) {
                                 if edit_state
-                                    .visible_rows(&projected)
+                                    .visible_rows_with_columns(&projected, &edit_columns)
                                     .iter()
                                     .any(|record| record.id == row)
                                 {
@@ -1604,11 +1673,12 @@ pub fn DataGrid(
             }
         }
     });
-    let (checked, mixed) = state.filtered_selection(&rows);
+    let (checked, mixed) = state.filtered_selection_with_columns(&rows, &columns);
     let template = grid_template(&columns, &state, resizing.read().as_ref());
     let min_width = grid_min_width(&columns, &state, resizing.read().as_ref());
     let header_state = state.clone();
     let header_rows = rows.clone();
+    let header_columns = columns.clone();
     let resize_state = state.clone();
     let hit_autosize = autosize.clone();
     let measured_autosize = autosize.clone();
@@ -1631,7 +1701,7 @@ pub fn DataGrid(
                     div { class: "ix-data-grid-selection", role: "columnheader",
                         GridCheckbox { label: "Select all filtered rows", checked, mixed, disabled: visible_count == 0,
                             onmounted: header_mount, onfocus: move |_| focus_context.focused(None),
-                            onchange: move |_| { let mut next = header_state.clone(); next.select_filtered(&header_rows, !checked); onstatechange.call(next); },
+                            onchange: move |_| { let mut next = header_state.clone(); next.select_filtered_with_columns(&header_rows, &header_columns, !checked); onstatechange.call(next); },
                         }
                     }
                     for column in columns.iter().cloned() {
@@ -1645,7 +1715,7 @@ pub fn DataGrid(
                         }
                     }
                 }
-                if state.visible_rows(&rows).is_empty() { div { class: "ix-data-grid-empty", role: "status", "No Rows To Show" } }
+                if visible_count == 0 { div { class: "ix-data-grid-empty", role: "status", "No Rows To Show" } }
             }
             if let Some(request)=autosize.pending.read().clone() {
                 GridAutosizeProbe {key:"{request.serial}",request:request.clone(),onmeasure:{let context=measured_autosize.clone();move |width|context.complete(request.serial,width,onstatechange)}}
@@ -1918,7 +1988,20 @@ fn GridFilterInput(
     second: bool,
     onstatechange: EventHandler<DataGridState>,
 ) -> Element {
-    let filter = state.filters.get(&column.id).cloned().unwrap_or_default();
+    let mut filter = state.filters.get(&column.id).cloned().unwrap_or_default();
+    if column.value_type == DataGridValueType::Number {
+        for condition in [&mut filter.first, &mut filter.second] {
+            if !condition.is_active() && condition.operator == DataGridFilterOperator::Contains {
+                condition.operator = DataGridFilterOperator::Equals;
+            }
+        }
+    }
+    let operators = DataGridFilterOperator::choices(column.value_type);
+    let input_type = if column.value_type == DataGridValueType::Number {
+        "number"
+    } else {
+        "text"
+    };
     let condition = if second {
         filter.second.clone()
     } else {
@@ -1938,9 +2021,9 @@ fn GridFilterInput(
                 condition.operator = DataGridFilterOperator::from_token(&event.value());
                 let mut next = operator_state.clone(); next.filters.insert(operator_column.clone(), filter); onstatechange.call(next);
             },
-            for operator in DataGridFilterOperator::ALL { option { value: operator.token(), selected: operator == condition.operator, "{operator.label()}" } }
+            for operator in operators.iter().copied() { option { value: operator.token(), selected: operator == condition.operator, "{operator.label()}" } }
         }
-        if condition.operator.needs_value() { input { r#type: "text", value: condition.value, placeholder: "Filter...", autofocus: !second, "aria-label": "{column.title} filter value {number}",
+        if condition.operator.needs_value() { input { r#type: input_type, step: if input_type == "number" { Some("any") } else { None }, value: condition.value, placeholder: "Filter...", autofocus: !second, "aria-label": "{column.title} filter value {number}",
             oninput: move |event: FormEvent| {
                 let mut filter = text_filter.clone(); let condition = if second { &mut filter.second } else { &mut filter.first }; condition.value = event.value();
                 let mut next = text_state.clone(); next.filters.insert(text_column.clone(), filter); onstatechange.call(next);
@@ -1981,8 +2064,10 @@ fn GridRecord(
         .map(|column| row.value(column))
         .unwrap_or(&row.id)
         .to_string();
+    let cell_columns = Rc::new(columns.clone());
     let select_state = state.clone();
     let select_rows = rows.clone();
+    let select_columns = columns.clone();
     let select_id = row.id.clone();
     let drop_state = state.clone();
     let drop_rows = rows.clone();
@@ -2029,11 +2114,11 @@ fn GridRecord(
         div { class: "ix-data-grid-selection", role: "gridcell", GridCheckbox { label: format!("Select {row_label}"), checked: selected,
             onmounted: selection_mount,
             onfocus: move |_| { let focus = GridFocus {row:focus_id.clone(),lane:GridLane::Selection}; focus_context.focused(Some(focus.clone())); focused.set(Some(focus)); if editing.peek().is_some() { edit_action.call(GridEditAction::Commit { tab:None, restore_focus:false }); } },
-            onchange: move |event: MouseEvent| { let mut next = select_state.as_ref().clone(); next.select_row(&select_rows, &select_id, !selected, event.modifiers().shift()); onstatechange.call(next); },
+            onchange: move |event: MouseEvent| { let mut next = select_state.as_ref().clone(); next.select_row_with_columns(&select_rows, &select_columns, &select_id, !selected, event.modifiers().shift()); onstatechange.call(next); },
         } }
-        for (column_index, column) in columns.into_iter().enumerate() {
+        for (column_index, column) in columns.iter().cloned().enumerate() {
             GridCell { key: "{column.id}", text: row.value(&column.id).to_string(), tooltip: row.tooltips.get(&column.id).cloned().unwrap_or_else(|| row.value(&column.id).to_string()),
-                column: column.clone(), row_id: row.id.clone(), row_label: row_label.clone(), rows: rows.clone(), state: state.clone(),
+                column: column.clone(), columns: cell_columns.clone(), row_id: row.id.clone(), row_label: row_label.clone(), rows: rows.clone(), state: state.clone(),
                 onstatechange, dragging, drop_target, tooltip_delay_ms, focused, suppress_cell_focus, entry_cell: entry_row && column_index == 0, editing, edit_action, editable: editable_cell(&row,&column,read_only),
                 render_cell,
                 render_context: render_cell.map(|_| DataGridCellContext {
@@ -2051,6 +2136,7 @@ fn GridCell(
     text: String,
     tooltip: String,
     column: DataGridColumn,
+    #[props(default)] columns: Rc<Vec<DataGridColumn>>,
     row_id: String,
     row_label: String,
     rows: Rc<Vec<DataGridRow>>,
@@ -2138,6 +2224,7 @@ fn GridCell(
     }
     let select_state = state.clone();
     let select_rows = rows.clone();
+    let select_columns = columns.clone();
     let select_id = row_id.clone();
     let custom = if session.is_none() {
         render_cell.and_then(|render| render_context.and_then(|context| render.call(context)))
@@ -2178,7 +2265,7 @@ fn GridCell(
             }
             if event.key() == Key::Escape { let next = generation.peek().wrapping_add(1); generation.set(next); show_tooltip.set(false); }
             if !suppress_cell_focus && event.key() == Key::Character(" ".into()) && focused.peek().as_ref().is_some_and(|focus| matches!(focus.lane,GridLane::Cell(_))) {
-                event.prevent_default(); event.stop_propagation(); let mut next=select_state.as_ref().clone(); let checked=!next.selected.contains(&select_id); next.select_row(&select_rows,&select_id,checked,event.modifiers().shift()); onstatechange.call(next);
+                event.prevent_default(); event.stop_propagation(); let mut next=select_state.as_ref().clone(); let checked=!next.selected.contains(&select_id); next.select_row_with_columns(&select_rows,&select_columns,&select_id,checked,event.modifiers().shift()); onstatechange.call(next);
             }
         },
         if column.row_drag { button { onmounted: drag_mount, class: "ix-data-grid-drag", r#type: "button", draggable: can_reorder.to_string(), disabled: !can_reorder,
@@ -2189,7 +2276,7 @@ fn GridCell(
             onkeydown: move |event: KeyboardEvent| {
                 if can_reorder && event.modifiers().alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
                     event.prevent_default(); event.stop_propagation();
-                    let ids: Vec<_> = state.visible_rows(&rows).into_iter().map(|row| row.id.clone()).collect();
+                    let ids: Vec<_> = state.visible_rows_with_columns(&rows, &columns).into_iter().map(|row| row.id.clone()).collect();
                     if let Some(index) = ids.iter().position(|id| *id == key_id) {
                         let down = event.key() == Key::ArrowDown;
                         let adjacent = if down { index.checked_add(1).and_then(|next| ids.get(next)) } else { index.checked_sub(1).and_then(|next| ids.get(next)) };
@@ -4044,5 +4131,234 @@ mod tests {
         assert!(html.contains("Select Equipment"));
         assert!(html.contains("Move Equipment"));
         assert!(!html.contains("Select 2.0"));
+    }
+    fn numeric_column() -> DataGridColumn {
+        let mut column = edit_column("units");
+        column.title = "Units".into();
+        column.value_type = DataGridValueType::Number;
+        column.sortable = true;
+        column.filterable = true;
+        column.cell_editor = DataGridCellEditor::Number(crate::DataGridNumberEditor::default());
+        column
+    }
+    fn numeric_rows() -> Vec<DataGridRow> {
+        [
+            ("a", "2.5"),
+            ("b", "10"),
+            ("c", "2"),
+            ("d", ""),
+            ("e", "pending"),
+            ("f", "2.0"),
+        ]
+        .into_iter()
+        .map(|(id, value)| DataGridRow::new(id).cell("units", value))
+        .collect()
+    }
+    fn numeric_less_than(value: &str) -> DataGridTextFilter {
+        DataGridTextFilter {
+            first: DataGridFilterCondition {
+                operator: DataGridFilterOperator::LessThan,
+                value: value.into(),
+            },
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn numeric_projection_and_selection_share_display_order_and_preserve_hidden_ids() {
+        let rows = numeric_rows();
+        let columns = vec![numeric_column()];
+        let mut state = DataGridState {
+            sort: Some(("units".into(), DataGridSortDirection::Ascending)),
+            row_order: vec!["f".into(), "c".into()],
+            ..Default::default()
+        };
+        let ids = |state: &DataGridState| {
+            state
+                .visible_rows_with_columns(&rows, &columns)
+                .into_iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&state), ["f", "c", "a", "b", "d", "e"]);
+        state.select_row_with_columns(&rows, &columns, "c", true, false);
+        state.select_row_with_columns(&rows, &columns, "b", true, true);
+        assert_eq!(
+            state.selected,
+            BTreeSet::from(["a".into(), "b".into(), "c".into()])
+        );
+        state.sort = Some(("units".into(), DataGridSortDirection::Descending));
+        assert_eq!(ids(&state), ["b", "a", "f", "c", "d", "e"]);
+        state.select_row_with_columns(&rows, &columns, "b", true, false);
+        state
+            .filters
+            .insert("units".into(), numeric_less_than("10"));
+        assert_eq!(ids(&state), ["a", "f", "c"]);
+        assert_eq!(
+            state.filtered_selection_with_columns(&rows, &columns),
+            (false, true)
+        );
+        state.select_filtered_with_columns(&rows, &columns, true);
+        assert_eq!(
+            state.filtered_selection_with_columns(&rows, &columns),
+            (true, false)
+        );
+        state.select_filtered_with_columns(&rows, &columns, false);
+        assert_eq!(
+            state.selected,
+            BTreeSet::from(["b".into()]),
+            "hidden selection survives header deselection"
+        );
+        state.select_row_with_columns(&rows, &columns, "a", true, true);
+        assert_eq!(
+            state.selection_anchor.as_deref(),
+            Some("a"),
+            "filtered-out anchor starts a new range"
+        );
+        assert_eq!(state.selected, BTreeSet::from(["a".into(), "b".into()]));
+        state.filters.clear();
+        state.sort = Some(("units".into(), DataGridSortDirection::Ascending));
+        assert_eq!(
+            state
+                .visible_rows(&rows)
+                .into_iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["d", "b", "c", "f", "a", "e"],
+            "legacy projection retains case-insensitive text sorting"
+        );
+        assert_eq!(
+            DataGridColumn::new("units", "Units").value_type,
+            DataGridValueType::Text
+        );
+    }
+    #[test]
+    fn numeric_edits_reproject_without_losing_id_or_typed_edit_traversal() {
+        let mut rows = numeric_rows();
+        rows.iter_mut()
+            .find(|row| row.id == "f")
+            .unwrap()
+            .read_only_cells
+            .insert("units".into());
+        let columns = vec![numeric_column()];
+        let mut state = DataGridState {
+            sort: Some(("units".into(), DataGridSortDirection::Ascending)),
+            selected: BTreeSet::from(["c".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            next_editable_cell(&rows, &columns, &state, "c", "units", false),
+            Some(("a".into(), "units".into()))
+        );
+        assert_eq!(
+            next_editable_cell(&rows, &columns, &state, "a", "units", true),
+            Some(("c".into(), "units".into())),
+            "read-only equal-value row is skipped"
+        );
+        let change = finish_edit(
+            &edit_session("c", "units", "2", "12"),
+            &rows,
+            &columns,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(change.apply_to(&mut rows));
+        assert_eq!(
+            state
+                .visible_rows_with_columns(&rows, &columns)
+                .into_iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["f", "a", "b", "c", "d", "e"]
+        );
+        state
+            .filters
+            .insert("units".into(), numeric_less_than("10"));
+        assert_eq!(
+            state
+                .visible_rows_with_columns(&rows, &columns)
+                .into_iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["f", "a"]
+        );
+        assert!(
+            state.selected.contains("c"),
+            "editing out of a numeric filter preserves stable selection"
+        );
+        assert_eq!(
+            state.filtered_selection_with_columns(&rows, &columns),
+            (false, false)
+        );
+        assert_eq!(
+            next_editable_cell(&rows, &columns, &state, "a", "units", true),
+            None
+        );
+    }
+    #[test]
+    fn typed_filters_compose_and_or_without_changing_legacy_text_matching() {
+        let mut filter = numeric_less_than("2.5");
+        filter.second = DataGridFilterCondition {
+            operator: DataGridFilterOperator::GreaterThanOrEqual,
+            value: "10".into(),
+        };
+        assert!(!filter.matches_with_type("2", DataGridValueType::Number));
+        filter.match_any = true;
+        assert!(filter.matches_with_type("2e0", DataGridValueType::Number));
+        assert!(filter.matches_with_type("10.0", DataGridValueType::Number));
+        assert!(!filter.matches_with_type("5", DataGridValueType::Number));
+        assert!(!filter.matches_with_type("pending", DataGridValueType::Number));
+        assert!(!filter.matches_with_type("", DataGridValueType::Number));
+        assert!(
+            !filter.matches("2"),
+            "numeric operators are unsupported for legacy text matching"
+        );
+        let equals = DataGridFilterCondition {
+            operator: DataGridFilterOperator::Equals,
+            value: "2.0".into(),
+        };
+        assert!(equals.matches_with_type("2", DataGridValueType::Number));
+        assert!(!equals.matches("2"));
+        assert!(
+            DataGridFilterCondition::default()
+                .matches_with_type("pending", DataGridValueType::Number)
+        );
+    }
+    #[test]
+    fn numeric_filter_popup_has_supported_operators_and_native_number_input() {
+        fn numeric_probe() -> Element {
+            rsx! { GridFilterInput { column: numeric_column(), state: DataGridState::default(), second: false, onstatechange: move |_| {} } }
+        }
+        fn text_probe() -> Element {
+            rsx! { GridFilterInput { column: DataGridColumn::new("asset", "Asset"), state: DataGridState::default(), second: false, onstatechange: move |_| {} } }
+        }
+        let mut numeric = VirtualDom::new(numeric_probe);
+        numeric.rebuild_in_place();
+        let html = dioxus_ssr::render(&numeric);
+        assert_eq!(html.matches("<option").count(), 8);
+        assert!(html.contains("type=\"number\"") && html.contains("step=\"any\""));
+        assert!(html.contains("aria-label=\"Units filter value 1\""));
+        for token in [
+            "equals",
+            "notEqual",
+            "lessThan",
+            "lessThanOrEqual",
+            "greaterThan",
+            "greaterThanOrEqual",
+            "blank",
+            "notBlank",
+        ] {
+            assert!(
+                html.contains(&format!("value=\"{token}\"")),
+                "missing numeric operator {token}"
+            );
+        }
+        assert!(!html.contains("value=\"contains\""));
+        let mut text = VirtualDom::new(text_probe);
+        text.rebuild_in_place();
+        let html = dioxus_ssr::render(&text);
+        assert_eq!(html.matches("<option").count(), 8);
+        assert!(html.contains("type=\"text\"") && html.contains("value=\"contains\""));
+        assert!(!html.contains("lessThan") && !html.contains("step="));
     }
 }
