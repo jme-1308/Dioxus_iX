@@ -495,70 +495,10 @@ pub fn Tabs(
     } }
 }
 
-/// Stable breadcrumb definition for managed truncation and next-item menus.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BreadcrumbEntry {
-    pub key: String,
-    pub label: String,
-    pub icon: Option<String>,
-    pub href: Option<String>,
-}
-impl BreadcrumbEntry {
-    pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            key: key.into(),
-            label: label.into(),
-            icon: None,
-            href: None,
-        }
-    }
-}
-fn hidden_breadcrumb_count(count: usize, visible: usize) -> usize {
-    count.saturating_sub(visible.max(1))
-}
-/// Ordered breadcrumb navigation. Pass `items` for managed truncation/next menus,
-/// or compose children and mark the final [`BreadcrumbItem`] as `current`.
-#[component]
-pub fn Breadcrumb(
-    #[props(default = VNode::empty())] children: Element,
-    #[props(default = "Breadcrumb".to_string())] label: String,
-    #[props(default)] items: Vec<BreadcrumbEntry>,
-    #[props(default)] next_items: Vec<BreadcrumbEntry>,
-    #[props(default = 9)] visible_item_count: usize,
-    #[props(default)] onitem: EventHandler<BreadcrumbEntry>,
-    #[props(default)] onnext: EventHandler<BreadcrumbEntry>,
-) -> Element {
-    let hidden = hidden_breadcrumb_count(items.len(), visible_item_count);
-    rsx! { nav { class: "ix-breadcrumb", "aria-label": label, ol {
-        if hidden > 0 { li { crate::Dropdown { label: "...", aria_label: "Show previous breadcrumb items", variant: crate::ButtonVariant::Tertiary,
-            for item in items.iter().take(hidden) { crate::DropdownItem { label: item.label.clone(), onclick: { let item = item.clone(); move |_| onitem.call(item.clone()) } } }
-        } } }
-        for (index, item) in items.iter().enumerate().skip(hidden) {
-            if index + 1 == items.len() && !next_items.is_empty() { li { crate::Dropdown { label: item.label.clone(), aria_label: "Show next breadcrumb items", variant: crate::ButtonVariant::Tertiary,
-                for next in &next_items { crate::DropdownItem { label: next.label.clone(), onclick: { let next = next.clone(); move |_| onnext.call(next.clone()) } } }
-            } } }
-            else { BreadcrumbItem { label: item.label.clone(), icon: item.icon.clone(), href: item.href.clone(), current: index + 1 == items.len(), onclick: { let item = item.clone(); move |_| onitem.call(item.clone()) } } }
-        }
-        {children}
-    } } }
-}
-
-/// Breadcrumb link or application navigation action.
-#[component]
-pub fn BreadcrumbItem(
-    label: String,
-    #[props(default)] href: Option<String>,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] current: bool,
-    #[props(default)] onclick: EventHandler<MouseEvent>,
-) -> Element {
-    rsx! { li { class: "ix-breadcrumb-item",
-        if current { span { "aria-current": "page", if let Some(icon) = icon { Icon { name: icon, size: 16 } } "{label}" } }
-        else if let Some(href) = href { a { href, onclick: move |event| onclick.call(event), if let Some(icon) = icon { Icon { name: icon, size: 16 } } "{label}" } }
-        else { button { r#type: "button", onclick: move |event| onclick.call(event), if let Some(icon) = icon { Icon { name: icon, size: 16 } } "{label}" } }
-        span { class: "ix-breadcrumb-separator", "aria-hidden": "true", Icon { name: "chevron-right", size: 16 } }
-    } }
-}
+pub use crate::breadcrumb::{
+    Breadcrumb, BreadcrumbEntry, BreadcrumbItem, BreadcrumbItemProps, BreadcrumbLabels,
+    BreadcrumbNavigateEvent, BreadcrumbNavigationSource, BreadcrumbProps,
+};
 
 pub use crate::pagination::{Pagination, PaginationChangeEvent, PaginationLabels, PaginationProps};
 
@@ -1225,6 +1165,8 @@ pub(crate) const STYLES: &str = r#"
 @media(prefers-reduced-motion:reduce){.ix-chevron{transition:none}}
 .ix-card-list-item{width:320px;max-width:100%;min-width:0;flex-shrink:0}.ix-card-list-item[hidden]{display:none}.ix-card-list-item:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-card-list-more{width:320px;max-width:100%;min-width:0;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px 16px;min-height:160px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:transparent;color:var(--ix-color-text);font:inherit;text-align:center;cursor:pointer}.ix-card-list-more:hover{background:var(--ix-color-surface-2)}.ix-card-list-more:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-card-list-more>.ix-icon{width:32px;height:32px}
 
+.ix-breadcrumb-menu{display:flex;align-items:center;min-width:0}.ix-breadcrumb-menu>.ix-dropdown-trigger{max-width:100%;gap:4px}.ix-breadcrumb[data-subtle=true] .ix-breadcrumb-item>a,.ix-breadcrumb[data-subtle=true] .ix-breadcrumb-item>button,.ix-breadcrumb-item[data-subtle=true]>a,.ix-breadcrumb-item[data-subtle=true]>button,.ix-breadcrumb-menu[data-subtle=true]>.ix-dropdown-trigger{background:transparent}.ix-breadcrumb-menu[data-subtle=true]>.ix-dropdown-trigger:hover{background:var(--ix-color-surface-2)}.ix-breadcrumb-menu>.ix-dropdown-trigger[aria-current=page]{color:var(--ix-color-text)}
+
 "#;
 
 #[cfg(test)]
@@ -1723,13 +1665,6 @@ mod tests {
             WorkflowStatus::Done.icon(false),
             WorkflowStatus::Success.icon(false)
         );
-    }
-    #[test]
-    fn breadcrumb_truncation_keeps_the_current_location_visible() {
-        assert_eq!(hidden_breadcrumb_count(5, 3), 2);
-        assert_eq!(hidden_breadcrumb_count(3, 9), 0);
-        assert_eq!(hidden_breadcrumb_count(3, 0), 2);
-        assert_eq!(hidden_breadcrumb_count(0, 3), 0);
     }
     fn disclosure_slots_fixture() -> Element {
         rsx! {

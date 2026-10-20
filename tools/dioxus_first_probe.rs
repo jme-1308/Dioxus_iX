@@ -7,6 +7,8 @@ mod application_focus_review;
 mod application_shell_review;
 #[path = "dioxus_first_probe/application_viewport_review.rs"]
 mod application_viewport_review;
+#[path = "dioxus_first_probe/breadcrumb_workflow_review.rs"]
+mod breadcrumb_workflow_review;
 #[path = "dioxus_first_probe/card_collections_review.rs"]
 mod card_collections_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
@@ -193,6 +195,9 @@ fn Preview() -> Element {
     }
     if scope == "?paginationworkflow" {
         return rsx! { pagination_workflow_review::PaginationWorkflowPreview {} };
+    }
+    if scope == "?breadcrumbworkflow" {
+        return rsx! { breadcrumb_workflow_review::BreadcrumbWorkflowPreview {} };
     }
     if scope == "?fliptileworkflow" {
         return rsx! { flip_tile_workflow_review::FlipTileWorkflowPreview {} };

@@ -8,6 +8,7 @@ mod advanced_chart_scenarios;
 mod application;
 mod application_scenarios;
 mod asset_flip_tile;
+mod asset_hierarchy;
 mod button_review;
 mod card_collections;
 mod chart_scenarios;
@@ -224,6 +225,7 @@ fn Gallery() -> Element {
         style { {composition::STYLES} }
         style { {patterns::STYLES} }
         style { {asset_flip_tile::STYLES} }
+        style { {asset_hierarchy::STYLES} }
         style { {forms::STYLES} }
         style { {layout::STYLES} }
         style { {card_collections::STYLES} }
@@ -285,7 +287,7 @@ fn Gallery() -> Element {
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
                         GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
-                        GalleryPage::Layout => rsx! { paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
+                        GalleryPage::Layout => rsx! { asset_hierarchy::AssetHierarchyExample {} paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { grid_numeric_values::GridNumericValuesExample {} grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
                         GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },

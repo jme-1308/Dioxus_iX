@@ -1765,6 +1765,11 @@ impl DropdownHandle {
             .and_then(|context| context.open.try_read().ok().map(|open| *open))
             .unwrap_or(false)
     }
+    /// Persistent menu ID for an explicitly bound custom trigger's `aria-controls`.
+    /// Returns `None` after the controller owner's Dioxus scope has been dropped.
+    pub fn menu_id(self) -> Option<String> {
+        self.try_context().map(|context| context.host_id())
+    }
     /// Current active item ID for a custom trigger's `aria-activedescendant`.
     /// Bind this together with [`use_dropdown_trigger_binding`] when rendering a
     /// custom trigger. Closed menus and roving navigation have no descendant.
