@@ -560,61 +560,7 @@ pub fn BreadcrumbItem(
     } }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PageToken {
-    Page(usize),
-    Jump(usize),
-}
-fn page_tokens(count: usize, selected: usize) -> Vec<PageToken> {
-    if count <= 7 {
-        return (0..count).map(PageToken::Page).collect();
-    }
-    let selected = selected.min(count - 1);
-    let (start, end) = if selected <= 3 {
-        (1, 4)
-    } else if selected >= count - 4 {
-        (count - 5, count - 2)
-    } else {
-        (selected - 1, selected + 1)
-    };
-    let mut result = vec![PageToken::Page(0)];
-    if start > 1 {
-        result.push(PageToken::Jump(start / 2));
-    }
-    result.extend((start..=end).map(PageToken::Page));
-    if end < count - 2 {
-        result.push(PageToken::Jump(end + (count - 1 - end) / 2));
-    }
-    result.push(PageToken::Page(count - 1));
-    result
-}
-
-/// Zero-based pagination; `count` is the total number of pages, as in upstream iX.
-/// Advanced mode adds direct page entry and items-per-page selection.
-#[component]
-pub fn Pagination(
-    count: usize,
-    #[props(default)] selected_page: usize,
-    #[props(default)] onpage: EventHandler<usize>,
-    #[props(default)] advanced: bool,
-    #[props(default = 15)] item_count: usize,
-    #[props(default = vec![10,15,20,40,100])] item_count_options: Vec<usize>,
-    #[props(default)] onitemcount: EventHandler<usize>,
-    #[props(default)] hide_item_count: bool,
-    #[props(default = "Pagination".to_string())] label: String,
-) -> Element {
-    let selected = selected_page.min(count.saturating_sub(1));
-    rsx! { nav { class: "ix-pagination", "aria-label": label,
-        button { class: "ix-layout-icon-button", r#type: "button", disabled: count == 0 || selected == 0, "aria-label": "Previous page", onclick: move |_| onpage.call(selected.saturating_sub(1)), Icon { name: "chevron-left" } }
-        if advanced { span { "Page" } input { class: "ix-pagination-input", r#type: "number", min: "1", max: count.max(1), value: if count == 0 { 0 } else { selected + 1 }, disabled: count == 0, "aria-label": "Page selection", onchange: move |event| if let Ok(value) = event.value().parse::<usize>() { if count > 0 { onpage.call(value.saturating_sub(1).min(count - 1)); } } } span { "of {count}" } }
-        else { for token in page_tokens(count, selected) { match token {
-            PageToken::Page(page) => rsx! { button { class: "ix-page-button", r#type: "button", "aria-label": "Page {page + 1}", "aria-current": if selected == page { Some("page") } else { None }, onclick: move |_| onpage.call(page), "{page + 1}" } },
-            PageToken::Jump(page) => rsx! { button { class: "ix-page-button", r#type: "button", "aria-label": "Jump to page {page + 1}", onclick: move |_| onpage.call(page), "…" } },
-        } } }
-        button { class: "ix-layout-icon-button", r#type: "button", disabled: count == 0 || selected + 1 >= count, "aria-label": "Next page", onclick: move |_| onpage.call((selected + 1).min(count.saturating_sub(1))), Icon { name: "chevron-right" } }
-        if advanced && !hide_item_count { label { class: "ix-pagination-count", "Items" select { value: "{item_count}", "aria-label": "Items per page", onchange: move |event| if let Ok(value) = event.value().parse::<usize>() { if value > 0 { onitemcount.call(value); } }, for value in item_count_options.iter().copied().filter(|value| *value > 0) { option { value: "{value}", "{value}" } } } } }
-    } }
-}
+pub use crate::pagination::{Pagination, PaginationChangeEvent, PaginationLabels, PaginationProps};
 
 /// Expandable information section with optional status treatment.
 #[component]
@@ -1967,34 +1913,5 @@ mod tests {
         items.iter_mut().for_each(|item| item.disabled = true);
         assert_eq!(next_tab(&items, 0, true), None);
         assert_eq!(next_tab(&[], 0, false), None);
-    }
-    #[test]
-    fn pagination_empty_and_small_ranges_are_exact() {
-        assert!(page_tokens(0, 5).is_empty());
-        assert_eq!(page_tokens(1, 20), vec![PageToken::Page(0)]);
-        assert_eq!(
-            page_tokens(7, 3),
-            (0..7).map(PageToken::Page).collect::<Vec<_>>()
-        );
-    }
-    #[test]
-    fn pagination_windows_preserve_edges_current_and_valid_jump_targets() {
-        for count in 8..80 {
-            for selected in 0..count + 2 {
-                let tokens = page_tokens(count, selected);
-                assert_eq!(tokens.first(), Some(&PageToken::Page(0)));
-                assert_eq!(tokens.last(), Some(&PageToken::Page(count - 1)));
-                assert!(tokens.contains(&PageToken::Page(selected.min(count - 1))));
-                assert!(tokens.len() <= 7);
-                let indices: Vec<_> = tokens
-                    .iter()
-                    .map(|token| match *token {
-                        PageToken::Page(index) | PageToken::Jump(index) => index,
-                    })
-                    .collect();
-                assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
-                assert!(indices.iter().all(|index| *index < count));
-            }
-        }
     }
 }

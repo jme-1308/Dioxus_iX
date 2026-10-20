@@ -58,6 +58,8 @@ mod menu_focus_review;
 mod menu_order_review;
 #[path = "dioxus_first_probe/modal_focus_review.rs"]
 mod modal_focus_review;
+#[path = "dioxus_first_probe/pagination_workflow_review.rs"]
+mod pagination_workflow_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
 mod pane_layout_review;
 #[path = "dioxus_first_probe/select_direction_review.rs"]
@@ -186,6 +188,9 @@ fn Preview() -> Element {
     }
     if scope == "?cardcollections" {
         return rsx! { card_collections_review::CardCollectionsPreview {} };
+    }
+    if scope == "?paginationworkflow" {
+        return rsx! { pagination_workflow_review::PaginationWorkflowPreview {} };
     }
     if scope == "?chartworkflows" {
         return rsx! { chart_workflows_review::ChartWorkflowsPreview {} };
