@@ -1449,123 +1449,10 @@ pub fn CategoryFilter(
     }
 }
 
-/// Semantic treatment of a flip tile. Colored variants tint the footer and frame;
-/// the main content surface remains neutral, matching the upstream component.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FlipTileVariant {
-    Outline,
-    #[default]
-    Filled,
-    Primary,
-    Info,
-    Warning,
-    Alarm,
-}
-impl FlipTileVariant {
-    fn class(self) -> &'static str {
-        match self {
-            Self::Outline => "outline",
-            Self::Filled => "filled",
-            Self::Primary => "primary",
-            Self::Info => "info",
-            Self::Warning => "warning",
-            Self::Alarm => "alarm",
-        }
-    }
-}
-/// Tile dimensions use rem units, or auto sizing.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum FlipTileDimension {
-    Rem(f64),
-    Auto,
-}
-impl FlipTileDimension {
-    fn css(self, fallback: f64) -> String {
-        match self {
-            Self::Rem(value) if value.is_finite() && value > 0.0 => format!("{value}rem"),
-            Self::Auto => "auto".into(),
-            _ => format!("{fallback}rem"),
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum FlipPhase {
-    #[default]
-    Idle,
-    Outgoing,
-    Incoming,
-}
-impl FlipPhase {
-    fn class(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Outgoing => "outgoing",
-            Self::Incoming => "incoming",
-        }
-    }
-}
-fn flip_index(index: usize, count: usize) -> usize {
-    if count == 0 { 0 } else { index.min(count - 1) }
-}
-fn next_flip_index(index: usize, count: usize) -> usize {
-    if count == 0 {
-        0
-    } else {
-        (flip_index(index, count) + 1) % count
-    }
-}
-
-/// A tile cycling through any number of sides. Each item in `pages` normally
-/// contains [`FlipTileContent`]. Only the visible side is mounted. `index` makes
-/// cycling controlled; the parent can reject a request by leaving it unchanged.
-/// Outgoing and incoming half-rotations use native CSS animation events.
-#[component]
-pub fn FlipTile(
-    pages: Vec<Element>,
-    #[props(default=VNode::empty())] header: Element,
-    #[props(default)] footer: Option<Element>,
-    #[props(default)] variant: FlipTileVariant,
-    #[props(default)] index: Option<usize>,
-    #[props(default)] default_index: usize,
-    #[props(default)] ontoggle: EventHandler<usize>,
-    #[props(default=FlipTileDimension::Rem(16.0))] width: FlipTileDimension,
-    #[props(default=FlipTileDimension::Rem(15.125))] height: FlipTileDimension,
-    #[props(default="Show next content".to_string())] label: String,
-) -> Element {
-    let mut local = use_signal(|| default_index);
-    let target = flip_index(index.unwrap_or(local()), pages.len());
-    let mut displayed = use_signal(|| target);
-    let mut pending = use_signal(|| None::<usize>);
-    let mut phase = use_signal(FlipPhase::default);
-    use_effect(use_reactive!(|target| {
-        if phase() == FlipPhase::Idle && displayed() != target {
-            pending.set(Some(target));
-            phase.set(FlipPhase::Outgoing);
-        }
-    }));
-    let visible = flip_index(displayed(), pages.len());
-    let count = pages.len();
-    let display_number = if count == 0 { 0 } else { visible + 1 };
-    rsx! {
-        article {class:"ix-flip-tile ix-flip-tile-{variant.class()}",style:format!("width:{};height:{}",width.css(16.0),height.css(15.125)),"aria-label":"Flippable tile",
-            div {class:"ix-flip-tile-container","data-phase":phase().class(),
-                onanimationend:move |event:AnimationEvent|{
-                    if event.animation_name()=="ix-pattern-flip-out"&&phase()==FlipPhase::Outgoing{let next=*pending.peek();if let Some(next)=next{displayed.set(next);}phase.set(FlipPhase::Incoming);}
-                    else if event.animation_name()=="ix-pattern-flip-in"&&phase()==FlipPhase::Incoming{phase.set(FlipPhase::Idle);pending.set(None);}
-                },
-                header {class:"ix-flip-tile-header",div {{header}}button {class:"ix-flip-tile-toggle",r#type:"button",disabled:count<2||phase()!=FlipPhase::Idle,"aria-label":label,onclick:move |_|{let next=next_flip_index(target,count);if index.is_none(){local.set(next);}ontoggle.call(next);},Icon {name:"eye",size:24}}}
-                div {class:"ix-flip-tile-content",key:"{visible}",if let Some(page)=pages.get(visible){{page.clone()}}}
-                if let Some(footer)=footer{footer {class:"ix-flip-tile-footer",{footer}}}
-            }
-            span {class:"ix-sr-only",role:"status","Content {display_number} of {count}"}
-        }
-    }
-}
-/// One flip tile side. Hidden sides are unmounted by the parent [`FlipTile`].
-#[component]
-pub fn FlipTileContent(children: Element) -> Element {
-    rsx! {div{class:"ix-flip-tile-side",{children}}}
-}
+pub use crate::flip_tile::{
+    FlipTile, FlipTileChangeEvent, FlipTileContent, FlipTileContentProps, FlipTileDimension,
+    FlipTileItem, FlipTileProps, FlipTileVariant,
+};
 
 /// Full-page information/error explanation with optional illustration and actions.
 #[component]
@@ -1784,6 +1671,8 @@ pub(crate) const STYLES: &str = r#"
 .ix-css-grid{display:grid;position:relative;gap:16px;min-width:0}.ix-grid-area{min-width:0}.ix-layout-auto{--ix-layout-columns:1;--ix-layout-gap:24px;display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--ix-layout-gap);margin:0 12px}.ix-layout-auto>*{flex:0 0 auto;min-width:0;width:calc((100% + var(--ix-layout-gap)) / var(--ix-layout-columns) * min(var(--ix-colspan,1),var(--ix-layout-columns)) - var(--ix-layout-gap))}
 @media(max-width:576px){.ix-info-page{padding:24px 16px}.ix-info-page-message h1{font-size:28px;line-height:36px}}
 @media(prefers-reduced-motion:reduce){.ix-flip-tile-container[data-phase=outgoing],.ix-flip-tile-container[data-phase=incoming]{animation-duration:.01ms}}
+.ix-flip-tile-toggle[aria-disabled=true]{opacity:.4;cursor:default}.ix-flip-tile-toggle[aria-disabled=true]:hover{background:transparent}.ix-flip-tile-page{height:100%;min-height:0;min-width:0}.ix-flip-tile-page[hidden]{display:none}.ix-flip-tile:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}
+
 "#;
 
 #[cfg(test)]
@@ -4524,14 +4413,6 @@ mod tests {
         );
         assert!(css.contains("min-width:800px"));
         assert!(!css.contains("body"));
-    }
-    #[test]
-    fn flip_indices_handle_empty_single_and_out_of_range_pages() {
-        assert_eq!(next_flip_index(0, 0), 0);
-        assert_eq!(next_flip_index(9, 1), 0);
-        assert_eq!(next_flip_index(1, 2), 0);
-        assert_eq!(flip_index(99, 3), 2);
-        assert_eq!(FlipTileDimension::Rem(f64::NAN).css(16.0), "16rem");
     }
     fn fixture() -> Element {
         rsx! {CategoryFilter{disabled:true,default_state:FilterState{tokens:vec!["Token".into()],categories:vec![]}}FlipTile{index:1,pages:vec![rsx!{FlipTileContent{"Hidden side"}},rsx!{FlipTileContent{"Visible side"}}]}InfoPage{title_text:"Report could not be generated",instructions:"Try again",actions:rsx!{button{"Return to overview"}}}}

@@ -7,6 +7,7 @@ mod actions;
 mod advanced_chart_scenarios;
 mod application;
 mod application_scenarios;
+mod asset_flip_tile;
 mod button_review;
 mod card_collections;
 mod chart_scenarios;
@@ -222,6 +223,7 @@ fn Gallery() -> Element {
         style { {icon_catalog::STYLES} }
         style { {composition::STYLES} }
         style { {patterns::STYLES} }
+        style { {asset_flip_tile::STYLES} }
         style { {forms::STYLES} }
         style { {layout::STYLES} }
         style { {card_collections::STYLES} }
@@ -292,7 +294,7 @@ fn Gallery() -> Element {
                         GalleryPage::Feedback => rsx! { dropdown_review::DropdownOrderReview {} FeedbackExamples {} },
                         GalleryPage::Composition => rsx! { tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat::ChatExamples {} },
-                        GalleryPage::Patterns => rsx! { filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
+                        GalleryPage::Patterns => rsx! { asset_flip_tile::AssetFlipTileExample {} filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
                         GalleryPage::Dialogs => rsx! { dialogs::DialogExamples {} },
                         GalleryPage::Icons => rsx! { IconExamples {} },
                         GalleryPage::Theme => rsx! { theme_review::ThemeReview {} },

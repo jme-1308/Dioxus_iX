@@ -30,6 +30,8 @@ mod dom_query;
 mod filter_keyboard_review;
 #[path = "dioxus_first_probe/filter_layout_review.rs"]
 mod filter_layout_review;
+#[path = "dioxus_first_probe/flip_tile_workflow_review.rs"]
+mod flip_tile_workflow_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
 #[path = "dioxus_first_probe/grid_cell_renderers_review.rs"]
@@ -191,6 +193,9 @@ fn Preview() -> Element {
     }
     if scope == "?paginationworkflow" {
         return rsx! { pagination_workflow_review::PaginationWorkflowPreview {} };
+    }
+    if scope == "?fliptileworkflow" {
+        return rsx! { flip_tile_workflow_review::FlipTileWorkflowPreview {} };
     }
     if scope == "?chartworkflows" {
         return rsx! { chart_workflows_review::ChartWorkflowsPreview {} };
