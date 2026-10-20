@@ -1602,6 +1602,7 @@ impl DateInputAlignment {
 fn TemporalField(
     id: String,
     name: Option<String>,
+    form: Option<String>,
     label: String,
     value: String,
     placeholder: String,
@@ -1687,7 +1688,7 @@ fn TemporalField(
         if !label.is_empty() { label { r#for: id.clone(), "{label}" if required { span { aria_hidden: true, " *" } } } }
         div { class: "ix-temporal-control",
             if let Some(start) = start { span { class: "ix-temporal-slot", {start} } }
-            input { id, name, r#type: "text", value, placeholder, disabled, readonly, required,
+            input { id, name, form, r#type: "text", value, placeholder, disabled, readonly, required,
                 // A never-matching native pattern blocks nonempty invalid date/time
                 // values; `required` independently handles missing values.
                 pattern: if constraint_invalid { Some("(?!)") } else { None }, title: validation_title,
@@ -1738,6 +1739,9 @@ pub fn DateInput(
     #[props(default = "Open calendar".to_string())] calendar_button_label: String,
     id: Option<String>,
     name: Option<String>,
+    /// Explicit native form owner; omission retains normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     placeholder: Option<String>,
     helper_text: Option<String>,
     invalid_text: Option<String>,
@@ -1769,7 +1773,7 @@ pub fn DateInput(
     let range_open = use_callback(move |_| open.set(true));
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
     rsx! {
-        TemporalField { id, name, label, value, placeholder: placeholder.unwrap_or_default(),
+        TemporalField { id, name, form, label, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
             button_label: calendar_button_label, icon: "calendar", open: open(),
             onopen: move |_| open.toggle(), onclose: move |_| open.set(false),
@@ -1815,6 +1819,9 @@ pub fn TimeInput(
     #[props(default = "Toggle time picker".to_string())] time_button_label: String,
     id: Option<String>,
     name: Option<String>,
+    /// Explicit native form owner; omission retains normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     placeholder: Option<String>,
     helper_text: Option<String>,
     invalid_text: Option<String>,
@@ -1850,7 +1857,7 @@ pub fn TimeInput(
         invalid_text.clone().or_else(|| validity.message("Time"))
     };
     rsx! {
-        TemporalField { id, name, label, value, placeholder: placeholder.unwrap_or_default(),
+        TemporalField { id, name, form, label, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
             button_label: time_button_label, icon: "clock", open: open(),
             onopen: move |_| { draft.set(selected); open.toggle(); }, onclose: move |_| open.set(false),
@@ -1929,6 +1936,9 @@ pub fn DateTimeInput(
     #[props(default = "Toggle calendar".to_string())] calendar_button_label: String,
     id: Option<String>,
     name: Option<String>,
+    /// Explicit native form owner; omission retains normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     placeholder: Option<String>,
     helper_text: Option<String>,
     invalid_text: Option<String>,
@@ -1978,7 +1988,7 @@ pub fn DateTimeInput(
             .or_else(|| validity.message("Date time"))
     };
     rsx! {
-        TemporalField { id, name, label, value, placeholder: placeholder.unwrap_or_default(),
+        TemporalField { id, name, form, label, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
             button_label: calendar_button_label, icon: "calendar", open: open(),
             onopen: move |_| { draft_date.set(Some(selected.map_or(today, |value| value.date))); draft_time.set(selected.map_or(IxTime::default(), |value| value.time)); open.toggle(); },
@@ -3120,5 +3130,6 @@ mod tests {
     mod scheduling_tests {
         use super::*;
         include!("datetime_scheduling_tests.rs");
+        include!("temporal_form_tests.rs");
     }
 }

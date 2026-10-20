@@ -114,6 +114,8 @@ mod split_actions_review;
 mod tab_exit_review;
 #[path = "dioxus_first_probe/task_cards_review.rs"]
 mod task_cards_review;
+#[path = "dioxus_first_probe/temporal_work_order_review.rs"]
+mod temporal_work_order_review;
 #[path = "dioxus_first_probe/text_control_method_review.rs"]
 mod text_control_method_review;
 #[path = "dioxus_first_probe/toast_lifetime_review.rs"]
@@ -279,6 +281,9 @@ fn Preview() -> Element {
     }
     if scope == "?dropdownbutton" {
         return rsx! { dropdown_button_review::DropdownButtonPreview {} };
+    }
+    if scope == "?temporalforms" {
+        return rsx! { temporal_work_order_review::TemporalWorkOrderPreview {} };
     }
     if scope == "?externalforms" {
         return rsx! { external_work_order_review::ExternalWorkOrderPreview {} };
