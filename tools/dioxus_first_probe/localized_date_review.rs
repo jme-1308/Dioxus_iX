@@ -62,7 +62,7 @@ const STYLES: &str = "body{margin:0}.localized-dates-review{box-sizing:border-bo
 // neither route claims physical-device certification or exact event chronology.
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const NATIVE_LOCALIZED_DATES_CHECK: &str = r#"
-let snapshots={},locales={},layout={},inputFocusFacts={};
+let snapshots={},locales={},layout={},inputFocusFacts={},surfaceFacts={};
 try {
  await dioxus.recv();
  const get=id=>document.getElementById(id),active=()=>document.activeElement;
@@ -70,7 +70,7 @@ try {
  const ids=['localized-long','localized-short','localized-weekday','localized-datetime'];
  const input=id=>get(id),field=id=>input(id)?.closest('.ix-temporal-field');
  const toggle=id=>field(id)?.querySelector('button.ix-temporal-toggle');
- const popup=id=>get(input(id)?.getAttribute('aria-controls'));
+ const popup=id=>get(input(id)?.getAttribute('aria-controls')),opened=id=>!!popup(id)&&!popup(id).hidden&&input(id)?.getAttribute('aria-expanded')==='true',closed=id=>!!popup(id)&&popup(id).hidden&&!popup(id).querySelector('.ix-date-time-card')&&input(id)?.getAttribute('aria-expanded')==='false';
  const data=name=>result()?.dataset[name];
  const hold=ms=>new Promise(resolve=>setTimeout(resolve,ms));
  const assert=(condition,label)=>{if(!condition)throw Error(label)};
@@ -97,12 +97,15 @@ try {
  const allSample=()=>data('long')==='2026-10-20'&&data('short')==='2026-10-20'&&data('weekday')==='2026-10-20'&&data('datetime')==='2026-10-20T13:30:00';
  const openPicker=async id=>{
   await focus(toggle(id),id+' picker trigger');toggle(id).click();
-  await wait(id+' actual dialog and calendar mounted',()=>input(id)?.getAttribute('aria-expanded')==='true'&&popup(id)?.querySelector('.ix-calendar-grid'));
+  await wait(id+' actual dialog and calendar mounted',()=>opened(id)&&popup(id)?.querySelector('.ix-calendar-grid'));
+  assert(popup(id).getAttribute('role')==='dialog'&&!popup(id).hasAttribute('popover')&&toggle(id).getAttribute('aria-haspopup')==='dialog'&&toggle(id).getAttribute('aria-controls')===popup(id).id,'default inline shared Dialog matches bound toggle ARIA');
+  await wait(id+' inline dialog fits actual viewport',()=>{const r=popup(id).getBoundingClientRect();return r.width>0&&r.height>0&&r.left>=-1&&r.right<=innerWidth+1&&r.top>=-1&&r.bottom<=innerHeight+1});
+  const r=popup(id).getBoundingClientRect();surfaceFacts[language().value+':'+id+':'+Math.round(get('localized-review-frame').getBoundingClientRect().width)]={host:popup(id).id,role:popup(id).getAttribute('role'),topLayer:popup(id).hasAttribute('popover'),rect:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height},viewport:{width:innerWidth,height:innerHeight}};
  };
  const escapePicker=async id=>{
   const target=popup(id)?.querySelector('.ix-calendar-day[tabindex="0"]')||popup(id);
   await focus(target,id+' picker Escape target');key(target,'Escape');
-  await wait(id+' Escape closes picker and restores trigger focus',()=>!popup(id)&&input(id)?.getAttribute('aria-expanded')==='false'&&active()===toggle(id));
+  await wait(id+' Escape closes picker and restores trigger focus',()=>closed(id)&&active()===toggle(id));
  };
  const nextMonth=id=>popup(id)?.querySelector('.ix-calendar-header button[aria-label="Next month"]');
  const calendar=id=>popup(id)?.querySelector('.ix-calendar-grid');
@@ -114,7 +117,7 @@ try {
  await wait('actual localized date inputs and ISO readouts mounted',()=>host()&&result()&&language()&&ids.every(id=>input(id)&&toggle(id))&&allSample());
  await wait('WebView document ready for focus input',()=>document.hasFocus());
  assert(language().value==='en'&&input('localized-long').value==='20 October 2026'&&input('localized-short').value==='20 Oct 2026'&&input('localized-weekday').value==='Tuesday, 20 October 2026'&&input('localized-datetime').value==='20 October 2026 01:30 PM','English illustrative sample formats named dates and spaced12-hour appointment');
- checkAllNativeValid('initial sample');snapshots.initial=snapshot();
+ assert(ids.every(id=>closed(id)&&popup(id).getAttribute('role')==='dialog'&&!popup(id).hasAttribute('popover')),'default inline shared Dialog hosts are persistent and hidden without picker children initially');checkAllNativeValid('initial sample');snapshots.initial=snapshot();
  await focus(input('localized-long'),'long named date');await setValue('localized-long','21 October 2026');
  await wait('typed named date normalizes to stable ISO',()=>data('long')==='2026-10-21'&&input('localized-long').validity.valid);
  inputFocusFacts={documentFocused:document.hasFocus(),active:active()?.id};
@@ -135,7 +138,7 @@ try {
  await wait('calendar advances to bounded November',()=>calendar('localized-long')?.getAttribute('aria-label')==='November 2026'&&pickDate('localized-long','7 November 2026'));
  assert(nextMonth('localized-long').disabled&&!pickDate('localized-long','7 November 2026').disabled,'November bound preserves enabled in-range dates and blocks later months');
  pickDate('localized-long','7 November 2026').click();
- await wait('calendar selection formats named date and returns trigger focus',()=>data('long')==='2026-11-07'&&input('localized-long').value==='07 November 2026'&&!popup('localized-long')&&active()===toggle('localized-long')&&input('localized-long').validity.valid);
+ await wait('calendar selection formats named date and returns trigger focus',()=>data('long')==='2026-11-07'&&input('localized-long').value==='07 November 2026'&&closed('localized-long')&&active()===toggle('localized-long')&&input('localized-long').validity.valid);
  await openPicker('localized-short');await escapePicker('localized-short');
  assert(data('short')==='2026-10-20','Escape preserves short-date value');
 
@@ -156,7 +159,7 @@ try {
  key(active(),'Enter');await wait('minute Enter updates draft selection',()=>selectedClock('Minutes')?.textContent.trim()==='46');
  assert(data('datetime')==='2026-10-31T14:45:00','calendar/clock drafts do not publish before Done');
  const done=popup('localized-datetime').querySelector('.ix-datetime-picker>.ix-date-card-footer button');assert(done&&!done.disabled,'combined picker exposes enabled Done');done.click();
- await wait('Done publishes named-date appointment with selected clock and focus return',()=>data('datetime')==='2026-11-07T15:46:00'&&input('localized-datetime').value==='07 November 2026 03:46 PM'&&!popup('localized-datetime')&&active()===toggle('localized-datetime'));
+ await wait('Done publishes named-date appointment with selected clock and focus return',()=>data('datetime')==='2026-11-07T15:46:00'&&input('localized-datetime').value==='07 November 2026 03:46 PM'&&closed('localized-datetime')&&active()===toggle('localized-datetime'));
  checkAllNativeValid('calendar recovery');snapshots.confirmed=snapshot();
 
  const expected={
@@ -181,16 +184,16 @@ try {
  }
  await openPicker('localized-long');assert(popup('localized-long'),'calendar is open before Reset');
  get('localized-reset').focus();get('localized-reset').click();
- await wait('Restore sample clears transient picker and preserves selected language',()=>allSample()&&language().value==='ja'&&!host().querySelector('.ix-temporal-popover')&&!host().querySelector('.ix-temporal-backdrop')&&active()===get('localized-reset'));
+ await wait('Restore sample clears transient picker and preserves selected language',()=>allSample()&&language().value==='ja'&&ids.every(closed)&&!host().querySelector('.ix-temporal-backdrop')&&active()===get('localized-reset'));
  checkAllNativeValid('restored sample');snapshots.reset=snapshot();
  get('localized-review-narrow').click();
  await wait('Rust-owned narrow fixture contains all actual fields',()=>get('localized-review-frame').getBoundingClientRect().width<=341&&ids.every(id=>field(id).getBoundingClientRect().width<=341));
  layout={frame:get('localized-review-frame').getBoundingClientRect().width,pageClient:document.documentElement.clientWidth,pageScroll:document.documentElement.scrollWidth,
   fields:Object.fromEntries(ids.map(id=>{const box=field(id).getBoundingClientRect();return [id,{width:box.width,height:box.height}]}))};
- assert(layout.pageScroll<=layout.pageClient+1,'named-date fields and readouts do not overflow page');
- return {ok:true,snapshots,locales,layout,inputFocusFacts,
-  checks:['four actual named-date sample fields and stable ISO readouts','typed long date and spaced AM/PM datetime','impossible date and weekday mismatch native pattern/ARIA validation','calendar bounded navigation/selection and Escape focus return','combined calendar/hour/minute draft and Done confirmation','German/French/Japanese named input parsing and translated calendar/clock labels','Restore sample language/state/picker cleanup','native validity and narrow field containment'],
+ assert(layout.pageScroll<=layout.pageClient+1,'named-date fields and readouts do not overflow page');await openPicker('localized-datetime');await escapePicker('localized-datetime');assert(allSample(),'narrow default inline combined picker closes without changing restored sample');
+ return {ok:true,snapshots,locales,layout,inputFocusFacts,surfaceFacts,
+  checks:['default inline shared Dialog ARIA links, persistent hidden hosts and wide/narrow viewport containment','four actual named-date sample fields and stable ISO readouts','typed long date and spaced AM/PM datetime','impossible date and weekday mismatch native pattern/ARIA validation','calendar bounded navigation/selection and Escape focus return','combined calendar/hour/minute draft and Done confirmation','German/French/Japanese named input parsing and translated calendar/clock labels','Restore sample language/state/picker cleanup','native validity and narrow field containment'],
   input:'synthetic native input/click/keydown/change events with explicit focus and actual validation/picker layout',
-  trustedInput:'separate Chromium actual keyboard typing/activation and native defaults; no physical-device certification',renderer:navigator.userAgent};
-} catch(error){return {ok:false,error:String(error),snapshots,locales,layout,inputFocusFacts,documentFocusedNow:document.hasFocus()}}
+  trustedInput:'not established by this excluded synthetic replay; any current trusted browser evidence is recorded separately by the lead',renderer:navigator.userAgent};
+} catch(error){return {ok:false,error:String(error),snapshots,locales,layout,inputFocusFacts,surfaceFacts,documentFocusedNow:document.hasFocus()}}
 "#;

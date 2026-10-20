@@ -11,7 +11,7 @@ pub use crate::date_dropdown_controller::{
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
@@ -31,7 +31,6 @@ struct TemporalRangeContext {
     targets: Rc<RefCell<BTreeMap<usize, RangeTarget>>>,
     next: Rc<Cell<usize>>,
     keyboard: Rc<Cell<bool>>,
-    handoff_from: Rc<Cell<Option<usize>>>,
 }
 
 /// Install the range's local focus scope without any browser-specific API.
@@ -40,7 +39,6 @@ pub(crate) fn provide_range_navigation() {
         targets: Rc::new(RefCell::new(BTreeMap::new())),
         next: Rc::new(Cell::new(0)),
         keyboard: Rc::new(Cell::new(false)),
-        handoff_from: Rc::new(Cell::new(None)),
     });
 }
 
@@ -74,19 +72,9 @@ impl RangeBinding {
             context.keyboard.set(keyboard);
         }
     }
-    fn suppress_return_focus(&self) -> bool {
-        self.context.as_ref().is_some_and(|context| {
-            if context.handoff_from.get() == Some(self.id) {
-                context.handoff_from.set(None);
-                true
-            } else {
-                false
-            }
-        })
-    }
-    fn advance(&self) {
+    fn advance(&self) -> bool {
         let Some(context) = &self.context else {
-            return;
+            return false;
         };
         let targets = context.targets.borrow();
         let next = range_handoff_target(
@@ -97,10 +85,12 @@ impl RangeBinding {
                 .map(|(id, target)| (*id, target.enabled.get())),
         );
         let Some(next) = next.and_then(|id| targets.get(&id)).cloned() else {
-            return;
+            return false;
         };
-        context.handoff_from.set(Some(self.id));
         spawn(async move {
+            if !next.enabled.get() {
+                return;
+            }
             let input = next.input.borrow().clone();
             if let Some(input) = input {
                 let _ = input.set_focus(true).await;
@@ -109,6 +99,7 @@ impl RangeBinding {
                 next.activate.call(());
             }
         });
+        true
     }
 }
 fn use_range_binding(activate: Callback<()>, enabled: bool) -> RangeBinding {
@@ -141,6 +132,7 @@ fn use_range_binding(activate: Callback<()>, enabled: bool) -> RangeBinding {
     binding.enabled.set(enabled);
     let cleanup = binding.clone();
     use_drop(move || {
+        cleanup.enabled.set(false);
         if let Some(context) = cleanup.context {
             context.targets.borrow_mut().remove(&cleanup.id);
         }
@@ -714,6 +706,26 @@ pub fn DatePicker(
     let mut focused = use_signal(|| initial);
     let mut focus_requested = use_signal(|| auto_focus);
     let day_refs = use_hook(|| Rc::new(RefCell::new(BTreeMap::<IxDate, Rc<MountedData>>::new())));
+    let initial_focus_pending = use_hook(|| Rc::new(Cell::new(auto_focus)));
+    let focus_initial_visible_day = {
+        let day_refs = day_refs.clone();
+        use_callback(move |event: VisibleEvent| {
+            // Native popovers can still be hidden when mounted handlers run.
+            // Retry the initial intent once after the calendar is visible.
+            if !disabled
+                && event.is_intersecting().is_ok_and(|visible| visible)
+                && initial_focus_pending.get()
+            {
+                let element = day_refs.borrow().get(&*focused.peek()).cloned();
+                if let Some(element) = element {
+                    initial_focus_pending.set(false);
+                    spawn(async move {
+                        let _ = element.set_focus(true).await;
+                    });
+                }
+            }
+        })
+    };
     let register = {
         let day_refs = day_refs.clone();
         use_callback(move |(date, element): (IxDate, Rc<MountedData>)| {
@@ -819,6 +831,7 @@ pub fn DatePicker(
     };
     rsx! { DateTimeCard { header, footer, corners, embedded,
         div { class: "ix-calendar-grid", role: "grid", aria_label: format!("{} {}", labels.months[usize::from(visible.month - 1)], visible.year),
+            onvisible: focus_initial_visible_day,
             div { class: "ix-calendar-row", role: "row",
                 if show_week_numbers { span { class: "ix-calendar-weekday", role: "columnheader", aria_label: "Week number", "Wk" } }
                 for index in 0..7u8 { span { class: "ix-calendar-weekday", role: "columnheader", title: labels.weekdays[usize::from((index + week_start) % 7)].clone(), "{labels.weekdays[usize::from((index + week_start) % 7)].chars().take(3).collect::<String>()}" } }
@@ -1304,40 +1317,52 @@ pub fn TimePicker(
     });
     let containers =
         use_hook(|| Rc::new(RefCell::new(BTreeMap::<ClockUnit, Rc<MountedData>>::new())));
-    let reveal_option = {
-        let references = references.clone();
+    let register_container = {
         let containers = containers.clone();
-        use_callback(move |key: (ClockUnit, u16)| {
-            let option = references.borrow().get(&key).cloned();
-            let container = containers.borrow().get(&key.0).cloned();
-            if let (Some(container), Some(option)) = (container, option) {
-                spawn(reveal_clock_option(container, option));
-            }
+        use_callback(move |(unit, element): (ClockUnit, Rc<MountedData>)| {
+            containers.borrow_mut().insert(unit, element);
         })
     };
-    let register_container = use_callback(
-        move |(unit, element, selected): (ClockUnit, Rc<MountedData>, Option<u16>)| {
-            containers.borrow_mut().insert(unit, element);
-            if let Some(value) = selected {
-                reveal_option.call((unit, value));
-            }
-        },
-    );
     let register = {
         let references = references.clone();
         use_callback(move |(key, element): ((ClockUnit, u16), Rc<MountedData>)| {
             references.borrow_mut().insert(key, element);
         })
     };
-    let focus_option = use_callback(move |key: (ClockUnit, u16)| {
-        focused_option.set(Some(key));
-        let element = references.borrow().get(&key).cloned();
-        if let Some(element) = element {
-            spawn(async move {
-                let _ = element.set_focus(true).await;
-            });
-        }
-    });
+    let focus_option = {
+        let references = references.clone();
+        use_callback(move |key: (ClockUnit, u16)| {
+            focused_option.set(Some(key));
+            let element = references.borrow().get(&key).cloned();
+            if let Some(element) = element {
+                spawn(async move {
+                    let _ = element.set_focus(true).await;
+                });
+            }
+        })
+    };
+    let visible_columns = use_hook(|| Rc::new(RefCell::new(BTreeSet::<ClockUnit>::new())));
+    let reveal_initial_visible_option =
+        use_callback(move |(unit, selected): (ClockUnit, Option<u16>)| {
+            // Observe the container: its selected option may start offscreen.
+            // Reveal before focusing so both operations use stable geometry.
+            let Some(value) = selected else {
+                return;
+            };
+            let option = references.borrow().get(&(unit, value)).cloned();
+            let container = containers.borrow().get(&unit).cloned();
+            if let (Some(container), Some(option)) = (container, option)
+                && visible_columns.borrow_mut().insert(unit)
+            {
+                let focus = auto_focus && !disabled && unit == ClockUnit::Hour;
+                spawn(async move {
+                    reveal_clock_option(container, option.clone()).await;
+                    if focus {
+                        let _ = option.set_focus(true).await;
+                    }
+                });
+            }
+        });
     let mut columns = vec![
         (
             ClockUnit::Hour,
@@ -1403,20 +1428,18 @@ pub fn TimePicker(
                 div { class: "ix-clock-column",
                     div { class: "ix-clock-column-heading", "{label}" }
                     div { class: "ix-clock-options", role: "listbox", aria_label: unit.name(), aria_disabled: disabled,
-                        onmounted: move |event| register_container.call((unit, event.data(), roving)),
+                        onmounted: move |event| register_container.call((unit, event.data())),
+                        onvisible: move |event: VisibleEvent| {
+                            if event.is_intersecting().is_ok_and(|visible| visible) {
+                                reveal_initial_visible_option.call((unit, roving));
+                            }
+                        },
                         for value in clock_unit_values(unit, interval, format, time) {
                             button { key: "{value}", class: "ix-clock-option", class: if time.unit(unit) == value { "ix-clock-selected" },
                                 r#type: "button", role: "option", aria_selected: time.unit(unit) == value,
                                 disabled: disabled || select_clock_unit(time, unit, value, min_time, max_time).is_none(),
                                 tabindex: if roving == Some(value) { 0 } else { -1 },
-                                onmounted: move |event| {
-                                    let element = event.data();
-                                    register.call(((unit, value), element.clone()));
-                                    if roving == Some(value) {
-                                        reveal_option.call((unit, value));
-                                        if auto_focus && unit == ClockUnit::Hour { focus_option.call((unit, value)); }
-                                    }
-                                },
+                                onmounted: move |event| register.call(((unit, value), event.data())),
                                 onfocus: move |_| focused_option.set(Some((unit, value))),
                                 onblur: move |_| {
                                     let current = *focused_option.peek();
@@ -1629,21 +1652,17 @@ fn TemporalField(
     range_binding: RangeBinding,
     button_label: String,
     icon: String,
-    open: bool,
+    dropdown: crate::DropdownHandle,
+    enable_top_layer: bool,
+    #[props(default)] onprepare: EventHandler<()>,
     onvaluechange: EventHandler<String>,
     onmounted: EventHandler<MountedEvent>,
-    onopen: EventHandler<()>,
-    onclose: EventHandler<()>,
     children: Option<Element>,
 ) -> Element {
     let help_id = format!("{id}-help");
-    let popup_id = format!("{id}-picker");
-    let anchor = use_hook(|| {
-        format!(
-            "--ix-temporal-anchor-{}",
-            NEXT_DATE_ID.fetch_add(1, Ordering::Relaxed)
-        )
-    });
+    let toggle_id = format!("{id}-toggle");
+    let open = dropdown.is_open();
+    let binding = crate::use_dropdown_trigger_binding(dropdown);
     let invalid = error.is_some() || state == crate::FieldState::Invalid;
     crate::use_custom_field_state(if invalid {
         crate::FieldState::Invalid
@@ -1668,30 +1687,11 @@ fn TemporalField(
         crate::FieldState::Valid => "ix-temporal-valid",
         crate::FieldState::Invalid => "ix-temporal-invalid",
     };
-    let trigger_ref = use_hook(|| Rc::new(RefCell::new(None::<Rc<MountedData>>)));
-    let mut was_open = use_signal(|| open);
-    {
-        let trigger_ref = trigger_ref.clone();
-        let range_binding = range_binding.clone();
-        use_effect(use_reactive!(|open| {
-            // Observe the state transition itself: confirmation, Escape, outside
-            // dismissal, and a host-controlled close all share this restoration.
-            if *was_open.peek() && !open && !range_binding.suppress_return_focus() {
-                let element = trigger_ref.borrow().clone();
-                if let Some(element) = element {
-                    spawn(async move {
-                        let _ = element.set_focus(true).await;
-                    });
-                }
-            }
-            was_open.set(open);
-        }));
-    }
     let pointer_binding = range_binding.clone();
     let key_binding = range_binding.clone();
-    rsx! { div { class: "ix-temporal-field {state_class}", style: "anchor-name:{anchor}", class: if invalid { "ix-temporal-invalid" }, class: if disabled { "ix-temporal-disabled" },
+    rsx! { div { class: "ix-temporal-field {state_class}", class: if invalid { "ix-temporal-invalid" }, class: if disabled { "ix-temporal-disabled" },
         onpointerdown: move |_| pointer_binding.input_mode(false),
-        onkeydown: move |event| { key_binding.input_mode(true); if event.key() == Key::Escape && open { event.stop_propagation(); onclose.call(()); } },
+        onkeydown: move |event| { key_binding.input_mode(true); if event.key() == Key::Escape && open { event.stop_propagation(); dropdown.close(true); } },
         if !label.is_empty() { label { r#for: id.clone(), "{label}" if required { span { aria_hidden: true, " *" } } } }
         div { class: "ix-temporal-control",
             if let Some(start) = start { span { class: "ix-temporal-slot", {start} } }
@@ -1700,7 +1700,7 @@ fn TemporalField(
                 // values; `required` independently handles missing values.
                 pattern: if constraint_invalid { Some("(?!)") } else { None }, title: validation_title,
                 style: "text-align:{alignment.css()}", autocomplete: "off", spellcheck: false,
-                aria_invalid: invalid, aria_describedby: help_id.clone(), aria_haspopup: "dialog", aria_controls: popup_id.clone(), aria_expanded: open,
+                aria_invalid: invalid, aria_describedby: help_id.clone(), aria_haspopup: "dialog", aria_controls: dropdown.menu_id(), aria_expanded: open,
                 oninput: move |event| onvaluechange.call(event.value()),
                 onmounted: move |event| {
                     *range_binding.input.borrow_mut() = Some(event.data());
@@ -1708,22 +1708,27 @@ fn TemporalField(
                 },
                 onkeydown: move |event| {
                     if suppress_submit_on_enter && event.key() == Key::Enter { event.prevent_default(); }
-                    if !disabled && !readonly && !open && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) { event.prevent_default(); onopen.call(()); }
+                    if !disabled && !readonly && !open && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) { event.prevent_default(); dropdown.open(); }
                 },
             }
             if let Some(end) = end { span { class: "ix-temporal-slot", {end} } }
-            if !readonly && !disabled { button { class: "ix-temporal-toggle", r#type: "button", disabled,
-                aria_label: button_label.clone(), aria_expanded: open, aria_controls: popup_id.clone(), aria_haspopup: "dialog",
-                onmounted: move |event| *trigger_ref.borrow_mut() = Some(event.data()),
-                onclick: move |_| onopen.call(()), crate::Icon { name: icon, size: 16 }
+            if !readonly && !disabled { button { id: toggle_id.clone(), class: "ix-temporal-toggle", r#type: "button", disabled,
+                aria_label: button_label.clone(), aria_expanded: open, aria_controls: dropdown.menu_id(), aria_haspopup: "dialog",
+                onmounted: binding.onmounted, onvisible: binding.onvisible, onkeydown: binding.onkeydown, onclick: binding.onclick,
+                ..binding.attributes(),
+                crate::Icon { name: icon, size: 16 }
             } }
         }
         if let Some(message) = feedback { div { class: "ix-temporal-helper", id: help_id.clone(), role: if invalid { "alert" } else { "status" }, "{message}" } }
-        if open && !disabled && !readonly {
-            button { class: "ix-temporal-backdrop", tabindex: -1, r#type: "button", aria_label: "Close picker", onclick: move |_| onclose.call(()) }
-            div { class: "ix-temporal-popover", style: "position-anchor:{anchor}", role: "dialog", id: popup_id.clone(), aria_label: button_label,
-                {children}
-            }
+        crate::Dropdown { label: button_label, controller: dropdown, trigger: toggle_id.clone(),
+            surface_role: crate::DropdownSurfaceRole::Dialog, close_behavior: crate::DropdownCloseBehavior::Outside,
+            disable_focus_handling: true, enable_top_layer, disabled: disabled || readonly,
+            // The text input also opens this surface; visibility of the separate
+            // toggle is not a dismissal condition for a typed field.
+            suppress_trigger_visibility_check: true,
+            class: "ix-temporal-surface",
+            onbeforechange: move |event: crate::DropdownChangeEvent| { if event.open { onprepare.call(()); } },
+            if open && !disabled && !readonly { {children} }
         }
     } }
 }
@@ -1740,6 +1745,9 @@ pub fn DateInput(
     #[props(default)] required: bool,
     #[props(default)] disabled: bool,
     #[props(default)] readonly: bool,
+    /// Render the shared picker surface in the native top layer when supported.
+    #[props(default)]
+    enable_top_layer: bool,
     #[props(default)] suppress_submit_on_enter: bool,
     #[props(default)] text_alignment: DateInputAlignment,
     #[props(default)] week_start_index: u8,
@@ -1775,7 +1783,7 @@ pub fn DateInput(
         )
     });
     let id = id.unwrap_or(generated_id);
-    let mut open = use_signal(|| false);
+    let dropdown = crate::use_dropdown();
     let validity = validate_date_input(&value, format, required, min_date, max_date);
     let error = if validity.valid() {
         None
@@ -1783,13 +1791,12 @@ pub fn DateInput(
         invalid_text.clone().or_else(|| validity.message("Date"))
     };
     let selected = format.parse(&value);
-    let range_open = use_callback(move |_| open.set(true));
+    let range_open = use_callback(move |_| dropdown.open());
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
     rsx! {
         TemporalField { id, name, form, label,onmounted, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
-            button_label: calendar_button_label, icon: "calendar", open: open(),
-            onopen: move |_| open.toggle(), onclose: move |_| open.set(false),
+            button_label: calendar_button_label, icon: "calendar", dropdown, enable_top_layer,
             onvaluechange: move |value: String| {
                 let validity = validate_date_input(&value, format, required, min_date, max_date);
                 if let Some(handler) = onvaliditychange { handler.call(validity); }
@@ -1803,7 +1810,7 @@ pub fn DateInput(
                         onvaluechange.call(format.format(date));
                         if let Some(handler) = ondatechange { handler.call(Some(date)); }
                         if let Some(handler) = onvaliditychange { handler.call(DateInputValidity::default()); }
-                        open.set(false); range_binding.advance();
+                        dropdown.close(!range_binding.advance());
                     }
                 }
             }
@@ -1821,6 +1828,9 @@ pub fn TimeInput(
     #[props(default)] required: bool,
     #[props(default)] disabled: bool,
     #[props(default)] readonly: bool,
+    /// Render the shared picker surface in the native top layer when supported.
+    #[props(default)]
+    enable_top_layer: bool,
     #[props(default)] suppress_submit_on_enter: bool,
     #[props(default)] text_alignment: DateInputAlignment,
     #[props(default = 1)] hour_interval: u8,
@@ -1858,13 +1868,10 @@ pub fn TimeInput(
         )
     });
     let id = id.unwrap_or(generated_id);
-    let mut open = use_signal(|| false);
+    let dropdown = crate::use_dropdown();
     let mut draft = use_signal(|| format.parse(&value).unwrap_or_default());
     let selected = format.parse(&value).unwrap_or_default();
-    let range_open = use_callback(move |_| {
-        draft.set(selected);
-        open.set(true);
-    });
+    let range_open = use_callback(move |_| dropdown.open());
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
     let validity = validate_time_input(&value, format, required, min_time, max_time);
     let error = if validity.valid() {
@@ -1875,8 +1882,8 @@ pub fn TimeInput(
     rsx! {
         TemporalField { id, name, form, label,onmounted, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
-            button_label: time_button_label, icon: "clock", open: open(),
-            onopen: move |_| { draft.set(selected); open.toggle(); }, onclose: move |_| open.set(false),
+            button_label: time_button_label, icon: "clock", dropdown, enable_top_layer,
+            onprepare: move |_| draft.set(selected),
             onvaluechange: move |value: String| {
                 let validity = validate_time_input(&value, format, required, min_time, max_time);
                 if let Some(handler) = onvaliditychange { handler.call(validity); }
@@ -1889,7 +1896,7 @@ pub fn TimeInput(
                     onvaluechange.call(format.format(time));
                     if let Some(handler) = ontimechange { handler.call(Some(time)); }
                     if let Some(handler) = onvaliditychange { handler.call(DateInputValidity::default()); }
-                    open.set(false); range_binding.advance();
+                    dropdown.close(!range_binding.advance());
                 }
             }
         }
@@ -1941,6 +1948,9 @@ pub fn DateTimeInput(
     #[props(default)] required: bool,
     #[props(default)] disabled: bool,
     #[props(default)] readonly: bool,
+    /// Render the shared picker surface in the native top layer when supported.
+    #[props(default)]
+    enable_top_layer: bool,
     #[props(default)] suppress_submit_on_enter: bool,
     #[props(default)] text_alignment: DateInputAlignment,
     #[props(default)] week_start_index: u8,
@@ -1979,14 +1989,10 @@ pub fn DateTimeInput(
     });
     let id = id.unwrap_or(generated_id);
     let selected = IxDateTime::parse(&value, date_format, time_format);
-    let mut open = use_signal(|| false);
+    let dropdown = crate::use_dropdown();
     let mut draft_date = use_signal(|| Some(selected.map_or(today, |value| value.date)));
     let mut draft_time = use_signal(|| selected.map_or(IxTime::default(), |value| value.time));
-    let range_open = use_callback(move |_| {
-        draft_date.set(Some(selected.map_or(today, |value| value.date)));
-        draft_time.set(selected.map_or(IxTime::default(), |value| value.time));
-        open.set(true);
-    });
+    let range_open = use_callback(move |_| dropdown.open());
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
     let validate = use_callback(move |value: String| {
         let parsed = IxDateTime::parse(&value, date_format, time_format);
@@ -2009,9 +2015,8 @@ pub fn DateTimeInput(
     rsx! {
         TemporalField { id, name, form, label,onmounted, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
-            button_label: calendar_button_label, icon: "calendar", open: open(),
-            onopen: move |_| { draft_date.set(Some(selected.map_or(today, |value| value.date))); draft_time.set(selected.map_or(IxTime::default(), |value| value.time)); open.toggle(); },
-            onclose: move |_| open.set(false),
+            button_label: calendar_button_label, icon: "calendar", dropdown, enable_top_layer,
+            onprepare: move |_| { draft_date.set(Some(selected.map_or(today, |value| value.date))); draft_time.set(selected.map_or(IxTime::default(), |value| value.time)); },
             onvaluechange: move |value: String| {
                 let validity = validate.call(value.clone());
                 if let Some(handler) = onvaliditychange { handler.call(validity); }
@@ -2027,7 +2032,7 @@ pub fn DateTimeInput(
                         onvaluechange.call(datetime.format(date_format, time_format));
                         if let Some(handler) = ondatetimechange { handler.call(Some(datetime)); }
                         if let Some(handler) = onvaliditychange { handler.call(DateInputValidity::default()); }
-                        open.set(false); range_binding.advance();
+                        dropdown.close(!range_binding.advance());
                     }
                 }
             }

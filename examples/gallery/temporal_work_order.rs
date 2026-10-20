@@ -141,18 +141,18 @@ fn TemporalAppointmentFields(
                     onclick: move |_| { if !reminder_disabled && let Some(node) = reminder_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit reminder"
                 }
             }
-            DateInput { id: "temporal-date", name: "date", form: association.clone(), label: "Service date", today: today(), value: current.date.clone(), format: DateFormat::YmdSlash,
+            DateInput { enable_top_layer: true, id: "temporal-date", name: "date", form: association.clone(), label: "Service date", today: today(), value: current.date.clone(), format: DateFormat::YmdSlash,
                 min_date: first_date(), max_date: last_date(), required: true, calendar_button_label: "Choose service date", placeholder: "YYYY/MM/DD", helper_text: "1–31 October 2026.",
                 onmounted: move |event: MountedEvent| date_input.set(Some(event.data())),
                 onvaluechange: move |value| draft.write().date = value,
             }
-            TimeInput { id: "temporal-time", name: "time", form: association.clone(), label: "Start time", value: current.time.clone(), format: TimeFormat::Hms,
+            TimeInput { enable_top_layer: true, id: "temporal-time", name: "time", form: association.clone(), label: "Start time", value: current.time.clone(), format: TimeFormat::Hms,
                 min_time: first_time(), max_time: last_time(), required: true, time_button_label: "Choose start time", placeholder: "HH:MM:SS", helper_text: "08:00:00–18:00:00.",
                 onmounted: move |event: MountedEvent| time_input.set(Some(event.data())),
                 onvaluechange: move |value| draft.write().time = value,
             }
             div { class: "temporal-reminder",
-                DateTimeInput { id: "temporal-datetime", name: "datetime", form: association.clone(), label: "Follow-up reminder", today: today(), value: current.datetime.clone(),
+                DateTimeInput { enable_top_layer: true, id: "temporal-datetime", name: "datetime", form: association.clone(), label: "Follow-up reminder", today: today(), value: current.datetime.clone(),
                     date_format: DateFormat::YmdSlash, time_format: TimeFormat::Hms, min_date: first_date(), max_date: last_date(), min_time: first_time(), max_time: last_time(),
                     disabled: reminder_disabled, calendar_button_label: "Choose follow-up reminder", placeholder: "YYYY/MM/DD HH:MM:SS", helper_text: "Optional: between 1 October 08:00 and 31 October 18:00, 2026.",
                     onmounted: move |event: MountedEvent| reminder_input.set(Some(event.data())),

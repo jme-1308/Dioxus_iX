@@ -20,3 +20,7 @@
 
 .ix-theme .ix-date-dropdown-surface>.ix-dropdown-root-menu{padding:0;min-width:0;max-width:min(660px,calc(100vw - 32px));max-height:calc(100dvh - 32px);box-shadow:0 6px 24px #0004}
 .ix-theme .ix-date-dropdown-surface .ix-date-preset[aria-pressed=true]{color:var(--ix-color-text)}
+
+.ix-theme .ix-temporal-surface{display:contents}
+.ix-theme .ix-temporal-surface>.ix-dropdown-root-menu{padding:0;border:0;min-width:0;max-width:min(660px,calc(100vw - 32px));max-height:calc(100dvh - 32px);z-index:71;box-shadow:0 6px 24px #0004}
+.ix-theme .ix-temporal-surface>.ix-dropdown-root-menu>.ix-date-time-card{border:0}

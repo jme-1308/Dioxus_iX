@@ -452,6 +452,29 @@ fn outside_snapshot_rechecks_later_presence_and_reverse_presentation_order() {
 }
 
 #[test]
+fn departing_dropdown_click_preserves_new_peer_until_a_genuine_outside_click() {
+    let domain = Domain::join("selection hands off to another field");
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let first = model(&domain, "a", "first", OverlayKind::Dropdown, log.clone());
+    let next = model(&domain, "b", "next", OverlayKind::Dropdown, log.clone());
+    domain.observe_all(&[fact("first", &[]), fact("next", &[])]);
+    first.open.set(true);
+    domain.sync_open("first", 1, true);
+
+    // The selection handler commits, closes the first field, and opens its
+    // peer before the original click reaches the shared document observer.
+    first.open.set(false);
+    next.open.set(true);
+    assert!(!domain.outside(&["first".into()], &[]));
+    assert!(!first.open.get() && next.open.get());
+    assert!(log.borrow().is_empty());
+
+    assert!(domain.outside(&[], &[]));
+    assert!(!next.open.get());
+    assert_eq!(*log.borrow(), ["next:false:Outside:false"]);
+}
+
+#[test]
 fn current_assignment_follows_cross_owner_trigger_detachment() {
     let domain = Domain::join("current cross-owner detachment");
     let log = Rc::new(RefCell::new(Vec::new()));

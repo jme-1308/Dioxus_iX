@@ -55,20 +55,15 @@ fn temporal_form_live_owner_changes_keep_values_open_picker_and_preparation_scop
     let(mut dom,mut targets,data)=temporal_form_setup(Some("temporal-primary".into()));
     let prep=dioxus::core::ElementId::from_raw(*targets.attrs.iter().find(|(_,attrs)|attrs.get("id").is_some_and(|id|id=="temporal-preparation")).unwrap().0);
     schedule_dispatch(&dom,"click",prep,Box::new(()));schedule_render(&mut dom,&mut targets);
-    // The first calendar toggle belongs to the ordinary ancestor DateInput;
-    // select the external field's actual native button within its field wrapper.
-    let html=dioxus_ssr::render(&dom);let from=html.find("id=\"temporal-form-date\"").unwrap();let button=html[from..].split("</button>").next().unwrap();
-    let toggle=targets.attrs.iter().find_map(|(id,attrs)|{
-        let label=attrs.get("aria-label")?;
-        (label=="Open calendar"&&attrs.get("aria-controls").is_some_and(|value|value=="temporal-form-date-picker")).then_some(dioxus::core::ElementId::from_raw(*id))
-    }).unwrap_or_else(||panic!("external calendar toggle missing: {button}"));
+    let toggle=targets.id("temporal-form-date-toggle");
+    targets.mount_toggle(&dom,toggle);
     schedule_dispatch(&dom,"click",toggle,Box::new(()));schedule_render(&mut dom,&mut targets);
-    assert!(dioxus_ssr::render(&dom).contains("id=\"temporal-form-date-picker\""));
+    assert!(temporal_surface_open(&dioxus_ssr::render(&dom),"temporal-form-date"));
     for owner in[Some("temporal-alternate".to_string()),None]{
         *data.owner.borrow_mut()=owner.clone();dom.mark_dirty(ScopeId::APP);schedule_render(&mut dom,&mut targets);let html=dioxus_ssr::render(&dom);let fields=temporal_form_controls(&html);
         assert_eq!(fields.len(),3);for field in fields{assert_eq!(temporal_form_attribute(field,"form"),owner.as_deref());}
         for value in["2026/10/20","12:30:00","2026/10/20 12:30:00"]{assert!(html.contains(&format!("value=\"{value}\"")));}
         for id in["temporal-form-date","temporal-form-time","temporal-form-combined"]{assert!(html.contains(&format!("id=\"{id}\"")));}
-        assert!(html.contains("id=\"temporal-form-date-picker\""),"owner updates retain the open picker");assert!(html.contains("Tools prepared"));assert_eq!(data.mounts.get(),1);
+        assert!(temporal_surface_open(&html,"temporal-form-date"),"owner updates retain the open picker");assert!(html.contains("Tools prepared"));assert_eq!(data.mounts.get(),1);
     }
 }

@@ -160,6 +160,16 @@ impl ScheduleTargets {
                 .unwrap_or_else(|| panic!("missing {label}")),
         )
     }
+    fn id(&self, value: &str) -> dioxus::core::ElementId {
+        dioxus::core::ElementId::from_raw(
+            self.attrs.iter().find_map(|(id, attrs)| {
+                (attrs.get("id").map(String::as_str) == Some(value)).then_some(*id)
+            }).unwrap_or_else(|| panic!("missing native element {value}")),
+        )
+    }
+    fn mount_toggle(&self, dom: &VirtualDom, toggle: dioxus::core::ElementId) {
+        schedule_dispatch(dom, "mounted", toggle, Box::new(ScheduleMount(Rc::new(Cell::new(0)))));
+    }
     fn confirmation(&self, html: &str) -> dioxus::core::ElementId {
         // Static child attributes can precede their SetId in the stack protocol.
         // Resolve the actual native button's dynamic ID instead of attributing
@@ -335,6 +345,7 @@ fn scheduling_datetime_input_forwards_live_confirmation_label_and_existing_value
     let mut targets = ScheduleTargets::default();
     targets.collect(dom.rebuild_to_vec());
     schedule_render(&mut dom, &mut targets);
+    targets.mount_toggle(&dom, targets.label("Toggle calendar"));
     schedule_dispatch(
         &dom,
         "click",
@@ -364,6 +375,7 @@ fn scheduling_datetime_input_forwards_live_confirmation_label_and_existing_value
     let mut defaults = ScheduleTargets::default();
     defaults.collect(default_dom.rebuild_to_vec());
     schedule_render(&mut default_dom, &mut defaults);
+    defaults.mount_toggle(&default_dom, defaults.label("Toggle calendar"));
     schedule_dispatch(
         &default_dom,
         "click",
@@ -423,3 +435,5 @@ fn scheduling_month_option_matches_initial_calendar_and_external_owner_update() 
     schedule_month(&dom, "November");
     assert_eq!(fixture.changes.get(), 0);
 }
+
+include!("datetime/temporal_surface_tests.rs");

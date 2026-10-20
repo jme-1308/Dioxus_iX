@@ -933,6 +933,18 @@ impl Domain {
         self.refresh();
         let presented = {
             let state = self.0.borrow();
+            // A selection may close its persistent host and open another field
+            // before the document delivers this same click. The departing
+            // host consumed that click; it must not dismiss the new surface.
+            if hosts.iter().any(|id| {
+                state.entries.get(id).is_some_and(|entry| {
+                    entry.kind.is_dropdown()
+                        && state.registry.is_connected(id)
+                        && !state.registry.is_open(id)
+                })
+            }) {
+                return false;
+            }
             state
                 .presented()
                 .into_iter()

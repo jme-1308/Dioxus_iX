@@ -46,6 +46,8 @@ impl TemporalMountHarness {
             let id=self.targets.attrs.get(&target.raw()).and_then(|attrs|attrs.get("id"));
             if let Some(index)=["mounted-date","mounted-time","mounted-combined"].iter().position(|expected|id.is_some_and(|id|id.as_str()==*expected)){
                 schedule_dispatch(&self.dom,"mounted",target,Box::new(ScheduleMount(self.focuses[index].clone())));
+            } else if id.is_some_and(|id| id.ends_with("-toggle")) {
+                self.targets.mount_toggle(&self.dom,target);
             }
         }
         schedule_render(&mut self.dom,&mut self.targets);
@@ -63,7 +65,8 @@ fn temporal_mount_callbacks_receive_each_native_handle_after_internal_registrati
     let mut h=TemporalMountHarness::new();let mut delivered=h.data.deliveries.borrow().clone();delivered.sort_unstable();assert_eq!(delivered,[0,1,2]);
     assert_eq!(h.data.nodes.borrow().len(),3);h.focus_current();
     assert_eq!(h.focuses.each_ref().map(|calls|calls.get()),[1,1,1],"consumer handles focus the three respective native inputs");
-    assert!(!dioxus_ssr::render(&h.dom).contains("ix-temporal-popover"),"input focus does not open a picker");
+    let html=dioxus_ssr::render(&h.dom);
+    for id in ["mounted-date","mounted-time","mounted-combined"]{assert!(!temporal_surface_open(&html,id),"input focus does not open a picker");}
 }
 #[test]
 fn temporal_mount_owner_and_value_rerenders_keep_handles_until_actual_remount(){
@@ -85,7 +88,7 @@ fn temporal_mount_consumer_callbacks_preserve_pointer_range_handoff(){
     schedule_dispatch(&h.dom,"click",calendar,Box::new(()));schedule_render(&mut h.dom,&mut h.targets);
     let selection=h.targets.label("21 October 2026");schedule_dispatch(&h.dom,"click",selection,Box::new(()));schedule_render(&mut h.dom,&mut h.targets);
     let html=dioxus_ssr::render(&h.dom);
-    assert!(!html.contains("id=\"mounted-date-picker\""));assert!(html.contains("id=\"mounted-time-picker\""),"range handoff still opens the next input picker");
+    assert!(!temporal_surface_open(&html,"mounted-date"));assert!(temporal_surface_open(&html,"mounted-time"),"range handoff still opens the next input picker");
     assert_eq!(h.focuses.each_ref().map(|calls|calls.get()),[0,1,0],"existing handoff uses the internally registered input handle");
     assert_eq!(h.data.deliveries.borrow().len(),3);
 }
