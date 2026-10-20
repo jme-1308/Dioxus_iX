@@ -128,6 +128,8 @@ mod progress_transfer_review;
 mod release_news_review;
 #[path = "dioxus_first_probe/release_popover_review.rs"]
 mod release_popover_review;
+#[path = "dioxus_first_probe/search_focus_review.rs"]
+mod search_focus_review;
 #[path = "dioxus_first_probe/select_direction_review.rs"]
 mod select_direction_review;
 #[path = "dioxus_first_probe/select_item_review.rs"]
@@ -390,6 +392,9 @@ fn Preview() -> Element {
     }
     if scope == "?paneequipment" {
         return rsx! { pane_equipment_review::PaneEquipmentPreview {} };
+    }
+    if scope == "?searchfocus" {
+        return rsx! { search_focus_review::SearchFocusReview {} };
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };

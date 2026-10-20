@@ -3150,7 +3150,7 @@ impl ExpandingSearchState {
 ///
 /// Input history controls the clear button and whether blur collapses the field;
 /// an initial or externally supplied value does not expand it. Expansion focuses
-/// the retained native input after 300ms. Values remain consumer-controlled.
+/// the retained native input after rendering. Values remain consumer-controlled.
 /// `disabled` and the Enter `onsearch` callback are Rust extensions to source iX.
 #[component]
 pub fn ExpandingSearch(
@@ -3169,16 +3169,9 @@ pub fn ExpandingSearch(
 ) -> Element {
     let mut state = use_signal(ExpandingSearchState::default);
     let mut input_ref = use_signal(|| None::<Rc<MountedData>>);
-    let alive = use_hook(|| Rc::new(std::cell::Cell::new(true)));
-    let cleanup = alive.clone();
-    use_drop(move || cleanup.set(false));
-    let focus_input = use_callback(move |delay_ms: u64| {
-        let alive = alive.clone();
+    let focus_input = use_callback(move |()| {
         spawn(async move {
-            if delay_ms > 0 {
-                futures_timer::Delay::new(std::time::Duration::from_millis(delay_ms)).await;
-            }
-            if !alive.get() {
+            if disabled || !state.peek().expanded {
                 return;
             }
             let node = input_ref.peek().clone();
@@ -3212,7 +3205,10 @@ pub fn ExpandingSearch(
                     variant: if expanded { crate::ButtonVariant::Tertiary } else { variant },
                     icon_color: expanded.then(|| "--si-sys-color-text-primary".to_string()),
                     label: search_label, tabindex: if expanded { -1 } else { 0 }, aria_expanded: expanded,
-                    onclick: move |_| { state.write().expand(); focus_input.call(300); },
+                    onclick: move |_| {
+                        state.write().expand();
+                        dioxus::core::queue_effect(move || focus_input.call(()));
+                    },
                 }
             }
             div { class: "ix-search-input-container", "data-expanded": expanded.to_string(),
@@ -3233,7 +3229,11 @@ pub fn ExpandingSearch(
                         crate::IconButton { class: "ix-search-button ix-search-clear", disabled,
                             variant: crate::ButtonVariant::SubtleTertiary, size: crate::ButtonIconSize::Sixteen,
                             label: aria_label_clear_icon_button, icon: "clear",
-                            onclick: move |_| { state.write().clear(); onvaluechange.call(String::new()); focus_input.call(0); },
+                            onclick: move |_| {
+                                state.write().clear();
+                                onvaluechange.call(String::new());
+                                dioxus::core::queue_effect(move || focus_input.call(()));
+                            },
                         }
                     }
                 }
