@@ -26,6 +26,7 @@ mod composition;
 mod date_dropdown_review;
 mod datetime;
 mod datetime_scenarios;
+mod demo_images;
 mod dialog_scenarios;
 mod dialogs;
 mod document_workspace;

@@ -15,6 +15,8 @@ mod asset_properties_review;
 mod asset_workspace_review;
 #[path = "dioxus_first_probe/breadcrumb_workflow_review.rs"]
 mod breadcrumb_workflow_review;
+#[path = "dioxus_first_probe/bundled_images_review.rs"]
+mod bundled_images_review;
 #[path = "dioxus_first_probe/card_collections_review.rs"]
 mod card_collections_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
@@ -281,6 +283,9 @@ fn Preview() -> Element {
     }
     if scope == "?dropdownbutton" {
         return rsx! { dropdown_button_review::DropdownButtonPreview {} };
+    }
+    if scope == "?bundledimages" {
+        return rsx! { bundled_images_review::BundledImagesPreview {} };
     }
     if scope == "?temporalforms" {
         return rsx! { temporal_work_order_review::TemporalWorkOrderPreview {} };

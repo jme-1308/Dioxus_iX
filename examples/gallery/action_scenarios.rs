@@ -92,7 +92,7 @@ pub fn ActionScenario(name: String) -> Element {
         "avatar" => rsx! { Avatar {} },
         "avatar-initials" => rsx! { Avatar { initials: "JD" } },
         "avatar-image" => {
-            rsx! { Avatar { image: "https://www.gravatar.com/avatar/00000000000000000000000000000000" } }
+            rsx! { Avatar { image: super::demo_images::avatar_image() } }
         }
         "buttons" => rsx! { ButtonPair { variant: ButtonVariant::Primary } },
         "button-secondary"

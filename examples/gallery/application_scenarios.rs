@@ -56,7 +56,11 @@ fn source_switch_config() -> AppSwitchConfig {
             id: id.into(),
             name: name.into(),
             description: format!("Example description for {description}"),
-            icon_src: "https://www.svgrepo.com/show/530661/genetic-data.svg".into(),
+            icon_src: if id == "demo-app-1" {
+                super::demo_images::floor_app_icon()
+            } else {
+                super::demo_images::calculator_app_icon()
+            },
             url: "https://ix.siemens.io/".into(),
             target: "_self".into(),
         })
@@ -73,7 +77,7 @@ fn SourceHeaderActions(
     rsx! {
         if full { for number in 1..=3 { IconButton { icon: "checkboxes", label: format!("Button {number}"), variant: ButtonVariant::Tertiary, onclick: move |_| onaction.call(format!("Button {number}")) } } }
         DropdownButton { label: "Select config", variant: ButtonVariant::SubtleTertiary,
-            for number in 1..=3 { DropdownItem { label: format!("Config {number}"), onclick: move |_| onaction.call(format!("Config {number}")) } }
+            for number in 1..=3 { DropdownItem { label: format!("Config {number}"), onitemclick: move |_| onaction.call(format!("Config {number}")) } }
         }
         div { class: "application-source-header-avatar",
             MenuAvatar { top: if full { "John Doe" } else { "User" }, bottom: full.then(|| "Administrator".to_string()), hide_logout_button: true,
