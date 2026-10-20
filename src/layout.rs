@@ -51,20 +51,19 @@ pub fn Card(
     #[props(default)] selected: bool,
     #[props(default)] passive: bool,
     #[props(default)] class: String,
+    #[props(default)] id: Option<String>,
     #[props(default = "Select card".to_string())] aria_label: String,
     #[props(default)] onclick: EventHandler<MouseEvent>,
     #[props(default)] onselect: EventHandler<()>,
 ) -> Element {
-    if passive {
-        rsx! { article { class: "ix-card ix-card-{variant.class()} {class}", "data-selected": selected, "data-passive": true, {children} } }
-    } else {
-        rsx! { article { class: "ix-card ix-card-{variant.class()} {class}", role: "group", "data-selected": selected, "data-passive": false,
+    rsx! { article { id, class: "ix-card ix-card-{variant.class()} {class}", role: (!passive).then_some("group"), "data-selected": selected, "data-passive": passive,
+        if !passive {
             button { class: "ix-card-select", r#type: "button", "aria-label": aria_label, "aria-pressed": selected,
                 onclick: move |event| { onclick.call(event); onselect.call(()); }
             }
-            div { class: "ix-card-body", {children} }
-        } }
-    }
+        }
+        div { class: "ix-card-body", {children} }
+    } }
 }
 
 /// Standard card content inset.
@@ -124,42 +123,7 @@ pub fn Tile(
     } }
 }
 
-/// Compact keyboard-operable action card.
-#[component]
-pub fn ActionCard(
-    heading: String,
-    #[props(default)] subheading: Option<String>,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] variant: CardVariant,
-    #[props(default)] selected: bool,
-    #[props(default)] passive: bool,
-    #[props(default)] onclick: EventHandler<MouseEvent>,
-) -> Element {
-    rsx! { button { class: "ix-card ix-card-{variant.class()} ix-action-card", r#type: "button", disabled: passive, "aria-pressed": selected, "data-selected": selected, onclick: move |event| onclick.call(event),
-        if let Some(icon) = icon { Icon { name: icon } } strong { "{heading}" }
-        if let Some(subheading) = subheading { span { class: "ix-card-subheading", "{subheading}" } }
-    } }
-}
-
-/// Notification card with expandable details.
-#[component]
-pub fn PushCard(
-    heading: String,
-    children: Element,
-    #[props(default)] subheading: Option<String>,
-    #[props(default)] notification: Option<String>,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] variant: CardVariant,
-    #[props(default)] expanded: Option<bool>,
-    #[props(default)] default_expanded: bool,
-    #[props(default)] onexpand: EventHandler<bool>,
-) -> Element {
-    rsx! { Card { variant, passive: true,
-        CardTitle { if let Some(icon) = icon { Icon { name: icon } } "{heading}" }
-        CardContent { if let Some(text) = notification { strong { class: "ix-push-notification", "{text}" } } if let Some(text) = subheading { p { class: "ix-card-subheading", "{text}" } } }
-        CardAccordion { expanded, default_expanded, onexpand, {children} }
-    } }
-}
+pub use crate::task_cards::{ActionCard, ActionCardProps, PushCard, PushCardProps};
 
 /// Application main content inset.
 #[component]
@@ -1113,6 +1077,8 @@ pub(crate) const STYLES: &str = r#"
 .ix-event-row[data-animated=true]{animation:ix-event-row-enter .15s ease-out}
 @keyframes ix-event-row-enter{from{opacity:.6;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 @media(prefers-reduced-motion:reduce){.ix-event-row[data-animated=true]{animation:none}}
+
+.ix-card[data-passive=true]>.ix-card-body{pointer-events:auto}
 
 "#;
 

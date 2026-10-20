@@ -94,6 +94,7 @@ mod select_visual_styles;
 mod slider_styles;
 mod spinner_styles;
 mod split_button;
+mod task_cards;
 pub mod theme;
 mod toggle_button_styles;
 mod toggle_styles;

@@ -82,6 +82,8 @@ mod service_request_review;
 mod split_actions_review;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
 mod tab_exit_review;
+#[path = "dioxus_first_probe/task_cards_review.rs"]
+mod task_cards_review;
 #[path = "dioxus_first_probe/text_control_method_review.rs"]
 mod text_control_method_review;
 #[path = "dioxus_first_probe/toast_lifetime_review.rs"]
@@ -206,6 +208,9 @@ fn Preview() -> Element {
     }
     if scope == "?equipmentevents" {
         return rsx! { equipment_events_review::EquipmentEventsPreview {} };
+    }
+    if scope == "?taskcards" {
+        return rsx! { task_cards_review::TaskCardsPreview {} };
     }
     if scope == "?gridnumeric" {
         return rsx! { grid_numeric_values_review::GridNumericValuesPreview {} };
