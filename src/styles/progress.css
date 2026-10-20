@@ -147,3 +147,9 @@
   .ix-theme .ix-progress-fill,
   .ix-theme .ix-progress-circle-fill { transition: none; }
 }
+
+/* Composed helpers and the existing shared tooltip; default helper paint stays above. */
+.ix-theme .ix-progress-helper-content { min-width: 0; overflow-wrap: anywhere; }
+.ix-theme .ix-progress-helper-composed { flex-wrap: wrap; }
+.ix-theme .ix-progress-helper-composed > .ix-progress-helper-content { flex: 1 1 100%; }
+.ix-theme .ix-progress-helper-tooltip .ix-progress-helper { margin: 0; color: inherit; }

@@ -106,6 +106,8 @@ mod pagination_workflow_review;
 mod pane_equipment_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
 mod pane_layout_review;
+#[path = "dioxus_first_probe/progress_transfer_review.rs"]
+mod progress_transfer_review;
 #[path = "dioxus_first_probe/release_popover_review.rs"]
 mod release_popover_review;
 #[path = "dioxus_first_probe/select_direction_review.rs"]
@@ -416,6 +418,9 @@ fn Preview() -> Element {
     }
     if scope == "?menufocus" {
         return rsx! { menu_focus_review::MenuFocusPreview {} };
+    }
+    if scope == "?progresstransfer" {
+        return rsx! { progress_transfer_review::ProgressTransferPreview {} };
     }
     if scope == "?releasepopover" {
         return rsx! { release_popover_review::ReleasePopoverPreview {} };

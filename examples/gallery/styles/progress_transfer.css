@@ -1,0 +1,28 @@
+.progress-transfer-example{min-width:0;max-width:100%;margin-bottom:48px}
+.progress-transfer-example .transfer-intro{max-width:72ch;line-height:1.55}
+.progress-transfer-example .transfer-preparation{max-width:480px;min-width:0;margin:20px 0}
+.progress-transfer-example .transfer-option{display:inline-flex;align-items:center;gap:8px;max-width:100%;font-size:14px;line-height:20px;margin-bottom:24px}
+.progress-transfer-example .transfer-option input{width:16px;height:16px;flex:none;margin:0;accent-color:var(--ix-color-primary)}
+.progress-transfer-example .transfer-option input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}
+.progress-transfer-example .transfer-progress-section{max-width:800px;min-width:0;margin-bottom:24px}
+.progress-transfer-example .transfer-controls{display:flex;flex-direction:column;gap:16px;width:100%;min-width:0;max-width:100%;color:var(--ix-color-text);font:14px/20px var(--ix-font)}
+.progress-transfer-example .transfer-note{width:100%;max-width:480px;min-width:0}
+.progress-transfer-example .transfer-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.progress-transfer-example .transfer-actions>.ix-button{max-width:100%;white-space:normal;overflow-wrap:anywhere;height:auto;min-height:32px}
+.progress-transfer-example .transfer-tooltip-hint{margin:12px 0 20px;font-size:14px;line-height:20px;color:var(--ix-color-text-secondary)}
+.progress-transfer-example .transfer-controls-outside{min-width:0;max-width:100%}
+.progress-transfer-example .transfer-details{display:flex;flex-direction:column;gap:4px;min-width:0;max-width:100%;color:inherit;overflow-wrap:anywhere}
+.progress-transfer-example .transfer-status{max-width:72ch;margin:16px 0 28px;font-size:14px;line-height:20px;color:var(--ix-color-text);overflow-wrap:anywhere}
+.progress-transfer-example h3{margin:28px 0 12px;font-size:20px;line-height:28px}
+.progress-transfer-example .transfer-queue{list-style:none;margin:0 0 32px;padding:0;max-width:800px;min-width:0}
+.progress-transfer-example .transfer-queue>li{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px 16px;min-width:0;padding:12px 0;border-bottom:1px solid var(--ix-color-border)}
+.progress-transfer-example .transfer-queue>li>div{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 16px;min-width:0;overflow-wrap:anywhere}
+.progress-transfer-example .transfer-queue strong{font-size:16px;line-height:24px}
+.progress-transfer-example .transfer-queue span{font-size:14px;line-height:20px;color:var(--ix-color-text-secondary)}
+.progress-transfer-example .transfer-records{width:100%;max-width:800px;table-layout:fixed;border-collapse:collapse;font-size:14px;line-height:20px;color:var(--ix-color-text)}
+.progress-transfer-example .transfer-records caption{text-align:start;font-weight:600;font-size:20px;line-height:28px;padding-bottom:12px}
+.progress-transfer-example .transfer-records th,.progress-transfer-example .transfer-records td{padding:8px;text-align:start;vertical-align:top;border-bottom:1px solid var(--ix-color-border);overflow-wrap:anywhere;white-space:pre-wrap}
+.progress-transfer-example .transfer-records thead th{background:var(--ix-color-surface-1)}
+.progress-transfer-example .transfer-records th:first-child{width:30%}
+.progress-transfer-example .transfer-records th:nth-child(2){width:16%}
+@media(max-width:576px){.progress-transfer-example .transfer-actions{align-items:stretch}.progress-transfer-example .transfer-records th,.progress-transfer-example .transfer-records td{padding:8px 4px}}

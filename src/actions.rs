@@ -675,8 +675,11 @@ pub fn normalize_progress(value: f64, min: f64, max: f64) -> f64 {
 
 /// Determinate linear or circular progress with semantic status and helper text.
 /// Values are normalized to 0–100 for both paint and accessibility. Invalid
-/// ranges render empty. Tooltip mode uses a native title; the helper remains
-/// available as the progress bar's accessible description.
+/// ranges render empty. Composed helpers render alongside `helper_text` or alone.
+/// Tooltip mode uses the shared styled tooltip when `helper_text` is nonempty;
+/// content-only helpers stay inline. Keep independent actions/inputs inline,
+/// rather than inside the noninteractive tooltip. The root defaults to tabindex
+/// -1; opt into ordinary Tab navigation or use its mounted handle when useful.
 #[component]
 pub fn ProgressIndicator(
     #[props(default)] value: f64,
@@ -688,8 +691,14 @@ pub fn ProgressIndicator(
     #[props(default)] text_alignment: TextAlignment,
     #[props(default)] show_text_as_tooltip: bool,
     #[props(default)] class: String,
+    #[props(default)] id: Option<String>,
+    #[props(default = -1)] tabindex: i64,
+    #[props(default)] onmounted: Option<EventHandler<MountedEvent>>,
     label: Option<String>,
     helper_text: Option<String>,
+    /// Additional Rust helper content. Use inline mode for independent controls.
+    #[props(default)]
+    helper_content: Option<Element>,
     children: Option<Element>,
 ) -> Element {
     let percent = normalize_progress(value, min, max);
@@ -702,15 +711,47 @@ pub fn ProgressIndicator(
         ProgressStatus::Paused => Some("circle-pause"),
         _ => None,
     };
-    let title = if show_text_as_tooltip {
-        helper_text.clone()
+    static NEXT_HELPER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    let helper_id = use_hook(|| {
+        format!(
+            "ix-progress-helper-{}",
+            NEXT_HELPER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    let tooltip = crate::use_tooltip(helper_id.clone());
+    let binding = crate::use_tooltip_anchor(tooltip.clone(), format!("{helper_id}-anchor"));
+    let tooltip_mode =
+        show_text_as_tooltip && helper_text.as_ref().is_some_and(|text| !text.is_empty());
+    let composed = helper_content.is_some();
+    let description = (tooltip_mode || composed).then(|| helper_id.clone());
+    let mount_tooltip = binding.onmounted;
+    // Preserve the plain helper's existing markup, including an explicitly empty
+    // string. With composed content, an empty string leaves the slot on its own.
+    let inline_text = helper_text
+        .clone()
+        .filter(|text| !composed || !text.is_empty());
+    let helper = if let Some(helper) = inline_text {
+        rsx! { div { class: if composed { "ix-progress-helper ix-progress-helper-composed" } else { "ix-progress-helper" },
+            if let Some(name) = status_icon { crate::Icon { name: name.to_string(), size: 16 } }
+            span { class: "ix-progress-helper-text", "{helper}" }
+            if let Some(content) = helper_content {
+                div { id: (!tooltip_mode).then(|| helper_id.clone()), class: "ix-progress-helper-content", {content} }
+            }
+        } }
+    } else if let Some(content) = helper_content {
+        rsx! { div { id: helper_id.clone(), class: "ix-progress-helper-content", {content} } }
     } else {
-        None
+        VNode::empty()
     };
     let accessible_label = label.clone().unwrap_or_else(|| "Progress".into());
     rsx! { div {
         class: "ix-progress ix-progress-{progress_type.as_str()} ix-progress-{size.as_str()} ix-progress-status-{status.as_str()} ix-progress-text-{text_alignment.as_str()} {class}",
-        style: "text-align:{text_alignment.as_str()};--ix-progress-size:{size.pixels()}px", title,
+        id, tabindex, "aria-describedby": description,
+        style: "text-align:{text_alignment.as_str()};--ix-progress-size:{size.pixels()}px",
+        onmounted: move |event: MountedEvent| { mount_tooltip.call(event.clone()); if let Some(handler) = onmounted { handler.call(event); } },
+        onresize: binding.onresize, onvisible: binding.onvisible,
+        onmouseenter: binding.onmouseenter, onmouseleave: binding.onmouseleave,
+        onfocusin: binding.onfocusin, onfocusout: binding.onfocusout, onkeydown: binding.onkeydown,
         if let Some(label) = label { div { class: "ix-progress-label", "{label}" } }
         div { class: "ix-progress-content",
             if progress_type == ProgressType::Linear {
@@ -733,12 +774,11 @@ pub fn ProgressIndicator(
                 if !matches!(size, ProgressSize::Lg | ProgressSize::Xl) { if let Some(children) = children { span { class: "ix-progress-value", {children} } } }
             }
         }
-        if !show_text_as_tooltip { if let Some(helper) = helper_text {
-            div { class: "ix-progress-helper",
-                if let Some(name) = status_icon { crate::Icon { name: name.to_string(), size: 16 } }
-                span { class: "ix-progress-helper-text", "{helper}" }
+        if tooltip_mode {
+            crate::TooltipFor { id: helper_id, controller: tooltip, placement: crate::TooltipPlacement::Bottom,
+                show_delay: 500, class: "ix-progress-helper-tooltip", {helper}
             }
-        } }
+        } else { {helper} }
     } }
 }
 
