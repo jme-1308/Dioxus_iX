@@ -1984,6 +1984,7 @@ fn virtual_item_enter_and_space_deliver_one_registered_rust_action_in_both_modes
             mode,
             ..Fixture::default()
         });
+        let trigger = mount_trigger_mock(&mut h, "Menu");
         for (index, key) in [Key::Enter, Key::Character(" ".into())]
             .into_iter()
             .enumerate()
@@ -1993,6 +1994,7 @@ fn virtual_item_enter_and_space_deliver_one_registered_rust_action_in_both_modes
             }
             h.key("Menu", Key::Home);
             assert_eq!(selected_label(&h.context()).unwrap(), "Alpha");
+            let prior_focus_calls = trigger.calls.borrow().len();
             h.key("Menu", key);
             assert_eq!(
                 h.config.borrow().item_requests,
@@ -2003,6 +2005,12 @@ fn virtual_item_enter_and_space_deliver_one_registered_rust_action_in_both_modes
                 h.config.borrow().native_clicks,
                 0,
                 "keyboard action does not fabricate a MouseEvent"
+            );
+            assert!(!*h.context().open.peek());
+            assert_eq!(
+                trigger.calls.borrow().len(),
+                prior_focus_calls + 1,
+                "keyboard action returns focus to the surviving trigger"
             );
         }
     }

@@ -2593,7 +2593,7 @@ fn direct_key(
                 DropdownCloseBehavior::Both | DropdownCloseBehavior::Inside
             );
             if close && event.default_action_enabled() {
-                owner.request(false, Reason::Keyboard, false);
+                owner.request(false, Reason::Keyboard, true);
             }
         }
     }

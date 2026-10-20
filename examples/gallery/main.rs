@@ -31,6 +31,7 @@ mod filter_reset_review;
 mod filter_state_review;
 mod form_scenarios;
 mod forms;
+mod grid_cell_renderers;
 mod grid_scenarios;
 mod grid_typed_editors;
 mod grid_worklist;
@@ -228,6 +229,7 @@ fn Gallery() -> Element {
         style { {grid_scenarios::STYLES} }
         style { {grid_worklist::STYLES} }
         style { {grid_typed_editors::STYLES} }
+        style { {grid_cell_renderers::STYLES} }
         style { {chart_workflows::STYLES} }
         style { {service_request::STYLES} }
         IxTheme {
@@ -277,7 +279,7 @@ fn Gallery() -> Element {
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
-                        GalleryPage::DataGrid => rsx! { grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
+                        GalleryPage::DataGrid => rsx! { grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
                         GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
                         GalleryPage::Application => rsx! { header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
