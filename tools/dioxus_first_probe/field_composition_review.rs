@@ -2,8 +2,7 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
-#[path = "../../examples/gallery/custom_field_workflow.rs"]
-mod gallery_field;
+use crate::custom_field_workflow as gallery_field;
 
 #[component]
 pub fn FieldCompositionPreview() -> Element {

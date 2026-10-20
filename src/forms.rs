@@ -326,11 +326,36 @@ pub fn FieldWrapper(
     /// Independent content beside the helper text, outside the native label.
     #[props(default)]
     bottom_right: Option<Element>,
+    /// Show nonblank helper/validation feedback on hover or focus of this field,
+    /// including its composed label and footer. Native controls retain their
+    /// caller-provided descriptions; `helper_id` identifies the feedback in
+    /// either presentation mode.
+    #[props(default)]
+    show_text_as_tooltip: bool,
     #[props(default)] state: FieldState,
 ) -> Element {
-    let helper = rsx! { HelperText { id: helper_id, helper_text, invalid_text, valid_text, info_text, warning_text, state } };
+    let root_id = field_id(None);
+    let panel_id = format!("{root_id}-feedback-tooltip");
+    let tooltip = crate::use_tooltip(panel_id.clone());
+    let anchor = crate::use_tooltip_anchor(tooltip.clone(), root_id.clone());
+    let feedback = field_feedback(
+        state,
+        helper_text,
+        invalid_text,
+        valid_text,
+        info_text,
+        warning_text,
+    );
+    let helper = if !show_text_as_tooltip {
+        rsx! { if let Some(feedback) = feedback.clone() { {render_field_feedback(feedback, helper_id.clone())} } }
+    } else {
+        rsx! {}
+    };
     rsx! {
-        div { class: "ix-field {state.class()}",
+        div { id: root_id, class: "ix-field {state.class()}",
+            onmounted: anchor.onmounted, onresize: anchor.onresize, onvisible: anchor.onvisible,
+            onmouseenter: anchor.onmouseenter, onmouseleave: anchor.onmouseleave,
+            onfocusin: anchor.onfocusin, onfocusout: anchor.onfocusout, onkeydown: anchor.onkeydown,
             if let Some(content) = label_content {
                 FieldLabel { html_for, required, invalid: state == FieldState::Invalid, {content} }
             } else if let Some(text) = label {
@@ -343,6 +368,14 @@ pub fn FieldWrapper(
                     div { class: "ix-field-bottom-right", {content} }
                 }
             } else { {helper} }
+            if show_text_as_tooltip {
+                if let Some(feedback) = feedback {
+                    crate::TooltipFor { id: panel_id, controller: tooltip, placement: crate::TooltipPlacement::Bottom, show_delay: 500,
+                        class: "ix-field-feedback-tooltip",
+                        {render_field_feedback(feedback, helper_id)}
+                    }
+                }
+            }
         }
     }
 }
@@ -364,13 +397,14 @@ pub fn CustomField(
     #[props(default)] warning_text: Option<String>,
     #[props(default)] helper_id: Option<String>,
     #[props(default)] bottom_right: Option<Element>,
+    #[props(default)] show_text_as_tooltip: bool,
     #[props(default)] state: FieldState,
     #[props(default)] class: String,
 ) -> Element {
     let id = field_id(None);
     let state = crate::form_control::use_custom_field_validation(state, &class);
     rsx! { div { id, class: "ix-custom-field {class}",
-        FieldWrapper { label, label_content, html_for, required, helper_text, invalid_text, valid_text, info_text, warning_text, helper_id, bottom_right, state,
+        FieldWrapper { label, label_content, html_for, required, helper_text, invalid_text, valid_text, info_text, warning_text, helper_id, bottom_right, show_text_as_tooltip, state,
             div { "data-custom-control": "true", {children} }
         }
     } }
@@ -3582,6 +3616,10 @@ pub(crate) const STYLES: &str = include_str!("styles/forms.css");
 #[cfg(test)]
 #[path = "forms/field_composition_tests.rs"]
 mod field_composition_tests;
+
+#[cfg(test)]
+#[path = "forms/field_tooltip_tests.rs"]
+mod field_tooltip_tests;
 
 #[cfg(test)]
 mod tests;

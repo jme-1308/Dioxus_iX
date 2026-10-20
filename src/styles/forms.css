@@ -41,3 +41,5 @@
 .ix-theme .ix-select-native{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;inset-inline-start:0;bottom:1rem}.ix-theme .ix-select-backdrop{position:fixed;inset:0;border:0;background:transparent;z-index:90;cursor:default}
 
 .ix-theme .ix-field-composed-footer{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:.375rem .75rem;min-width:0}.ix-theme .ix-field-composed-footer>.ix-helper{flex:1 1 10rem;min-width:0}.ix-theme .ix-field-composed-footer>.ix-field-bottom-right{display:flex;flex:0 1 auto;flex-wrap:wrap;align-items:center;gap:.375rem;min-width:0;max-width:100%;margin-inline-start:auto}
+
+.ix-theme .ix-field-feedback-tooltip .ix-helper{color:inherit}

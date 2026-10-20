@@ -26,7 +26,7 @@ fn FieldPreparation() -> Element {
 }
 
 #[component]
-fn FieldWorkspace(rich: bool, locked: bool) -> Element {
+fn FieldWorkspace(rich: bool, locked: bool, tooltip: bool) -> Element {
     let mut code = use_signal(String::new);
     let mut note = use_signal(String::new);
     let mut records = use_signal(BTreeMap::<String, String>::new);
@@ -94,6 +94,7 @@ fn FieldWorkspace(rich: bool, locked: bool) -> Element {
                 label: "Service identifier", label_content, bottom_right,
                 html_for: "field-composition-code", helper_id: "field-composition-feedback",
                 required: true, state,
+                show_text_as_tooltip: tooltip,
                 helper_text: "Use two uppercase letters, a hyphen and three digits.",
                 invalid_text: "Enter an identifier such as AB-123.",
                 valid_text: "Identifier format is valid.",
@@ -122,6 +123,7 @@ fn FieldWorkspace(rich: bool, locked: bool) -> Element {
         p { id: "field-composition-status", class: "field-composition-status", role: "status", "aria-live": "polite",
             "data-count": saved.len(), "data-code": current_code, "data-note": current_note,
             "data-state": state_name, "data-rich": rich, "data-locked": locked,
+            "data-tooltip": tooltip,
             "data-submissions": submissions(),
             "{message}"
         }
@@ -147,6 +149,7 @@ fn FieldWorkspace(rich: bool, locked: bool) -> Element {
 pub fn CustomFieldWorkflowExample() -> Element {
     let mut rich = use_signal(|| true);
     let mut locked = use_signal(|| false);
+    let mut tooltip = use_signal(|| false);
     let mut epoch = use_signal(|| 0_u64);
     rsx! {
         style { {STYLES} }
@@ -159,9 +162,11 @@ pub fn CustomFieldWorkflowExample() -> Element {
                     onchange: move |event| rich.set(event.checked()), } "Show the format in the label" }
                 label { input { id: "field-composition-lock", r#type: "checkbox", checked: locked(),
                     onchange: move |event| locked.set(event.checked()), } "Lock editing" }
+                label { input { id: "field-composition-tooltip", r#type: "checkbox", checked: tooltip(),
+                    onchange: move |event| tooltip.set(event.checked()), } "Show identifier feedback as a tooltip" }
             }
             for generation in [epoch()] {
-                FieldWorkspace { key: "field-workspace-{generation}", rich: rich(), locked: locked() }
+                FieldWorkspace { key: "field-workspace-{generation}", rich: rich(), locked: locked(), tooltip: tooltip() }
             }
             Button { id: "field-composition-reset", class: "field-composition-reset",
                 variant: ButtonVariant::Secondary, button_type: ButtonType::Button,

@@ -33,6 +33,8 @@ mod chip_workflows_review;
 mod content_columns_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
 mod cue_review;
+#[path = "../examples/gallery/custom_field_workflow.rs"]
+mod custom_field_workflow;
 #[path = "dioxus_first_probe/custom_validation_review.rs"]
 mod custom_validation_review;
 #[path = "dioxus_first_probe/descendant_review.rs"]
@@ -54,6 +56,8 @@ mod equipment_readings_review;
 mod external_work_order_review;
 #[path = "dioxus_first_probe/field_composition_review.rs"]
 mod field_composition_review;
+#[path = "dioxus_first_probe/field_tooltip_review.rs"]
+mod field_tooltip_review;
 #[path = "../examples/gallery/filter_keyboard_review.rs"]
 mod filter_keyboard_review;
 #[path = "dioxus_first_probe/filter_layout_review.rs"]
@@ -436,6 +440,9 @@ fn Preview() -> Element {
     }
     if scope == "?fieldcomposition" {
         return rsx! { field_composition_review::FieldCompositionPreview {} };
+    }
+    if scope == "?fieldtooltip" {
+        return rsx! { field_tooltip_review::FieldTooltipPreview {} };
     }
     if scope == "?releasepopover" {
         return rsx! { release_popover_review::ReleasePopoverPreview {} };
