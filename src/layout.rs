@@ -398,60 +398,9 @@ pub use crate::breadcrumb::{
 
 pub use crate::pagination::{Pagination, PaginationChangeEvent, PaginationLabels, PaginationProps};
 
-/// Collapsible collection of selectable [`GroupItem`] rows.
-#[component]
-pub fn Group(
-    header: String,
-    children: Element,
-    #[props(default)] subheader: Option<String>,
-    #[props(default)] expanded: Option<bool>,
-    #[props(default)] default_expanded: bool,
-    #[props(default)] onexpand: EventHandler<bool>,
-    #[props(default)] selected: Option<bool>,
-    #[props(default)] onselect: EventHandler<bool>,
-    #[props(default)] suppress_header_selection: bool,
-    #[props(default)] expand_on_header_click: bool,
-    #[props(default)] header_actions: Option<Element>,
-) -> Element {
-    let mut local = use_signal(|| default_expanded);
-    let mut local_selected = use_signal(|| false);
-    let is_selected = selected.unwrap_or(local_selected());
-    let mut disclosure = use_signal(|| None::<MountedEvent>);
-    let open = expanded.unwrap_or(local());
-    rsx! { section { class: "ix-group", onkeydown: move |event: KeyboardEvent| if event.key() == Key::Escape && open { event.prevent_default(); event.stop_propagation(); local.set(false); onexpand.call(false); let node = disclosure.peek().clone(); if let Some(node) = node { spawn(async move { let _ = node.set_focus(true).await; }); } },
-        div { class: "ix-group-header-row", "data-selected": is_selected,
-            button { class: "ix-group-header", r#type: "button", "aria-pressed": if suppress_header_selection { None } else { Some(is_selected.to_string()) }, "aria-expanded": if suppress_header_selection || expand_on_header_click { Some(open.to_string()) } else { None },
-                onclick: move |_| {
-                    if !suppress_header_selection { local_selected.set(!is_selected); onselect.call(!is_selected); }
-                    if suppress_header_selection || expand_on_header_click { local.set(!open); onexpand.call(!open); }
-                },
-                span { strong { "{header}" } if let Some(text) = subheader { small { "{text}" } } }
-            }
-            {header_actions}
-            button { class: "ix-group-expand", r#type: "button", "aria-label": format!("{} {header}", if open { "Collapse" } else { "Expand" }), "aria-expanded": open, onmounted: move |event| disclosure.set(Some(event)), onclick: move |_| { local.set(!open); onexpand.call(!open); }, span { class: "ix-chevron", "data-open": open, Icon { name: "chevron-down" } } }
-        }
-        div { class: "ix-group-content", hidden: !open, {children} }
-    } }
-}
-
-/// Parent-controlled selectable group row.
-#[component]
-pub fn GroupItem(
-    #[props(default)] text: String,
-    #[props(default)] children: Option<Element>,
-    #[props(default)] secondary_text: Option<String>,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] selected: bool,
-    #[props(default)] disabled: bool,
-    #[props(default)] onselect: EventHandler<()>,
-) -> Element {
-    if let Some(children) = children {
-        return rsx! { div { class: "ix-group-item ix-group-custom-item", {children} } };
-    }
-    rsx! { button { class: "ix-group-item", r#type: "button", disabled, "aria-pressed": selected, "data-selected": selected, onclick: move |_| onselect.call(()),
-        if let Some(icon) = icon { Icon { name: icon } } span { "{text}" } if let Some(text) = secondary_text { span { class: "ix-group-secondary", "{text}" } }
-    } }
-}
+pub use crate::groups::{
+    Group, GroupChange, GroupChangeRequest, GroupEntry, GroupItem, GroupItemProps, GroupProps,
+};
 
 /// Empty state alignment and density.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1033,6 +982,10 @@ pub(crate) const STYLES: &str = r#"
 .ix-content-header[data-variant=secondary] h1{font:var(--si-sys-typography-h4,20px/28px var(--ix-font));font-weight:600}
 .ix-content-header-title-line>h1,.ix-content-header-titles>p{overflow-wrap:anywhere;max-width:100%}.ix-content-header[data-ellipsis=false] .ix-content-header-title-line{flex-wrap:wrap}
 .ix-tile-header{gap:8px;flex-wrap:wrap;min-width:0}.ix-tile-header>span,.ix-tile-subheader,.ix-tile-content,.ix-tile-footer{min-width:0;overflow-wrap:anywhere}
+
+.ix-group-entry{display:contents}.ix-group-header-row[data-item-selected]{box-shadow:inset 2px 0 0 var(--ix-color-primary)}
+.ix-group-header-content{display:flex;align-items:center;gap:8px;min-width:0;overflow-wrap:anywhere}.ix-group-footer{padding:12px 16px;min-width:0;background:var(--ix-color-surface-1);overflow-wrap:anywhere}
+.ix-group-header-row{flex-wrap:wrap}.ix-group-header>span,.ix-group-item>span{min-width:0;overflow-wrap:anywhere}.ix-group-secondary{flex-shrink:0}
 
 "#;
 

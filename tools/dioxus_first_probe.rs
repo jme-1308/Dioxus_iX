@@ -60,6 +60,8 @@ mod header_group_review;
 mod header_tab_review;
 #[path = "dioxus_first_probe/icon_catalog_review.rs"]
 mod icon_catalog_review;
+#[path = "dioxus_first_probe/inspection_groups_review.rs"]
+mod inspection_groups_review;
 #[path = "dioxus_first_probe/item_order_review.rs"]
 mod item_order_review;
 #[path = "dioxus_first_probe/localized_date_review.rs"]
@@ -216,6 +218,9 @@ fn Preview() -> Element {
     }
     if scope == "?assetworkspace" {
         return rsx! { asset_workspace_review::AssetWorkspacePreview {} };
+    }
+    if scope == "?inspectiongroups" {
+        return rsx! { inspection_groups_review::InspectionGroupsPreview {} };
     }
     if scope == "?gridnumeric" {
         return rsx! { grid_numeric_values_review::GridNumericValuesPreview {} };
