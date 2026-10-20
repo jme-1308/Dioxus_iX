@@ -2524,6 +2524,10 @@ pub fn Select(
     #[props(default)]
     oninputchange: EventHandler<String>,
     #[props(default)] onixblur: EventHandler<()>,
+    /// Receives the visible native combobox after internal mounted-handle registration.
+    /// Use its Dioxus handle for focus, measurement and scrolling.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
 ) -> Element {
     let id = field_id(id);
     let surface_focus_mount = use_surface_focus_mount(id.clone());
@@ -2954,7 +2958,7 @@ pub fn Select(
                     "aria-required": required.to_string(), "aria-invalid": (state == FieldState::Invalid).to_string(),
                     "aria-describedby": describedby,
                     "aria-activedescendant": active_descendant,
-                    onmounted: move |event| { let node = event.data(); *method_input.borrow_mut() = Some(node.clone()); trigger_ref.set(Some(node)); if let Some(mount) = surface_focus_mount { mount.call(event); } },
+                    onmounted: move |event| { let node = event.data(); *method_input.borrow_mut() = Some(node.clone()); trigger_ref.set(Some(node)); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); },
                     onclick: move |_| if !read_only { overflow_open.set(false); if !open() { active.set(usize::MAX); open.set(true); } },
                     oninput: move |event| if !read_only { let text = event.value(); query.set(text.clone()); query_dirty.set(true); active.set(usize::MAX); overflow_open.set(false); open.set(true); oninputchange.call(text); },
                     onfocus: move |_| focused.set(true),

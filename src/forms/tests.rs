@@ -1457,3 +1457,8 @@ mod text_mount_tests {
     use super::*;
     include!("text_mount_tests.rs");
 }
+
+mod select_mount_tests {
+    use super::*;
+    include!("select_mount_tests.rs");
+}

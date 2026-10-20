@@ -110,6 +110,7 @@ fn WorkOrderFields(
     let mut draft = draft;
     // These native handles belong to this keyed field scope, including resets.
     let mut title_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut asset_input = use_signal(|| None::<Rc<MountedData>>);
     let mut quantity_input = use_signal(|| None::<Rc<MountedData>>);
     let mut notes_input = use_signal(|| None::<Rc<MountedData>>);
     let current = draft();
@@ -117,6 +118,9 @@ fn WorkOrderFields(
         div { class: "external-toolbar",
             Button { id: "external-edit-title", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
                 onclick: move |_| { if let Some(node) = title_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit title"
+            }
+            Button { id: "external-edit-asset", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
+                onclick: move |_| { if let Some(node) = asset_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit asset"
             }
             Button { id: "external-edit-quantity", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
                 onclick: move |_| { if let Some(node) = quantity_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit inspection points"
@@ -131,6 +135,7 @@ fn WorkOrderFields(
             }
             Select { id: "external-asset", label: "Asset", name: "asset", form: association.clone(), required: true, value: current.asset.clone(),
                 options: vec![SelectOption::new("motor-001", "Motor 001"), SelectOption::new("pump-002", "Pump 002")], allow_clear: true,
+                onmounted: move |event: MountedEvent| asset_input.set(Some(event.data())),
                 onvaluechange: move |value| draft.write().asset = value,
             }
             NumberInput { id: "external-quantity", label: "Inspection points", name: "quantity", form: association.clone(), min: 1.0, max: 20.0, step: 1.0, required: true, value: current.quantity.clone(),
