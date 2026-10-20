@@ -3240,7 +3240,4 @@ pub(crate) const STYLES: &str = r#"
 "#;
 
 #[cfg(test)]
-mod tests {
-    include!("application/tests.rs");
-    include!("menu_avatar_tests.rs");
-}
+mod tests;

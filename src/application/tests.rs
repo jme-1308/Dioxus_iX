@@ -4686,3 +4686,5 @@ fn popover_standard_controls_use_nearest_scope_and_expire_with_their_composition
         "retaining old mounted handles does not authorize stale focus"
     );
 }
+
+include!("../menu_avatar_tests.rs");
