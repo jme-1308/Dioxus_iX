@@ -104,6 +104,8 @@ mod operator_profile_review;
 mod pagination_workflow_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
 mod pane_layout_review;
+#[path = "dioxus_first_probe/release_popover_review.rs"]
+mod release_popover_review;
 #[path = "dioxus_first_probe/select_direction_review.rs"]
 mod select_direction_review;
 #[path = "dioxus_first_probe/select_method_review.rs"]
@@ -116,6 +118,8 @@ mod service_request_review;
 mod slider_content_review;
 #[path = "dioxus_first_probe/split_actions_review.rs"]
 mod split_actions_review;
+#[path = "../examples/gallery/svg_data_uri.rs"]
+mod svg_data_uri;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
 mod tab_exit_review;
 #[path = "dioxus_first_probe/task_cards_review.rs"]
@@ -407,6 +411,9 @@ fn Preview() -> Element {
     }
     if scope == "?menufocus" {
         return rsx! { menu_focus_review::MenuFocusPreview {} };
+    }
+    if scope == "?releasepopover" {
+        return rsx! { release_popover_review::ReleasePopoverPreview {} };
     }
     if scope == "?modal" {
         return rsx! { modal_focus_review::ModalFocusPreview {} };

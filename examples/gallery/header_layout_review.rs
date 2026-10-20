@@ -8,11 +8,17 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 use serde_json::{Value, json};
 
+use crate::svg_data_uri;
+
 const MAX_EVENTS: usize = 200;
 static NEXT_EVENT: AtomicU64 = AtomicU64::new(1);
 
-const APP_ICON_DATA_URL: &str = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%2300cccc'/%3E%3Cpath d='M7 12h10M12 7v10' stroke='%23001a1a' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E";
-const COMPANY_LOGO_DATA_URL: &str = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 24'%3E%3Crect x='1' y='2' width='94' height='20' rx='4' fill='%23162436' stroke='%2300cccc' stroke-width='1.5'/%3E%3Ctext x='48' y='15' text-anchor='middle' fill='%23e8eef5' font-family='sans-serif' font-size='10' font-weight='700'%3ENORTHGRID%3C/text%3E%3C/svg%3E";
+static APP_ICON_DATA_URL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    svg_data_uri::svg_data_uri(include_str!("assets/header-app-icon.svg"))
+});
+static COMPANY_LOGO_DATA_URL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    svg_data_uri::svg_data_uri(include_str!("assets/header-company-logo.svg"))
+});
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContainerMode {

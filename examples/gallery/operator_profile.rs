@@ -2,10 +2,14 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
+use crate::svg_data_uri;
+
 const INITIAL_NOTE: &str = "Inspect Motor 001";
 const INVALID_IMAGE: &str = "data:image/png;base64,not-a-valid-image";
 // An authored geometric badge, rather than a remote portrait or licensed asset.
-const BADGE_IMAGE: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23006673'/%3E%3Ccircle cx='16' cy='16' r='9' fill='%2300cccc'/%3E%3Cpath d='M11 16h10M16 11v10' stroke='%23000028' stroke-width='2'/%3E%3C/svg%3E";
+static BADGE_IMAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    svg_data_uri::svg_data_uri(include_str!("assets/operator-badge.svg"))
+});
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OperatorRecord {

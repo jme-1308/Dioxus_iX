@@ -32,6 +32,7 @@ struct MetadataFixture(Rc<MetadataFixtureState>);
 #[derive(Default)]
 struct MetadataFixtureState {
     popover: std::cell::Cell<Option<PopoverHandle>>,
+    anchored: std::cell::Cell<bool>,
     visible: std::cell::Cell<Option<Signal<bool>>>,
     id: RefCell<Option<Signal<String>>>,
     mounted: RefCell<Option<EventHandler<MountedEvent>>>,
@@ -43,9 +44,12 @@ impl PartialEq for MetadataFixture {
 }
 #[component]
 fn MetadataTrigger(popover: PopoverHandle, id: String, fixture: MetadataFixture) -> Element {
-    let mounted = use_popover_trigger_mount(popover, id.clone());
+    let anchored = fixture.0.anchored.get();
+    let binding = use_popover_trigger_registration(popover, id.clone(), anchored);
+    let mounted = binding.onmounted;
+    let style = anchored.then(|| binding.style());
     *fixture.0.mounted.borrow_mut() = Some(mounted);
-    rsx! { button { id, onmounted:mounted, "Custom trigger" } }
+    rsx! { button { id, style, onmounted:mounted, "Custom trigger" } }
 }
 fn metadata_fixture(fixture: MetadataFixture) -> Element {
     let popover = use_popover();
@@ -124,6 +128,87 @@ fn popover_surface_metadata_follows_registered_trigger_id_and_cleanup() {
         dom.render_immediate_to_vec();
     }
     assert!(node.surface_metadata().unwrap().trigger_id.is_empty());
+}
+
+#[test]
+fn popover_anchor_registration_restores_viewport_fallbacks_and_detach_centers_again() {
+    struct AnchorMount;
+    impl dioxus::html::RenderedElementBacking for AnchorMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_client_rect(
+            &self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = dioxus::html::MountedResult<dioxus::html::geometry::PixelsRect>,
+                    >,
+            >,
+        > {
+            Box::pin(async {
+                Ok(dioxus::html::geometry::PixelsRect::new(
+                    dioxus::html::geometry::euclid::Point2D::new(40., 40.),
+                    dioxus::html::geometry::euclid::Size2D::new(80., 32.),
+                ))
+            })
+        }
+    }
+    fn panel(dom: &VirtualDom) -> String {
+        dioxus_ssr::render(dom)
+            .split('<')
+            .find(|part| part.starts_with("div ") && part.contains("aria-label=\"Metadata panel\""))
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+    fn settle(dom: &mut VirtualDom) {
+        for _ in 0..4 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+        }
+    }
+    let fixture = MetadataFixture::default();
+    fixture.0.anchored.set(true);
+    let mut dom = VirtualDom::new_with_props(metadata_fixture, fixture.clone());
+    dom.rebuild_in_place();
+    let popover = fixture.0.popover.get().unwrap();
+    let node = popover.overlay.peek().clone().unwrap();
+    let initial = panel(&dom);
+    assert!(node.surface_metadata().unwrap().trigger_id.is_empty());
+    assert!(initial.contains("data-unanchored=\"true\""));
+    assert!(
+        initial.contains("position-anchor:auto;position-area:none;position-try-fallbacks:none")
+    );
+
+    let mounted = fixture.0.mounted.borrow().unwrap();
+    dom.in_scope(ScopeId::ROOT, || {
+        mounted.call(Event::new(Rc::new(MountedData::new(AnchorMount)), false));
+    });
+    settle(&mut dom);
+    let anchored = panel(&dom);
+    assert_eq!(
+        node.surface_metadata().unwrap().trigger_id,
+        "custom-popover-trigger"
+    );
+    assert!(!anchored.contains("data-unanchored"));
+    assert!(anchored.contains("position-anchor:--ix-popover-trigger-"));
+    assert!(anchored.contains("position-area:bottom"));
+    assert!(anchored.contains("position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline,--ix-popover-viewport"),
+        "the update must replace the old inline none, not rely on a stylesheet declaration");
+
+    dom.in_scope(ScopeId::ROOT, || {
+        fixture.0.visible.get().unwrap().set(false)
+    });
+    settle(&mut dom);
+    let detached = panel(&dom);
+    assert!(node.surface_metadata().unwrap().trigger_id.is_empty());
+    assert!(detached.contains("data-unanchored=\"true\""));
+    assert!(
+        detached.contains("position-anchor:auto;position-area:none;position-try-fallbacks:none")
+    );
 }
 
 #[test]

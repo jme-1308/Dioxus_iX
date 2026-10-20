@@ -1,4 +1,4 @@
-//! Interactive, logo-free iX port review examples. All authored assets are Rust.
+//! Interactive, logo-free iX port review examples with bundled CSS/SVG assets.
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
@@ -91,6 +91,7 @@ mod slider_review;
 mod source_examples;
 mod spinner_review;
 mod split_work_orders;
+mod svg_data_uri;
 mod tabs_review;
 mod temporal_work_order;
 mod text_commit_review;

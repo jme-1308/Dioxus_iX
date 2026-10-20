@@ -2,6 +2,8 @@
 //! non-forwarding spy. Trusted defaults and real destinations require browser QA.
 use dioxus::prelude::*;
 use dioxus_ix::*;
+#[path = "../examples/gallery/svg_data_uri.rs"]
+mod svg_data_uri;
 use std::time::Duration;
 
 #[path = "../src/dom_query.rs"]

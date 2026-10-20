@@ -4,7 +4,11 @@ use dioxus_ix::*;
 use serde_json::{Value, json};
 use std::time::Duration;
 
-const SYMBOL: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='8' fill='%2331566c'/%3E%3Cpath d='M11 12h18v16H11z' fill='white'/%3E%3Cpath d='M16 17h8v6h-8z' fill='%2331566c'/%3E%3C/svg%3E";
+use crate::svg_data_uri;
+
+static SYMBOL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    svg_data_uri::svg_data_uri(include_str!("assets/header-switch-symbol.svg"))
+});
 const TARGET_BASE: &str = "/?header-review-destination=";
 const REVIEW_STYLES: &str = include_str!("styles/header_switch_review.css");
 const DESTINATION_STYLES: &str = include_str!("styles/header_switch_review-destination.css");
@@ -109,7 +113,7 @@ fn configuration(settings: &ConfigSettings, populated: bool) -> AppSwitchConfig 
                     id: id.into(),
                     name: name.into(),
                     description: format!("Neutral {id} destination"),
-                    icon_src: SYMBOL.into(),
+                    icon_src: SYMBOL.as_str().into(),
                     url: format!("{TARGET_BASE}{id}"),
                     target: settings.target.clone(),
                 })

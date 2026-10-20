@@ -1665,8 +1665,10 @@ pub fn Popover(
     let anchored_style = anchor
         .as_ref()
         .map(|anchor| {
+            // The pinned interpreter preserves omitted inline declarations.
+            // Replace the centered panel's explicit `none` when an anchor appears.
             format!(
-                "position-anchor:{anchor};position-area:{}",
+                "position-anchor:{anchor};position-area:{};position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline,--ix-popover-viewport",
                 placement.as_str()
             )
         })

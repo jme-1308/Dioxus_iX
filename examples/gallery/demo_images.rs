@@ -1,10 +1,6 @@
 //! Developer-authored demo pictograms, bundled as readable SVG files.
 //! They contain no company marks, external references, fonts or scripts.
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-
-fn svg_data_uri(svg: &str) -> String {
-    format!("data:image/svg+xml;base64,{}", STANDARD.encode(svg))
-}
+use crate::svg_data_uri::svg_data_uri;
 
 /// Profile silhouette for the Avatar image-prop example.
 pub(crate) fn avatar_image() -> String {

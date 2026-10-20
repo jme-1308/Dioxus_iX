@@ -2,6 +2,8 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
+use crate::svg_data_uri;
+
 #[component]
 pub fn DialogExamples() -> Element {
     rsx! {
@@ -206,7 +208,9 @@ fn LoadingModalExample() -> Element {
     }
 }
 
-const RELEASE_IMAGE: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='160'%3E%3Crect fill='%232a2a4a' width='100%25' height='100%25'/%3E%3Ctext x='50%25' y='50%25' fill='%23e0e0e0' text-anchor='middle' dy='.3em' font-size='18'%3ERelease%20preview%3C/text%3E%3C/svg%3E";
+static RELEASE_IMAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    svg_data_uri::svg_data_uri(include_str!("assets/release-preview.svg"))
+});
 
 #[component]
 fn ReleasePopoverExample() -> Element {
@@ -217,7 +221,7 @@ fn ReleasePopoverExample() -> Element {
         Popover { popover, label: "Release highlights", placement: PopoverPlacement::Bottom, has_spike: true, close_on_click_outside: true,
             PopoverHeader { icon: "info", icon_color: "--ix-color-info", close_label: "Close popover",
                 additional_items: rsx! { Pill { variant: StatusVariant::Info, "New" } }, "Release highlights" }
-            PopoverImage { image: RELEASE_IMAGE, image_alt: "Release preview" }
+            PopoverImage { image: RELEASE_IMAGE.as_str(), image_alt: "Release preview" }
             PopoverContent { "Check out the new dashboard and improved performance metrics." }
             PopoverFooter { alignment: PopoverFooterAlignment::Vertical, start: rsx! { span { "v4.0.0" } },
                 Button { variant: ButtonVariant::Secondary, onclick: move |_| { outcome.set("Cancelled".into()); popover.hide(); }, "Cancel" }
