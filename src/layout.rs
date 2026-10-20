@@ -102,51 +102,9 @@ pub fn CardAccordion(
     } }
 }
 
-/// Layout of a card collection.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CardListStyle {
-    /// Cards wrap into multiple rows.
-    #[default]
-    Stack,
-    /// Cards stay in a horizontally scrollable row.
-    Scroll,
-}
-
-/// Responsive, collapsible card collection with stack and scroll layouts.
-/// `show_all_count` adds a show-all action; when activated all cards are revealed.
-#[component]
-pub fn CardList(
-    children: Element,
-    #[props(default)] label: Option<String>,
-    #[props(default)] list_style: CardListStyle,
-    #[props(default)] collapsed: Option<bool>,
-    #[props(default)] default_collapsed: bool,
-    #[props(default)] oncollapse: EventHandler<bool>,
-    #[props(default)] show_all_count: Option<usize>,
-    #[props(default)] onshowall: EventHandler<bool>,
-) -> Element {
-    let mut local = use_signal(|| default_collapsed);
-    let mut show_all = use_signal(|| false);
-    let is_collapsed = collapsed.unwrap_or(local());
-    rsx! { section { class: "ix-card-list", "data-scroll": list_style == CardListStyle::Scroll && !show_all(),
-        if let Some(label) = label {
-            div { class: "ix-card-list-header",
-                button { class: "ix-disclosure-button", r#type: "button", "aria-expanded": !is_collapsed,
-                    onclick: move |_| { local.set(!is_collapsed); oncollapse.call(!is_collapsed); },
-                    span { class: "ix-chevron", "data-open": !is_collapsed, Icon { name: "chevron-down" } }
-                    "{label}"
-                }
-                if let Some(count) = show_all_count {
-                    button { class: "ix-card-list-show-all", r#type: "button", "aria-pressed": show_all(),
-                        onclick: move |_| { let next = !show_all(); show_all.set(next); onshowall.call(next); },
-                        if show_all() { "Show less" } else { "Show all ({count})" }
-                    }
-                }
-            }
-        }
-        div { class: "ix-card-list-items", hidden: is_collapsed, {children} }
-    } }
-}
+// Preserve the original layout module import paths.
+pub use crate::card_list::{CardList, CardListProps};
+pub use crate::card_list_model::*;
 
 /// Default-density tile height.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1319,6 +1277,8 @@ pub(crate) const STYLES: &str = r#"
 .ix-card:focus-visible,.ix-disclosure-button:focus-visible,.ix-layout-icon-button:focus-visible,.ix-page-button:focus-visible,.ix-tab:focus-visible,.ix-tab-close:focus-visible,.ix-breadcrumb-item>a:focus-visible,.ix-breadcrumb-item>button:focus-visible,.ix-pagination-input:focus-visible,.ix-pagination-count select:focus-visible,.ix-blind-header:focus-visible,.ix-group-header:focus-visible,.ix-group-item:focus-visible,.ix-empty-state-action:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
 @media(max-width:600px){.ix-content{padding:16px}.ix-content-header{flex-wrap:wrap}.ix-content-header-actions{width:100%}.ix-content-header h1{font-size:24px;line-height:32px}.ix-empty-state-compact{flex-wrap:wrap;justify-content:flex-start}.ix-event-content{flex-wrap:wrap;gap:4px 12px}.ix-pagination-count{margin-inline-start:8px}}
 @media(prefers-reduced-motion:reduce){.ix-chevron{transition:none}}
+.ix-card-list-item{width:320px;max-width:100%;min-width:0;flex-shrink:0}.ix-card-list-item[hidden]{display:none}.ix-card-list-item:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-card-list-more{width:320px;max-width:100%;min-width:0;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px 16px;min-height:160px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:transparent;color:var(--ix-color-text);font:inherit;text-align:center;cursor:pointer}.ix-card-list-more:hover{background:var(--ix-color-surface-2)}.ix-card-list-more:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-card-list-more>.ix-icon{width:32px;height:32px}
+
 "#;
 
 #[cfg(test)]

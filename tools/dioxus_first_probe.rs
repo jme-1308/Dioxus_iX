@@ -7,6 +7,8 @@ mod application_focus_review;
 mod application_shell_review;
 #[path = "dioxus_first_probe/application_viewport_review.rs"]
 mod application_viewport_review;
+#[path = "dioxus_first_probe/card_collections_review.rs"]
+mod card_collections_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
 mod chart_review;
 #[path = "dioxus_first_probe/chart_workflows_review.rs"]
@@ -181,6 +183,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridnumeric" {
         return rsx! { grid_numeric_values_review::GridNumericValuesPreview {} };
+    }
+    if scope == "?cardcollections" {
+        return rsx! { card_collections_review::CardCollectionsPreview {} };
     }
     if scope == "?chartworkflows" {
         return rsx! { chart_workflows_review::ChartWorkflowsPreview {} };
