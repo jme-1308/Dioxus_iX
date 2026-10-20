@@ -7,6 +7,8 @@ mod application_focus_review;
 mod application_shell_review;
 #[path = "dioxus_first_probe/application_viewport_review.rs"]
 mod application_viewport_review;
+#[path = "dioxus_first_probe/asset_properties_review.rs"]
+mod asset_properties_review;
 #[path = "dioxus_first_probe/asset_workspace_review.rs"]
 mod asset_workspace_review;
 #[path = "dioxus_first_probe/breadcrumb_workflow_review.rs"]
@@ -217,6 +219,9 @@ fn Preview() -> Element {
     }
     if scope == "?taskcards" {
         return rsx! { task_cards_review::TaskCardsPreview {} };
+    }
+    if scope == "?assetproperties" {
+        return rsx! { asset_properties_review::AssetPropertiesPreview {} };
     }
     if scope == "?assetworkspace" {
         return rsx! { asset_workspace_review::AssetWorkspacePreview {} };

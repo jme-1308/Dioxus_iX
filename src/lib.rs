@@ -74,6 +74,7 @@ mod icon_button_styles;
 pub mod icons;
 mod input_geometry;
 mod input_styles;
+mod key_value;
 pub mod layout;
 mod localized_date;
 mod menu_hover_dom;

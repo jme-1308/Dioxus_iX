@@ -437,38 +437,9 @@ pub fn EmptyState(
     } }
 }
 
-/// Label placement in a key/value entry.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum KeyValueLabelPosition {
-    #[default]
-    Top,
-    Left,
-}
-
-/// Semantic label/value pair with optional custom value children.
-#[component]
-pub fn KeyValue(
-    label: String,
-    #[props(default)] value: Option<String>,
-    #[props(default)] icon: Option<String>,
-    #[props(default)] label_position: KeyValueLabelPosition,
-    #[props(default = VNode::empty())] children: Element,
-) -> Element {
-    rsx! { div { class: "ix-key-value", "data-horizontal": label_position == KeyValueLabelPosition::Left,
-        if let Some(icon) = icon { Icon { name: icon } }
-        dl { dt { "{label}" } dd { if let Some(value) = value { "{value}" } {children} } }
-    } }
-}
-
-/// Collection of key/value entries, optionally horizontal.
-#[component]
-pub fn KeyValueList(
-    children: Element,
-    #[props(default)] horizontal: bool,
-    #[props(default)] striped: bool,
-) -> Element {
-    rsx! { div { class: "ix-key-value-list", "data-horizontal": horizontal, "data-striped": striped, {children} } }
-}
+pub use crate::key_value::{
+    KeyValue, KeyValueLabelPosition, KeyValueList, KeyValueListProps, KeyValueProps,
+};
 
 /// KPI severity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -986,6 +957,10 @@ pub(crate) const STYLES: &str = r#"
 .ix-group-entry{display:contents}.ix-group-header-row[data-item-selected]{box-shadow:inset 2px 0 0 var(--ix-color-primary)}
 .ix-group-header-content{display:flex;align-items:center;gap:8px;min-width:0;overflow-wrap:anywhere}.ix-group-footer{padding:12px 16px;min-width:0;background:var(--ix-color-surface-1);overflow-wrap:anywhere}
 .ix-group-header-row{flex-wrap:wrap}.ix-group-header>span,.ix-group-item>span{min-width:0;overflow-wrap:anywhere}.ix-group-secondary{flex-shrink:0}
+
+.ix-key-value dl{flex:1}.ix-key-value dt,.ix-key-value dd{min-width:0;max-width:100%;overflow-wrap:anywhere}.ix-key-value[data-horizontal=true] dt{flex:0 1 100px;min-width:min(100px,100%)}.ix-key-value[data-horizontal=true] dd{flex:1}
+.ix-key-value-list[data-horizontal=true]>.ix-key-value{flex-basis:min(240px,100%)}
+.ix-key-value-custom{min-width:0;max-width:100%}.ix-key-value-custom[hidden]{display:none!important}.ix-key-value-custom :is(input,select,textarea,button){min-width:0;max-width:100%;box-sizing:border-box}
 
 "#;
 
