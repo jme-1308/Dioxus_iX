@@ -278,6 +278,9 @@ pub fn Tabs(
     #[props(default)] onselectionchange: EventHandler<Option<usize>>,
     #[props(default)] onchange: EventHandler<usize>,
     #[props(default)] onclose: EventHandler<usize>,
+    /// Format each close button's accessible label from the current tab item.
+    #[props(default)]
+    close_label: Option<Callback<TabItem, String>>,
     #[props(default)] small: bool,
     #[props(default)] rounded: bool,
     #[props(default)] stretched: bool,
@@ -369,6 +372,13 @@ pub fn Tabs(
                     onmounted: { let key = item.key.clone(); move |event| { mounted.write().insert(key.clone(), event.data()); } },
                     onclick: move |_| request.call(Some(index)),
                     onkeydown: { let items = items.clone(); move |event: KeyboardEvent| {
+                        if event.key() == Key::Delete {
+                            if items.get(index).is_some_and(|item|item.closable && !item.disabled) {
+                                event.prevent_default();
+                                onclose.call(index);
+                            }
+                            return;
+                        }
                         let target = match event.key() { Key::ArrowRight => next_tab(&items, index, true), Key::ArrowLeft => next_tab(&items, index, false), Key::Home => items.iter().position(|item| !item.disabled), Key::End => items.iter().rposition(|item| !item.disabled), _ => return };
                         event.prevent_default();
                         if let Some(target) = target {
@@ -381,7 +391,9 @@ pub fn Tabs(
                     else { if let Some(icon) = &item.icon { Icon { name: icon.clone() } } span { "{item.label}" } }
                     if let Some(counter) = item.counter { span { class: "ix-tab-counter", "{counter}" } }
                 }
-                if item.closable && !rounded { button { class: "ix-tab-close", r#type: "button", disabled: item.disabled, "aria-label": "Close {item.label}", onclick: move |_| onclose.call(index), Icon { name: "close", size: 16 } } }
+                if item.closable && !rounded { button { class: "ix-tab-close", r#type: "button", disabled: item.disabled,
+                    "aria-label": close_label.map(|format|format.call(item.clone())).unwrap_or_else(||format!("Close {}",item.label)),
+                    onclick: {let disabled=item.disabled;move |_| {if !disabled {onclose.call(index);}}}, Icon { name: "close", size: 16 } } }
             }
         }
     }
@@ -1582,5 +1594,9 @@ mod tests {
         items.iter_mut().for_each(|item| item.disabled = true);
         assert_eq!(next_tab(&items, 0, true), None);
         assert_eq!(next_tab(&[], 0, false), None);
+    }
+    mod tab_workspace_tests {
+        use super::*;
+        include!("tab_workspace_tests.rs");
     }
 }

@@ -31,6 +31,8 @@ mod custom_validation_review;
 mod descendant_review;
 #[path = "dioxus_first_probe/disclosure_package_review.rs"]
 mod disclosure_package_review;
+#[path = "dioxus_first_probe/document_workspace_review.rs"]
+mod document_workspace_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
@@ -223,6 +225,9 @@ fn Preview() -> Element {
     }
     if scope == "?disclosurepackage" {
         return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
+    }
+    if scope == "?documentworkspace" {
+        return rsx! { document_workspace_review::DocumentWorkspacePreview {} };
     }
     if scope == "?servicedialogs" {
         return rsx! { service_dialogs_review::ServiceDialogsPreview {} };

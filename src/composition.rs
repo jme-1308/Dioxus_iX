@@ -1,8 +1,8 @@
 //! Keyed tab panels and composed dropdown controls.
 //!
 //! Adapted from Siemens iX (MIT). Child definitions use Rust data and slots;
-//! the tab strip uses a small DOM measurement bridge for overflow without a
-//! JavaScript custom-element runtime. Selection and panel state remain in Rust.
+//! the tab strip uses Dioxus mounted measurements and resize events for overflow.
+//! Selection and panel state remain in Rust.
 
 use crate::layout::{
     TabKeySelectionChange, TabKeyboardNavigation, TabPlacement, TabSelection, TabSelectionChange,
@@ -63,6 +63,13 @@ pub fn TabSet(
     #[props(default)] default_active_key: String,
     #[props(default)] onselectedchange: EventHandler<String>,
     #[props(default)] onclose: EventHandler<String>,
+    /// Format each native close button's accessible label from its current item.
+    #[props(default)]
+    close_label: Option<Callback<TabItem, String>>,
+    /// Force the all-tabs menu, including when every tab fits.
+    #[props(default)]
+    overflow_menu: bool,
+    #[props(default = "Show all tabs".to_string())] aria_label_more_tabs: String,
     #[props(default)] small: bool,
     #[props(default)] rounded: bool,
     #[props(default)] stretched: bool,
@@ -99,6 +106,7 @@ pub fn TabSet(
     rsx! {
         div { class: "ix-tab-set {class}",
             Tabs { items, selection: selected_index.map_or(TabSelection::Empty, TabSelection::Index), small, rounded, stretched, keyboard_navigation, placement, label, id_prefix: prefix,
+                close_label, overflow_menu, aria_label_more_tabs,
                 onbeforechange: move |event: TabSelectionChange| {
                     let keyed = TabKeySelectionChange::new(
                         event.previous.and_then(|index| before_items.get(index).map(|item| item.key.clone())),

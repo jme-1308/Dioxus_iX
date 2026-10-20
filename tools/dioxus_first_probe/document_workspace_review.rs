@@ -1,0 +1,108 @@
+//! Excluded actual-gallery document workspace preview and bounded native DOM replay.
+use dioxus::prelude::*;
+use dioxus_ix::*;
+
+#[path = "../../examples/gallery/document_workspace.rs"]
+mod gallery_documents;
+
+#[component]
+pub fn DocumentWorkspacePreview() -> Element {
+    let mut narrow = use_signal(|| false);
+    #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+    let window = dioxus::desktop::window();
+    rsx! {
+        style { {STYLES} }
+        style { {gallery_documents::STYLES} }
+        IxTheme { class: "document-workspace-review",
+            h1 { "Document workspace" }
+            Button { id: "document-workspace-narrow", variant: ButtonVariant::Secondary,
+                onclick: move |_| narrow.toggle(), if narrow() { "Use wide preview" } else { "Use narrow preview" }
+            }
+            div { id: "document-workspace-frame", style: if narrow() { "width:340px;max-width:100%;min-width:0" } else { "width:960px;max-width:100%;min-width:0" },
+                gallery_documents::DocumentWorkspaceExample {}
+            }
+            div { onmounted: move |_| {
+                #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+                {
+                    let window = window.clone();
+                    spawn(async move {
+                        let query = crate::dom_query::eval(NATIVE_DOCUMENT_WORKSPACE_CHECK);
+                        if let Err(error) = query.send("documentworkspace") {
+                            eprintln!("Document workspace native driver failed to start: {error:?}");
+                            std::process::exit(1);
+                        }
+                        match query.join::<serde_json::Value>().await {
+                            Ok(result) if result["ok"] == true => {
+                                println!("Dioxus native document workspace: {result}");
+                                window.close();
+                            }
+                            result => {
+                                eprintln!("Dioxus native document workspace failed: {result:?}");
+                                std::process::exit(1);
+                            }
+                        }
+                    });
+                    spawn(async move {
+                        futures_timer::Delay::new(std::time::Duration::from_secs(30)).await;
+                        eprintln!("Document workspace native driver timed out");
+                        std::process::exit(1);
+                    });
+                }
+            } }
+        }
+    }
+}
+
+const STYLES: &str = "body{margin:0}.document-workspace-review{box-sizing:border-box;min-height:100vh;padding:24px}.document-workspace-review>h1{font-size:28px;margin:0 0 24px}.document-workspace-review h2{font-size:22px;margin:24px 0 16px}.document-workspace-review p{max-width:72ch;line-height:1.5}#document-workspace-frame{margin-top:24px}@media(max-width:600px){.document-workspace-review{padding:16px}}";
+
+// Excluded actual-gallery replay: synthetic typed keys/forms and explicit native focus.
+// Trusted input/default activation are separate lead browser evidence.
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+const NATIVE_DOCUMENT_WORKSPACE_CHECK: &str = r#"
+let snapshots={},layout={},hitFacts={},keyPermissions={},failureGeometry={};
+try {
+ await dioxus.recv();
+ const get=id=>document.getElementById(id),active=()=>document.activeElement,result=()=>get('documents-result'),host=()=>get('documents-tabs');
+ const set=()=>host()?.querySelector('.ix-tab-set'),strip=()=>host()?.querySelector('[role="tablist"]'),wrappers=()=>[...host()?.querySelectorAll('.ix-tab-wrapper[data-tab-key]')??[]];
+ const wrapper=key=>wrappers().find(node=>node.dataset.tabKey===key),tab=key=>wrapper(key)?.querySelector('button[role="tab"]'),close=key=>wrapper(key)?.querySelector('.ix-tab-close');
+ const panel=key=>get(tab(key)?.getAttribute('aria-controls')),draft=key=>get('document-draft-'+key),save=key=>get('document-save-'+key),note=()=>get('documents-preparation');
+ const savedRow=key=>get('document-saved-'+key),saved=key=>savedRow(key)?.querySelector('[data-field="saved"]')?.textContent.trim(),title=key=>savedRow(key)?.querySelector('[data-field="title"]')?.textContent.trim();
+ const selected=()=>result()?.dataset.selected,count=name=>Number(result()?.dataset[name]),order=()=>wrappers().map(node=>node.dataset.tabKey);
+ const overflow=()=>host()?.querySelector('.ix-tabs-overflow[role="button"]'),menu=()=>get(overflow()?.getAttribute('aria-controls'));
+ const assert=(condition,label)=>{if(!condition)throw Error(label)};
+ const hold=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ const wait=async(label,predicate)=>{let stable=0;for(let attempt=0;attempt<150;attempt++){stable=predicate()?stable+1:0;if(stable===3)return;await hold(20)}throw Error(label+'; state='+JSON.stringify(result()?.dataset)+'; focus='+(active()?.id||active()?.textContent||active()?.tagName))};
+ const focus=async(node,label)=>{assert(node,label+' exists');node.scrollIntoView({block:'nearest',inline:'nearest'});node.focus();await wait(label+' actual native focus',()=>active()===node)};
+ const input=async(node,text,label)=>{const prototype=node instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(prototype,'value').set.call(node,text);node.dispatchEvent(new Event('input',{bubbles:true,composed:true}));await wait(label+' native draft applied',()=>node.isConnected&&node.value===text)};
+ const key=(node,value)=>{const event=new KeyboardEvent('keydown',{key:value,code:value===' '?'Space':value,bubbles:true,cancelable:true});node.dispatchEvent(event);return event};
+ const checked=async(id,value)=>{const node=get(id);node.checked=value;node.dispatchEvent(new Event('change',{bubbles:true}));await wait(id+' native option applied',()=>node.checked===value)};
+ const choose=async id=>{await focus(tab(id),'native '+id+' tab');tab(id).click();await wait('actual '+id+' panel selected',()=>selected()===id&&tab(id).getAttribute('aria-selected')==='true'&&!panel(id).hidden&&draft(id).getClientRects().length>0)};
+ const commit=async(id,text)=>{const before=count('saves');save(id).click();await wait('Save commits actual '+id+' document',()=>count('saves')===before+1&&saved(id)===text&&draft(id).value===text)};
+ const visibleTab=id=>{const box=tab(id)?.getBoundingClientRect(),viewport=strip()?.getBoundingClientRect();return !!box&&box.left>=viewport.left-1&&box.right<=viewport.right+1};
+ const hitTestable=node=>{const box=node?.getBoundingClientRect(),frame=get('document-workspace-frame')?.getBoundingClientRect(),hit=box?document.elementFromPoint(box.left+box.width/2,box.top+box.height/2):null;failureGeometry={node:node?.id||node?.textContent,nodeRect:box?{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}:null,frameWidth:frame?.width,innerWidth,innerHeight,stripScroll:strip()?.scrollLeft,hit:hit?{id:hit.id,tag:hit.tagName,className:hit.className}:null};return !!box&&box.width>0&&box.height>0&&box.left>=frame.left-1&&box.right<=frame.right+1&&box.top>=0&&box.bottom<=innerHeight+1&&(hit===node||node.contains(hit))};
+ const snapshot=()=>({selected:selected(),count:count('count'),dirty:count('dirty'),pending:result()?.dataset.pendingClose,saves:count('saves'),closes:count('closes'),closeRequests:count('closeRequests'),additions:count('additions'),order:order(),documents:order().map(id=>({id,title:title(id),saved:saved(id),draft:draft(id)?.value,hidden:panel(id)?.hidden})),note:note()?.value});
+
+ await wait('actual three-document workspace mounted',()=>result()&&set()&&strip()&&['motor','pump','reference'].every(id=>tab(id)&&panel(id)&&draft(id)&&savedRow(id))&&note());await wait('native WebView ready for focus',()=>document.hasFocus());
+ assert(order().join(',')==='motor,pump,reference'&&selected()==='motor'&&count('count')===3&&count('dirty')===0&&['saves','closes','closeRequests','additions'].every(name=>count(name)===0)&&saved('motor')==='Inspect bearing housing'&&saved('pump')==='Check inlet pressure'&&saved('reference')==='Use equipment-specific maintenance instructions'&&note().value==='Prepare inspection documents','actual initial documents/saved records/preparation');
+ assert(strip().getAttribute('aria-label')==='Inspection documents'&&['motor','pump','reference'].every(id=>tab(id).tagName==='BUTTON'&&!tab(id).disabled&&panel(id).getAttribute('role')==='tabpanel'&&panel(id).getAttribute('aria-labelledby')===tab(id).id&&panel(id).hidden===(id!=='motor')&&close(id).getAttribute('aria-label')==='Close '+title(id)),'native tab/panel/close relationships and enabled defaults');
+ const retainedNote=note(),motorDraft=draft('motor'),pumpDraft=draft('pump');await focus(note(),'independent document preparation');await input(note(),'Prepare workspace review','outside preparation');draft('pump').focus();assert(active()===note()&&draft('pump').getClientRects().length===0,'inactive retained panel cannot take native focus');snapshots.initial=snapshot();
+
+ await focus(draft('motor'),'actual Motor document');await input(draft('motor'),'Motor working draft','Motor draft');await wait('actual Motor draft dirty without saved mutation',()=>count('dirty')===1&&saved('motor')==='Inspect bearing housing');await choose('pump');await input(draft('pump'),'Pump saved inspection','Pump draft');await wait('both document drafts independently dirty',()=>count('dirty')===2);await commit('pump','Pump saved inspection');await choose('motor');assert(draft('motor')===motorDraft&&draft('pump')===pumpDraft&&draft('motor').value==='Motor working draft'&&count('dirty')===1&&saved('motor')==='Inspect bearing housing','switching preserves native draft scopes and independent saved data');get('documents-reverse').click();await wait('stable-key reorder preserves selected native drafts',()=>order().join(',')==='reference,pump,motor'&&selected()==='motor'&&draft('motor')===motorDraft&&draft('pump')===pumpDraft&&draft('motor').value==='Motor working draft');await commit('motor','Motor working draft');get('documents-reverse').click();await wait('ordinary order restored with actual saved drafts',()=>order().join(',')==='motor,pump,reference'&&count('dirty')===0&&count('saves')===2);snapshots.retainedSaveReorder=snapshot();
+
+ const options=get('documents-options');options.querySelector('summary').click();await wait('native workspace options expanded',()=>options.open);await checked('documents-disable-reference',true);await wait('reference native tab/close disabled',()=>tab('reference').disabled&&close('reference').disabled);close('reference').click();await wait('disabled native close emits no owner request',()=>count('closeRequests')===0&&count('count')===3);await choose('pump');key(active(),'ArrowRight');await wait('automatic keyboard navigation skips disabled reference and wraps',()=>active()===tab('motor')&&selected()==='motor');
+ await checked('documents-manual',true);await focus(tab('motor'),'manual native Motor tab');key(active(),'ArrowRight');await wait('manual arrows move native focus without changing displayed document',()=>active()===tab('pump')&&selected()==='motor'&&!panel('motor').hidden&&panel('pump').hidden);for(const value of ['Enter',' ']){const event=key(active(),value);keyPermissions['manual '+value]=!event.defaultPrevented;assert(!event.defaultPrevented&&selected()==='motor','native manual '+value+' default admitted without synthetic activation')}tab('pump').click();await wait('explicit native click activates manually focused Pump',()=>selected()==='pump'&&!panel('pump').hidden);
+ await checked('documents-top',true);await checked('documents-german',true);await checked('documents-all-tabs',true);await wait('live top/localized/all-tabs options reach actual controls',()=>strip().dataset.placement==='top'&&close('motor').getAttribute('aria-label')==='Dokument '+title('motor')+' schließen'&&overflow()?.getAttribute('aria-label')==='Alle Dokumente');assert(count('saves')===2&&count('dirty')===0&&draft('motor')===motorDraft&&note()===retainedNote,'native navigation/options preserve actual document state');for(const id of ['documents-manual','documents-top','documents-german','documents-all-tabs','documents-disable-reference'])await checked(id,false);await choose('motor');snapshots.keyboardOptions=snapshot();
+
+ await input(draft('motor'),'Uncommitted motor delete','dirty Motor deletion');await focus(tab('motor'),'Motor Delete close request');const deletion=key(active(),'Delete');assert(deletion.defaultPrevented,'enabled closable tab Delete handled by Rust');await wait('dirty Delete holds owner removal for decision',()=>get('documents-close-decision')&&result().dataset.pendingClose==='motor'&&count('count')===3&&count('closes')===0&&count('closeRequests')===1&&selected()==='motor');await focus(get('documents-keep'),'Keep dirty document');get('documents-keep').click();await wait('Keep document preserves draft and returns actual editor focus',()=>!get('documents-close-decision')&&active()===draft('motor')&&draft('motor').value==='Uncommitted motor delete'&&count('count')===3&&count('closes')===0&&count('closeRequests')===1&&saved('motor')==='Motor working draft');
+ await focus(tab('motor'),'second native Motor Delete');key(active(),'Delete');await wait('second dirty close held',()=>result().dataset.pendingClose==='motor'&&get('documents-discard')&&count('closeRequests')===2);await focus(get('documents-discard'),'Discard dirty document');get('documents-discard').click();await wait('accepted discard removes actual document and focuses neighboring editor',()=>!wrapper('motor')&&!motorDraft.isConnected&&!savedRow('motor')&&count('count')===2&&count('closes')===1&&count('closeRequests')===2&&selected()==='pump'&&active()===draft('pump')&&draft('pump')===pumpDraft&&saved('pump')==='Pump saved inspection');assert(note()===retainedNote&&note().value==='Prepare workspace review','dirty guard/discard retains outside preparation');snapshots.dirtyClose=snapshot();
+
+ for(const id of ['pump','reference']){const before=count('count');await focus(close(id),'native clean close '+id);close(id).click();await wait('actual clean '+id+' document removed once',()=>!wrapper(id)&&!savedRow(id)&&count('count')===before-1)}await wait('last close leaves real empty workspace and useful Add focus',()=>count('count')===0&&count('closes')===3&&count('closeRequests')===4&&order().length===0&&get('documents-empty')&&active()===get('documents-add'));const emptyAction=get('documents-empty').querySelector('button');await focus(emptyAction,'native empty recovery Add');emptyAction.click();await wait('empty recovery creates actual new document and focuses its field',()=>count('count')===1&&count('additions')===1&&selected()==='note-4'&&draft('note-4')&&active()===draft('note-4')&&draft('note-4').value==='New inspection note');await input(draft('note-4'),'Recovered inspection document','recovered document');await commit('note-4','Recovered inspection document');assert(note()===retainedNote&&note().value==='Prepare workspace review','last-close recovery retains independent outside note');snapshots.emptyRecovery=snapshot();
+
+ get('documents-samples').click();await wait('actual sample documents create genuine strip overflow',()=>order().includes('sample-8')&&strip().scrollWidth>strip().clientWidth+1&&overflow());await choose('note-4');strip().scrollLeft=0;await wait('far sample really starts outside visible strip',()=>tab('sample-8').getBoundingClientRect().left>=strip().getBoundingClientRect().right-1);await focus(overflow(),'actual all-documents menu');overflow().click();await wait('actual overflow menu opened',()=>overflow().getAttribute('aria-expanded')==='true'&&menu()&&!menu().hidden);const targetTitle=title('sample-8'),item=[...menu().querySelectorAll('.ix-dropdown-item')].find(node=>node.getAttribute('data-ix-dropdown-label')===targetTitle);assert(item,'actual far sample menu entry exists');item.click();await wait('overflow selection reveals actual offscreen tab and retained panel',()=>selected()==='sample-8'&&!panel('sample-8').hidden&&visibleTab('sample-8')&&overflow().getAttribute('aria-expanded')==='false');await focus(draft('sample-8'),'native far sample document');await wait('selected overflow document field is actually accessible',()=>hitTestable(draft('sample-8')));hitFacts.overflowDraft=failureGeometry.hit;assert(saved('note-4')==='Recovered inspection document'&&note()===retainedNote&&note().value==='Prepare workspace review','real overflow selection preserves saved data and outside preparation');snapshots.overflow=snapshot();
+
+ const reset=get('documents-reset'),oldSet=set(),oldNote=note(),oldFarDraft=draft('sample-8');await focus(reset,'Restore documents');reset.click();await wait('Restore resets actual documents/options/counts and owned draft scopes',()=>set()&&set()!==oldSet&&order().join(',')==='motor,pump,reference'&&selected()==='motor'&&count('count')===3&&count('dirty')===0&&['saves','closes','closeRequests','additions'].every(name=>count(name)===0)&&saved('motor')==='Inspect bearing housing'&&saved('pump')==='Check inlet pressure'&&note()?.value==='Prepare inspection documents'&&['documents-manual','documents-top','documents-all-tabs','documents-german','documents-disable-reference'].every(id=>!get(id).checked));assert(!oldSet.isConnected&&!oldNote.isConnected&&!oldFarDraft.isConnected&&get('documents-reset')===reset&&get('documents-options')===options&&active()===reset,'scoped Restore replaces owned workspace/preparation and preserves toolbar/options focus');snapshots.reset=snapshot();
+
+ get('document-workspace-narrow').click();await wait('340px document frame and internally overflowing tab strip fit page',()=>get('document-workspace-frame').getBoundingClientRect().width<=341&&strip().scrollWidth>strip().clientWidth&&document.documentElement.scrollWidth<=document.documentElement.clientWidth+1);await focus(note(),'narrow outside preparation');await wait('narrow actual note fits and receives pointer hit',()=>hitTestable(note()));hitFacts.narrowNote=failureGeometry.hit;await input(note(),'Narrow document preparation','narrow preparation');await focus(draft('motor'),'narrow actual Motor text');await wait('narrow actual editor fits and receives pointer hit',()=>hitTestable(draft('motor')));hitFacts.narrowDraft=failureGeometry.hit;await input(draft('motor'),'Narrow Motor inspection saved','narrow Motor draft');await focus(save('motor'),'narrow actual Save');await wait('narrow Save fits and receives pointer hit',()=>hitTestable(save('motor')));await commit('motor','Narrow Motor inspection saved');await choose('pump');await input(draft('pump'),'Uncommitted narrow Pump','narrow Pump draft');await focus(tab('pump'),'narrow native Delete');key(active(),'Delete');await wait('narrow dirty close displays actual decision',()=>result().dataset.pendingClose==='pump'&&get('documents-keep'));await focus(get('documents-keep'),'narrow native Keep');await wait('narrow Keep action fits and receives pointer hit',()=>hitTestable(get('documents-keep')));get('documents-keep').click();await wait('narrow Keep restores actual editable draft focus without data loss',()=>active()===draft('pump')&&draft('pump').value==='Uncommitted narrow Pump'&&saved('pump')==='Check inlet pressure'&&count('count')===3&&count('closes')===0&&count('saves')===1);const frame=get('document-workspace-frame').getBoundingClientRect(),text=draft('pump').getBoundingClientRect();layout={frameWidth:frame.width,stripWidth:strip().clientWidth,stripScrollWidth:strip().scrollWidth,tabHeight:tab('pump').getBoundingClientRect().height,editorWidth:text.width,editorHeight:text.height,pageClient:document.documentElement.clientWidth,pageScroll:document.documentElement.scrollWidth};assert(layout.frameWidth<=341&&layout.editorWidth<=341&&layout.editorHeight>=32&&layout.pageScroll<=layout.pageClient+1&&note().value==='Narrow document preparation','narrow retained native workspace produces actual saved and dirty records without page overflow');snapshots.narrow=snapshot();
+ return {ok:true,snapshots,layout,hitFacts,keyPermissions,checks:['actual initial saved documents/native tab-panel-close relationships and hidden retained fields','independent native drafts survive switch/reverse; Save changes actual stored records','disabled skip/manual activation/default admission and localized top/forced menu options','native Delete dirty Keep/Discard preserves or removes actual document with useful native editor focus','clean last close creates real empty state; Add recovery focuses new actual document','genuine sample overflow selects/reveals far actual tab and editable panel without losing saved data','scoped Restore resets owned documents/preparation/options/counts and preserves toolbar focus','340px internal tab overflow/editor/Save/Keep/note hits preserve actual saved and dirty work'],input:'synthetic typed tab/Delete keys, input/change events, DOM clicks and explicit native focus/normal page scroll setup; untrusted native Enter/Space/Tab defaults are not simulated',trustedInput:'separate Chromium trusted Enter/Space/Tab/Delete/pointer/typing and paired visual evidence; no physical-device certification',renderer:navigator.userAgent};
+} catch(error){return {ok:false,error:String(error),snapshots,layout,hitFacts,keyPermissions,failureGeometry,documentFocusedNow:document.hasFocus()}}
+"#;

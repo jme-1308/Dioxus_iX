@@ -26,6 +26,7 @@ mod datetime;
 mod datetime_scenarios;
 mod dialog_scenarios;
 mod dialogs;
+mod document_workspace;
 mod dropdown_review;
 mod equipment_events;
 mod equipment_readings;
@@ -237,6 +238,7 @@ fn Gallery() -> Element {
         style { {chip_workflows::STYLES} }
         style { {icon_catalog::STYLES} }
         style { {composition::STYLES} }
+        style { {document_workspace::STYLES} }
         style { {patterns::STYLES} }
         style { {asset_flip_tile::STYLES} }
         style { {asset_hierarchy::STYLES} }
@@ -322,7 +324,7 @@ fn Gallery() -> Element {
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
                         GalleryPage::Application => rsx! { header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
                         GalleryPage::Feedback => rsx! { maintenance_notices::MaintenanceNoticesExample {} dropdown_review::DropdownOrderReview {} FeedbackExamples {} },
-                        GalleryPage::Composition => rsx! { tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
+                        GalleryPage::Composition => rsx! { document_workspace::DocumentWorkspaceExample {} tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat::ChatExamples {} },
                         GalleryPage::Patterns => rsx! { asset_flip_tile::AssetFlipTileExample {} filter_keyboard_review::FilterKeyboardReview {} filter_order_review::FilterOrderReview {} filter_state_review::FilterStateReview {} filter_mode_review::FilterModeReview {} filter_reset_review::FilterResetReview {}  patterns::PatternExamples {} },
                         GalleryPage::Dialogs => rsx! { service_dialogs::ServiceDialogsExample {} dialogs::DialogExamples {} },
