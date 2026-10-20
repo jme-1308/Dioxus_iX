@@ -57,6 +57,7 @@ mod patterns;
 mod progress_review;
 mod radio_review;
 mod select_visual_review;
+mod service_request;
 mod slider_review;
 mod source_examples;
 mod spinner_review;
@@ -224,6 +225,7 @@ fn Gallery() -> Element {
         style { {grid_scenarios::STYLES} }
         style { {grid_worklist::STYLES} }
         style { {chart_workflows::STYLES} }
+        style { {service_request::STYLES} }
         IxTheme {
             scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
             density: if compact { Density::Compact } else { Density::Normal },
@@ -267,7 +269,7 @@ fn Gallery() -> Element {
                     match page {
                         GalleryPage::Actions => rsx! { chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
-                        GalleryPage::Forms => rsx! { upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
+                        GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },

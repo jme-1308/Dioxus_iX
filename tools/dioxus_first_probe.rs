@@ -54,6 +54,8 @@ mod pane_layout_review;
 mod select_direction_review;
 #[path = "dioxus_first_probe/select_method_review.rs"]
 mod select_method_review;
+#[path = "dioxus_first_probe/service_request_review.rs"]
+mod service_request_review;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
 mod tab_exit_review;
 #[path = "dioxus_first_probe/text_control_method_review.rs"]
@@ -165,6 +167,9 @@ fn Preview() -> Element {
     }
     if scope == "?chartworkflows" {
         return rsx! { chart_workflows_review::ChartWorkflowsPreview {} };
+    }
+    if scope == "?servicerequest" {
+        return rsx! { service_request_review::ServiceRequestPreview {} };
     }
     if scope == "?chipworkflows" {
         return rsx! { chip_workflows_review::ChipWorkflowsPreview {} };
