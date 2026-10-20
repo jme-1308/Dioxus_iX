@@ -1870,27 +1870,22 @@ impl SelectController {
         if binding.input.borrow().is_none() {
             return Err(SelectMethodError::NotMounted);
         }
-        // Pinned MountedData/FormData cannot expose the associated native form
-        // or its metadata. This query supplies only that missing native fact.
-        let task = crate::dom_query::eval(
-            r#"
-            const id = await dioxus.recv();
-            const input = document.getElementById(id);
-            if (!(input instanceof HTMLInputElement)) throw new Error('Select input is not mounted');
-            const form = input.form;
-            return form ? {id:form.id,name:form.name,method:form.method,action:form.action,no_validate:form.noValidate} : null;
-        "#,
-        );
-        task.send(binding.id)
-            .map_err(|error| SelectMethodError::Dom(error.to_string()))?;
-        let result = task
-            .join::<Option<SelectFormElement>>()
-            .await
-            .map_err(|error| SelectMethodError::Dom(error.to_string()))?;
+        let result = crate::form_control::read_associated_form(
+            &binding.id,
+            crate::form_control::NativeFormControl::Select,
+        )
+        .await
+        .map_err(SelectMethodError::Dom)?;
         if !binding.alive.get() {
             return Err(SelectMethodError::NotMounted);
         }
-        Ok(result)
+        Ok(result.map(|form| SelectFormElement {
+            id: form.id,
+            name: form.name,
+            method: form.method,
+            action: form.action,
+            no_validate: form.no_validate,
+        }))
     }
 }
 
@@ -2969,17 +2964,13 @@ pub fn Select(
                         if required && !read_only {
                             let id = validation_id.clone();
                             spawn(async move {
-                                // `noValidate` suppresses iX's internal touched validation too.
-                                // Pinned FormData::valid() is aggregate validity; it
-                                // exposes neither the associated form nor noValidate.
-                                // Required/value/feedback stay Rust-owned.
-                                let task = crate::dom_query::eval(r#"
-                                    const id = await dioxus.recv();
-                                    const input = document.getElementById(id);
-                                    return !!input && !input.closest('form')?.noValidate;
-                                "#);
-                                if task.send(id).is_ok() && matches!(task.join::<bool>().await, Ok(true)) {
-                                    invalid_attempted.set(true);
+                                // Follow the native owner, including an external `form`
+                                // association. noValidate also clears old automatic feedback.
+                                if let Ok(form) = crate::form_control::read_associated_form(
+                                    &id,
+                                    crate::form_control::NativeFormControl::Select,
+                                ).await {
+                                    invalid_attempted.set(!form.is_some_and(|form| form.no_validate));
                                 }
                             });
                         }

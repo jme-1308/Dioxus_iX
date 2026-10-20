@@ -16,6 +16,7 @@ pub fn SelectMethodPreview() -> Element {
     let controller = use_select();
     let focus_controller = controller.clone();
     let capture_controller = controller.clone();
+    let form_controller = controller.clone();
     let mut mounted = use_signal(|| true);
     let mut value = use_signal(String::new);
     let mut query = use_signal(String::new);
@@ -24,6 +25,7 @@ pub fn SelectMethodPreview() -> Element {
     let mut method = use_signal(|| "None".to_string());
     let mut result = use_signal(|| "Ready".to_string());
     let mut completed = use_signal(|| 0_usize);
+    let mut associated_form = use_signal(|| "Not inspected".to_string());
     let focus_input = use_callback(move |()| {
         let controller = focus_controller.clone();
         method.set("controller".into());
@@ -84,14 +86,33 @@ pub fn SelectMethodPreview() -> Element {
                         completed+=1;
                     },"Capture current input descriptor"}
                     button {id:"r0231-saved-focus",r#type:"button",class:"ix-button ix-button-secondary",onclick:move |_|focus_saved.call(()),"Focus saved descriptor"}
+                    button {id:"r0231-inspect-form",r#type:"button",class:"ix-button ix-button-secondary",onclick:move |_|{
+                        let controller=form_controller.clone();
+                        method.set("form".into());
+                        result.set("Pending".into());
+                        spawn(async move {
+                            match controller.get_associated_form_element().await {
+                                Ok(form)=>{
+                                    associated_form.set(match form {
+                                        Some(form)=>serde_json::json!({"id":form.id,"name":form.name,"method":form.method,"action":form.action,"no_validate":form.no_validate}).to_string(),
+                                        None=>"null".into(),
+                                    });
+                                    result.set("Ok".into());
+                                }
+                                Err(error)=>result.set(result_status(Err(error))),
+                            }
+                            completed+=1;
+                        });
+                    },"Inspect associated form"}
                     button {id:"r0231-remove",r#type:"button",class:"ix-button ix-button-secondary",disabled:!mounted(),onclick:move |_|mounted.set(false),"Remove choice (F7)"}
                     button {id:"r0231-remount",r#type:"button",class:"ix-button ix-button-secondary",disabled:mounted(),onclick:move |_|mounted.set(true),"Restore choice (F8)"}
                     button {id:"r0231-outside",r#type:"button",class:"ix-button ix-button-secondary","Independent focus destination"}
                 }
-                output {id:"r0231-result",role:"status","aria-live":"polite","data-method":method(),"data-result":result(),"data-completed":completed().to_string(),"data-value":value(),"data-query":query(),"data-mounted":mounted().to_string(),
+                output {id:"r0231-result",role:"status","aria-live":"polite","data-method":method(),"data-result":result(),"data-completed":completed().to_string(),"data-value":value(),"data-query":query(),"data-mounted":mounted().to_string(),"data-associated-form":associated_form(),"data-changes":changes().to_string(),
                     span {"Method: {method()}; result: {result()}; completed: {completed()}"}
                     span {"Saved input: {saved_id}; selection: {value()}; value events: {changes()}"}
                     span {"Typed query: {query()}"}
+                    span {"Associated form: {associated_form()}"}
                 }
             }
             div {onmounted:move |_| {
@@ -131,6 +152,26 @@ key(input(),'Enter');await wait('ordinary selection',()=>output().getAttribute('
 key(input(),'ArrowDown');await wait('reopen for Escape',()=>input().getAttribute('aria-expanded')==='true');key(input(),'Escape');await wait('Escape closes options',()=>input().getAttribute('aria-expanded')==='false');
 input().value='Fa';input().dispatchEvent(new Event('input',{bubbles:true}));await wait('ordinary text editing',()=>output().getAttribute('data-query')==='Fa');
 key(input(),'ArrowDown');await wait('edited option keyboard target',()=>!!input().getAttribute('aria-activedescendant'));key(input(),'Enter');await wait('edited option selected',()=>output().getAttribute('data-value')==='fan');
+const form=byId('r0231-form');
+form.name='equipment-registration';form.method='post';form.setAttribute('action','/work-orders?fixture=select-methods');
+const inspectForm=async(expected)=>{
+  const node=input(),focused=document.activeElement,nativeValue=node.value;
+  const state=['data-value','data-query','data-changes'].map(name=>output().getAttribute(name));
+  await run(()=>byId('r0231-inspect-form').click(),'form','Ok');
+  const actual=JSON.parse(output().getAttribute('data-associated-form'));
+  if(expected===null?actual!==null:!actual||Object.keys(actual).length!==Object.keys(expected).length||Object.entries(expected).some(([key,value])=>actual[key]!==value))throw new Error('associated form metadata mismatch '+JSON.stringify(actual)+' expected '+JSON.stringify(expected));
+  if(input()!==node||node.value!==nativeValue||document.activeElement!==focused||input().getAttribute('aria-expanded')!=='false'||state.some((value,index)=>value!==output().getAttribute(['data-value','data-query','data-changes'][index])))throw new Error('associated form query changed input, focus, selection or query');
+};
+const formFacts=()=>({id:form.id,name:form.name,method:form.method,action:form.action,no_validate:form.noValidate});
+await inspectForm(formFacts());
+form.noValidate=true;await inspectForm(formFacts());
+form.noValidate=false;await inspectForm(formFacts());
+// Explicit association overrides the ancestor: removing its owner id leaves
+// this mounted input ownerless without changing Dioxus's component lifetime.
+input().setAttribute('form','r0231-form');form.removeAttribute('id');
+if(input().form!==null)throw new Error('native owner-removal setup failed');
+await inspectForm(null);
+form.id='r0231-form';input().removeAttribute('form');await inspectForm(formFacts());
 const old=input();outside.focus();key(outside,'F7');await wait('choice unmounted',()=>!input()&&!old.isConnected);
 await run(()=>byId('r0231-saved-focus').click(),'descriptor','NotMounted');
 if(document.activeElement!==outside)throw new Error('stale descriptor moved focus after unmount');
@@ -139,5 +180,5 @@ key(outside,'F8');await wait('fresh remount',()=>input()&&input()!==old);
 await run(()=>byId('r0231-saved-focus').click(),'descriptor','NotMounted');
 if(document.activeElement!==outside)throw new Error('old descriptor retargeted fresh input');
 await run(()=>byId('r0231-focus').click(),'controller','Ok');await wait('current controller focuses fresh input',()=>document.activeElement===input());
-return {ok:true,controllerResultAndActualFocus:true,alreadyFocusedRepeat:true,savedDescriptorFocus:true,normalBlur:true,staleDescriptorNotMounted:true,noRetargetAfterRemount:true,newControllerFocus:true,ordinarySelection:true,escapeAndEditing:true};
+return {ok:true,controllerResultAndActualFocus:true,alreadyFocusedRepeat:true,savedDescriptorFocus:true,normalBlur:true,staleDescriptorNotMounted:true,noRetargetAfterRemount:true,newControllerFocus:true,ordinarySelection:true,escapeAndEditing:true,associatedFormMetadata:true,freshNoValidate:true,removedOwnerReturnsNone:true,formQueryHasNoInteractionSideEffects:true};
 "#;

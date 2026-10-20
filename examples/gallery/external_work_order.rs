@@ -177,6 +177,7 @@ pub fn ExternalWorkOrderExample() -> Element {
     let mut draft = use_signal(initial_draft);
     let mut owner = use_signal(|| "primary".to_string());
     let mut disable_notes = use_signal(|| false);
+    let mut primary_no_validate = use_signal(|| false);
     let mut saved = use_signal(Vec::<WorkOrderRecord>::new);
     let mut payload = use_signal(BTreeMap::<String, String>::new);
     let mut last_form = use_signal(String::new);
@@ -235,7 +236,7 @@ pub fn ExternalWorkOrderExample() -> Element {
             p { class: "external-intro", "Prepare an illustrative local work order in a separate editing area, then submit it with its chosen form. Switching the form keeps the draft. Saved details come from the native form submission." }
             div { class: "external-toolbar",
                 Button { id: "external-restore", variant: ButtonVariant::Secondary, onclick: move |_| {
-                    draft.set(initial_draft()); owner.set("primary".into()); disable_notes.set(false); saved.set(Vec::new()); payload.set(BTreeMap::new()); last_form.set(String::new());
+                    draft.set(initial_draft()); owner.set("primary".into()); disable_notes.set(false); primary_no_validate.set(false); saved.set(Vec::new()); payload.set(BTreeMap::new()); last_form.set(String::new());
                     saves.set(0); resets.set(0); error.set(false); feedback.set("Complete the title and asset, then save with the selected form.".into());
                     let next = epoch.peek().wrapping_add(1); epoch.set(next);
                     let next = controls_epoch.peek().wrapping_add(1); controls_epoch.set(next);
@@ -253,6 +254,7 @@ pub fn ExternalWorkOrderExample() -> Element {
             details { id: "external-options", class: "external-options",
                 summary { "Submission options" }
                 label { input { id: "external-disable-notes", r#type: "checkbox", checked: disable_notes(), onchange: move |event: FormEvent| disable_notes.set(event.checked()) } "Disable notes and omit them from submission" }
+                label { input { id: "external-primary-novalidate", r#type: "checkbox", checked: primary_no_validate(), onchange: move |event: FormEvent| primary_no_validate.set(event.checked()) } "Skip automatic validation in primary form" }
             }
             for generation in [epoch()] { WorkOrderPreparation { key: "external-preparation-{generation}" } }
             for generation in [controls_epoch()] {
@@ -262,6 +264,7 @@ pub fn ExternalWorkOrderExample() -> Element {
             div { class: "external-forms",
                 for form in ["primary", "alternate"] {
                     form { key: "{form}", id: format!("external-{form}-form"), "data-owner": form,
+                        novalidate: form == "primary" && primary_no_validate(),
                         onsubmit: move |event: FormEvent| { event.prevent_default(); submit.call((form.into(), text_payload(event.values()))); },
                         onreset: move |event: FormEvent| { event.prevent_default(); reset.call(form.into()); },
                         h3 { if form == "primary" { "Primary form" } else { "Alternate form" } }

@@ -85,6 +85,34 @@ pub struct NativeFormElement {
     pub no_validate: bool,
 }
 
+pub(crate) enum NativeFormControl {
+    Text,
+    Select,
+}
+
+// Pinned Dioxus alpha.2 MountedData has focus/geometry/scrolling only;
+// FormData exposes aggregate validity, not the associated form or noValidate.
+// Read only those missing native facts here; callers own validation in Rust.
+pub(crate) async fn read_associated_form(
+    id: &str,
+    control: NativeFormControl,
+) -> Result<Option<NativeFormElement>, String> {
+    let task = crate::dom_query::eval(
+        r#"
+        const [id,allowTextarea]=await dioxus.recv(), input=document.getElementById(id);
+        if (!(input instanceof HTMLInputElement || (allowTextarea && input instanceof HTMLTextAreaElement)))
+            throw new Error(allowTextarea ? 'Text control is not mounted' : 'Select input is not mounted');
+        const form=input.form;
+        return form?{id:form.id,name:form.name,method:form.method,action:form.action,no_validate:form.noValidate}:null;
+    "#,
+    );
+    task.send((id, matches!(control, NativeFormControl::Text)))
+        .map_err(|error| error.to_string())?;
+    task.join::<Option<NativeFormElement>>()
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Clone)]
 struct Binding {
     id: String,
@@ -250,19 +278,9 @@ impl TextControlController {
     ) -> Result<Option<NativeFormElement>, TextControlError> {
         let binding = self.binding()?;
         binding.ensure_mounted()?;
-        // MountedData does not expose an input's associated form/metadata.
-        let task = crate::dom_query::eval(
-            r#"
-            const id=await dioxus.recv(), input=document.getElementById(id);
-            if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) throw new Error('Text control is not mounted');
-            const f=input.form; return f?{id:f.id,name:f.name,method:f.method,action:f.action,no_validate:f.noValidate}:null;
-        "#,
-        );
-        task.send(&binding.id).map_err(dom_error)?;
-        let form = task
-            .join::<Option<NativeFormElement>>()
+        let form = read_associated_form(&binding.id, NativeFormControl::Text)
             .await
-            .map_err(dom_error)?;
+            .map_err(TextControlError::Dom)?;
         binding.ensure_mounted()?;
         Ok(form)
     }
