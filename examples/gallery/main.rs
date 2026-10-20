@@ -89,6 +89,7 @@ mod toggle_button_review;
 mod toggle_review;
 mod tree;
 mod upload_review;
+mod wide_equipment_grid;
 mod workflow_review;
 
 fn main() {
@@ -264,6 +265,7 @@ fn Gallery() -> Element {
         style { {operator_profile::STYLES} }
         style { {link_navigation::STYLES} }
         style { {maintenance_notices::STYLES} }
+        style { {wide_equipment_grid::STYLES} }
         style { {asset_properties::STYLES} }
         style { {equipment_readings::STYLES} }
         IxTheme {
@@ -313,7 +315,7 @@ fn Gallery() -> Element {
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
                         GalleryPage::Layout => rsx! { equipment_readings::EquipmentReadingsExample {} asset_properties::AssetPropertiesExample {} inspection_groups::InspectionGroupsExample {} asset_workspace::AssetWorkspaceExample {} maintenance_launch::MaintenanceLaunchExample {} equipment_events::EquipmentEventsExample {} service_package::ServicePackageExample {} asset_hierarchy::AssetHierarchyExample {} paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
-                        GalleryPage::DataGrid => rsx! { grid_custom_editors::GridCustomEditorsExample {} grid_numeric_values::GridNumericValuesExample {} grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
+                        GalleryPage::DataGrid => rsx! { wide_equipment_grid::WideEquipmentGridExample {} grid_custom_editors::GridCustomEditorsExample {} grid_numeric_values::GridNumericValuesExample {} grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
                         GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
                         GalleryPage::Application => rsx! { header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },

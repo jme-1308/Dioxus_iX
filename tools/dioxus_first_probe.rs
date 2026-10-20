@@ -118,6 +118,8 @@ mod upload_interaction_review;
 mod virtual_navigation_review;
 #[path = "dioxus_first_probe/visibility_review.rs"]
 mod visibility_review;
+#[path = "dioxus_first_probe/wide_equipment_grid_review.rs"]
+mod wide_equipment_grid_review;
 #[path = "dioxus_first_probe/workflow_order_review.rs"]
 mod workflow_order_review;
 #[path = "../examples/gallery/workflow_review.rs"]
@@ -219,6 +221,9 @@ fn Preview() -> Element {
     }
     if scope == "?disclosurepackage" {
         return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
+    }
+    if scope == "?widegrid" {
+        return rsx! { wide_equipment_grid_review::WideEquipmentGridPreview {} };
     }
     if scope == "?maintenancenotices" {
         return rsx! { maintenance_notices_review::MaintenanceNoticesPreview {} };

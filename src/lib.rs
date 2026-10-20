@@ -50,6 +50,7 @@ pub mod chat;
 mod checkbox_styles;
 pub mod composition;
 pub mod data_grid;
+mod data_grid_columns;
 mod data_grid_custom_editor;
 mod data_grid_editor;
 mod data_grid_render;

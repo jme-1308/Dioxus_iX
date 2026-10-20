@@ -1,6 +1,6 @@
 //! Dioxus composition for visible grid cells, without foreign renderer objects
 //! or a second DOM lifecycle. Keep persistent per-row state in the consumer:
-//! virtualized rows and built-in editing can unmount custom content normally.
+//! virtualized rows/columns and built-in editing can unmount custom content normally.
 use crate::{DataGridColumn, DataGridRow};
 use dioxus::prelude::Element;
 
@@ -47,7 +47,7 @@ impl DataGridCellRender {
     /// to the cell through Dioxus mounted focus. A child may consume Escape.
     ///
     /// Native Tab visits mounted controls. Use cell navigation for offscreen
-    /// virtualized rows. Compose components here and keep hooks inside those
+    /// virtualized rows and columns. Compose components here and keep hooks inside those
     /// components rather than calling hooks directly in a rendering callback.
     pub fn interactive(content: Element) -> Self {
         Self {
