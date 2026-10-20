@@ -2,6 +2,7 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 const INITIAL_REMINDER: &str = "2026/10/21 09:30:00";
 
@@ -115,6 +116,53 @@ fn TemporalPreparation() -> Element {
     } }
 }
 
+#[component]
+fn TemporalAppointmentFields(
+    draft: Signal<AppointmentDraft>,
+    association: Option<String>,
+    reminder_disabled: bool,
+) -> Element {
+    let mut draft = draft;
+    // These native handles share the keyed fields' lifetime, including resets.
+    let mut date_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut time_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut reminder_input = use_signal(|| None::<Rc<MountedData>>);
+    let current = draft();
+    rsx! {
+        div { id: "temporal-fields", class: "temporal-fields",
+            div { class: "temporal-edit-actions",
+                button { id: "temporal-edit-date", class: "ix-button ix-button-secondary", r#type: "button",
+                    onclick: move |_| { if let Some(node) = date_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit date"
+                }
+                button { id: "temporal-edit-time", class: "ix-button ix-button-secondary", r#type: "button",
+                    onclick: move |_| { if let Some(node) = time_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit time"
+                }
+                button { id: "temporal-edit-datetime", class: "ix-button ix-button-secondary", r#type: "button", disabled: reminder_disabled,
+                    onclick: move |_| { if !reminder_disabled && let Some(node) = reminder_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit reminder"
+                }
+            }
+            DateInput { id: "temporal-date", name: "date", form: association.clone(), label: "Service date", today: today(), value: current.date.clone(), format: DateFormat::YmdSlash,
+                min_date: first_date(), max_date: last_date(), required: true, calendar_button_label: "Choose service date", placeholder: "YYYY/MM/DD", helper_text: "1–31 October 2026.",
+                onmounted: move |event: MountedEvent| date_input.set(Some(event.data())),
+                onvaluechange: move |value| draft.write().date = value,
+            }
+            TimeInput { id: "temporal-time", name: "time", form: association.clone(), label: "Start time", value: current.time.clone(), format: TimeFormat::Hms,
+                min_time: first_time(), max_time: last_time(), required: true, time_button_label: "Choose start time", placeholder: "HH:MM:SS", helper_text: "08:00:00–18:00:00.",
+                onmounted: move |event: MountedEvent| time_input.set(Some(event.data())),
+                onvaluechange: move |value| draft.write().time = value,
+            }
+            div { class: "temporal-reminder",
+                DateTimeInput { id: "temporal-datetime", name: "datetime", form: association.clone(), label: "Follow-up reminder", today: today(), value: current.datetime.clone(),
+                    date_format: DateFormat::YmdSlash, time_format: TimeFormat::Hms, min_date: first_date(), max_date: last_date(), min_time: first_time(), max_time: last_time(),
+                    disabled: reminder_disabled, calendar_button_label: "Choose follow-up reminder", placeholder: "YYYY/MM/DD HH:MM:SS", helper_text: "Optional: between 1 October 08:00 and 31 October 18:00, 2026.",
+                    onmounted: move |event: MountedEvent| reminder_input.set(Some(event.data())),
+                    onvaluechange: move |value| draft.write().datetime = value,
+                }
+            }
+        }
+    }
+}
+
 /// The same date/time controls can submit to either explicitly named native form.
 #[component]
 pub fn TemporalWorkOrderExample() -> Element {
@@ -175,7 +223,6 @@ pub fn TemporalWorkOrderExample() -> Element {
         }
     });
     let association = (owner() != "none").then(|| format!("temporal-{}-form", owner()));
-    let current = draft();
     rsx! {
         section { id: "temporal-work-order", class: "demo-section temporal-work-order-example",
             h2 { "Service appointment forms" }
@@ -203,23 +250,7 @@ pub fn TemporalWorkOrderExample() -> Element {
             }
             for generation in [preparation_epoch()] { TemporalPreparation { key: "temporal-preparation-{generation}" } }
             for generation in [controls_epoch()] {
-                div { key: "temporal-controls-{generation}", id: "temporal-fields", class: "temporal-fields",
-                    DateInput { id: "temporal-date", name: "date", form: association.clone(), label: "Service date", today: today(), value: current.date.clone(), format: DateFormat::YmdSlash,
-                        min_date: first_date(), max_date: last_date(), required: true, calendar_button_label: "Choose service date", placeholder: "YYYY/MM/DD", helper_text: "1–31 October 2026.",
-                        onvaluechange: move |value| draft.write().date = value,
-                    }
-                    TimeInput { id: "temporal-time", name: "time", form: association.clone(), label: "Start time", value: current.time.clone(), format: TimeFormat::Hms,
-                        min_time: first_time(), max_time: last_time(), required: true, time_button_label: "Choose start time", placeholder: "HH:MM:SS", helper_text: "08:00:00–18:00:00.",
-                        onvaluechange: move |value| draft.write().time = value,
-                    }
-                    div { class: "temporal-reminder",
-                        DateTimeInput { id: "temporal-datetime", name: "datetime", form: association.clone(), label: "Follow-up reminder", today: today(), value: current.datetime.clone(),
-                            date_format: DateFormat::YmdSlash, time_format: TimeFormat::Hms, min_date: first_date(), max_date: last_date(), min_time: first_time(), max_time: last_time(),
-                            disabled: disable_datetime(), calendar_button_label: "Choose follow-up reminder", placeholder: "YYYY/MM/DD HH:MM:SS", helper_text: "Optional: between 1 October 08:00 and 31 October 18:00, 2026.",
-                            onvaluechange: move |value| draft.write().datetime = value,
-                        }
-                    }
-                }
+                TemporalAppointmentFields { key: "temporal-controls-{generation}", draft, association: association.clone(), reminder_disabled: disable_datetime() }
             }
             p { class: "temporal-owner-note", "Only the selected form submits or resets these appointment fields. No form owner leaves the fields independent." }
             div { class: "temporal-forms",
@@ -261,6 +292,7 @@ pub fn TemporalWorkOrderExample() -> Element {
 
 pub(crate) const STYLES: &str = r#"
 .temporal-work-order-example{min-width:0;max-width:100%}.temporal-work-order-example .temporal-intro{max-width:72ch;line-height:1.55}.temporal-work-order-example .temporal-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px 20px;margin:20px 0 16px}.temporal-work-order-example .temporal-toolbar .ix-button{max-width:100%;white-space:normal}.temporal-work-order-example .temporal-toolbar>label{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;font-size:14px;line-height:20px}.temporal-work-order-example .temporal-toolbar select{box-sizing:border-box;min-height:32px;max-width:100%;padding:4px 8px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1);color:var(--ix-color-text);font:14px/20px var(--ix-font)}.temporal-work-order-example .temporal-options{margin-bottom:24px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius)}.temporal-work-order-example .temporal-options>summary{padding:10px 12px;font-size:14px;font-weight:600;cursor:pointer}.temporal-work-order-example .temporal-options>label{display:flex;align-items:center;gap:8px;padding:12px;font-size:14px;line-height:20px}.temporal-work-order-example .temporal-options input{flex:none;width:16px;height:16px;margin:0;accent-color:var(--ix-color-primary)}.temporal-work-order-example .temporal-preparation{display:flex;flex-direction:column;gap:8px;width:100%;max-width:480px;min-width:0;margin-bottom:32px;font-size:14px;line-height:20px}.temporal-work-order-example .temporal-preparation input{box-sizing:border-box;width:100%;min-width:0;height:32px;padding:4px 8px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1);color:var(--ix-color-text);font:14px/20px var(--ix-font);caret-color:var(--ix-color-primary)}.temporal-work-order-example .temporal-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));align-items:start;gap:24px 32px;max-width:880px;min-width:0}.temporal-work-order-example .temporal-fields>div{min-width:0}.temporal-work-order-example .temporal-reminder{grid-column:1/-1;max-width:480px}.temporal-work-order-example .temporal-owner-note{max-width:72ch;margin:24px 0;font-size:14px;line-height:20px}.temporal-work-order-example .temporal-forms{display:flex;flex-wrap:wrap;gap:24px 40px;max-width:880px}.temporal-work-order-example .temporal-forms>form{min-width:0;max-width:100%}.temporal-work-order-example .temporal-forms h3{margin:0 0 12px}.temporal-work-order-example .temporal-form-actions{display:flex;flex-wrap:wrap;gap:12px}.temporal-work-order-example .temporal-form-actions .ix-button{max-width:100%;white-space:normal}.temporal-work-order-example .temporal-result{display:block;max-width:72ch;margin-top:24px;font-size:14px;line-height:20px;overflow-wrap:anywhere;color:var(--ix-color-text)}.temporal-work-order-example .temporal-saved{margin-top:40px;max-width:880px}.temporal-work-order-example .temporal-saved h3{margin:0 0 12px}.temporal-work-order-example .temporal-saved p{font-size:14px;line-height:20px}.temporal-work-order-example .temporal-saved dl{display:grid;grid-template-columns:minmax(100px,1fr) minmax(0,3fr);gap:8px 16px;margin:0 0 24px;font-size:14px;line-height:20px}.temporal-work-order-example .temporal-saved dt{font-weight:600}.temporal-work-order-example .temporal-saved dd{margin:0;overflow-wrap:anywhere}.temporal-work-order-example .temporal-payload{margin-top:24px;max-width:880px;font-size:14px;line-height:20px}.temporal-work-order-example .temporal-payload>summary{cursor:pointer;min-height:24px}.temporal-work-order-example .temporal-payload li{overflow-wrap:anywhere}.temporal-work-order-example .temporal-preparation input:focus-visible,.temporal-work-order-example .temporal-toolbar select:focus-visible,.temporal-work-order-example .temporal-options>summary:focus-visible,.temporal-work-order-example .temporal-payload>summary:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.temporal-work-order-example .temporal-options input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}
+.temporal-work-order-example .temporal-edit-actions{display:flex;flex-wrap:wrap;gap:12px;grid-column:1/-1}.temporal-work-order-example .temporal-edit-actions .ix-button{max-width:100%;white-space:normal}
 "#;
 
 #[cfg(test)]
@@ -306,6 +338,9 @@ mod tests {
         let html = dioxus_ssr::render(&dom);
         for id in [
             "temporal-work-order",
+            "temporal-edit-date",
+            "temporal-edit-time",
+            "temporal-edit-datetime",
             "temporal-date",
             "temporal-time",
             "temporal-datetime",

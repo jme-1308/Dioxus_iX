@@ -2,6 +2,9 @@
 //!
 //! Date values have no timezone. Supply the user's current local date through
 //! `today`; the library deliberately avoids guessing a timezone on the server.
+//! Temporal inputs expose their real native input through `onmounted`. Retain
+//! `event.data()` and call `MountedData::set_focus(true).await` for host-owned
+//! focus, the Dioxus adaptation of upstream `focusInput`.
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -1625,6 +1628,7 @@ fn TemporalField(
     icon: String,
     open: bool,
     onvaluechange: EventHandler<String>,
+    onmounted: EventHandler<MountedEvent>,
     onopen: EventHandler<()>,
     onclose: EventHandler<()>,
     children: Option<Element>,
@@ -1695,7 +1699,10 @@ fn TemporalField(
                 style: "text-align:{alignment.css()}", autocomplete: "off", spellcheck: false,
                 aria_invalid: invalid, aria_describedby: help_id.clone(), aria_haspopup: "dialog", aria_controls: popup_id.clone(), aria_expanded: open,
                 oninput: move |event| onvaluechange.call(event.value()),
-                onmounted: move |event| *range_binding.input.borrow_mut() = Some(event.data()),
+                onmounted: move |event| {
+                    *range_binding.input.borrow_mut() = Some(event.data());
+                    onmounted.call(event);
+                },
                 onkeydown: move |event| {
                     if suppress_submit_on_enter && event.key() == Key::Enter { event.prevent_default(); }
                     if !disabled && !readonly && !open && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) { event.prevent_default(); onopen.call(()); }
@@ -1751,6 +1758,9 @@ pub fn DateInput(
     valid_text: Option<String>,
     start: Option<Element>,
     end: Option<Element>,
+    /// Actual native input mount, after internal range registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
     onvaluechange: EventHandler<String>,
     ondatechange: Option<EventHandler<Option<IxDate>>>,
     onvaliditychange: Option<EventHandler<DateInputValidity>>,
@@ -1773,7 +1783,7 @@ pub fn DateInput(
     let range_open = use_callback(move |_| open.set(true));
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
     rsx! {
-        TemporalField { id, name, form, label, value, placeholder: placeholder.unwrap_or_default(),
+        TemporalField { id, name, form, label,onmounted, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
             button_label: calendar_button_label, icon: "calendar", open: open(),
             onopen: move |_| open.toggle(), onclose: move |_| open.set(false),
@@ -1831,6 +1841,9 @@ pub fn TimeInput(
     valid_text: Option<String>,
     start: Option<Element>,
     end: Option<Element>,
+    /// Actual native input mount, after internal range registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
     onvaluechange: EventHandler<String>,
     ontimechange: Option<EventHandler<Option<IxTime>>>,
     onvaliditychange: Option<EventHandler<DateInputValidity>>,
@@ -1857,7 +1870,7 @@ pub fn TimeInput(
         invalid_text.clone().or_else(|| validity.message("Time"))
     };
     rsx! {
-        TemporalField { id, name, form, label, value, placeholder: placeholder.unwrap_or_default(),
+        TemporalField { id, name, form, label,onmounted, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
             button_label: time_button_label, icon: "clock", open: open(),
             onopen: move |_| { draft.set(selected); open.toggle(); }, onclose: move |_| open.set(false),
@@ -1948,6 +1961,9 @@ pub fn DateTimeInput(
     valid_text: Option<String>,
     start: Option<Element>,
     end: Option<Element>,
+    /// Actual native input mount, after internal range registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
     onvaluechange: EventHandler<String>,
     ondatetimechange: Option<EventHandler<Option<IxDateTime>>>,
     onvaliditychange: Option<EventHandler<DateInputValidity>>,
@@ -1988,7 +2004,7 @@ pub fn DateTimeInput(
             .or_else(|| validity.message("Date time"))
     };
     rsx! {
-        TemporalField { id, name, form, label, value, placeholder: placeholder.unwrap_or_default(),
+        TemporalField { id, name, form, label,onmounted, value, placeholder: placeholder.unwrap_or_default(),
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
             button_label: calendar_button_label, icon: "calendar", open: open(),
             onopen: move |_| { draft_date.set(Some(selected.map_or(today, |value| value.date))); draft_time.set(selected.map_or(IxTime::default(), |value| value.time)); open.toggle(); },
@@ -3131,5 +3147,6 @@ mod tests {
         use super::*;
         include!("datetime_scheduling_tests.rs");
         include!("temporal_form_tests.rs");
+        include!("temporal_mount_tests.rs");
     }
 }
