@@ -2,6 +2,7 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq)]
 struct WorkOrderDraft {
@@ -100,6 +101,71 @@ fn WorkOrderPreparation() -> Element {
     } }
 }
 
+#[component]
+fn WorkOrderFields(
+    draft: Signal<WorkOrderDraft>,
+    association: Option<String>,
+    disable_notes: bool,
+) -> Element {
+    let mut draft = draft;
+    // These native handles belong to this keyed field scope, including resets.
+    let mut title_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut quantity_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut notes_input = use_signal(|| None::<Rc<MountedData>>);
+    let current = draft();
+    rsx! {
+        div { class: "external-toolbar",
+            Button { id: "external-edit-title", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
+                onclick: move |_| { if let Some(node) = title_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit title"
+            }
+            Button { id: "external-edit-quantity", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
+                onclick: move |_| { if let Some(node) = quantity_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit inspection points"
+            }
+            Button { id: "external-edit-notes", variant: ButtonVariant::Secondary, button_type: ButtonType::Button, disabled: disable_notes,
+                onclick: move |_| { if !disable_notes && let Some(node) = notes_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit notes"
+            }
+        }
+        div { id: "external-fields", class: "external-fields",
+            Input { id: "external-title", label: "Work order title", name: "title", form: association.clone(), required: true, value: current.title.clone(),
+                placeholder: "For example, inspect Motor 001", onmounted: move |event: MountedEvent| title_input.set(Some(event.data())), onvaluechange: move |value| draft.write().title = value,
+            }
+            Select { id: "external-asset", label: "Asset", name: "asset", form: association.clone(), required: true, value: current.asset.clone(),
+                options: vec![SelectOption::new("motor-001", "Motor 001"), SelectOption::new("pump-002", "Pump 002")], allow_clear: true,
+                onvaluechange: move |value| draft.write().asset = value,
+            }
+            NumberInput { id: "external-quantity", label: "Inspection points", name: "quantity", form: association.clone(), min: 1.0, max: 20.0, step: 1.0, required: true, value: current.quantity.clone(),
+                onmounted: move |event: MountedEvent| quantity_input.set(Some(event.data())),
+                onvaluechange: move |value| draft.write().quantity = value,
+            }
+            div { id: "external-priority",
+                Slider { label: "Scheduling priority", name: "priority", form: association.clone(), min: 0.0, max: 100.0, step: 5.0, value: current.priority, show_value: true,
+                    onvaluechange: move |value| draft.write().priority = value,
+                }
+            }
+            div { id: "external-shift",
+                RadioGroup { label: "Work shift", name: "shift", form: association.clone(), required: true, value: current.shift.clone(),
+                    options: vec![SelectOption::new("day", "Day shift"), SelectOption::new("night", "Night shift")],
+                    onvaluechange: move |value| draft.write().shift = value,
+                }
+            }
+            div { class: "external-flags",
+                Checkbox { id: "external-ack", label: "Preparation reviewed", name: "acknowledged", value: "on", form: association.clone(), checked: current.acknowledged,
+                    oncheckedchange: move |value| draft.write().acknowledged = value,
+                }
+                Toggle { id: "external-urgent", label: "Urgent work", name: "urgent", value: "on", form: association.clone(), checked: current.urgent,
+                    oncheckedchange: move |value| draft.write().urgent = value,
+                }
+            }
+            div { class: "external-notes",
+                Textarea { id: "external-notes", label: "Work notes", name: "notes", form: association.clone(), disabled: disable_notes, value: current.notes.clone(),
+                    onmounted: move |event: MountedEvent| notes_input.set(Some(event.data())),
+                    onvaluechange: move |value| draft.write().notes = value,
+                }
+            }
+        }
+    }
+}
+
 /// Explicit native form association keeps layout and form ownership independent.
 #[component]
 pub fn ExternalWorkOrderExample() -> Element {
@@ -158,7 +224,6 @@ pub fn ExternalWorkOrderExample() -> Element {
         }
     });
     let association = (owner() != "none").then(|| format!("external-{}-form", owner()));
-    let current = draft();
     rsx! {
         section { id: "external-work-order", class: "demo-section external-work-order-example",
             h2 { "Work order form ownership" }
@@ -186,42 +251,7 @@ pub fn ExternalWorkOrderExample() -> Element {
             }
             for generation in [epoch()] { WorkOrderPreparation { key: "external-preparation-{generation}" } }
             for generation in [controls_epoch()] {
-            div { key: "external-controls-{generation}", id: "external-fields", class: "external-fields",
-                Input { id: "external-title", label: "Work order title", name: "title", form: association.clone(), required: true, value: current.title.clone(),
-                    placeholder: "For example, inspect Motor 001", onvaluechange: move |value| draft.write().title = value,
-                }
-                Select { id: "external-asset", label: "Asset", name: "asset", form: association.clone(), required: true, value: current.asset.clone(),
-                    options: vec![SelectOption::new("motor-001", "Motor 001"), SelectOption::new("pump-002", "Pump 002")], allow_clear: true,
-                    onvaluechange: move |value| draft.write().asset = value,
-                }
-                NumberInput { id: "external-quantity", label: "Inspection points", name: "quantity", form: association.clone(), min: 1.0, max: 20.0, step: 1.0, required: true, value: current.quantity.clone(),
-                    onvaluechange: move |value| draft.write().quantity = value,
-                }
-                div { id: "external-priority",
-                    Slider { label: "Scheduling priority", name: "priority", form: association.clone(), min: 0.0, max: 100.0, step: 5.0, value: current.priority, show_value: true,
-                        onvaluechange: move |value| draft.write().priority = value,
-                    }
-                }
-                div { id: "external-shift",
-                    RadioGroup { label: "Work shift", name: "shift", form: association.clone(), required: true, value: current.shift.clone(),
-                        options: vec![SelectOption::new("day", "Day shift"), SelectOption::new("night", "Night shift")],
-                        onvaluechange: move |value| draft.write().shift = value,
-                    }
-                }
-                div { class: "external-flags",
-                    Checkbox { id: "external-ack", label: "Preparation reviewed", name: "acknowledged", value: "on", form: association.clone(), checked: current.acknowledged,
-                        oncheckedchange: move |value| draft.write().acknowledged = value,
-                    }
-                    Toggle { id: "external-urgent", label: "Urgent work", name: "urgent", value: "on", form: association.clone(), checked: current.urgent,
-                        oncheckedchange: move |value| draft.write().urgent = value,
-                    }
-                }
-                div { class: "external-notes",
-                    Textarea { id: "external-notes", label: "Work notes", name: "notes", form: association.clone(), disabled: disable_notes(), value: current.notes.clone(),
-                        onvaluechange: move |value| draft.write().notes = value,
-                    }
-                }
-            }
+                WorkOrderFields { key: "external-controls-{generation}", draft, association: association.clone(), disable_notes: disable_notes() }
             }
             p { class: "external-owner-note", "Only the selected form submits or resets this editing area. No form owner leaves the controls independent." }
             div { class: "external-forms",

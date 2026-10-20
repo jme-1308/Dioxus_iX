@@ -1452,3 +1452,8 @@ mod slider_value_tooltip_tests {
     use super::*;
     include!("slider_value_tooltip_tests.rs");
 }
+
+mod text_mount_tests {
+    use super::*;
+    include!("text_mount_tests.rs");
+}

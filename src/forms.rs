@@ -463,6 +463,9 @@ pub fn Input(
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] onkeydown: EventHandler<KeyboardEvent>,
     #[props(default)] onfocus: EventHandler<FocusEvent>,
+    /// Actual native control mount, after internal lifecycle registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
     #[props(default)] onixblur: EventHandler<()>,
     #[props(default)] onvaliditystatechange: EventHandler<ValidityStateChangeEvent>,
     #[props(default)] controller: Option<TextControlController>,
@@ -570,7 +573,7 @@ pub fn Input(
                     "aria-describedby": describedby,
                     "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                     "data-ix-touched": lifecycle.touched.to_string(),
-                    onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = surface_focus_mount { mount.call(event); } },
+                    onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); },
                     oninput: move |event| { onvaluechange.call(event.value()); observe.call(false); },
                     onfocus: move |event| { focus_state.call(true); focus_commit.call(()); onfocus.call(event); },
                     onblur: move |event| { focus_state.call(false); onixblur.call(()); observe.call(true); commit.call(()); onblur.call(event); },
@@ -643,6 +646,9 @@ pub fn Textarea(
     #[props(default)] onchange: EventHandler<String>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] onfocus: EventHandler<FocusEvent>,
+    /// Actual native control mount, after internal lifecycle registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
     #[props(default)] onkeydown: EventHandler<KeyboardEvent>,
     #[props(default)] onixblur: EventHandler<()>,
     #[props(default)] onvaliditystatechange: EventHandler<ValidityStateChangeEvent>,
@@ -728,7 +734,7 @@ pub fn Textarea(
                 "aria-describedby": describedby,
                 "aria-errormessage": (state == FieldState::Invalid && has_feedback).then(||help_id.clone()),
                 "data-ix-touched": lifecycle.touched.to_string(),
-                onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } tooltip_anchor.onmounted.call(event); },
+                onmounted: move |event| { mounted.call(event.data()); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } tooltip_anchor.onmounted.call(event.clone()); onmounted.call(event); },
                 onresize: tooltip_anchor.onresize, onvisible: tooltip_anchor.onvisible,
                 onmouseenter: tooltip_anchor.onmouseenter, onmouseleave: tooltip_anchor.onmouseleave,
                 onfocusin: tooltip_anchor.onfocusin, onfocusout: tooltip_anchor.onfocusout,
@@ -1235,6 +1241,9 @@ pub fn NumberInput(
     #[props(default)] onnumericvaluechange: EventHandler<Option<f64>>,
     #[props(default)] oncommit: EventHandler<Option<f64>>,
     #[props(default)] onfocus: EventHandler<FocusEvent>,
+    /// Actual native control mount, after internal lifecycle registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] onixblur: EventHandler<()>,
     #[props(default)] onvaliditystatechange: EventHandler<crate::ValidityStateChangeEvent>,
@@ -1269,7 +1278,7 @@ pub fn NumberInput(
                 helper_text, invalid_text, valid_text, info_text, warning_text, state,
                 class: number_class, show_text_as_tooltip,
                 onvaluechange: emit_value, text_alignment_end, suppress_submit_on_enter,
-                onixblur, onvaliditystatechange, start,
+                onixblur, onvaliditystatechange, onmounted, start,
                 onfocus: move |event| {
                     committed.write().focus(&draft.peek());
                     onfocus.call(event);
