@@ -778,6 +778,9 @@ pub fn Checkbox(
     aria_label: Option<String>,
     #[props(default)] oncheckedchange: EventHandler<bool>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
+    /// Receives the interactive native control after internal mounted registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
 ) -> Element {
     let id = field_id(id);
     let surface_focus_mount = use_surface_focus_mount(id.clone());
@@ -806,7 +809,7 @@ pub fn Checkbox(
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
                 "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
                 "aria-disabled": disabled.to_string(), aria_label,
-                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = surface_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
                 span { class: "ix-checkbox-button", "aria-hidden": "true",
                     span { class: "ix-check-shape",
                         svg { view_box: "0 0 18 18", width: "18", height: "18", fill: "none",
@@ -984,6 +987,9 @@ pub fn Radio(
     aria_label: Option<String>,
     #[props(default)] oncheckedchange: EventHandler<bool>,
     #[props(default)] onvaluechange: EventHandler<String>,
+    /// Receives the interactive native control after internal mounted registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
 ) -> Element {
     let id = field_id(id);
     let surface_focus_mount = use_surface_focus_mount(id.clone());
@@ -997,7 +1003,7 @@ pub fn Radio(
             "data-checked": checked.to_string(), "data-disabled": disabled.to_string(),
             "data-label-less": label.is_empty().to_string(),
             input { id, r#type: "radio", name, form, value, checked, disabled, required,
-                onmounted: move |event| { if let Some(mount) = surface_focus_mount { mount.call(event); } },
+                onmounted: move |event| { if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); },
                 "aria-label": accessible_label,
                 "aria-invalid": (state == FieldState::Invalid).to_string(),
                 // Radio change fires only when becoming checked. FormData::checked
@@ -1074,6 +1080,9 @@ pub fn RadioGroup(
     aria_label: Option<String>,
     aria_labelledby: Option<String>,
     #[props(default)] onvaluechange: EventHandler<String>,
+    /// Receives each option value and its mounted native radio input.
+    #[props(default)]
+    onoptionmounted: EventHandler<(String, MountedEvent)>,
 ) -> Element {
     crate::form_control::use_custom_field_state(crate::form_control::control_validation(
         state, &class,
@@ -1102,7 +1111,8 @@ pub fn RadioGroup(
                 div { class: if horizontal { "ix-group-choices ix-group-row" } else { "ix-group-choices" },
                     for option in options {
                         Radio { key: "{option.value}", name: name.clone(), form:form.clone(), checked: option.value == value,
-                            value: option.value, label: option.label, disabled: disabled || option.disabled, required, state, onvaluechange }
+                            value: option.value.clone(), label: option.label, disabled: disabled || option.disabled, required, state, onvaluechange,
+                            onmounted: move |event| onoptionmounted.call((option.value.clone(), event)) }
                     }
                 }
             }
@@ -1138,6 +1148,9 @@ pub fn Toggle(
     aria_labelledby: Option<String>,
     #[props(default)] onblur: EventHandler<FocusEvent>,
     #[props(default)] oncheckedchange: EventHandler<bool>,
+    /// Receives the interactive native control after internal mounted registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
 ) -> Element {
     let id = field_id(id);
     let surface_focus_mount = use_surface_focus_mount(id.clone());
@@ -1178,7 +1191,7 @@ pub fn Toggle(
                 "aria-label": accessible_label, "aria-labelledby": aria_labelledby, "aria-disabled": disabled.to_string(),
                 "aria-checked": if indeterminate { "mixed" } else if checked { "true" } else { "false" },
                 "aria-required": required.to_string(), "aria-invalid": invalid.to_string(),
-                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = surface_focus_mount { mount.call(event); } }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
+                onmounted: move |event| { button.set(Some(event.data())); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); }, onclick: move |_| { if !disabled { oncheckedchange.call(!checked); } }, onblur,
                 span { class: "ix-toggle-wrapper",
                     span { class: if checked { if indeterminate { "ix-toggle-switch checked indeterminate" } else { "ix-toggle-switch checked" } } else if indeterminate { "ix-toggle-switch indeterminate" } else { "ix-toggle-switch" },
                         "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(), "aria-hidden": "true",
@@ -1462,7 +1475,13 @@ pub fn Slider(
     #[props(default = 100.0)] max: f64,
     #[props(default = 1.0)] step: f64,
     #[props(default)] label: String,
+    /// Stable ID of the native range input. Keep stable while mounted.
+    #[props(default)]
+    id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Overrides the visible label as the range input's accessible name.
+    #[props(default)]
+    aria_label: Option<String>,
     /// Explicit native form owner; omission keeps normal ancestor association.
     #[props(default)]
     form: Option<String>,
@@ -1491,8 +1510,12 @@ pub fn Slider(
     #[props(default)] class: String,
     #[props(default)] state: FieldState,
     #[props(default)] onvaluechange: EventHandler<f64>,
+    /// Receives the native range input after scoped focus registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
 ) -> Element {
-    let id = field_id(None);
+    let id = field_id(id);
+    let surface_focus_mount = use_surface_focus_mount(id.clone());
     let anchor_id = format!("{id}-anchor");
     let feedback_id = format!("{id}-feedback");
     let value_tooltip_id = format!("{id}-value-tooltip");
@@ -1587,7 +1610,8 @@ pub fn Slider(
                             class: if trace && (trace_reference <= min || trace_reference >= max) { "hide-trace-reference" },
                             id: id.clone(), r#type: "range", name, form,
                             min, max, step: step.max(f64::EPSILON), value: value.to_string(), disabled, tabindex: if disabled { -1 } else { 0 },
-                            role: "slider", "aria-label": if label.is_empty() { "Slider".to_string() } else { label },
+                            role: "slider", "aria-label": aria_label.unwrap_or_else(|| if label.is_empty() { "Slider".to_string() } else { label }),
+                            onmounted: move |event| { if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); },
                             "aria-valuenow": value.to_string(), "aria-valuemin": min.to_string(), "aria-valuemax": max.to_string(),
                             "aria-invalid": (state == FieldState::Invalid).to_string(),
                             "aria-describedby": describedby,
@@ -3657,3 +3681,7 @@ mod field_tooltip_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "forms/choice_mount_tests.rs"]
+mod choice_mount_tests;

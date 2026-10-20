@@ -113,6 +113,10 @@ fn WorkOrderFields(
     let mut asset_input = use_signal(|| None::<Rc<MountedData>>);
     let mut quantity_input = use_signal(|| None::<Rc<MountedData>>);
     let mut notes_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut acknowledgment_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut urgency_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut priority_input = use_signal(|| None::<Rc<MountedData>>);
+    let mut shift_inputs = use_signal(BTreeMap::<String, Rc<MountedData>>::new);
     let current = draft();
     rsx! {
         div { class: "external-toolbar",
@@ -127,6 +131,25 @@ fn WorkOrderFields(
             }
             Button { id: "external-edit-notes", variant: ButtonVariant::Secondary, button_type: ButtonType::Button, disabled: disable_notes,
                 onclick: move |_| { if !disable_notes && let Some(node) = notes_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit notes"
+            }
+            Button { id: "external-edit-ack", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
+                onclick: move |_| { if let Some(node) = acknowledgment_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Review preparation"
+            }
+            Button { id: "external-edit-urgent", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
+                onclick: move |_| { if let Some(node) = urgency_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit urgency"
+            }
+            Button { id: "external-edit-priority", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
+                onclick: move |_| { if let Some(node) = priority_input.peek().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "Edit priority"
+            }
+            Button { id: "external-edit-shift", variant: ButtonVariant::Secondary, button_type: ButtonType::Button,
+                onclick: move |_| {
+                    let node = {
+                        let selected = draft.peek().shift.clone();
+                        let inputs = shift_inputs.peek();
+                        inputs.get(&selected).or_else(|| inputs.get("day")).or_else(|| inputs.get("night")).cloned()
+                    };
+                    if let Some(node) = node { spawn(async move { let _ = node.set_focus(true).await; }); }
+                }, "Edit work shift"
             }
         }
         div { id: "external-fields", class: "external-fields",
@@ -143,21 +166,25 @@ fn WorkOrderFields(
                 onvaluechange: move |value| draft.write().quantity = value,
             }
             div { id: "external-priority",
-                Slider { label: "Scheduling priority", name: "priority", form: association.clone(), min: 0.0, max: 100.0, step: 5.0, value: current.priority, show_value: true,
+                Slider { id: "external-priority-input", label: "Scheduling priority", name: "priority", form: association.clone(), min: 0.0, max: 100.0, step: 5.0, value: current.priority, show_value: true,
+                    onmounted: move |event: MountedEvent| priority_input.set(Some(event.data())),
                     onvaluechange: move |value| draft.write().priority = value,
                 }
             }
             div { id: "external-shift",
                 RadioGroup { label: "Work shift", name: "shift", form: association.clone(), required: true, value: current.shift.clone(),
                     options: vec![SelectOption::new("day", "Day shift"), SelectOption::new("night", "Night shift")],
+                    onoptionmounted: move |(value, event): (String, MountedEvent)| { shift_inputs.write().insert(value, event.data()); },
                     onvaluechange: move |value| draft.write().shift = value,
                 }
             }
             div { class: "external-flags",
                 Checkbox { id: "external-ack", label: "Preparation reviewed", name: "acknowledged", value: "on", form: association.clone(), checked: current.acknowledged,
+                    onmounted: move |event: MountedEvent| acknowledgment_input.set(Some(event.data())),
                     oncheckedchange: move |value| draft.write().acknowledged = value,
                 }
                 Toggle { id: "external-urgent", label: "Urgent work", name: "urgent", value: "on", form: association.clone(), checked: current.urgent,
+                    onmounted: move |event: MountedEvent| urgency_input.set(Some(event.data())),
                     oncheckedchange: move |value| draft.write().urgent = value,
                 }
             }
@@ -358,11 +385,21 @@ mod tests {
             "external-ack",
             "external-urgent",
             "external-priority",
+            "external-priority-input",
             "external-shift",
             "external-primary-form",
             "external-alternate-form",
         ] {
             assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
+        }
+        for field in [
+            "title", "asset", "quantity", "notes", "ack", "urgent", "priority", "shift",
+        ] {
+            let id = format!("id=\"external-edit-{field}\"");
+            let position = html.find(&id).expect("mounted-field review action");
+            let start = html[..position].rfind('<').unwrap();
+            let button = html[start..].split('>').next().unwrap();
+            assert!(button.starts_with("<button") && button.contains("type=\"button\""));
         }
         assert!(html.matches("form=\"external-primary-form\"").count() >= 8);
         for form in ["primary", "alternate"] {
