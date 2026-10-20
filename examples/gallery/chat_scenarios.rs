@@ -93,7 +93,4 @@ fn MessageActions(#[props(default)] user: bool, onaction: Callback<String>) -> E
     rsx! { for (icon, label) in actions { IconButton { icon, label, variant: ButtonVariant::SubtleTertiary, onclick: move |_| onaction.call(label.into()) } } }
 }
 
-pub const STYLES: &str = r#"
-.source-chat-notice{font-size:12px;color:var(--ix-color-text-secondary);margin:0 0 16px}.ix-chat.source-chat-preview{height:680px;max-height:80vh;min-height:320px}
-.ix-chat.source-chat-input-only{height:auto;max-height:none;min-height:0}.source-chat-input-only>.ix-chat-messages{display:none}
-"#;
+pub const STYLES: &str = include_str!("styles/chat_scenarios.css");

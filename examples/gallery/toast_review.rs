@@ -4,7 +4,7 @@ use dioxus_ix::*;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 /// This example inherits the gallery layout and production notification styles.
-pub const STYLES: &str = "";
+pub const STYLES: &str = include_str!("styles/toast_review.css");
 
 /// A scoped notification queue with timed and persistent messages.
 #[component]

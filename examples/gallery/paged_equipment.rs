@@ -390,36 +390,7 @@ pub fn PagedEquipmentExample() -> Element {
     }
 }
 
-pub const STYLES: &str = "\
-.paged-equipment-example{margin-bottom:48px;min-width:0;max-width:100%}\
-.paged-equipment-example>p{max-width:72ch;line-height:1.55;overflow-wrap:anywhere}\
-.paged-equipment-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px 16px;margin:16px 0 12px;min-width:0;max-width:100%}\
-.paged-equipment-field{display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;max-width:100%;font-size:14px}\
-.paged-equipment-select{box-sizing:border-box;height:32px;min-width:136px;max-width:100%;padding:4px 8px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1);color:var(--ix-color-text);font:14px/20px var(--ix-font)}\
-.paged-equipment-select:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:1px}\
-.paged-equipment-options{box-sizing:border-box;min-width:0;max-width:100%;margin:0 0 20px;padding:8px 12px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1)}\
-.paged-equipment-options-summary{cursor:pointer;font-size:14px;font-weight:600;line-height:20px;color:var(--ix-color-text);user-select:none}\
-.paged-equipment-options-summary:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px;border-radius:var(--ix-radius)}\
-.paged-equipment-options-body{display:flex;flex-direction:column;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--ix-color-border);min-width:0;max-width:100%}\
-.paged-equipment-options-row,.paged-equipment-options-checks{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;min-width:0;max-width:100%}\
-.paged-equipment-checkbox{display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;font-size:14px;cursor:pointer}\
-.paged-equipment-checkbox input[type=\"checkbox\"]{width:16px;height:16px;margin:0;flex:none;accent-color:var(--ix-color-primary)}\
-.paged-equipment-checkbox input[type=\"checkbox\"]:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}\
-.paged-equipment-table-wrap{box-sizing:border-box;min-width:0;max-width:100%;overflow-x:auto;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1)}\
-.paged-equipment-table{width:100%;margin:0;border-collapse:collapse;border-spacing:0;color:var(--ix-color-text);font-size:14px;line-height:20px;font-variant-numeric:tabular-nums}\
-.paged-equipment-table caption{padding:10px 12px;border-bottom:1px solid var(--ix-color-border);background:var(--ix-color-surface-2);color:var(--ix-color-text);font-size:14px;font-weight:600;line-height:20px;text-align:left}\
-.paged-equipment-table th,.paged-equipment-table td{box-sizing:border-box;height:42px;padding:6px 12px;border-bottom:1px solid var(--ix-color-border);text-align:left;vertical-align:middle}\
-.paged-equipment-table thead th{background:var(--ix-color-surface-2);color:var(--ix-color-text);font-size:12px;font-weight:600;line-height:16px}\
-.paged-equipment-table tbody tr:last-child td{border-bottom:0}\
-.paged-equipment-table tbody tr:hover td{background:var(--ix-color-surface-2)}\
-.paged-equipment-name{font-weight:600;white-space:nowrap}\
-.paged-equipment-location{color:var(--ix-color-text-secondary);white-space:nowrap}\
-.paged-equipment-condition{white-space:nowrap}\
-.paged-equipment-navigation{margin-top:16px;min-width:0;max-width:100%}\
-.paged-equipment-navigation .ix-pagination{min-width:0;max-width:100%}\
-.paged-equipment-result{display:block;min-height:1.5em;margin-top:16px;color:var(--ix-color-text-secondary);font-size:14px;line-height:20px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}\
-@media(max-width:480px){.paged-equipment-toolbar,.paged-equipment-options-row,.paged-equipment-options-checks{align-items:flex-start}.paged-equipment-toolbar .ix-button,.paged-equipment-options-row .ix-button{max-width:100%}.paged-equipment-table th,.paged-equipment-table td{padding:6px 8px}}\
-";
+pub const STYLES: &str = include_str!("styles/paged_equipment.css");
 
 #[cfg(test)]
 mod tests {

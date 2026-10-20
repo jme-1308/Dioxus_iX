@@ -150,6 +150,4 @@ pub fn ActionExamples() -> Element {
     }
 }
 
-pub(crate) const STYLES: &str = r#"
-.demo-progress-stack{display:grid;gap:16px;max-width:640px;margin-block:20px}.demo-label{min-width:130px;font-size:13px;color:var(--ix-color-text-secondary)}
-"#;
+pub(crate) const STYLES: &str = include_str!("styles/actions.css");

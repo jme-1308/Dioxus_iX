@@ -162,7 +162,7 @@ fn GridEditingExample() -> Element {
     } }
 }
 
-pub const STYLES: &str = ".grid-editing-example{margin-bottom:48px}.grid-scale-toolbar>label{display:flex;align-items:center;gap:8px}.grid-editing-status{min-height:1.5em;color:var(--ix-color-text-secondary)}.source-data-grid{width:100%;min-width:0}.grid-scale-example,.grid-editing-example{min-width:0;max-width:100%}.grid-scale-example>p,.grid-editing-example>p{max-width:72ch;line-height:1.55}.grid-scale-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:16px;margin:20px 0 12px}.grid-scale-toolbar>span{color:var(--ix-color-text-secondary);font-variant-numeric:tabular-nums}";
+pub const STYLES: &str = include_str!("styles/grid_scenarios.css");
 
 #[cfg(test)]
 mod tests {

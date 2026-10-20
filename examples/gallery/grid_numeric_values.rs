@@ -247,7 +247,7 @@ pub fn GridNumericValuesExample() -> Element {
     }
 }
 
-pub const STYLES: &str = ".grid-numeric-values-example{margin-bottom:48px;min-width:0;max-width:100%}.grid-numeric-values-example>p{max-width:72ch;line-height:1.55;overflow-wrap:anywhere}.grid-numeric-values-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px 16px;margin:20px 0 12px;min-width:0;max-width:100%}.grid-numeric-values-toolbar>label{display:inline-flex;align-items:center;gap:8px;max-width:100%;font-size:14px;cursor:pointer}.grid-numeric-values-toolbar input[type=\"checkbox\"]{width:16px;height:16px;margin:0;flex:none;accent-color:var(--ix-color-primary)}.grid-numeric-values-toolbar input[type=\"checkbox\"]:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}.numeric-stock-grid{width:100%;min-width:0;max-width:100%}.grid-numeric-values-result{min-height:1.5em;margin:12px 0 0;color:var(--ix-color-text-secondary);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}@media(max-width:420px){.grid-numeric-values-toolbar{align-items:flex-start;gap:10px 12px}.grid-numeric-values-toolbar .ix-button{max-width:100%}}";
+pub const STYLES: &str = include_str!("styles/grid_numeric_values.css");
 
 #[cfg(test)]
 mod tests {

@@ -29,7 +29,7 @@ pub fn IconScenario(name: String) -> Element {
     }
 }
 
-pub const STYLES: &str = ".source-icon-registration{display:flex;align-items:center;gap:4px}";
+pub const STYLES: &str = include_str!("styles/icon_scenarios.css");
 
 #[cfg(test)]
 mod tests {

@@ -240,6 +240,4 @@ fn PlacementExample(placement: PopoverPlacement) -> Element {
     }
 }
 
-pub(crate) const STYLES: &str = r#"
-.dialog-dismiss-decision{padding:16px;background:var(--ix-color-surface-2);margin-top:16px}.dialog-placement-review{display:flex;flex-wrap:wrap;gap:24px;justify-content:center;padding:80px 24px;min-height:180px}.dialog-countdown{height:4px;overflow:hidden;background:var(--ix-color-border);margin-block:16px}.dialog-countdown-fill{height:100%;background:var(--ix-color-primary);transform-origin:left;animation:dialog-countdown 5s linear forwards}@keyframes dialog-countdown{from{transform:scaleX(1)}to{transform:scaleX(0)}}@media(prefers-reduced-motion:reduce){.dialog-countdown-fill{animation-name:dialog-countdown-reduced}@keyframes dialog-countdown-reduced{from{opacity:1}to{opacity:1}}}
-"#;
+pub(crate) const STYLES: &str = include_str!("styles/dialogs.css");

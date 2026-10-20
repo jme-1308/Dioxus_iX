@@ -1,0 +1,4 @@
+
+.form-select-top-layer-clip{height:92px;overflow:hidden;max-width:400px;margin-block:16px}
+.form-select-rtl{max-width:600px;margin-block:16px}.form-select-rtl-control{width:240px;max-width:100%}
+.form-demo-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 32px;max-width:900px;margin-block:24px}.form-demo-stack{display:flex;flex-direction:column;gap:16px}.form-demo-narrow{max-width:400px}.form-demo-indent{display:flex;flex-direction:column;gap:12px;padding-inline-start:24px}.form-demo-range{max-width:680px;margin-block:24px}.form-demo-result{overflow-wrap:anywhere;max-width:75ch}@media(max-width:650px){.form-demo-grid{grid-template-columns:1fr}.form-demo-range .ix-range-field{gap:24px}}

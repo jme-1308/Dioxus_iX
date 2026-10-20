@@ -156,9 +156,7 @@ pub fn FeedbackScenario(name: String) -> Element {
     }
 }
 
-pub const STYLES: &str = r#"
-.source-feedback-buttons{display:flex;flex-wrap:wrap;gap:8px}
-"#;
+pub const STYLES: &str = include_str!("styles/feedback_scenarios.css");
 
 #[cfg(test)]
 mod tests {

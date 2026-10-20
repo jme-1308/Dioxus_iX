@@ -58,7 +58,7 @@ fn SyntheticZoom() -> Element {
     }
 }
 
-pub const STYLES: &str = ".source-chart-data-notice{font-size:12px;color:var(--ix-color-text-secondary);margin:0 0 12px}.source-surface-host{position:relative;width:100%;height:40rem;padding-top:1rem}";
+pub const STYLES: &str = include_str!("styles/advanced_chart_scenarios.css");
 
 #[cfg(test)]
 mod tests {

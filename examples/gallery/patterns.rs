@@ -154,7 +154,4 @@ pub fn PatternExamples() -> Element {
     }
 }
 
-pub const STYLES: &str = r#"
-.pattern-top-layer-clip{height:92px;overflow:hidden;position:relative}
-.pattern-option{display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px}.pattern-status{font-size:14px;line-height:20px;color:var(--ix-color-text-secondary);margin:12px 0 0;overflow-wrap:anywhere}.pattern-state-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}.pattern-flip-examples{display:flex;flex-wrap:wrap;align-items:flex-start;gap:24px}.pattern-flip-example{max-width:100%}.pattern-flip-example>p{font-size:12px;color:var(--ix-color-text-secondary);margin:8px 0 0}.pattern-flip-footer-date{display:flex;align-items:center;justify-content:center;gap:4px}.pattern-report-overview{padding:24px 0}.pattern-grid-region{padding:16px;background:var(--ix-color-surface-1);border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);height:100%;min-height:56px}.pattern-grid-content{min-height:120px}.pattern-layout-number{display:flex;align-items:center;justify-content:center;font-size:40px;line-height:48px;min-height:80px;padding:16px;background:var(--ix-color-surface-1);border:1px solid var(--ix-color-border);border-radius:var(--ix-radius)}.pattern-form-field{display:flex;flex-direction:column;gap:8px;font-size:14px;margin-top:16px}.pattern-form-field input,.pattern-form-field textarea{min-width:0;width:100%;background:var(--ix-color-surface);border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);color:var(--ix-color-text);padding:8px}
-"#;
+pub const STYLES: &str = include_str!("styles/patterns.css");

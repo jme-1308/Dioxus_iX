@@ -156,7 +156,4 @@ fn PaneExamples() -> Element {
     }
 }
 
-pub(crate) const STYLES: &str = r#"
-.application-demo-controls{display:flex;align-items:end;flex-wrap:wrap;gap:16px;margin-block:24px}.application-demo-controls>.ix-field{width:180px}.application-demo-frame{height:540px;border:1px solid var(--ix-color-border);margin-block:24px;isolation:isolate}.application-demo-frame>.ix-theme{height:100%;min-height:0}.application-demo-content{padding:24px}.application-demo-content p{max-width:65ch}.application-demo-footer{padding:8px 24px;border-top:1px solid var(--ix-color-border);font-size:12px;color:var(--ix-color-text-secondary)}.application-demo-settings{max-width:500px}.application-pane-demo{height:400px;border:1px solid var(--ix-color-border);margin-block:24px}.application-pane-content{padding:24px}.application-grid-cell{padding:16px;background:var(--ix-color-surface-2);font-size:14px;color:var(--ix-color-text);min-height:48px}@media(max-width:576px){.application-demo-frame{height:520px}.application-demo-content{padding:16px}.application-pane-content{padding:12px}}
-.application-pane-note{display:flex;flex-direction:column;gap:.5rem;font-size:.875rem;margin-block:1rem}.application-pane-note input{box-sizing:border-box;width:100%;min-width:0;min-height:2rem;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);padding:.375rem .5rem;background:var(--ix-color-surface);color:var(--ix-color-text);font:inherit}.application-pane-note input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}
-"#;
+pub(crate) const STYLES: &str = include_str!("styles/application.css");

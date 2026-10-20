@@ -1,0 +1,4 @@
+
+.tree-example-surface{border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);min-height:160px;max-width:640px;padding:8px 0;background:var(--ix-color-surface)}.tree-example-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}.tree-example-surface+.tree-example-actions{margin-top:16px}
+.tree-model-editor{max-width:640px}.tree-model-editor .tree-example-actions{margin-top:12px}.tree-model-item{display:flex;align-items:center;gap:8px;min-width:0}.tree-model-item>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-model-status{max-width:72ch;font-variant-numeric:tabular-nums}
+.tree-row-action-item>span{flex:1}

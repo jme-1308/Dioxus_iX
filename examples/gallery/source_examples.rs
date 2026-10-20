@@ -258,30 +258,7 @@ pub fn SourceExamples(mut location: Signal<GalleryLocation>) -> Element {
     }
 }
 
-const STYLES: &str = r#"
-.source-introduction{max-width:80ch;font-size:14px;color:var(--ix-color-text-secondary)}
-.source-controls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;max-width:900px;margin:24px 0 16px}
-.source-controls>label{display:flex;flex-direction:column;gap:8px;font-size:14px;min-width:0}
-.source-controls input[type=search],.source-controls select{min-width:0;width:100%;height:40px;padding:8px 12px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);color:var(--ix-color-text);background:var(--ix-color-surface-1);font:inherit}
-.source-controls input::placeholder{color:var(--ix-color-text-secondary);opacity:1}
-.source-controls>.source-checkbox{grid-column:1/-1;flex-direction:row;align-items:center}
-.source-navigation{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:32px}
-.source-navigation>span{font-size:14px;color:var(--ix-color-text-secondary)}
-.source-permalink{display:inline-block;margin-bottom:16px;font-size:14px;text-underline-offset:3px}
-.source-usage{max-width:75ch;margin-bottom:24px;font-size:14px;color:var(--ix-color-text-secondary)}
-.source-usage p{margin:0 0 8px}.source-usage code{color:var(--ix-color-text)}
-.source-usage a{display:inline-block;margin-right:20px;font-size:14px;text-underline-offset:3px}
-.source-empty{max-width:65ch;padding:24px 0}.source-empty h2{font-size:24px;margin:0 0 12px}.source-empty p{margin:0 0 20px;color:var(--ix-color-text-secondary)}
-.source-controls :is(input,select):focus-visible,.source-permalink:focus-visible,.source-usage a:focus-visible{outline:2px solid var(--ix-color-primary);outline-offset:3px}
-.source-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:16px;margin:0 0 16px}
-.source-heading h2{font-size:18px;margin:0;overflow-wrap:anywhere}
-.source-heading a{font-size:14px;text-underline-offset:3px}
-.source-scenario-frame{min-height:200px;min-width:0;padding:24px;border:1px solid var(--ix-color-border);isolation:isolate}
-.source-scenario-frame[data-source-example^="badge"]{overflow-x:auto}
-.source-feedback-frame{min-height:320px;overflow:visible}
-.source-event-feedback{font-size:14px;color:var(--ix-color-text-secondary);margin:24px 0 0;overflow-wrap:anywhere}
-@media(max-width:640px){.source-controls{grid-template-columns:1fr}.source-scenario-frame{padding:16px}}
-"#;
+const STYLES: &str = include_str!("styles/source_examples.css");
 
 #[cfg(test)]
 mod tests {

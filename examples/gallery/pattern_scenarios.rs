@@ -168,12 +168,7 @@ fn GridScenario(name: String) -> Element {
     } }
 }
 
-pub const STYLES: &str = r#"
-.source-sample-tree{min-height:128px;width:100%}.source-sample-tree>.ix-button{margin-bottom:32px}.source-tree-item{display:flex;align-items:center;gap:8px}
-.source-flip-tiles{display:flex;justify-content:center;flex-wrap:wrap;margin-top:32px}.source-flip-tiles>.ix-flip-tile{margin:0 8px 8px 0;max-width:100%}.source-flip-date{display:flex;align-items:center}
-.source-number-grid{padding:16px 0 4px}.source-number-grid>.ix-layout-grid{margin-bottom:16px}.source-number-grid .ix-layout-col>.ix-typography{display:flex;padding:8px;justify-content:center;align-items:center;flex:1 0 0;align-self:stretch;border:1px solid var(--ix-color-border);border-radius:3px}
-.source-auto-numbers .ix-typography{display:flex;justify-content:center;align-items:center;padding:2.4px;border:1px solid var(--ix-color-border);border-radius:3px}.source-form-grid .ix-layout-row{margin-bottom:16px}
-"#;
+pub const STYLES: &str = include_str!("styles/pattern_scenarios.css");
 
 #[cfg(test)]
 mod tests {

@@ -186,6 +186,4 @@ pub fn ChatComposerExample() -> Element {
     }
 }
 
-pub const STYLES: &str = r#"
-.chat-composer-workflow{min-width:0}.chat-composer-workflow>.demo-row{margin-block:12px}.chat-composer-options label{display:inline-flex;align-items:center;gap:8px}.chat-composer-workflow>p{overflow-wrap:anywhere}.chat-composer-last-submit{white-space:pre-wrap}
-"#;
+pub const STYLES: &str = include_str!("styles/chat_composer_review.css");

@@ -8,7 +8,7 @@ license = "MIT"
 readme = "README.md"
 keywords = ["dioxus", "components", "ui", "industrial", "design-system"]
 categories = ["gui", "web-programming"]
-include = ["src/**/*.rs", "src/**/*.css", "src/**/*.svg", "examples/**/*.rs", "!examples/contract_audit.rs", "!examples/desktop_probe.rs", "!examples/native_bridge_probe.rs", "!examples/native_bridge_probe/**", "tests/**/*.rs", "Cargo.toml", "README.md", "IMPLEMENTATION.md", "Cargo.lock", "LICENSE", "THIRD_PARTY_NOTICES.md"]
+include = ["src/**/*.rs", "src/**/*.css", "src/**/*.svg", "examples/**/*.rs", "examples/**/*.css", "examples/**/*.svg", "!examples/contract_audit.rs", "!examples/desktop_probe.rs", "!examples/native_bridge_probe.rs", "!examples/native_bridge_probe/**", "tests/**/*.rs", "Cargo.toml", "README.md", "IMPLEMENTATION.md", "Cargo.lock", "LICENSE", "THIRD_PARTY_NOTICES.md"]
 
 [features]
 default = []

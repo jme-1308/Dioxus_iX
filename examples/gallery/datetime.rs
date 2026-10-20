@@ -186,6 +186,4 @@ fn BoundaryDateTimeExample(today: IxDate) -> Element {
     }
 }
 
-pub(crate) const STYLES: &str = r#"
-.demo-date-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:24px}.demo-date-row>div{min-width:0}.demo-date-row h3{font-size:14px;margin:0 0 12px}.demo-date-input-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:24px;max-width:1000px;margin-block:20px}
-"#;
+pub(crate) const STYLES: &str = include_str!("styles/datetime.css");

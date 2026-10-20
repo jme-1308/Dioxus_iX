@@ -156,19 +156,4 @@ pub fn ChipWorkflowsExample() -> Element {
     }
 }
 
-pub const STYLES: &str = r#"
-.chip-workflows>p{max-width:72ch;line-height:1.5}
-.chip-workflow-assets,.chip-workflow-filters,.chip-workflow-palette{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:16px 0}
-.chip-workflow-asset{min-width:0;max-width:100%}
-.chip-workflow-bounded{box-sizing:border-box;width:260px;max-width:100%;min-width:0}
-.chip-workflows .chip-workflow-wide{width:100%}
-.chip-workflow-controls{display:flex;align-items:center;flex-wrap:wrap;gap:16px;margin:20px 0 12px}
-.chip-workflow-checkbox{display:inline-flex;align-items:center;gap:8px;max-width:100%;font-size:14px;cursor:pointer}
-.chip-workflow-checkbox input{width:16px;height:16px;margin:0;flex:none;accent-color:var(--ix-color-primary)}
-.chip-workflow-checkbox input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}
-.chip-workflow-details{margin:16px 0 8px;font-size:14px;color:var(--ix-color-text)}
-.chip-workflows #chip-workflow-status,.chip-workflows #chip-filter-status,.chip-workflow-note{font-size:13px;color:var(--ix-color-text-secondary)}
-.chip-workflows h3{margin:28px 0 12px}
-.chip-workflow-palette{max-width:960px}
-@media(max-width:420px){.chip-workflow-controls{align-items:flex-start;gap:12px}.chip-workflow-controls .ix-button{max-width:100%}}
-"#;
+pub const STYLES: &str = include_str!("styles/chip_workflows.css");

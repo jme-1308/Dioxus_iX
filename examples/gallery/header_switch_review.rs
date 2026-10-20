@@ -6,23 +6,8 @@ use std::time::Duration;
 
 const SYMBOL: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='8' fill='%2331566c'/%3E%3Cpath d='M11 12h18v16H11z' fill='white'/%3E%3Cpath d='M16 17h8v6h-8z' fill='%2331566c'/%3E%3C/svg%3E";
 const TARGET_BASE: &str = "/?header-review-destination=";
-const REVIEW_STYLES: &str = r"
-#header-review .header-review-control{box-sizing:border-box;display:block;width:100%;min-width:0;min-height:2.5rem;padding:.5rem .75rem;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1);color:var(--ix-color-text);font:inherit;font-size:.875rem;line-height:1.375rem;caret-color:var(--ix-color-primary)}
-#header-review label:has(.header-review-control){display:grid;gap:.375rem;min-width:0}
-#header-review .header-review-control:hover{border-color:var(--ix-color-text-secondary)}
-#header-review .header-review-control:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}
-#header-review-stage>.ix-application{height:100%}
-";
-const DESTINATION_STYLES: &str = r"
-html,body{margin:0;min-height:100%}
-.ix-theme.header-review-destination-theme{min-height:100vh;min-height:100svh;--ix-font:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
-#header-review-destination{box-sizing:border-box;max-width:56rem;padding:clamp(1.25rem,4vw,2.5rem);overflow-wrap:anywhere;font:normal 1rem/1.5 var(--ix-font);color:var(--ix-color-text)}
-#header-review-destination h1{margin:0 0 1rem;font:600 1.75rem/1.25 var(--ix-font)}
-#header-review-destination p{max-width:65ch;margin:0 0 1rem;color:var(--ix-color-text-secondary)}
-#header-review-destination pre{margin:0 0 1.5rem;padding:.75rem 1rem;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1);white-space:pre-wrap;overflow-wrap:anywhere;font:normal .875rem/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
-#header-review-destination a{color:var(--ix-color-primary);text-underline-offset:.2em}
-#header-review-destination a:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}
-";
+const REVIEW_STYLES: &str = include_str!("styles/header_switch_review.css");
+const DESTINATION_STYLES: &str = include_str!("styles/header_switch_review-destination.css");
 
 /// Read only the local review route; navigation itself remains native.
 pub fn navigation_destination() -> Option<String> {

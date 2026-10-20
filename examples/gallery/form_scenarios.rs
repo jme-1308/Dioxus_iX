@@ -513,6 +513,4 @@ fn RangeScenario() -> Element {
     } }
 }
 
-pub const STYLES: &str = r#"
-.form-source-case{max-width:100%;min-width:0}.form-source-stack{display:flex;flex-direction:column;gap:16px}.form-source-types{display:flex;flex-direction:column;gap:16px;width:11rem;max-width:100%}.form-source-child-checkboxes{display:flex;flex-direction:column;gap:12px;padding-left:1rem}.form-source-radio-button{display:flex;flex-direction:column;gap:.5rem}.form-source-sliders{display:flex;flex-direction:column;gap:16px}.form-source-slider-padding{padding:.5rem}.form-source-file-line{display:flex;align-items:center;gap:4px}.form-source-file-line>.ix-field{flex:1;min-width:0}.form-source-file-picker{display:flex;align-items:center;justify-content:center;position:relative;width:32px;height:32px;color:var(--ix-color-primary);flex:none;cursor:pointer;border-radius:var(--ix-radius)}.form-source-file-picker:hover{background:var(--ix-color-surface-2)}.form-source-file-picker input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}.form-source-file-picker:has(:focus-visible){outline:2px solid var(--ix-color-focus);outline-offset:2px}.form-source-upload-result{display:block;font-size:.875rem;margin-top:16px;overflow-wrap:anywhere}.form-source-ranges{display:flex;flex-direction:column;gap:16px;width:32rem;max-width:100%}
-"#;
+pub const STYLES: &str = include_str!("styles/form_scenarios.css");

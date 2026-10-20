@@ -306,9 +306,7 @@ fn EquipmentTable(striped: bool) -> Element {
     rsx! {table{class:if striped{"ix-table ix-table-striped"}else{"ix-table"},thead{tr{th{scope:"col","ID"}th{scope:"col","Type"}th{scope:"col","Status"}th{scope:"col","HW Version"}}}tbody{for (id,kind,status,version) in [("1","Equipment","Normal","2.0"),("2","Positioner","Maintenance","1.0"),("3","Pressure sensor","Unknown","N/A")]{tr{th{scope:"row","{id}"}td{"{kind}"}td{"{status}"}td{"{version}"}}}}}}
 }
 
-pub const STYLES: &str = r#"
-.layout-scenario{width:100%;min-width:0}.lx-stack{display:flex;flex-direction:column;gap:24px}.lx-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px}.lx-feedback{font-size:14px;color:var(--ix-color-text-secondary);margin:12px 0 0}.lx-lorem{margin:0;max-width:75ch;line-height:24px}.lx-card-example{width:318px;height:252px}.lx-card-heading{display:block;margin-top:8px}.lx-card-frameworks{font-size:14px;line-height:20px}.lx-card-number{position:absolute;right:16px;bottom:16px;font-size:40px;line-height:48px;font-weight:600;z-index:1}.lx-card-chart{position:absolute;bottom:0;left:0;pointer-events:none}.lx-icon-dropdown>.ix-dropdown-trigger{font-size:0;width:32px;min-width:32px;padding:4px;gap:0}.lx-icon-dropdown>.ix-dropdown-trigger>.ix-icon:last-child{display:none}.lx-form-control{width:100%;min-width:0;height:32px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface);color:var(--ix-color-text);padding:4px 8px;font:inherit}.lx-form-control::placeholder{color:var(--ix-color-text-secondary)}.lx-form-control:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:1px}.lx-kpis{display:flex;flex-direction:column;gap:16px;max-width:320px}.lx-tab-content{padding-top:16px}.lx-vertical-menu{position:relative;min-height:440px}.lx-vertical-menu>.ix-menu{min-height:440px;position:relative;width:100%;max-width:none}.lx-vertical-menu .ix-menu-toggle{display:none}
-"#;
+pub const STYLES: &str = include_str!("styles/layout_scenarios.css");
 
 #[cfg(test)]
 mod tests {
