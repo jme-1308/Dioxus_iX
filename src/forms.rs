@@ -2,6 +2,8 @@
 //!
 //! Values are controlled: update `value` or `checked` from the corresponding event.
 //! Text controls retain native constraint validation and form submission semantics.
+//! The optional `form` ID associates each successful native control with an
+//! external form; omission preserves normal ancestor association.
 use crate::form_control::{TextControlController, ValidityStateChangeEvent};
 use dioxus::html::FileData;
 use dioxus::prelude::*;
@@ -364,6 +366,9 @@ pub fn Input(
     #[props(default)] label: Option<String>,
     #[props(default)] id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default = "text".to_string())] input_type: String,
     #[props(default)] placeholder: Option<String>,
     #[props(default)] required: bool,
@@ -496,7 +501,7 @@ pub fn Input(
                     "data-padding-start": padding.map(|facts| facts.start.to_string()),
                     "data-padding-end": padding.map(|facts| facts.end.to_string()),
                     span { class: "ix-input-start", onresize: adornments.start_resized, if let Some(start) = start { {start} } }
-                input { id, class: "ix-input", name, r#type: native_type, value, placeholder,
+                input { id, class: "ix-input", name, form, r#type: native_type, value, placeholder,
                     required, disabled, readonly, autofocus, pattern, minlength: min_length, maxlength: max_length,
                     min, max, step, autocomplete,
                     style: input_style,
@@ -552,6 +557,9 @@ pub fn Textarea(
     #[props(default)] label: Option<String>,
     #[props(default)] id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default)] placeholder: Option<String>,
     #[props(default)] required: bool,
     #[props(default)] disabled: bool,
@@ -654,7 +662,7 @@ pub fn Textarea(
             TextFieldPresentation { label, control_id: id.clone(), tooltip: tooltip.clone(), feedback_id: help_id.clone(),
                 required, state, feedback, invalid_alert, show_text_as_tooltip, max_length, length,
                 div { class: "ix-input-wrap",
-            textarea { id, class: "ix-input ix-textarea", name, value, placeholder,
+            textarea { id, class: "ix-input ix-textarea", name, form, value, placeholder,
                 required, disabled, readonly, rows, cols, minlength: min_length, maxlength: max_length,
                 style: dimensions, "aria-label": aria_label, "aria-invalid": (state == FieldState::Invalid).to_string(),
                 "aria-describedby": describedby,
@@ -691,6 +699,9 @@ pub fn Checkbox(
     #[props(default)]
     id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default = "on".to_string())] value: String,
     #[props(default)] disabled: bool,
     #[props(default)] required: bool,
@@ -716,7 +727,7 @@ pub fn Checkbox(
         span { class: "ix-checkbox-field ix-checkbox-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(),
             "data-invalid": invalid.to_string(), "data-label-less": label.is_empty().to_string(),
-            input { class: "ix-check-native", r#type: "checkbox", name, value, checked, disabled, required,
+            input { class: "ix-check-native", r#type: "checkbox", name, form, value, checked, disabled, required,
                 "aria-hidden": "true", tabindex: "-1",
                 oninvalid: move |event| {
                     event.prevent_default(); attempted.set(true);
@@ -896,6 +907,9 @@ pub fn Radio(
     #[props(default)]
     id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default)] checked: bool,
     #[props(default)] disabled: bool,
     #[props(default)] required: bool,
@@ -916,7 +930,7 @@ pub fn Radio(
         label { class: "ix-check ix-radio ix-radio-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-disabled": disabled.to_string(),
             "data-label-less": label.is_empty().to_string(),
-            input { id, r#type: "radio", name, value, checked, disabled, required,
+            input { id, r#type: "radio", name, form, value, checked, disabled, required,
                 onmounted: move |event| { if let Some(mount) = surface_focus_mount { mount.call(event); } },
                 "aria-label": accessible_label,
                 "aria-invalid": (state == FieldState::Invalid).to_string(),
@@ -975,6 +989,9 @@ pub fn RadioGroup(
     #[props(default)] value: String,
     #[props(default)] label: String,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default)] horizontal: bool,
     #[props(default)] disabled: bool,
     #[props(default)] required: bool,
@@ -1018,7 +1035,7 @@ pub fn RadioGroup(
             GroupLayout { label, required, state, feedback, invalid_alert,feedback_id,show_text_as_tooltip,
                 div { class: if horizontal { "ix-group-choices ix-group-row" } else { "ix-group-choices" },
                     for option in options {
-                        Radio { key: "{option.value}", name: name.clone(), checked: option.value == value,
+                        Radio { key: "{option.value}", name: name.clone(), form:form.clone(), checked: option.value == value,
                             value: option.value, label: option.label, disabled: disabled || option.disabled, required, state, onvaluechange }
                     }
                 }
@@ -1037,6 +1054,9 @@ pub fn Toggle(
     #[props(default)]
     id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default = "on".to_string())] value: String,
     #[props(default)] disabled: bool,
     #[props(default)] required: bool,
@@ -1079,7 +1099,7 @@ pub fn Toggle(
     rsx! {
         span { class: "ix-toggle-field ix-toggle-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(), "data-invalid": invalid.to_string(),
-            input { class: "ix-check-native", r#type: "checkbox", name, value, checked, disabled, required,
+            input { class: "ix-check-native", r#type: "checkbox", name, form, value, checked, disabled, required,
                 "aria-hidden": "true", tabindex: "-1",
                 oninvalid: move |event| {
                     event.prevent_default(); attempted.set(true);
@@ -1123,6 +1143,9 @@ pub fn NumberInput(
     #[props(default)] label: Option<String>,
     #[props(default)] id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default)] placeholder: Option<String>,
     #[props(default)] aria_label: Option<String>,
     #[props(default)] pattern: Option<String>,
@@ -1179,7 +1202,7 @@ pub fn NumberInput(
     let steppers_hidden = !show_stepper_buttons || disabled || readonly;
     rsx! {
         div { class: "ix-number-field",
-            Input { value: draft(), label, id, name, placeholder, aria_label, pattern,
+            Input { value: draft(), label, id, name, form, placeholder, aria_label, pattern,
                 allowed_characters_pattern, controller, input_type: "number", autocomplete: "off",
                 min: min.map(|v| v.to_string()), max: max.map(|v| v.to_string()),
                 step: step.to_string(), disabled, readonly, required,
@@ -1371,6 +1394,9 @@ pub fn Slider(
     #[props(default = 1.0)] step: f64,
     #[props(default)] label: String,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default)] disabled: bool,
     #[props(default)] trace: bool,
     #[props(default)] trace_reference: f64,
@@ -1462,7 +1488,7 @@ pub fn Slider(
                         input { class: "ix-slider",
                             class: if trace && fraction != reference { "trace" },
                             class: if trace && (trace_reference <= min || trace_reference >= max) { "hide-trace-reference" },
-                            id: id.clone(), r#type: "range", name,
+                            id: id.clone(), r#type: "range", name, form,
                             min, max, step: step.max(f64::EPSILON), value: value.to_string(), disabled, tabindex: if disabled { -1 } else { 0 },
                             role: "slider", "aria-label": if label.is_empty() { "Slider".to_string() } else { label },
                             "aria-valuenow": value.to_string(), "aria-valuemin": min.to_string(), "aria-valuemax": max.to_string(),
@@ -2331,6 +2357,9 @@ pub fn Select(
     #[props(default)] class: String,
     #[props(default)] id: Option<String>,
     #[props(default)] name: Option<String>,
+    /// Explicit native form owner; omission keeps normal ancestor association.
+    #[props(default)]
+    form: Option<String>,
     #[props(default = "Select an option".to_string())] placeholder: String,
     #[props(default = "Type of select option".to_string())] editable_placeholder: String,
     #[props(default = "Select an option".to_string())] list_header: String,
@@ -2798,7 +2827,7 @@ pub fn Select(
                         }
                       }
                 div { class: "ix-select-trigger-rail",
-                input { id: id.clone(), r#type: "text", class: if multiple && !selected.is_empty() { "ix-select-trigger ix-select-trigger-multiple" } else { "ix-select-trigger" }, disabled, readonly,
+                input { id: id.clone(), form:form.clone(), r#type: "text", class: if multiple && !selected.is_empty() { "ix-select-trigger ix-select-trigger-multiple" } else { "ix-select-trigger" }, disabled, readonly,
                     value: input_text, placeholder: input_placeholder, autocomplete: "off",
                     role: "combobox", "aria-haspopup": "listbox", "aria-expanded": open().to_string(),
                     "aria-autocomplete": "list",
@@ -2895,7 +2924,7 @@ pub fn Select(
                     }
                 }
             }
-            select { class: "ix-select-native", name, multiple, required: required && !readonly, disabled, tabindex: "-1", "aria-hidden": "true",
+            select { class: "ix-select-native", name, form, multiple, required: required && !readonly, disabled, tabindex: "-1", "aria-hidden": "true",
                 oninvalid: move |event| { event.prevent_default(); if !read_only { invalid_attempted.set(true); open.set(true); } },
                 if !multiple { option { value: "", selected: selected.is_empty(), "" } }
                 for option in &all_options {
@@ -4993,4 +5022,5 @@ mod tests {
         assert_eq!(html.matches("data-hidden=\"false\"").count(), 1);
     }
     include!("group_feedback_tests.rs");
+    include!("external_form_tests.rs");
 }

@@ -46,6 +46,8 @@ mod dropdown_button_review;
 mod equipment_events_review;
 #[path = "dioxus_first_probe/equipment_readings_review.rs"]
 mod equipment_readings_review;
+#[path = "dioxus_first_probe/external_work_order_review.rs"]
+mod external_work_order_review;
 #[path = "../examples/gallery/filter_keyboard_review.rs"]
 mod filter_keyboard_review;
 #[path = "dioxus_first_probe/filter_layout_review.rs"]
@@ -277,6 +279,9 @@ fn Preview() -> Element {
     }
     if scope == "?dropdownbutton" {
         return rsx! { dropdown_button_review::DropdownButtonPreview {} };
+    }
+    if scope == "?externalforms" {
+        return rsx! { external_work_order_review::ExternalWorkOrderPreview {} };
     }
     if scope == "?groupfeedback" {
         return rsx! { group_feedback_review::GroupFeedbackPreview {} };
