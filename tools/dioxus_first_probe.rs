@@ -29,6 +29,8 @@ mod chat_composer_review;
 mod chat_workspace_review;
 #[path = "dioxus_first_probe/chip_workflows_review.rs"]
 mod chip_workflows_review;
+#[path = "dioxus_first_probe/content_columns_review.rs"]
+mod content_columns_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
 mod cue_review;
 #[path = "dioxus_first_probe/custom_validation_review.rs"]
@@ -426,6 +428,9 @@ fn Preview() -> Element {
     }
     if scope == "?releasenews" {
         return rsx! { release_news_review::ReleaseNewsPreview {} };
+    }
+    if scope == "?contentcolumns" {
+        return rsx! { content_columns_review::ContentColumnsPreview {} };
     }
     if scope == "?releasepopover" {
         return rsx! { release_popover_review::ReleasePopoverPreview {} };

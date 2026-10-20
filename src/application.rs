@@ -3171,7 +3171,55 @@ pub fn Row(children: Element) -> Element {
     rsx! { div { class: "ix-layout-row", {children} } }
 }
 
-/// Responsive column. Omitted size shares available space; explicit sizes use grid fractions.
+/// Width policy for one responsive [`Col`] slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColWidth {
+    /// Share the remaining row space with other flexible columns.
+    Flexible,
+    /// Use the content's natural width without growing into remaining space.
+    Auto,
+    /// Use a grid fraction; values are clamped to 1–12 like the legacy sizes.
+    Span(u8),
+}
+
+/// Optional width policies for the base and existing responsive container slots.
+/// A supplied policy overrides only its corresponding legacy numeric size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ColWidths {
+    /// Base width, used when no responsive slot supplies a value.
+    pub base: Option<ColWidth>,
+    /// Small-container width; otherwise inherits md, lg, then base.
+    pub sm: Option<ColWidth>,
+    /// Medium-container width; otherwise inherits lg, then base.
+    pub md: Option<ColWidth>,
+    /// Large-container width; otherwise inherits base.
+    pub lg: Option<ColWidth>,
+}
+impl From<ColWidth> for ColWidths {
+    fn from(width: ColWidth) -> Self {
+        Self {
+            base: Some(width),
+            ..Self::default()
+        }
+    }
+}
+fn col_width_style(width: Option<ColWidth>) -> (String, u8) {
+    match width.unwrap_or(ColWidth::Flexible) {
+        ColWidth::Flexible => ("0%".into(), 1),
+        ColWidth::Auto => ("auto".into(), 0),
+        ColWidth::Span(value) => (
+            format!(
+                "calc({} / var(--ix-grid-columns,12) * 100%)",
+                value.clamp(1, 12)
+            ),
+            0,
+        ),
+    }
+}
+
+/// Responsive column. Omitted sizes share space; spans use grid fractions and
+/// [`ColWidth::Auto`] uses content width. Typed `widths` override matching legacy
+/// `size` slots. Existing small-to-medium-to-large-to-base inheritance remains.
 #[component]
 pub fn Col(
     children: Element,
@@ -3179,32 +3227,24 @@ pub fn Col(
     #[props(default)] size_sm: Option<u8>,
     #[props(default)] size_md: Option<u8>,
     #[props(default)] size_lg: Option<u8>,
+    #[props(default, into)] widths: ColWidths,
 ) -> Element {
-    fn basis(value: Option<u8>) -> String {
-        value
-            .map(|n| {
-                format!(
-                    "calc({} / var(--ix-grid-columns,12) * 100%)",
-                    n.clamp(1, 12)
-                )
-            })
-            .unwrap_or_else(|| "0%".to_string())
-    }
-    let base = basis(size);
-    let sm_size = size_sm.or(size_md).or(size_lg).or(size);
-    let md_size = size_md.or(size_lg).or(size);
-    let lg_size = size_lg.or(size);
-    let sm = basis(sm_size);
-    let md = basis(md_size);
-    let lg = basis(lg_size);
-    let grow = u8::from(size.is_none());
-    let sm_grow = u8::from(sm_size.is_none());
-    let md_grow = u8::from(md_size.is_none());
-    let lg_grow = u8::from(lg_size.is_none());
+    let base_width = widths.base.or(size.map(ColWidth::Span));
+    let sm_width = widths.sm.or(size_sm.map(ColWidth::Span));
+    let md_width = widths.md.or(size_md.map(ColWidth::Span));
+    let lg_width = widths.lg.or(size_lg.map(ColWidth::Span));
+    let (base, grow) = col_width_style(base_width);
+    let (sm, sm_grow) = col_width_style(sm_width.or(md_width).or(lg_width).or(base_width));
+    let (md, md_grow) = col_width_style(md_width.or(lg_width).or(base_width));
+    let (lg, lg_grow) = col_width_style(lg_width.or(base_width));
     rsx! { div { class: "ix-layout-col", style: "--ix-col-basis:{base};--ix-col-sm:{sm};--ix-col-md:{md};--ix-col-lg:{lg};--ix-col-grow:{grow};--ix-col-grow-sm:{sm_grow};--ix-col-grow-md:{md_grow};--ix-col-grow-lg:{lg_grow}", {children} } }
 }
 
 pub(crate) const STYLES: &str = include_str!("styles/application.css");
+
+#[cfg(test)]
+#[path = "application/col_width_tests.rs"]
+mod col_width_tests;
 
 #[cfg(test)]
 mod tests;
