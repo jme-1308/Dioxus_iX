@@ -13,7 +13,7 @@ pub struct DataGridCellContext {
     /// Zero-based position in the displayed, sorted/filtered rows.
     pub row_index: usize,
     pub selected: bool,
-    /// Whether the grid's built-in editing is enabled for this cell.
+    /// Whether grid-managed editing is enabled for this cell.
     /// Custom inputs can bind their read-only state to this value.
     pub editable: bool,
     /// The host's whole-grid read-only setting. Custom actions decide whether
@@ -22,8 +22,8 @@ pub struct DataGridCellContext {
 }
 
 /// Ordinary Dioxus content for a cell. Return `None` from `render_cell` to keep
-/// the built-in text presentation. Built-in editors replace custom content
-/// while the cell is being edited; sorting/filtering/autosizing still use the
+/// the built-in text presentation. Active native or composed editors replace
+/// this content while the cell is being edited; sorting/filtering/autosizing still use the
 /// row's stored text. Configure widths for custom layouts when necessary.
 #[derive(Clone, PartialEq)]
 pub struct DataGridCellRender {

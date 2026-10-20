@@ -38,6 +38,8 @@ mod flip_tile_workflow_review;
 mod generic_focus_review;
 #[path = "dioxus_first_probe/grid_cell_renderers_review.rs"]
 mod grid_cell_renderers_review;
+#[path = "dioxus_first_probe/grid_custom_editors_review.rs"]
+mod grid_custom_editors_review;
 #[path = "dioxus_first_probe/grid_numeric_values_review.rs"]
 mod grid_numeric_values_review;
 #[path = "dioxus_first_probe/grid_typed_editors_review.rs"]
@@ -186,6 +188,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridrenderers" {
         return rsx! { grid_cell_renderers_review::GridCellRenderersPreview {} };
+    }
+    if scope == "?gridcustomeditors" {
+        return rsx! { grid_custom_editors_review::GridCustomEditorsPreview {} };
     }
     if scope == "?gridnumeric" {
         return rsx! { grid_numeric_values_review::GridNumericValuesPreview {} };

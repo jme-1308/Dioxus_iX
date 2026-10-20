@@ -3,7 +3,10 @@
 //! This implements typed sorting/filtering, filtered multi-selection, column
 //! resizing, content autosizing and stable-ID row/column movement. It is an independent Dioxus component;
 //! it does not embed the AG Grid JavaScript engine or implement its plugin API.
-use crate::{DataGridCellContext, DataGridCellEditor, DataGridCellRender, DataGridValueType, Icon};
+use crate::{
+    DataGridCellContext, DataGridCellEditor, DataGridCellRender, DataGridEditorContext,
+    DataGridValueType, Icon,
+};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -152,6 +155,7 @@ impl DataGridCellValueChanged {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GridEditSession {
+    id: usize,
     row: String,
     column: String,
     original: String,
@@ -1253,9 +1257,14 @@ pub fn DataGrid(
     #[props(default)]
     oncellvaluechanged: EventHandler<DataGridCellValueChanged>,
     /// Compose visible cells with Dioxus content. Returning `None` retains text;
-    /// built-in active editors take priority. Autosizing still measures source text.
+    /// active editors take priority. Autosizing still measures source text.
     #[props(default)]
     render_cell: Option<Callback<DataGridCellContext, Option<DataGridCellRender>>>,
+    /// Compose the active editor with ordinary Dioxus content. Attach its
+    /// context's mounted handler to the primary control. `None` preserves the
+    /// native editor, including its existing text-selection behavior.
+    #[props(default)]
+    render_editor: Option<Callback<DataGridEditorContext, Option<Element>>>,
     /// Disable editing while preserving selection and navigation.
     #[props(default)]
     read_only: bool,
@@ -1601,6 +1610,7 @@ pub fn DataGrid(
                 }
                 let original = record.value(&column).to_string();
                 let session = GridEditSession {
+                    id: GRID_ID.fetch_add(1, Ordering::Relaxed),
                     row,
                     column,
                     select_all: initial.is_none(),
@@ -1654,6 +1664,7 @@ pub fn DataGrid(
                                 {
                                     let original = record.value(&column).to_string();
                                     let next = GridEditSession {
+                                        id: GRID_ID.fetch_add(1, Ordering::Relaxed),
                                         row,
                                         column,
                                         original: original.clone(),
@@ -1711,7 +1722,7 @@ pub fn DataGrid(
                 div { class: "ix-data-grid-body", role: "rowgroup", style: "height:{visible_count as u64 * u64::from(row_height)}px",
                     for index in rendered {
                         GridRecord { key: "{visible[index].id}", row: visible[index].clone(), row_label_column: row_label_column.clone(), columns: columns.clone(), rows: callback_rows.clone(), state: record_state.clone(),
-                            onstatechange, dragging, drop_target, tooltip_delay_ms, index, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: index == window.start, total: visible_count, editing, edit_action, read_only, render_cell,
+                            onstatechange, dragging, drop_target, tooltip_delay_ms, index, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: index == window.start, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
                         }
                     }
                 }
@@ -2056,6 +2067,7 @@ fn GridRecord(
     #[props(default)] render_cell: Option<
         Callback<DataGridCellContext, Option<DataGridCellRender>>,
     >,
+    #[props(default)] render_editor: Option<Callback<DataGridEditorContext, Option<Element>>>,
 ) -> Element {
     let mut mounted = use_signal(|| None::<Rc<MountedData>>);
     let selected = state.selected.contains(&row.id);
@@ -2120,8 +2132,8 @@ fn GridRecord(
             GridCell { key: "{column.id}", text: row.value(&column.id).to_string(), tooltip: row.tooltips.get(&column.id).cloned().unwrap_or_else(|| row.value(&column.id).to_string()),
                 column: column.clone(), columns: cell_columns.clone(), row_id: row.id.clone(), row_label: row_label.clone(), rows: rows.clone(), state: state.clone(),
                 onstatechange, dragging, drop_target, tooltip_delay_ms, focused, suppress_cell_focus, entry_cell: entry_row && column_index == 0, editing, edit_action, editable: editable_cell(&row,&column,read_only),
-                render_cell,
-                render_context: render_cell.map(|_| DataGridCellContext {
+                render_cell, render_editor,
+                render_context: (render_cell.is_some() || render_editor.is_some()).then(|| DataGridCellContext {
                     row: row.clone(), column: column.clone(), value: row.value(&column.id).to_string(),
                     row_index: index, selected, editable: editable_cell(&row,&column,read_only) && !suppress_cell_focus,
                     grid_read_only: read_only,
@@ -2155,6 +2167,7 @@ fn GridCell(
     #[props(default)] render_cell: Option<
         Callback<DataGridCellContext, Option<DataGridCellRender>>,
     >,
+    #[props(default)] render_editor: Option<Callback<DataGridEditorContext, Option<Element>>>,
 ) -> Element {
     let focus_context = use_context::<GridMountContext>();
     let cell_mount = use_grid_focus_lane(
@@ -2227,7 +2240,11 @@ fn GridCell(
     let select_columns = columns.clone();
     let select_id = row_id.clone();
     let custom = if session.is_none() {
-        render_cell.and_then(|render| render_context.and_then(|context| render.call(context)))
+        render_cell.and_then(|render| {
+            render_context
+                .clone()
+                .and_then(|context| render.call(context))
+        })
     } else {
         None
     };
@@ -2286,7 +2303,7 @@ fn GridCell(
             },
             Icon { name: "drag-gripper", size: 16 }
         } }
-        if let Some(session)=session.clone() { GridCellEditor {session,title:column.title.clone(),kind:column.cell_editor.clone(),editing,edit_action,retiring} }
+        if let Some(session)=session.clone() { GridCellEditor {session,title:column.title.clone(),kind:column.cell_editor.clone(),editing,edit_action,retiring,render_editor,cell_context:render_context} }
         else if let Some(render) = custom {
             div { class: "ix-data-grid-cell-content",
                 onfocus: move |event: FocusEvent| { if interactive { event.stop_propagation(); } },
@@ -2324,6 +2341,19 @@ fn GridCell(
     } }
 }
 
+fn grid_editor_session_active(
+    editing: Signal<Option<GridEditSession>>,
+    id: usize,
+    retiring: bool,
+    alive: &Cell<bool>,
+) -> bool {
+    alive.get()
+        && !retiring
+        && editing
+            .try_peek()
+            .is_ok_and(|session| session.as_ref().is_some_and(|session| session.id == id))
+}
+
 #[component]
 fn GridCellEditor(
     session: GridEditSession,
@@ -2332,72 +2362,76 @@ fn GridCellEditor(
     mut editing: Signal<Option<GridEditSession>>,
     edit_action: EventHandler<GridEditAction>,
     #[props(default)] retiring: bool,
+    #[props(default)] render_editor: Option<Callback<DataGridEditorContext, Option<Element>>>,
+    #[props(default)] cell_context: Option<DataGridCellContext>,
 ) -> Element {
     let focus_context = use_context::<GridMountContext>();
     let editor_id =
         use_hook(|| format!("ix-grid-editor-{}", GRID_ID.fetch_add(1, Ordering::Relaxed)));
-    let editor_mount = use_grid_focus_lane(
-        Some(GridFocus {
-            row: session.row.clone(),
-            lane: GridLane::Editor(session.column.clone()),
-        }),
-        // Native number/select/checkbox controls have no text selection range.
-        matches!(&kind, DataGridCellEditor::Text).then(|| (editor_id.clone(), session.select_all)),
-    );
     let error_id = use_context::<GridValidationContext>().id;
-    let row = session.row.clone();
-    let column = session.column.clone();
+    let session_id = session.id;
+    let callback_owner = crate::data_grid_custom_editor::EditorCallbackOwner::capture();
+    let alive = use_hook(|| Rc::new(Cell::new(true)));
+    let drop_alive = alive.clone();
+    use_drop(move || drop_alive.set(false));
+    let update_alive = alive.clone();
     let update = EventHandler::new(move |value: String| {
-        if retiring {
+        if !grid_editor_session_active(editing, session_id, retiring, &update_alive) {
             return;
         }
         focus_context.cancel();
         let current = editing.peek().clone();
-        if let Some(mut session) =
-            current.filter(|session| session.row == row && session.column == column)
-        {
+        if let Some(mut session) = current.filter(|session| session.id == session_id) {
             session.draft = value;
             session.error = None;
             session.select_all = false;
             editing.set(Some(session));
         }
     });
+    let action_alive = alive.clone();
+    let action = EventHandler::new(move |action: GridEditAction| {
+        if grid_editor_session_active(editing, session_id, retiring, &action_alive) {
+            edit_action.call(action);
+        }
+    });
     let focus = {
         let row = session.row.clone();
         let column = session.column.clone();
+        let alive = alive.clone();
         EventHandler::new(move |_: FocusEvent| {
-            focus_context.focused(Some(GridFocus {
-                row: row.clone(),
-                lane: GridLane::Editor(column.clone()),
-            }))
+            if grid_editor_session_active(editing, session_id, retiring, &alive) {
+                focus_context.focused(Some(GridFocus {
+                    row: row.clone(),
+                    lane: GridLane::Editor(column.clone()),
+                }));
+            }
         })
     };
+    let key_alive = alive.clone();
     let keydown = EventHandler::new(move |event: KeyboardEvent| {
         event.stop_propagation();
-        if retiring {
-            // Keep the outgoing native control alive until its pending mounted
-            // target takes focus; stale input cannot cancel or alter that handoff.
+        if !grid_editor_session_active(editing, session_id, retiring, &key_alive) {
             event.prevent_default();
             return;
         }
-        if event.is_composing() {
+        if !event.default_action_enabled() || event.is_composing() {
             return;
         }
         match event.key() {
             Key::Escape => {
                 event.prevent_default();
-                edit_action.call(GridEditAction::Cancel);
+                action.call(GridEditAction::Cancel);
             }
             Key::Enter => {
                 event.prevent_default();
-                edit_action.call(GridEditAction::Commit {
+                action.call(GridEditAction::Commit {
                     tab: None,
                     restore_focus: true,
                 });
             }
             Key::Tab => {
                 event.prevent_default();
-                edit_action.call(GridEditAction::Commit {
+                action.call(GridEditAction::Commit {
                     tab: Some(event.modifiers().shift()),
                     restore_focus: true,
                 });
@@ -2414,6 +2448,70 @@ fn GridCellEditor(
     let label = format!("Edit {title} for {}", session.row);
     let invalid = session.error.is_some().to_string();
     let error_message = session.error.as_ref().map(|_| error_id);
+    // The renderer needs its primary onmounted handler before it chooses Some
+    // or None. This scoped forwarder supplies that handler to the single
+    // existing focus lane after the choice is known, without a second runtime.
+    let mount_forward = use_hook(|| Rc::new(RefCell::new(None::<EventHandler<MountedEvent>>)));
+    let forwarded = mount_forward.clone();
+    let mount_alive = alive.clone();
+    let custom_mount = EventHandler::new(move |event: MountedEvent| {
+        if grid_editor_session_active(editing, session_id, retiring, &mount_alive) {
+            let handler = *forwarded.borrow();
+            if let Some(handler) = handler {
+                handler.call(event);
+            }
+        }
+    });
+    let custom = render_editor
+        .and_then(|render| {
+            cell_context.map(|cell| {
+                render.call(DataGridEditorContext {
+                    cell,
+                    draft: session.draft.clone(),
+                    error: session.error.clone(),
+                    label: label.clone(),
+                    error_id: error_message.clone(),
+                    active: grid_editor_session_active(editing, session_id, retiring, &alive),
+                    onmounted: custom_mount,
+                    callback_owner,
+                    alive: alive.clone(),
+                    set_value_handler: update,
+                    commit_handler: EventHandler::new(move |_| {
+                        action.call(GridEditAction::Commit {
+                            tab: None,
+                            restore_focus: true,
+                        })
+                    }),
+                    cancel_handler: EventHandler::new(move |_| action.call(GridEditAction::Cancel)),
+                    advance_handler: EventHandler::new(move |backwards| {
+                        action.call(GridEditAction::Commit {
+                            tab: Some(backwards),
+                            restore_focus: true,
+                        })
+                    }),
+                })
+            })
+        })
+        .flatten();
+    let editor_mount = use_grid_focus_lane(
+        Some(GridFocus {
+            row: session.row.clone(),
+            lane: GridLane::Editor(session.column.clone()),
+        }),
+        (custom.is_none() && matches!(&kind, DataGridCellEditor::Text))
+            .then(|| (editor_id.clone(), session.select_all)),
+    );
+    *mount_forward.borrow_mut() = custom.is_some().then_some(editor_mount);
+    if let Some(content) = custom {
+        return rsx! { div {
+            class: "ix-data-grid-editor-wrap ix-data-grid-custom-editor", "data-editor-kind": "custom", "data-retiring": retiring.to_string(),
+            onfocusin: move |event: FocusEvent| { event.stop_propagation(); focus.call(event); },
+            onkeydown: keydown,
+            onclick: move |event: MouseEvent| { event.stop_propagation(); pointer_guard.call(event); },
+            onmousedown: pointer_guard, ondoubleclick: move |event: MouseEvent| event.stop_propagation(),
+            {content}
+        } };
+    }
     let control = match kind {
         DataGridCellEditor::Text => rsx! {
             input { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor", r#type: "text",
@@ -2791,6 +2889,7 @@ mod tests {
     }
     fn edit_session(row: &str, column: &str, original: &str, draft: &str) -> GridEditSession {
         GridEditSession {
+            id: GRID_ID.fetch_add(1, Ordering::Relaxed),
             row: row.into(),
             column: column.into(),
             original: original.into(),
@@ -3140,6 +3239,7 @@ mod tests {
         (@data Mouse,$event:ident) => { dioxus::html::MouseData::new(RenderMouse) };
         (@data Keyboard,$event:ident) => { dioxus::html::KeyboardData::new($event.downcast::<RenderKey>().unwrap().clone()) };
         (@data Focus,$event:ident) => { dioxus::html::FocusData::new(RenderFocus) };
+        (@data Form,$event:ident) => { dioxus::html::FormData::new(EditorForm($event.downcast::<String>().unwrap().clone())) };
         (@data $other:ident,$event:ident) => { panic!("Unexpected grid renderer test event") };
     }
     dioxus::html::with_html_event_groups!(render_converter);
@@ -4360,5 +4460,451 @@ mod tests {
         assert_eq!(html.matches("<option").count(), 8);
         assert!(html.contains("type=\"text\"") && html.contains("value=\"contains\""));
         assert!(!html.contains("lessThan") && !html.contains("step="));
+    }
+
+    #[derive(Default)]
+    struct CustomEditorObservation {
+        rows: Cell<Option<Signal<Vec<DataGridRow>>>>,
+        epoch: Cell<Option<Signal<u64>>>,
+        contexts: RefCell<Vec<DataGridEditorContext>>,
+        requests: RefCell<Vec<DataGridCellValueChanged>>,
+        native_only: Cell<bool>,
+        apply: Cell<bool>,
+        consume_enter: Cell<bool>,
+        stop_enter: Cell<bool>,
+        key_calls: Cell<usize>,
+        focus_context: Cell<Option<GridMountContext>>,
+    }
+    #[derive(Clone, Default)]
+    struct CustomEditorFixture(Rc<CustomEditorObservation>);
+    impl PartialEq for CustomEditorFixture {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+    fn custom_editor_rows() -> Vec<DataGridRow> {
+        let mut locked = DataGridRow::new("b")
+            .cell("asset", "Pump")
+            .cell("owner", "Service")
+            .cell("done", "false");
+        locked.read_only_cells.insert("owner".into());
+        vec![
+            DataGridRow::new("a")
+                .cell("asset", "Motor")
+                .cell("owner", "Operations")
+                .cell("done", "false"),
+            locked,
+        ]
+    }
+    fn custom_editor_fixture(fixture: CustomEditorFixture) -> Element {
+        let mut rows = use_signal(custom_editor_rows);
+        let epoch = use_signal(|| 0_u64);
+        fixture.0.rows.set(Some(rows));
+        fixture.0.epoch.set(Some(epoch));
+        let mut state = use_signal(DataGridState::default);
+        let mut owner = edit_column("owner");
+        owner.title = "Owner".into();
+        owner.editor.required = true;
+        owner.editor.max_length = Some(24);
+        let mut done = edit_column("done");
+        done.cell_editor = DataGridCellEditor::Checkbox;
+        let changes = fixture.clone();
+        rsx! { for generation in [epoch()] {
+            DataGrid { key: "custom-editor-{generation}", columns: vec![DataGridColumn::new("asset", "Asset"), owner.clone(), done.clone()],
+                rows: rows(), state: state(), onstatechange: move |next| state.set(next),
+                oncellvaluechanged: {let changes=changes.clone(); move |event: DataGridCellValueChanged| {
+                    changes.0.requests.borrow_mut().push(event.clone());
+                    if changes.0.apply.get() { event.apply_to(&mut rows.write()); }
+                }},
+                render_editor: {let fixture=fixture.clone(); move |context: DataGridEditorContext| {
+                    fixture.0.contexts.borrow_mut().push(context.clone());
+                    if context.cell.column.id == "owner" && !fixture.0.native_only.get() {
+                        Some(rsx! { CustomEditorProbe { context, fixture: fixture.clone() } })
+                    } else { None }
+                }},
+            }
+        } }
+    }
+    #[component]
+    fn CustomEditorProbe(context: DataGridEditorContext, fixture: CustomEditorFixture) -> Element {
+        fixture
+            .0
+            .focus_context
+            .set(Some(use_context::<GridMountContext>()));
+        let input_context = context.clone();
+        let click_context = context.clone();
+        let save_context = context.clone();
+        rsx! { input {
+            "data-custom-probe": format!("primary-{}", context.cell.row.id), "aria-label": context.label.clone(), value: context.draft.clone(),
+            onmounted: context.onmounted, readonly: !context.active,
+            oninput: move |event: FormEvent| input_context.set_value(event.value()),
+            onkeydown: move |event: KeyboardEvent| {
+                fixture.0.key_calls.set(fixture.0.key_calls.get() + 1);
+                if event.key() == Key::Enter {
+                    if fixture.0.consume_enter.get() { event.prevent_default(); }
+                    if fixture.0.stop_enter.get() { event.stop_propagation(); }
+                }
+            },
+        }
+        button { "data-custom-probe": format!("quick-{}", context.cell.row.id), r#type: "button", onclick: move |_| click_context.set_value("Service".into()),
+            onkeydown: move |event: KeyboardEvent| if matches!(event.key(),Key::Enter) || event.key() == Key::Character(" ".into()) { event.stop_propagation(); },
+            "Use Service"
+        }
+        button { "data-custom-probe": format!("save-{}", context.cell.row.id), r#type: "button",
+            "aria-disabled": !context.active, tabindex: if context.active { "0" } else { "-1" },
+            onkeydown: move |event: KeyboardEvent| if matches!(event.key(),Key::Enter) || event.key() == Key::Character(" ".into()) { event.stop_propagation(); },
+            onclick: move |_| save_context.commit(), "Save"
+        } }
+    }
+    struct EditorForm(String);
+    impl dioxus::html::HasFileData for EditorForm {
+        fn files(&self) -> Vec<dioxus::html::FileData> {
+            Vec::new()
+        }
+    }
+    impl dioxus::html::HasFormData for EditorForm {
+        fn value(&self) -> String {
+            self.0.clone()
+        }
+        fn valid(&self) -> bool {
+            true
+        }
+        fn values(&self) -> Vec<(String, dioxus::html::FormValue)> {
+            Vec::new()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    fn custom_context(fixture: &CustomEditorFixture) -> DataGridEditorContext {
+        fixture
+            .0
+            .contexts
+            .borrow()
+            .iter()
+            .rev()
+            .find(|context| context.active)
+            .expect("active editor snapshot")
+            .clone()
+    }
+    fn begin_custom_editor(
+        dom: &mut VirtualDom,
+        attrs: &mut BTreeMap<usize, BTreeMap<String, String>>,
+    ) {
+        let cell = render_target(attrs, "data-column-id", "owner");
+        render_dispatch(dom, "focus", cell, Box::new(()));
+        render_dispatch(
+            dom,
+            "keydown",
+            cell,
+            Box::new(RenderKey {
+                key: Key::F2,
+                composing: false,
+            }),
+        );
+        settle_render(dom, attrs);
+    }
+    #[test]
+    fn custom_editor_context_reuses_validation_and_native_key_ownership() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(RenderConverter));
+        let fixture = CustomEditorFixture::default();
+        fixture.0.apply.set(true);
+        let mut dom = VirtualDom::new_with_props(custom_editor_fixture, fixture.clone());
+        let mut attrs = BTreeMap::new();
+        collect_render_ids(dom.rebuild_to_vec(), &mut attrs);
+        settle_render(&mut dom, &mut attrs);
+        begin_custom_editor(&mut dom, &mut attrs);
+        let context = custom_context(&fixture);
+        assert_eq!(
+            (
+                context.cell.row.id.as_str(),
+                context.cell.column.id.as_str(),
+                context.cell.row_index
+            ),
+            ("a", "owner", 0)
+        );
+        assert_eq!(context.cell.value, "Operations");
+        assert_eq!(context.draft, "Operations");
+        assert!(context.active && context.error.is_none());
+        assert!(
+            !dioxus_ssr::render(&dom).contains("data-select-all="),
+            "custom editor never enters built-in Text selection path"
+        );
+        let primary = render_target(&attrs, "data-custom-probe", "primary-a");
+        fixture.0.consume_enter.set(true);
+        assert_eq!(
+            render_dispatch(
+                &dom,
+                "keydown",
+                primary,
+                Box::new(RenderKey {
+                    key: Key::Enter,
+                    composing: false
+                })
+            ),
+            (false, false)
+        );
+        assert_eq!(
+            fixture.0.key_calls.get(),
+            1,
+            "actual primary child handler receives Enter; target={primary:?}, attrs={:?}",
+            attrs.get(&primary.raw())
+        );
+        assert!(fixture.0.requests.borrow().is_empty());
+        fixture.0.consume_enter.set(false);
+        fixture.0.stop_enter.set(true);
+        assert_eq!(
+            render_dispatch(
+                &dom,
+                "keydown",
+                primary,
+                Box::new(RenderKey {
+                    key: Key::Enter,
+                    composing: false
+                })
+            ),
+            (true, false)
+        );
+        fixture.0.stop_enter.set(false);
+        assert_eq!(
+            render_dispatch(
+                &dom,
+                "keydown",
+                primary,
+                Box::new(RenderKey {
+                    key: Key::Character(" ".into()),
+                    composing: false
+                })
+            ),
+            (true, false)
+        );
+        dom.in_runtime(|| context.set_value(String::new()));
+        settle_render(&mut dom, &mut attrs);
+        dom.in_runtime(|| custom_context(&fixture).commit());
+        settle_render(&mut dom, &mut attrs);
+        let invalid = custom_context(&fixture);
+        assert!(invalid.error.is_some() && invalid.error_id.is_some());
+        assert!(fixture.0.requests.borrow().is_empty());
+        let quick = render_target(&attrs, "data-custom-probe", "quick-a");
+        assert_eq!(
+            render_dispatch(
+                &dom,
+                "keydown",
+                quick,
+                Box::new(RenderKey {
+                    key: Key::Enter,
+                    composing: false
+                })
+            ),
+            (true, false),
+            "native button Enter remains available"
+        );
+        render_dispatch(&dom, "click", quick, Box::new(()));
+        settle_render(&mut dom, &mut attrs);
+        assert_eq!(custom_context(&fixture).draft, "Service");
+        assert!(custom_context(&fixture).error.is_none());
+        let primary = render_target(&attrs, "data-custom-probe", "primary-a");
+        assert_eq!(
+            render_dispatch(
+                &dom,
+                "keydown",
+                primary,
+                Box::new(RenderKey {
+                    key: Key::Enter,
+                    composing: false
+                })
+            ),
+            (false, false)
+        );
+        settle_render(&mut dom, &mut attrs);
+        assert_eq!(fixture.0.requests.borrow().len(), 1);
+        assert_eq!(
+            fixture.0.rows.get().unwrap().peek()[0].value("owner"),
+            "Service"
+        );
+        // Native Tab may put focus on a composed Save button rather than the
+        // registered primary input. Its focusin owns the same editor lane.
+        begin_custom_editor(&mut dom, &mut attrs);
+        dom.in_runtime(|| custom_context(&fixture).set_value("Inspection".into()));
+        settle_render(&mut dom, &mut attrs);
+        let save = render_target(&attrs, "data-custom-probe", "save-a");
+        render_dispatch(&dom, "focusin", save, Box::new(()));
+        let focus = fixture.0.focus_context.get().unwrap();
+        assert_eq!(
+            focus.state.peek().active,
+            Some(GridFocus {
+                row: "a".into(),
+                lane: GridLane::Editor("owner".into())
+            })
+        );
+        assert_eq!(
+            render_dispatch(
+                &dom,
+                "keydown",
+                save,
+                Box::new(RenderKey {
+                    key: Key::Character(" ".into()),
+                    composing: false
+                })
+            ),
+            (true, false),
+            "Save keeps native Space activation"
+        );
+        render_dispatch(&dom, "click", save, Box::new(()));
+        settle_render(&mut dom, &mut attrs);
+        assert_eq!(fixture.0.requests.borrow().len(), 2);
+        assert_eq!(
+            fixture.0.rows.get().unwrap().peek()[0].value("owner"),
+            "Inspection"
+        );
+        let pending = focus
+            .state
+            .peek()
+            .pending
+            .clone()
+            .expect("nested Save retains the mounted return-focus intent");
+        assert_eq!(
+            pending.target,
+            Some(GridFocus {
+                row: "a".into(),
+                lane: GridLane::Cell("owner".into())
+            })
+        );
+        let html = dioxus_ssr::render(&dom);
+        let retired_save = html
+            .split('<')
+            .map(|tag| tag.split('>').next().unwrap())
+            .find(|tag| tag.contains("data-custom-probe=\"save-a\""))
+            .expect("focused outgoing Save remains mounted");
+        assert!(
+            retired_save.contains("aria-disabled=true")
+                || retired_save.contains("aria-disabled=\"true\"")
+        );
+        assert!(
+            !retired_save.contains(" disabled"),
+            "retiring Save must preserve native focus until the target takes it"
+        );
+        dom.in_runtime(|| {
+            focus.focused(Some(GridFocus {
+                row: "a".into(),
+                lane: GridLane::Cell("owner".into()),
+            }))
+        });
+        settle_render(&mut dom, &mut attrs);
+        assert!(
+            !dioxus_ssr::render(&dom).contains("data-custom-probe="),
+            "normal target focus releases the outgoing editor"
+        );
+    }
+    #[test]
+    fn custom_editor_stale_context_cannot_change_cancel_or_mount_into_a_new_same_cell_session() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(RenderConverter));
+        let fixture = CustomEditorFixture::default();
+        let mut dom = VirtualDom::new_with_props(custom_editor_fixture, fixture.clone());
+        let mut attrs = BTreeMap::new();
+        collect_render_ids(dom.rebuild_to_vec(), &mut attrs);
+        settle_render(&mut dom, &mut attrs);
+        begin_custom_editor(&mut dom, &mut attrs);
+        let old = custom_context(&fixture);
+        dom.in_runtime(|| old.cancel());
+        settle_render(&mut dom, &mut attrs);
+        begin_custom_editor(&mut dom, &mut attrs);
+        let current = custom_context(&fixture);
+        dom.in_runtime(|| {
+            old.set_value("Stale".into());
+            old.commit();
+            old.cancel();
+            old.advance(false);
+            old.onmounted
+                .call(Event::new(Rc::new(MountedData::new(())), false));
+        });
+        settle_render(&mut dom, &mut attrs);
+        assert_eq!(custom_context(&fixture).draft, "Operations");
+        assert!(fixture.0.requests.borrow().is_empty());
+        dom.in_runtime(|| current.set_value("Current".into()));
+        settle_render(&mut dom, &mut attrs);
+        assert_eq!(custom_context(&fixture).draft, "Current");
+        let mut epoch = fixture.0.epoch.get().unwrap();
+        dom.in_runtime(|| epoch.set(1));
+        settle_render(&mut dom, &mut attrs);
+        dom.in_runtime(|| {
+            current.set_value("After reset".into());
+            current.cancel();
+            current.commit();
+            current
+                .onmounted
+                .call(Event::new(Rc::new(MountedData::new(())), false));
+        });
+        settle_render(&mut dom, &mut attrs);
+        assert!(fixture.0.requests.borrow().is_empty());
+        assert_eq!(
+            fixture.0.rows.get().unwrap().peek()[0].value("owner"),
+            "Operations"
+        );
+    }
+    #[test]
+    fn custom_editor_none_fallback_tab_advance_held_changes_and_conflict_keep_existing_contract() {
+        let _guard = crate::test_event_converter_guard();
+        dioxus::html::set_event_converter(Box::new(RenderConverter));
+        let fixture = CustomEditorFixture::default();
+        fixture.0.native_only.set(true);
+        let mut dom = VirtualDom::new_with_props(custom_editor_fixture, fixture.clone());
+        let mut attrs = BTreeMap::new();
+        collect_render_ids(dom.rebuild_to_vec(), &mut attrs);
+        settle_render(&mut dom, &mut attrs);
+        begin_custom_editor(&mut dom, &mut attrs);
+        assert!(
+            dioxus_ssr::render(&dom).contains("data-select-all="),
+            "None preserves built-in Text selection"
+        );
+        dom.in_runtime(|| custom_context(&fixture).cancel());
+        settle_render(&mut dom, &mut attrs);
+        fixture.0.native_only.set(false);
+        begin_custom_editor(&mut dom, &mut attrs);
+        dom.in_runtime(|| {
+            let context = custom_context(&fixture);
+            context.set_value("Service".into());
+            context.advance(false);
+        });
+        settle_render(&mut dom, &mut attrs);
+        assert_eq!(fixture.0.requests.borrow().len(), 1);
+        assert_eq!(
+            fixture.0.rows.get().unwrap().peek()[0].value("owner"),
+            "Operations",
+            "held host value stays authoritative"
+        );
+        assert!(
+            dioxus_ssr::render(&dom).contains("data-editor-kind=\"checkbox\""),
+            "advance uses native checkbox fallback"
+        );
+        dom.in_runtime(|| custom_context(&fixture).cancel());
+        settle_render(&mut dom, &mut attrs);
+        begin_custom_editor(&mut dom, &mut attrs);
+        let mut rows = fixture.0.rows.get().unwrap();
+        dom.in_runtime(|| {
+            rows.write()[0]
+                .cells
+                .insert("owner".into(), "External".into());
+        });
+        settle_render(&mut dom, &mut attrs);
+        dom.in_runtime(|| custom_context(&fixture).commit());
+        settle_render(&mut dom, &mut attrs);
+        assert!(
+            custom_context(&fixture)
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("changed while editing")
+        );
+        assert_eq!(fixture.0.requests.borrow().len(), 1);
+        assert_eq!(rows.peek()[0].value("owner"), "External");
+        dom.in_runtime(|| rows.write().remove(0));
+        settle_render(&mut dom, &mut attrs);
+        assert!(
+            !dioxus_ssr::render(&dom).contains("data-custom-probe="),
+            "removed row owns no editor controls"
+        );
     }
 }
