@@ -301,6 +301,8 @@ pub fn Tabs(
     let mut measured_overflow = use_signal(|| false);
     let mut mounted = use_signal(BTreeMap::<String, Rc<MountedData>>::new);
     let mut strip = use_signal(|| None::<Rc<MountedData>>);
+    let overflow_focus = use_hook(|| Rc::new(RefCell::new(None::<String>)));
+    let overflow = crate::use_dropdown();
     let measure = use_callback(move |()| {
         let node = strip.peek().clone();
         spawn(async move {
@@ -336,9 +338,10 @@ pub fn Tabs(
         .resolve(&items);
     let request_items = items.clone();
     let request = use_callback(move |next: Option<usize>| {
-        if accept_tab_request(&request_items, active, next, |event| {
+        let accepted = accept_tab_request(&request_items, active, next, |event| {
             onbeforechange.call(event)
-        }) {
+        });
+        if accepted {
             if !controlled {
                 internal.set(next.map_or(TabSelection::Empty, TabSelection::Index));
             }
@@ -347,6 +350,7 @@ pub fn Tabs(
                 onchange.call(index);
             }
         }
+        accepted
     });
     let active_key = active.map(|index| items[index].key.clone());
     use_effect(use_reactive!(|active_key| {
@@ -370,7 +374,7 @@ pub fn Tabs(
                     id: format!("{prefix}-tab-{}", crate::composition::tab_key_id(&item.key)),
                     "aria-controls": id_prefix.as_ref().map(|prefix| format!("{prefix}-panel-{}", crate::composition::tab_key_id(&item.key))),
                     onmounted: { let key = item.key.clone(); move |event| { mounted.write().insert(key.clone(), event.data()); } },
-                    onclick: move |_| request.call(Some(index)),
+                    onclick: move |_| { request.call(Some(index)); },
                     onkeydown: { let items = items.clone(); move |event: KeyboardEvent| {
                         if event.key() == Key::Delete {
                             if items.get(index).is_some_and(|item|item.closable && !item.disabled) {
@@ -397,9 +401,26 @@ pub fn Tabs(
             }
         }
     }
-        if show_menu { crate::Dropdown { label: "All tabs", aria_label: aria_label_more_tabs, icon: "more-menu", variant: crate::ButtonVariant::SubtleTertiary, class: "ix-tabs-overflow",
-            for (index, item) in items.iter().enumerate() { crate::DropdownItem { key: "{item.key}", label: item.label.clone(), icon: item.icon.clone(), disabled: item.disabled, checked: active == Some(index), checkable: true, onclick: { let key = item.key.clone(); move |_| { request.call(Some(index)); let node = mounted.peek().get(&key).cloned(); if let Some(node) = node { reveal_tab(node, true); } } } } }
-        } }
+        if show_menu { div { class: "ix-dropdown ix-tabs-overflow",
+            crate::DropdownTrigger { dropdown: overflow, aria_label: aria_label_more_tabs, icon: "more-menu", variant: crate::ButtonVariant::SubtleTertiary, class: "ix-dropdown-trigger",
+                "All tabs"
+                Icon { name: "chevron-down-small", size: 16 }
+            }
+            crate::Dropdown { controller: overflow, label: "All tabs",
+            onchange: { let pending = overflow_focus.clone(); let items = items.clone(); move |open| {
+                let key = pending.borrow_mut().take();
+                if open { return; }
+                // Accepted item activation owns dismissal without an invoker
+                // focus task. Hand focus to the still-selected real tab only
+                // after closing; Escape and veto keep normal invoker return.
+                let current = if controlled { active } else { internal.peek().resolve(&items) };
+                if let Some(key) = key.filter(|key|current.is_some_and(|index|items[index].key == *key)) {
+                    let node = mounted.peek().get(&key).cloned();
+                    if let Some(node) = node { reveal_tab(node, true); }
+                }
+            } },
+            for (index, item) in items.iter().enumerate() { crate::DropdownItem { key: "{item.key}", order: Some(index), label: item.label.clone(), icon: item.icon.clone(), disabled: item.disabled, checked: active == Some(index), checkable: true, keep_open: true, onitemclick: { let key = item.key.clone(); let pending = overflow_focus.clone(); move |_| { let accepted = request.call(Some(index)); *pending.borrow_mut() = accepted.then(||key.clone()); overflow.close(!accepted); } } } }
+        } } }
     } }
 }
 
