@@ -5,6 +5,9 @@
 //! Temporal inputs expose their real native input through `onmounted`. Retain
 //! `event.data()` and call `MountedData::set_focus(true).await` for host-owned
 //! focus, the Dioxus adaptation of upstream `focusInput`.
+pub use crate::date_dropdown_controller::{
+    DateDropdownController, DateDropdownError, use_date_dropdown,
+};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -181,7 +184,7 @@ impl IxDate {
     }
     /// Gregorian leap-year rule, including century exceptions.
     pub const fn is_leap_year(year: u16) -> bool {
-        year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+        year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
     }
     /// Number of days in a month; invalid months have zero days.
     pub const fn days_in_month(year: u16, month: u8) -> u8 {
@@ -999,7 +1002,7 @@ impl TimeFormat {
     /// Format a validated time.
     pub fn format(self, time: IxTime) -> String {
         let hour = if self.is_twelve_hour() {
-            if time.hour % 12 == 0 {
+            if time.hour.is_multiple_of(12) {
                 12
             } else {
                 time.hour % 12
@@ -2055,6 +2058,8 @@ pub struct DateRangeChange {
 /// event followed by the dismissal event, as in the source component.
 /// The persistent shared Dropdown surface owns dismissal, focus restoration and
 /// cleanup. Enable its native top layer to escape a clipped parent layout.
+/// Attach a [`DateDropdownController`] to query the current range, including
+/// unpublished calendar edits, without publishing or dismissing it.
 #[component]
 pub fn DateDropdown(
     today: IxDate,
@@ -2068,6 +2073,7 @@ pub fn DateDropdown(
     #[props(default)] single_selection: bool,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
+    #[props(default)] controller: Option<DateDropdownController>,
     #[props(default)] enable_top_layer: bool,
     #[props(default)] id: Option<String>,
     #[props(default)] class: String,
@@ -2088,6 +2094,11 @@ pub fn DateDropdown(
     };
     let mut draft = use_signal(|| committed);
     let mut draft_id = use_signal(|| date_range_id.clone());
+    crate::date_dropdown_controller::use_date_dropdown_binding(
+        controller.as_ref(),
+        draft,
+        draft_id,
+    );
     let mut picker_epoch = use_signal(|| 0_u64);
     use_effect(use_reactive!(|committed, date_range_id| {
         // The initial effect already agrees with the initial signals. Avoid
@@ -2184,6 +2195,10 @@ pub fn DateDropdown(
 }
 
 pub(crate) const STYLES: &str = include_str!("styles/datetime.css");
+
+#[cfg(test)]
+#[path = "datetime/date_dropdown_controller_tests.rs"]
+mod date_dropdown_controller_tests;
 
 #[cfg(test)]
 #[path = "datetime/date_dropdown_surface_tests.rs"]

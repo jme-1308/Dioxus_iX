@@ -531,7 +531,7 @@ fn build_popover_fixture(fixture: &Fixture) -> VirtualDom {
 }
 
 fn fixture_focus_candidate(target: &str, hosts: &[&str], active: bool) -> serde_json::Value {
-    let nearest = |popover_only| {
+    let nearest = |popover_only: bool| {
         hosts
             .iter()
             .filter_map(|id| {

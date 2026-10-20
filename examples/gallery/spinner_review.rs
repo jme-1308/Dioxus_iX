@@ -70,7 +70,7 @@ fn SpinnerCase(case: Value, revision: usize, measured: bool) -> Element {
     } else {
         ColorScheme::Dark
     };
-    let density = if scope % 2 == 0 {
+    let density = if scope.is_multiple_of(2) {
         Density::Normal
     } else {
         Density::Compact
@@ -102,7 +102,7 @@ fn SpinnerConsumer(case: Value, revision: usize) -> Element {
     } else {
         ColorScheme::Dark
     };
-    let density = if scope % 2 == 0 {
+    let density = if scope.is_multiple_of(2) {
         Density::Normal
     } else {
         Density::Compact

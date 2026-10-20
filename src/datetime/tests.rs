@@ -190,6 +190,7 @@ fn dropdown_event_fixture() -> Element {
         single_selection: false,
         disabled: false,
         loading: false,
+        controller: None,
         enable_top_layer: false,
         id: None,
         class: String::new(),

@@ -114,7 +114,9 @@ fn ReportDraftForm(onsave: EventHandler<BTreeMap<String, String>>) -> Element {
 }
 
 #[component]
-pub fn InspectionReportExample() -> Element {
+pub fn InspectionReportExample(
+    #[props(default)] controller: Option<DateDropdownController>,
+) -> Element {
     let mut range = use_signal(initial_range);
     let mut locked = use_signal(|| false);
     let mut epoch = use_signal(|| 0_u64);
@@ -157,7 +159,7 @@ pub fn InspectionReportExample() -> Element {
             }
             div { id: "report-toolbar", class: "report-toolbar",
                 span { class: "report-period-label", "Inspection period" }
-                DateDropdown { id: "report-period", enable_top_layer: true, today: date(20), options,
+                DateDropdown { id: "report-period", controller, enable_top_layer: true, today: date(20), options,
                     from: current.dates.from, to: current.dates.to, date_range_id: current.id.clone(),
                     min_date: date(1), max_date: date(20), disabled: locked(),
                     onrangechange: move |next| range.set(next),

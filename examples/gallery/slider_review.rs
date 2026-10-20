@@ -271,7 +271,7 @@ fn SliderCase(
     } else {
         ColorScheme::Dark
     };
-    let density = if scope % 2 == 0 {
+    let density = if scope.is_multiple_of(2) {
         Density::Normal
     } else {
         Density::Compact

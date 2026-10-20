@@ -47,7 +47,7 @@ pub fn ModalFocusPreview() -> Element {
                 p { "The close guard keeps the form open until you allow or deny a pending request. Confirmation always completes the form." }
                 Modal { modal, label:"Equipment modal form", size:ModalSize::Sm, centered:true, close_on_backdrop_click:true,
                     onresult:move |result|results.write().push(format!("{result:?}")),
-                    onopenchange:move |open|if !open {pending.set(None);},
+                    onopenchange:move |open: bool|if !open {pending.set(None);},
                     ondismissrequest:move |request:ModalDismissRequest| {
                         requests.set(requests()+1);
                         if guard(){pending.set(Some(request));}else{request.allow();}

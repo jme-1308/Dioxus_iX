@@ -55,6 +55,7 @@ mod data_grid_custom_editor;
 mod data_grid_editor;
 mod data_grid_render;
 mod data_grid_value;
+mod date_dropdown_controller;
 pub mod datetime;
 pub mod dialogs;
 mod disclosure;
