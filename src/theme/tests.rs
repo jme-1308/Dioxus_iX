@@ -44,11 +44,12 @@ fn standalone_theme_supplies_one_complete_bundle_and_nested_scopes_reuse_it() {
     assert_eq!(expected.len(), 34);
     assert_eq!(expected[0], BASE_STYLES);
     assert_eq!(expected[33], crate::tree::STYLES);
+    assert!(scope(&standalone, "ix-theme").contains("data-ix-theme-root=\"true\""));
     let nested = rendered(|| {
         rsx! {
             IxTheme {class:"outer",scheme:ColorScheme::Dark,
                 IxTheme {class:"inner",scheme:ColorScheme::Light,density:Density::Compact,
-                    IxTheme {class:"deepest",style:"--ix-space:11px", "Nested content"}
+                    IxTheme {class:"deepest",style:"--ix-space:11px;min-height:144px;height:180px", "Nested content"}
                 }
             }
         }
@@ -62,7 +63,11 @@ fn standalone_theme_supplies_one_complete_bundle_and_nested_scopes_reuse_it() {
     assert!(scope(&nested, "outer").contains("data-ix-color-schema=\"dark\""));
     assert!(scope(&nested, "inner").contains("data-ix-color-schema=\"light\""));
     assert!(scope(&nested, "inner").contains("data-ix-density=\"compact\""));
-    assert!(scope(&nested, "deepest").contains("--ix-space:11px"));
+    assert!(scope(&nested, "outer").contains("data-ix-theme-root=\"true\""));
+    assert!(scope(&nested, "inner").contains("data-ix-theme-root=\"false\""));
+    let deepest = scope(&nested, "deepest");
+    assert!(deepest.contains("data-ix-theme-root=\"false\""));
+    assert!(deepest.contains("--ix-space:11px;min-height:144px;height:180px"));
     assert!(nested.contains("Nested content"));
     assert!(!nested.contains("<script"));
     assert!(!nested.contains("<link"));
@@ -131,6 +136,8 @@ fn theme_updates_keep_the_outer_bundle_and_nested_child_state() {
         } else {
             ("dark", "light", "normal", "compact")
         };
+        assert!(outer.contains("data-ix-theme-root=\"true\""));
+        assert!(inner.contains("data-ix-theme-root=\"false\""));
         assert!(outer.contains(&format!("data-ix-color-schema=\"{outer_scheme}\"")));
         assert!(inner.contains(&format!("data-ix-color-schema=\"{inner_scheme}\"")));
         assert!(outer.contains(&format!("data-ix-density=\"{outer_density}\"")));
@@ -151,7 +158,11 @@ fn theme_updates_keep_the_outer_bundle_and_nested_child_state() {
 fn peer_themes(first_visible: Rc<Cell<bool>>) -> Element {
     rsx! {
         section {id:"first-peer",
-            if first_visible.get() { IxTheme {class:"first-root",scheme:ColorScheme::Light,"First root"} }
+            if first_visible.get() {
+                IxTheme {class:"first-root",scheme:ColorScheme::Light,
+                    IxTheme {class:"first-nested","First root"}
+                }
+            }
         }
         section {id:"second-peer",
             IxTheme {class:"second-root",scheme:ColorScheme::Dark,
@@ -173,6 +184,12 @@ fn independent_peers_retain_own_bundles_after_removal_and_fresh_roots_are_isolat
     assert_eq!(two_bundles.len(), 68);
     assert_eq!(&two_bundles[..34], expected.as_slice());
     assert_eq!(&two_bundles[34..], expected.as_slice());
+    for root in ["first-root", "second-root"] {
+        assert!(scope(&initial, root).contains("data-ix-theme-root=\"true\""));
+    }
+    for nested in ["first-nested", "second-nested"] {
+        assert!(scope(&initial, nested).contains("data-ix-theme-root=\"false\""));
+    }
     first_visible.set(false);
     dom.mark_dirty(ScopeId::APP);
     settle(&mut dom);
@@ -180,6 +197,9 @@ fn independent_peers_retain_own_bundles_after_removal_and_fresh_roots_are_isolat
     assert_eq!(styles(&remaining), expected);
     assert!(!remaining.contains("class=\"ix-theme first-root\""));
     assert!(scope(&remaining, "second-root").contains("data-ix-color-schema=\"dark\""));
+    assert!(scope(&remaining, "second-root").contains("data-ix-theme-root=\"true\""));
+    assert!(scope(&remaining, "second-nested").contains("data-ix-theme-root=\"false\""));
+    assert!(!remaining.contains("class=\"ix-theme first-nested\""));
     assert!(remaining.contains("Second root content"));
     first_visible.set(true);
     dom.mark_dirty(ScopeId::APP);
@@ -188,9 +208,39 @@ fn independent_peers_retain_own_bundles_after_removal_and_fresh_roots_are_isolat
     assert_eq!(styles(&restored).len(), 68);
     assert_eq!(&styles(&restored)[..34], expected.as_slice());
     assert_eq!(&styles(&restored)[34..], expected.as_slice());
+    for root in ["first-root", "second-root"] {
+        assert!(scope(&restored, root).contains("data-ix-theme-root=\"true\""));
+    }
+    for nested in ["first-nested", "second-nested"] {
+        assert!(scope(&restored, nested).contains("data-ix-theme-root=\"false\""));
+    }
     // A concurrently live root and a root created after teardown both need
     // complete styles; ownership must not escape through a process global.
     assert_eq!(styles(&rendered(standalone)), expected);
     drop(dom);
     assert_eq!(styles(&rendered(standalone)), expected);
+}
+
+#[test]
+fn raw_theme_containers_do_not_change_dioxus_bundle_ownership_or_explicit_sizing() {
+    let html = rendered(|| {
+        rsx! {
+            div {class:"ix-theme manual-theme",style:"height:320px",
+                IxTheme {class:"independent",style:"min-height:100%;--ix-space:12px",
+                    IxTheme {class:"sized-nested",style:"min-height:144px;height:180px",
+                        "Consumer-sized content"
+                    }
+                }
+            }
+        }
+    });
+    assert_eq!(styles(&html).len(), 34);
+    assert!(!scope(&html, "manual-theme").contains("data-ix-theme-root"));
+    let independent = scope(&html, "independent");
+    assert!(independent.contains("data-ix-theme-root=\"true\""));
+    assert!(independent.contains("min-height:100%;--ix-space:12px"));
+    let nested = scope(&html, "sized-nested");
+    assert!(nested.contains("data-ix-theme-root=\"false\""));
+    assert!(nested.contains("min-height:144px;height:180px"));
+    assert!(html.contains("Consumer-sized content"));
 }

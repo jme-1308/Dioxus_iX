@@ -49,7 +49,7 @@ fn app() -> Element {
 
 Import a platform in the consuming application's Dioxus configuration. The library itself has no renderer enabled by default. Optional `web` and `desktop` features forward the matching Dioxus renderer; the `desktop` target uses the Dioxus desktop WebView renderer, not Blitz native rendering.
 
-Each outer `IxTheme` installs the bundled styles once for its descendant theme scopes. Nested themes keep independent colors, density and token overrides while reusing those styles. Independently rooted sibling themes own separate bundles for their full lifetimes, including SSR; no global style manager or consumer asset setup is needed. Scoped overrides follow normal document CSS ordering.
+Each outer `IxTheme` installs the bundled styles once for its descendant theme scopes. Nested themes keep independent colors, density and token overrides while reusing those styles. Independently rooted sibling themes own separate bundles for their full lifetimes, including SSR; no global style manager or consumer asset setup is needed. Scoped overrides follow normal document CSS ordering. Independent roots retain their full-container minimum height. Nested theme scopes follow their content; explicit `style` sizing remains available.
 
 `IxTheme` accepts externally supplied upstream tokens through `style` or ancestor inheritance: 23 semantic color aliases across light/dark/system schemes, font family and body shorthand, radius, and control height. Missing tokens retain provisional defaults; direct `--ix-*` values in `style` take precedence. For example, with tokens and fonts you are authorized to use:
 

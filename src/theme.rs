@@ -45,7 +45,8 @@ impl Density {
 ///
 /// Nested themes reuse their ancestor's bundled styles while retaining their
 /// own scheme, density and token overrides. Independently rooted themes each
-/// own a bundle for their full Dioxus lifetime.
+/// own a bundle for their full Dioxus lifetime. Independent roots fill their
+/// containing block; nested themes size naturally unless `style` overrides it.
 ///
 /// `style` permits consumers with authorized Brand tokens to override the
 /// provisional public-source palette without changing any component code.
@@ -117,6 +118,7 @@ pub fn IxTheme(
         div {
             class: "ix-theme {class}",
             "data-ix-theme": "brand",
+            "data-ix-theme-root": (!inherited_styles).to_string(),
             "data-ix-color-schema": scheme.as_str(),
             "data-ix-density": density.as_str(),
             style,

@@ -61,3 +61,6 @@
 @media(prefers-reduced-motion:reduce) {
  .ix-theme *,.ix-theme *::before,.ix-theme *::after { animation-duration:.01ms!important;transition-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important; }
 }
+
+/* Nested color/density scopes follow their content instead of filling a grid track. */
+.ix-theme[data-ix-theme-root=false]{min-height:0}
