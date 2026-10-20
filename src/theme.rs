@@ -2,6 +2,9 @@
 
 use dioxus::prelude::*;
 
+#[derive(Clone, Copy)]
+struct ThemeStyleBundle;
+
 /// Color scheme. System follows the browser or desktop WebView preference.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorScheme {
@@ -40,6 +43,10 @@ impl Density {
 
 /// Install the Rust-embedded theme around an application or preview.
 ///
+/// Nested themes reuse their ancestor's bundled styles while retaining their
+/// own scheme, density and token overrides. Independently rooted themes each
+/// own a bundle for their full Dioxus lifetime.
+///
 /// `style` permits consumers with authorized Brand tokens to override the
 /// provisional public-source palette without changing any component code.
 /// The theme consumes the upstream `--si-sys-*` semantic color and sizing
@@ -66,41 +73,47 @@ pub fn IxTheme(
     #[props(default)] style: String,
     children: Element,
 ) -> Element {
+    // Capture the inherited bundle before providing our own marker. The cached
+    // context hook keeps an outer theme from observing itself on later renders.
+    let inherited_styles = try_use_context::<ThemeStyleBundle>().is_some();
+    use_context_provider(|| ThemeStyleBundle);
     rsx! {
-        style { {BASE_STYLES} }
-        style { {crate::actions::STYLES} }
-        style { {crate::spinner_styles::STYLES} }
-        style { {crate::progress_styles::STYLES} }
-        style { {crate::button_styles::STYLES} }
-        style { {crate::icon_button_styles::STYLES} }
-        style { {crate::toggle_button_styles::STYLES} }
-        style { {crate::application::STYLES} }
-        style { {crate::header_layout::STYLES} }
-        style { {crate::chat::STYLES} }
-        style { {crate::charts::STYLES} }
-        style { {crate::chart_advanced::STYLES} }
-        style { {crate::chart_toolbox::STYLES} }
-        style { {crate::data_grid::STYLES} }
-        style { {crate::composition::STYLES} }
-        style { {crate::datetime::STYLES} }
-        style { {crate::dialogs::STYLES} }
-        style { {crate::forms::STYLES} }
-        style { {crate::checkbox_styles::STYLES} }
-        style { {crate::radio_styles::STYLES} }
-        style { {crate::toggle_styles::STYLES} }
-        style { {crate::group_styles::STYLES} }
-        style { {crate::input_styles::STYLES} }
-        style { {crate::number_input_styles::STYLES} }
-        style { {crate::expanding_search_styles::STYLES} }
-        style { {crate::slider_styles::STYLES} }
-        style { {crate::select_visual_styles::STYLES} }
-        style { {crate::upload_styles::STYLES} }
-        style { {crate::layout::STYLES} }
-        style { {crate::notifications::STYLES} }
-        style { {crate::overlays::STYLES} }
-        style { {crate::dropdown::STYLES} }
-        style { {crate::patterns::STYLES} }
-        style { {crate::tree::STYLES} }
+        if !inherited_styles {
+            style { {BASE_STYLES} }
+            style { {crate::actions::STYLES} }
+            style { {crate::spinner_styles::STYLES} }
+            style { {crate::progress_styles::STYLES} }
+            style { {crate::button_styles::STYLES} }
+            style { {crate::icon_button_styles::STYLES} }
+            style { {crate::toggle_button_styles::STYLES} }
+            style { {crate::application::STYLES} }
+            style { {crate::header_layout::STYLES} }
+            style { {crate::chat::STYLES} }
+            style { {crate::charts::STYLES} }
+            style { {crate::chart_advanced::STYLES} }
+            style { {crate::chart_toolbox::STYLES} }
+            style { {crate::data_grid::STYLES} }
+            style { {crate::composition::STYLES} }
+            style { {crate::datetime::STYLES} }
+            style { {crate::dialogs::STYLES} }
+            style { {crate::forms::STYLES} }
+            style { {crate::checkbox_styles::STYLES} }
+            style { {crate::radio_styles::STYLES} }
+            style { {crate::toggle_styles::STYLES} }
+            style { {crate::group_styles::STYLES} }
+            style { {crate::input_styles::STYLES} }
+            style { {crate::number_input_styles::STYLES} }
+            style { {crate::expanding_search_styles::STYLES} }
+            style { {crate::slider_styles::STYLES} }
+            style { {crate::select_visual_styles::STYLES} }
+            style { {crate::upload_styles::STYLES} }
+            style { {crate::layout::STYLES} }
+            style { {crate::notifications::STYLES} }
+            style { {crate::overlays::STYLES} }
+            style { {crate::dropdown::STYLES} }
+            style { {crate::patterns::STYLES} }
+            style { {crate::tree::STYLES} }
+        }
         div {
             class: "ix-theme {class}",
             "data-ix-theme": "brand",
@@ -124,3 +137,6 @@ pub fn IxTheme(
 // These adapters enable authorized externally supplied tokens, not a bundled
 // or certified complete Siemens Corporate Brand theme.
 pub(crate) const BASE_STYLES: &str = include_str!("styles/theme.css");
+
+#[cfg(test)]
+mod tests;

@@ -6,9 +6,50 @@ use dioxus_ix::*;
 mod gallery_limits;
 
 #[component]
+fn NestedThemeForm(dark: bool) -> Element {
+    let mut note = use_signal(|| "Nested theme draft".to_string());
+    let mut saved = use_signal(String::new);
+    let mut actions = use_signal(|| 0_usize);
+    rsx! {
+        IxTheme { class: "slider-theme-nested", scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light }, density: if dark { Density::Normal } else { Density::Compact },
+            form { id: "slider-theme-nested-form", onsubmit: move |event: FormEvent| {
+                event.prevent_default();
+                if let Some(value) = event.values().into_iter().find_map(|(name, value)| match value {
+                    dioxus::html::FormValue::Text(value) if name == "theme-note" => Some(value),
+                    _ => None,
+                }) { saved.set(value); }
+            },
+                Input { id: "slider-theme-nested-note", label: "Nested theme preparation", name: "theme-note", required: true, value: note(), onvaluechange: move |value| note.set(value) }
+                Button { id: "slider-theme-nested-save", button_type: ButtonType::Submit, "Save nested preparation" }
+                output { id: "slider-theme-nested-saved", "{saved()}" }
+                IxTheme { class: "slider-theme-inner", scheme: ColorScheme::Dark, density: Density::Normal,
+                    Input { id: "slider-theme-inner-note", label: "Independent inner appearance", value: "Dark normal density", readonly: true }
+                    Button { id: "slider-theme-inner-action", button_type: ButtonType::Button, onclick: move |_| actions += 1, "Inspect inner scope" }
+                    output { id: "slider-theme-inner-actions", "{actions()}" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn IndependentThemePeer() -> Element {
+    let mut note = use_signal(|| "Independent peer draft".to_string());
+    rsx! {
+        IxTheme { class: "slider-theme-peer", scheme: ColorScheme::Dark, density: Density::Normal,
+            form { id: "slider-theme-peer-form",
+                Input { id: "slider-theme-peer-note", label: "Independent peer preparation", name: "peer-note", value: note(), onvaluechange: move |value| note.set(value) }
+            }
+        }
+    }
+}
+
+#[component]
 pub fn SliderContentPreview() -> Element {
     let mut narrow = use_signal(|| false);
     let mut plain = use_signal(|| 25.0);
+    let mut nested_dark = use_signal(|| false);
+    let mut peer = use_signal(|| true);
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     rsx! {
@@ -28,6 +69,12 @@ pub fn SliderContentPreview() -> Element {
                             label_start: "0", label_end: "100", onvaluechange: move |value| plain.set(value) }
                     }
                 }
+            }
+            section {
+                h2 { "Independent theme scopes" }
+                Button { id: "slider-theme-switch", button_type: ButtonType::Button, onclick: move |_| nested_dark.toggle(), "Switch nested scheme and density" }
+                Button { id: "slider-theme-peer-toggle", button_type: ButtonType::Button, onclick: move |_| peer.toggle(), "Hide / show independent peer" }
+                NestedThemeForm { dark: nested_dark() }
             }
             div { onmounted: move |_| {
                 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
@@ -58,6 +105,7 @@ pub fn SliderContentPreview() -> Element {
                 }
             } }
         }
+        if peer() { div { id: "slider-theme-peer-host", IndependentThemePeer {} } }
     }
 }
 
@@ -66,7 +114,7 @@ const STYLES: &str = "body{margin:0}.slider-content-review{box-sizing:border-box
 // Excluded native replay; native range keyboard defaults are separate trusted-browser evidence.
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 const NATIVE_SLIDER_CONTENT_CHECK: &str = r#"
-let snapshots={},hitFacts={},layout={},tooltipFacts={},failureGeometry={};
+let snapshots={},hitFacts={},layout={},tooltipFacts={},themeFacts={},failureGeometry={};
 try {
  await dioxus.recv();
  const get=id=>document.getElementById(id),active=()=>document.activeElement,result=()=>get('slider-limits-result'),form=()=>get('slider-limits-form'),range=()=>get('slider-limits')?.querySelector('input[type="range"]'),note=()=>get('slider-limits-note'),plain=()=>get('slider-content-plain')?.querySelector('input[type="range"]');
@@ -95,6 +143,19 @@ try {
  await input(range(),75,'native range setpoint before actual form Save');await wait('actual controlled75 setpoint',()=>result().dataset.value==='75');const payload=new FormData(form());assert(payload.getAll('setpoint').length===1&&payload.get('setpoint')==='75'&&payload.get('note')==='Retain fan preparation note','actual successful controls provide one exact native setpoint and note');await focus(save(),'actual native form Save');save().click();await wait('native FormEvent commits exact submitted setpoint/note',()=>saves()===1&&field('setpoint')==='75'&&field('note')==='Retain fan preparation note');await focus(reset(),'actual native form Reset');reset().click();await wait('native Reset restores controlled initial draft while preserving saved record',()=>range().value==='25'&&result().dataset.value==='25'&&note().value==='Prepare fan inspection'&&Number(result().dataset.resets)===1&&saves()===1&&field('setpoint')==='75'&&field('note')==='Retain fan preparation note');assert(range()===originalRange&&note()===originalNote,'native Reset preserves current mounted controls');snapshots.savedAndReset=snapshot();
 
  await disabled(true);assert(range().disabled&&note().disabled&&idle().disabled&&rated().disabled&&save().disabled&&!reset().disabled,'consumer disables composed endpoint controls, range/note and native Save while retaining Reset');idle().click();rated().click();save().click();await wait('disabled endpoint/Save attempts preserve actual draft and saved record',()=>range().value==='25'&&note().value==='Prepare fan inspection'&&saves()===1&&field('setpoint')==='75');await disabled(false);get('slider-content-narrow').click();await wait('340px actual preview frame',()=>get('slider-content-frame').getBoundingClientRect().width<=341);await hit(range(),'narrow actual native range');await checkValueTooltip(25,'narrow focused25 contained tooltip');await hit(idle(),'narrow Set idle');idle().click();await wait('narrow idle actual value',()=>range().value==='0');await hit(rated(),'narrow Set rated');rated().click();await wait('narrow rated actual value',()=>range().value==='100');await hit(note(),'narrow actual note');await input(note(),'Narrow fan inspection','narrow note input');await hit(save(),'narrow actual Save');save().click();await wait('narrow native form saves actual endpoint value and note',()=>saves()===2&&field('setpoint')==='100'&&field('note')==='Narrow fan inspection');await hit(plain(),'narrow legacy plain range');layout={frame:rect(get('slider-content-frame')),composed:rect(get('slider-limits')),legacy:rect(get('slider-content-plain')),endpoints:rect(endpoint()),viewport:{width:innerWidth,height:innerHeight},pageWidth:document.documentElement.scrollWidth};assert(layout.composed.width<=341&&layout.legacy.width<=341&&layout.pageWidth<=innerWidth+1,'actual composed controls/plain endpoints fit340px without page overflow');snapshots.disabledAndNarrow=snapshot();
- return {ok:true,snapshots,layout,hitFacts,tooltipFacts,checks:['shared native value tooltip follows actual controlled thumb, escapes consumer clipping and fits viewport without moving focus','Escape/blur/disabled/show-tooltip option remove value presentation while retaining setpoint/form drafts','actual native form/range and composed content precedence beside legacy plain endpoint anatomy','native Set idle/Set rated actions retain note and never submit','actual native FormData/FormEvent saves exact setpoint/note and Reset preserves saved record','disabled consumer controls/Save guards and340px actual range/endpoint/note/Save hits with real saved record'],input:'excluded synthetic native value assignment plus input events, explicit DOM clicks, real native form/reset defaults and actual native focus; no Rust callbacks or fabricated event payloads are invoked. Untrusted range keyboard events cannot prove browser default range stepping.',trustedInput:'not established by this excluded synthetic replay; any current trusted browser evidence is recorded separately by the lead',renderer:navigator.userAgent};
-} catch(error){return {ok:false,error:String(error),snapshots,layout,hitFacts,tooltipFacts,failureGeometry}}
+ const nested=()=>document.querySelector('.slider-theme-nested'),inner=()=>document.querySelector('.slider-theme-inner'),peerRoot=()=>document.querySelector('.slider-theme-peer');
+ const styleBundles=()=>[...document.querySelectorAll('style')].filter(node=>node.textContent.trimStart().startsWith('.ix-theme {\n --ix-font:')).map(base=>{const styles=[];for(let node=base;node&&node.tagName==='STYLE'&&styles.length<34;node=node.nextElementSibling)styles.push(node.textContent);return styles});
+ const sameBundle=(a,b)=>a.length===34&&b.length===34&&a.every((text,index)=>text===b[index]);
+ const styleSummary=()=>styleBundles().map(styles=>({count:styles.length,characters:styles.reduce((sum,text)=>sum+text.length,0),sheets:styles.map(text=>{let hash=2166136261;for(let index=0;index<text.length;index++)hash=Math.imul(hash^text.charCodeAt(index),16777619);return {characters:text.length,hash:(hash>>>0).toString(16)}})}));
+ const themeSnapshot=()=>({nested:{scheme:nested()?.dataset.ixColorSchema,density:nested()?.dataset.ixDensity,color:getComputedStyle(nested()).color,background:getComputedStyle(nested()).backgroundColor,controlHeight:getComputedStyle(nested()).getPropertyValue('--ix-control-height').trim(),buttonHeight:get('slider-theme-nested-save').getBoundingClientRect().height,inputHeight:get('slider-theme-nested-note').getBoundingClientRect().height},inner:{scheme:inner()?.dataset.ixColorSchema,density:inner()?.dataset.ixDensity,color:getComputedStyle(inner()).color,background:getComputedStyle(inner()).backgroundColor,controlHeight:getComputedStyle(inner()).getPropertyValue('--ix-control-height').trim(),buttonHeight:get('slider-theme-inner-action').getBoundingClientRect().height,inputHeight:get('slider-theme-inner-note').getBoundingClientRect().height},bundles:styleSummary()});
+ await wait('nested and independent peer theme fixture mounted',()=>nested()&&inner()&&peerRoot()&&get('slider-theme-nested-note')&&get('slider-theme-peer-note'));
+ const originalBundle=styleBundles()[0],nestedInput=get('slider-theme-nested-note'),innerInput=get('slider-theme-inner-note'),peerInput=get('slider-theme-peer-note');
+ assert(styleBundles().length===2&&styleBundles().every(styles=>sameBundle(styles,originalBundle))&&!nested().querySelector('style')&&!inner().querySelector('style')&&get('slider-theme-peer-host').querySelectorAll('style').length===34,'one exact34-sheet bundle per independent root with no nested duplicates');
+ themeFacts.initial=themeSnapshot();assert(themeFacts.initial.nested.scheme==='light'&&themeFacts.initial.nested.density==='compact'&&themeFacts.initial.inner.scheme==='dark'&&themeFacts.initial.inner.density==='normal'&&themeFacts.initial.nested.color!==themeFacts.initial.inner.color&&themeFacts.initial.nested.background!==themeFacts.initial.inner.background&&themeFacts.initial.nested.controlHeight==='32px'&&themeFacts.initial.inner.controlHeight==='40px'&&themeFacts.initial.nested.buttonHeight<themeFacts.initial.inner.buttonHeight&&themeFacts.initial.nested.inputHeight<themeFacts.initial.inner.inputHeight,'nested light/compact and inner dark/normal scopes apply independent real color and density tokens');
+ await input(nestedInput,'Retain nested theme preparation','actual nested native preparation');await focus(get('slider-theme-switch'),'nested scheme and density switch');get('slider-theme-switch').click();await wait('nested theme updates without remounting native fields or child draft',()=>nested().dataset.ixColorSchema==='dark'&&nested().dataset.ixDensity==='normal'&&get('slider-theme-nested-note')===nestedInput&&get('slider-theme-inner-note')===innerInput&&nestedInput.value==='Retain nested theme preparation'&&active()===get('slider-theme-switch'));
+ themeFacts.updated=themeSnapshot();assert(themeFacts.updated.nested.color===themeFacts.updated.inner.color&&themeFacts.updated.nested.background===themeFacts.updated.inner.background&&themeFacts.updated.nested.controlHeight==='40px'&&themeFacts.updated.nested.buttonHeight===themeFacts.updated.inner.buttonHeight&&themeFacts.updated.nested.inputHeight===themeFacts.updated.inner.inputHeight&&styleBundles().length===2&&styleBundles().every(styles=>sameBundle(styles,originalBundle)),'scheme/density rerender preserves bundle order/text and independent inner styling');
+ await focus(get('slider-theme-nested-save'),'actual nested native form Save');get('slider-theme-nested-save').click();await wait('nested native form submits retained current value',()=>get('slider-theme-nested-saved').textContent==='Retain nested theme preparation'&&new FormData(get('slider-theme-nested-form')).get('theme-note')==='Retain nested theme preparation');get('slider-theme-inner-action').click();await wait('nested independent button still acts without submitting',()=>get('slider-theme-inner-actions').textContent==='1'&&get('slider-theme-nested-saved').textContent==='Retain nested theme preparation');
+ await input(peerInput,'Independent retained peer note','actual peer native preparation');assert(new FormData(get('slider-theme-peer-form')).get('peer-note')==='Independent retained peer note','peer native form owns its own current preparation');await focus(get('slider-theme-peer-toggle'),'independent peer lifetime toggle');get('slider-theme-peer-toggle').click();await wait('peer removal retires only its own theme bundle and fields',()=>!peerRoot()&&!get('slider-theme-peer-host')&&!peerInput.isConnected&&styleBundles().length===1);assert(sameBundle(styleBundles()[0],originalBundle)&&get('slider-theme-nested-note')===nestedInput&&nestedInput.value==='Retain nested theme preparation'&&range()===originalRange&&note()===originalNote&&range().value==='100'&&note().value==='Narrow fan inspection'&&saves()===2&&field('setpoint')==='100'&&field('note')==='Narrow fan inspection','retained root bundle, native drafts and exact actual Slider saved record survive peer removal');themeFacts.peerRemoved=themeSnapshot();get('slider-theme-peer-toggle').click();await wait('fresh independent peer owns fresh exact stylesheet bundle',()=>peerRoot()&&get('slider-theme-peer-note')!==peerInput&&get('slider-theme-peer-note').value==='Independent peer draft'&&styleBundles().length===2);assert(styleBundles().every(styles=>sameBundle(styles,originalBundle))&&get('slider-theme-nested-note')===nestedInput&&get('slider-theme-nested-saved').textContent==='Retain nested theme preparation'&&getComputedStyle(peerRoot()).color===getComputedStyle(inner()).color&&getComputedStyle(peerRoot()).getPropertyValue('--ix-control-height').trim()==='40px','peer remount restores standalone styling without replacing retained siblings or native form result');themeFacts.peerRestored=themeSnapshot();
+ return {ok:true,snapshots,layout,hitFacts,tooltipFacts,themeFacts,checks:['independent roots own exact34-sheet bundles while nested themes reuse ancestor styles; native fields retain drafts/forms through scheme/density updates and peer lifetime','shared native value tooltip follows actual controlled thumb, escapes consumer clipping and fits viewport without moving focus','Escape/blur/disabled/show-tooltip option remove value presentation while retaining setpoint/form drafts','actual native form/range and composed content precedence beside legacy plain endpoint anatomy','native Set idle/Set rated actions retain note and never submit','actual native FormData/FormEvent saves exact setpoint/note and Reset preserves saved record','disabled consumer controls/Save guards and340px actual range/endpoint/note/Save hits with real saved record'],input:'excluded synthetic native value assignment plus input events, explicit DOM clicks, real native form/reset defaults and actual native focus; no Rust callbacks or fabricated event payloads are invoked. Untrusted range keyboard events cannot prove browser default range stepping.',trustedInput:'not established by this excluded synthetic replay; any current trusted browser evidence is recorded separately by the lead',renderer:navigator.userAgent};
+} catch(error){return {ok:false,error:String(error),snapshots,layout,hitFacts,tooltipFacts,themeFacts,failureGeometry}}
 "#;
