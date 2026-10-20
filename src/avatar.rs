@@ -1,7 +1,8 @@
 //! Static profile faces and explicitly composed Dioxus profile menus.
 use crate::{
     ButtonVariant, Divider, Dropdown, DropdownChangeEvent, DropdownNavigationMode,
-    DropdownPlacement, DropdownTrigger, Icon, use_dropdown,
+    DropdownPlacement, DropdownTrigger, Icon, TooltipAnchorBinding, TooltipController, TooltipFor,
+    use_dropdown, use_tooltip, use_tooltip_anchor,
 };
 use dioxus::prelude::*;
 
@@ -12,9 +13,9 @@ use dioxus::prelude::*;
 /// defaults to bottom-start placement, following the upstream Dropdown default.
 ///
 /// Failed images fall back only for that source; a changed image can load
-/// normally. Native `title` uses `tooltip` or username while closed and is
-/// suppressed while the menu is open. Custom tooltip styling/labels are not
-/// implemented by this native-title adaptation.
+/// normally. The shared styled tooltip uses `tooltip` or username; an explicit
+/// empty tooltip suppresses it. `aria_label_tooltip` optionally names that tooltip.
+/// Opening the menu dismisses it until the trigger is hovered or focused again.
 #[component]
 pub fn Avatar(
     username: Option<String>,
@@ -22,6 +23,7 @@ pub fn Avatar(
     image: Option<String>,
     #[props(default = 32)] size: u32,
     tooltip: Option<String>,
+    #[props(default)] aria_label_tooltip: Option<String>,
     #[props(default)] menu: bool,
     #[props(default)] extra: Option<String>,
     #[props(default)] children: Option<Element>,
@@ -41,11 +43,53 @@ pub fn Avatar(
         .filter(|label| !label.trim().is_empty())
         .or_else(|| username.clone().filter(|name| !name.trim().is_empty()))
         .unwrap_or_else(|| "User profile".into());
-    let title = tooltip.or_else(|| username.clone());
+    let text = tooltip
+        .or_else(|| username.clone())
+        .filter(|text| !text.trim().is_empty());
     if menu || children.is_some() {
-        rsx! {AvatarMenu{username,initials,image,size,title,extra,children,disabled,label,menu_label,id,class,enable_top_layer,placement,navigation_mode,onbeforechange,onchange,failed_source}}
+        rsx! {AvatarMenu{username,initials,image,size,text,aria_label_tooltip,extra,children,disabled,label,menu_label,id,class,enable_top_layer,placement,navigation_mode,onbeforechange,onchange,failed_source}}
     } else {
-        rsx! {AvatarFace{image,initials,size,label:Some(label),title,id,class,failed_source}}
+        rsx! {AvatarStatic{image,initials,size,label,text,aria_label_tooltip,id,class,failed_source}}
+    }
+}
+
+// A stable Rust binding identity is independent of the caller's optional DOM ID.
+// Tooltip measurement uses the mounted handle rather than looking up that ID.
+fn use_avatar_tooltip() -> (String, TooltipController, TooltipAnchorBinding) {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    let id = use_hook(|| {
+        format!(
+            "ix-avatar-tooltip-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    let controller = use_tooltip(id.clone());
+    let binding = use_tooltip_anchor(controller.clone(), format!("{id}-anchor"));
+    (id, controller, binding)
+}
+
+#[component]
+fn AvatarStatic(
+    image: Option<String>,
+    initials: Option<String>,
+    size: u32,
+    failed_source: Signal<Option<String>>,
+    label: String,
+    text: Option<String>,
+    aria_label_tooltip: Option<String>,
+    id: Option<String>,
+    class: String,
+) -> Element {
+    let (tooltip_id, controller, binding) = use_avatar_tooltip();
+    let description = text.as_ref().and_then(|_| binding.describedby(""));
+    rsx! {
+        span {id,class:"ix-avatar {class}",style:"--ix-avatar-size:{size}px",role:"img","aria-label":label,"aria-describedby":description,
+            onmounted:binding.onmounted,onresize:binding.onresize,onvisible:binding.onvisible,
+            onmouseenter:binding.onmouseenter,onmouseleave:binding.onmouseleave,
+            onfocusin:binding.onfocusin,onfocusout:binding.onfocusout,onkeydown:binding.onkeydown,
+            AvatarFaceContent {image,initials,failed_source}
+        }
+        if let Some(text)=text {TooltipFor {id:tooltip_id,controller,aria_label:aria_label_tooltip,"{text}"}}
     }
 }
 
@@ -55,18 +99,25 @@ fn AvatarFace(
     initials: Option<String>,
     size: u32,
     failed_source: Signal<Option<String>>,
-    #[props(default)] label: Option<String>,
-    #[props(default)] title: Option<String>,
-    #[props(default)] id: Option<String>,
-    #[props(default)] class: String,
     #[props(default)] decorative: bool,
 ) -> Element {
+    rsx! {span{class:"ix-avatar",style:"--ix-avatar-size:{size}px",role:if decorative{"presentation"}else{"img"},"aria-hidden":decorative.then_some("true"),
+        AvatarFaceContent {image,initials,failed_source}
+    }}
+}
+
+#[component]
+fn AvatarFaceContent(
+    image: Option<String>,
+    initials: Option<String>,
+    mut failed_source: Signal<Option<String>>,
+) -> Element {
     let visible_image = image.filter(|source| failed_source().as_ref() != Some(source));
-    rsx! {span{id,class:"ix-avatar {class}",style:"--ix-avatar-size:{size}px",role:if decorative{"presentation"}else{"img"},"aria-hidden":decorative.then_some("true"),"aria-label":label,title,
+    rsx! {
         if let Some(source)=visible_image{img{key:"{source}",src:source.clone(),alt:"",onerror:move |_|failed_source.set(Some(source.clone()))}}
         else if let Some(initials)=initials{span{"aria-hidden":"true","{initials}"}}
         else{Icon{name:"user",size:20}}
-    }}
+    }
 }
 
 #[component]
@@ -75,7 +126,8 @@ fn AvatarMenu(
     initials: Option<String>,
     image: Option<String>,
     size: u32,
-    title: Option<String>,
+    text: Option<String>,
+    aria_label_tooltip: Option<String>,
     extra: Option<String>,
     children: Option<Element>,
     disabled: bool,
@@ -92,10 +144,19 @@ fn AvatarMenu(
 ) -> Element {
     let dropdown = use_dropdown();
     let open = dropdown.is_open();
+    let (tooltip_id, controller, binding) = use_avatar_tooltip();
+    let description = (!open && text.is_some())
+        .then(|| binding.describedby(""))
+        .flatten();
+    let enter = binding.onmouseenter;
+    let focus = binding.onfocusin;
     let profile = username.filter(|name| !name.trim().is_empty());
     let divider = profile.is_some() && children.is_some();
-    rsx! {div{id,class:"ix-avatar-menu {class}",style:"--ix-avatar-size:{size}px",title:(!open).then_some(title).flatten(),
-        DropdownTrigger{dropdown,disabled,aria_label:label,variant:ButtonVariant::SubtleTertiary,class:"ix-avatar-trigger",
+    rsx! {div{id,class:"ix-avatar-menu {class}",style:"--ix-avatar-size:{size}px",
+        onmounted:binding.onmounted,onresize:binding.onresize,onvisible:binding.onvisible,
+        onmouseenter:move|event|if !dropdown.is_open(){enter.call(event)},onmouseleave:binding.onmouseleave,
+        onfocusin:move|event|if !dropdown.is_open(){focus.call(event)},onfocusout:binding.onfocusout,onkeydown:binding.onkeydown,
+        DropdownTrigger{dropdown,disabled,aria_label:label,aria_describedby:description,variant:ButtonVariant::SubtleTertiary,class:"ix-avatar-trigger",
             AvatarFace{image:image.clone(),initials:initials.clone(),size,failed_source,decorative:true}
         }
         Dropdown{controller:dropdown,label:menu_label,disabled,placement,navigation_mode,enable_top_layer,onbeforechange,onchange,class:"ix-avatar-menu-surface",
@@ -106,6 +167,7 @@ fn AvatarMenu(
             if divider{div{class:"ix-avatar-divider",onclick:move|event:MouseEvent|event.prevent_default(),Divider{}}}
             {children}
         }
+        if !open {if let Some(text)=text {TooltipFor {id:tooltip_id,controller,aria_label:aria_label_tooltip,"{text}"}}}
     }}
 }
 
@@ -124,6 +186,7 @@ mod tests {
         initials: Option<String>,
         image: Option<String>,
         tooltip: Option<String>,
+        tooltip_label: Option<String>,
         size: u32,
         menu: bool,
         children: bool,
@@ -137,6 +200,7 @@ mod tests {
                 initials: Some("OP".into()),
                 image: Some("portrait-one.png".into()),
                 tooltip: Some("Open operator details".into()),
+                tooltip_label: None,
                 size: 32,
                 menu: false,
                 children: false,
@@ -170,7 +234,7 @@ mod tests {
         let changed = data.clone();
         let action = data.clone();
         let children=config.children.then(||rsx!{MenuDraft{data:data.clone()}DropdownItem{label:"Preferences",order:0,onitemclick:move|_|action.actions.set(action.actions.get()+1)}});
-        rsx! {crate::actions::Avatar{id:"avatar-test",class:"custom-avatar",username:config.username,initials:config.initials,image:config.image,tooltip:config.tooltip,size:config.size,menu:config.menu,children,disabled:config.disabled,enable_top_layer:config.top,extra:"Service shift",menu_label:"Operator menu",
+        rsx! {crate::actions::Avatar{id:"avatar-test",class:"custom-avatar",username:config.username,initials:config.initials,image:config.image,tooltip:config.tooltip,aria_label_tooltip:config.tooltip_label,size:config.size,menu:config.menu,children,disabled:config.disabled,enable_top_layer:config.top,extra:"Service shift",menu_label:"Operator menu",
             onbeforechange:move|event:DropdownChangeEvent|{before.before.borrow_mut().push(event.open);if before.veto.get(){event.clone().prevent_default();assert!(event.default_prevented());}},onchange:move|open|changed.changes.borrow_mut().push(open)
         }}
     }
@@ -265,6 +329,36 @@ mod tests {
             self
         }
     }
+    // Tooltip's normal measurement path rejects unsupported mounted geometry.
+    // Other mounted operations keep the same unsupported defaults as ().
+    struct AvatarMount;
+    impl dioxus::html::RenderedElementBacking for AvatarMount {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn get_client_rect(
+            &self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = dioxus::html::MountedResult<dioxus::html::geometry::PixelsRect>,
+                    >,
+            >,
+        > {
+            Box::pin(async {
+                Ok(dioxus::html::geometry::PixelsRect::new(
+                    dioxus::html::geometry::euclid::Point2D::new(40.0, 60.0),
+                    dioxus::html::geometry::euclid::Size2D::new(32.0, 32.0),
+                ))
+            })
+        }
+    }
+    struct Focus;
+    impl dioxus::html::HasFocusData for Focus {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
     struct Converter;
     macro_rules! converter {
         (enum Event { $(#[convert = $convert:ident] #[events = [$($events:tt)*]] $(#[raw = [$($raw:ident),* $(,)?]])? $group:ident($data:ident),)* }) => {
@@ -272,10 +366,11 @@ mod tests {
                 $(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data { let _=event;converter!(@data $group,event) })*
             }
         };
+        (@data Focus,$event:ident) => { dioxus::html::FocusData::new(Focus) };
         (@data Mouse,$event:ident) => { dioxus::html::MouseData::new(Mouse) };
         (@data Image,$event:ident) => { dioxus::html::ImageData::new(ImageFailure) };
         (@data Keyboard,$event:ident) => { dioxus::html::KeyboardData::new($event.downcast::<RawKey>().unwrap().clone()) };
-        (@data Mounted,$event:ident) => { MountedData::new(()) };
+        (@data Mounted,$event:ident) => { MountedData::new(AvatarMount) };
         (@data Form,$event:ident) => { dioxus::html::FormData::new(RawForm($event.downcast::<String>().unwrap().clone())) };
         (@data $other:ident,$event:ident) => { panic!("Unexpected avatar test event") };
     }
@@ -380,7 +475,8 @@ mod tests {
         assert!(face.starts_with("span "));
         assert!(face.contains("role=\"img\""));
         assert!(face.contains("--ix-avatar-size:32px"));
-        assert!(face.contains("title=\"Open operator details\""));
+        assert!(!face.contains("title="));
+        assert!(html.contains("Open operator details"));
         assert!(!html.contains("ix-avatar-menu"));
         assert!(html.contains("src=\"portrait-one.png\""));
         assert!(!html.contains(">OP<"));
@@ -526,4 +622,5 @@ mod tests {
         assert!(!html.contains("ix-avatar-profile"));
         assert!(!html.contains("ix-avatar-divider"));
     }
+    include!("avatar_tooltip_tests.rs");
 }

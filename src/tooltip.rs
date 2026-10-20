@@ -666,6 +666,7 @@ pub fn TooltipFor(
     #[props(default)] animation_frame: bool,
     title: Option<String>,
     title_icon: Option<String>,
+    aria_label: Option<String>,
     #[props(default)] class: String,
     #[props(default)] onnativeerror: EventHandler<String>,
     children: Element,
@@ -685,6 +686,7 @@ pub fn TooltipFor(
             animation_frame,
             title,
             title_icon,
+            aria_label,
             class,
             onnativeerror,
             children,
@@ -706,6 +708,7 @@ fn render_tooltip(props: TooltipForProps, initial: Lifecycle) -> Element {
         animation_frame,
         title,
         title_icon,
+        aria_label,
         class,
         onnativeerror,
         children,
@@ -879,7 +882,7 @@ fn render_tooltip(props: TooltipForProps, initial: Lifecycle) -> Element {
     let keyed = controller.clone();
     rsx! {
         div {
-            id,class:"ix-tooltip {class}",role:"tooltip",popover:"manual",
+            id,class:"ix-tooltip {class}",role:"tooltip","aria-label":aria_label,popover:"manual",
             "data-open":visible.to_string(),"data-anchor":anchor,"data-placement":side.as_str(),
             "data-interactive":interactive.to_string(),"data-animation-frame":animation_frame.to_string(),
             "data-positioned":coordinates.is_some().to_string(),"data-ix-tooltip-native":marker,
@@ -926,6 +929,7 @@ mod tests {
                     animation_frame: false,
                     title: None,
                     title_icon: None,
+                    aria_label: None,
                     class: String::new(),
                     onnativeerror: EventHandler::default(),
                     children: rsx! { button { "Tooltip action" } },

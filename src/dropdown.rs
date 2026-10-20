@@ -2172,6 +2172,7 @@ pub fn DropdownTrigger(
     #[props(default)] loading: bool,
     icon: Option<String>,
     aria_label: Option<String>,
+    aria_describedby: Option<String>,
     #[props(default)] class: String,
 ) -> Element {
     let context = dropdown.context();
@@ -2189,7 +2190,7 @@ pub fn DropdownTrigger(
     let active_id = dropdown.active_descendant();
     rsx! { button {
         id:trigger_id, class:"ix-dropdown-external-trigger ix-button ix-button-{variant.as_str()} {class}",
-        r#type:"button",disabled:blocked,"aria-label":aria_label,"aria-busy":loading.to_string(),
+        r#type:"button",disabled:blocked,"aria-label":aria_label,"aria-describedby":aria_describedby,"aria-busy":loading.to_string(),
         "aria-haspopup":"menu","aria-expanded":dropdown.is_open().to_string(),"aria-controls":host_id,"aria-activedescendant":active_id,
         "data-ix-overlay-trigger":id,style:"anchor-name:--ix-dropdown-anchor-{context.id}",
         onmounted:binding.onmounted,onvisible:binding.onvisible,

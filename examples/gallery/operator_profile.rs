@@ -118,6 +118,8 @@ pub fn OperatorProfileExample() -> Element {
     let mut veto = use_signal(|| false);
     let mut top_layer = use_signal(|| false);
     let mut image_mode = use_signal(|| "initials".to_string());
+    let mut tooltip_german = use_signal(|| false);
+    let mut tooltip_hidden = use_signal(|| false);
     let mut menu_open = use_signal(|| false);
     let mut updates = use_signal(|| 0_usize);
     let mut status_actions = use_signal(|| 0_usize);
@@ -135,6 +137,16 @@ pub fn OperatorProfileExample() -> Element {
         "invalid" => Some(INVALID_IMAGE.to_string()),
         "valid" => Some(BADGE_IMAGE.to_string()),
         _ => None,
+    };
+    let tooltip_text = if tooltip_hidden() {
+        String::new()
+    } else {
+        format!("{} · {}", operator.name, operator.role)
+    };
+    let tooltip_label = if tooltip_german() {
+        "Profilinformationen"
+    } else {
+        "Operator profile information"
     };
     let apply_note = use_callback(move |note: String| {
         let key = selected.peek().clone();
@@ -179,6 +191,7 @@ pub fn OperatorProfileExample() -> Element {
                     onclick: move |_| {
                         operators.set(initial_operators()); selected.set("alex".into()); disabled.set(false); action_disabled.set(false);
                         veto.set(false); top_layer.set(false); image_mode.set("initials".into()); menu_open.set(false);
+                        tooltip_german.set(false); tooltip_hidden.set(false);
                         updates.set(0); status_actions.set(0); preference_changes.set(0); change_requests.set(0);
                         let next = epoch.peek().wrapping_add(1); epoch.set(next);
                     }, "Restore operator profiles"
@@ -199,6 +212,8 @@ pub fn OperatorProfileExample() -> Element {
                     label { input { id: "profile-action-disabled", r#type: "checkbox", checked: action_disabled(), onchange: move |event: FormEvent| action_disabled.set(event.checked()) } "Disable status action" }
                     label { input { id: "profile-veto", r#type: "checkbox", checked: veto(), onchange: move |event: FormEvent| veto.set(event.checked()) } "Veto menu changes" }
                     label { input { id: "profile-top-layer", r#type: "checkbox", checked: top_layer(), onchange: move |event: FormEvent| top_layer.set(event.checked()) } "Native top layer" }
+                    label { input { id: "profile-tooltip-german", r#type: "checkbox", checked: tooltip_german(), onchange: move |event: FormEvent| tooltip_german.set(event.checked()) } "German tooltip label" }
+                    label { input { id: "profile-tooltip-hidden", r#type: "checkbox", checked: tooltip_hidden(), onchange: move |event: FormEvent| tooltip_hidden.set(event.checked()) } "Hide profile tooltip" }
                     label { class: "profile-select-field", r#for: "profile-image", span { "Profile image" }
                         select { id: "profile-image", value: image_mode(), onchange: move |event: FormEvent| image_mode.set(event.value()),
                             option { value: "initials", selected: image_mode() == "initials", "Initials" }
@@ -212,6 +227,7 @@ pub fn OperatorProfileExample() -> Element {
                 for generation in [epoch()] {
                     Avatar { key: "operator-profile-{generation}", id: "profile-avatar", class: "operator-profile-avatar",
                         username: operator.name, initials: operator.initials, extra: operator.role, image: image.clone(),
+                        tooltip: tooltip_text.clone(), aria_label_tooltip: tooltip_label,
                         menu: true, disabled: disabled(), aria_label: "Open operator profile", menu_label: "Operator profile actions",
                         enable_top_layer: top_layer(), navigation_mode: DropdownNavigationMode::ActiveDescendant,
                         onbeforechange: move |event: DropdownChangeEvent| {
@@ -251,6 +267,8 @@ pub fn OperatorProfileExample() -> Element {
                 "data-operator": selected(), "data-menu-open": menu_open().to_string(), "data-updates": updates().to_string(),
                 "data-status-actions": status_actions().to_string(), "data-preference-changes": preference_changes().to_string(),
                 "data-change-requests": change_requests().to_string(), "data-image-mode": image_mode(),
+                "data-tooltip-hidden": tooltip_hidden().to_string(), "data-tooltip-german": tooltip_german().to_string(),
+                "data-tooltip-text": tooltip_text, "data-tooltip-label": tooltip_label,
                 "Preparation notes saved: {updates} · Status changes: {status_actions} · Notification changes: {preference_changes}"
             }
         }
@@ -282,6 +300,8 @@ mod tests {
             "profile-record-jo",
             "profile-result",
             "profile-image",
+            "profile-tooltip-german",
+            "profile-tooltip-hidden",
             "profile-reset",
         ] {
             assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
@@ -311,5 +331,13 @@ mod tests {
         );
         assert!(html.contains("data-ix-item-key=") && html.contains("role=\"separator\""));
         assert!(html.contains("data-menu-open=\"false\"") && html.contains("data-updates=\"0\""));
+        assert!(
+            html.contains("Alex Taylor · Line 1 operator")
+                && html.contains("Operator profile information")
+        );
+        assert!(
+            html.contains("data-tooltip-hidden=\"false\"")
+                && html.contains("data-tooltip-german=\"false\"")
+        );
     }
 }
