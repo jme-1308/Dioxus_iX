@@ -8,6 +8,7 @@ mod gallery_equipment;
 #[component]
 pub fn PaneEquipmentPreview() -> Element {
     let mut narrow = use_signal(|| false);
+    let mut outside_actions = use_signal(|| 0_usize);
     #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
     let window = dioxus::desktop::window();
     rsx! {
@@ -17,6 +18,11 @@ pub fn PaneEquipmentPreview() -> Element {
             Button { id: "pane-equipment-narrow", variant: ButtonVariant::Secondary,
                 onclick: move |_| narrow.toggle(), if narrow() { "Use wide preview" } else { "Use narrow preview" }
             }
+            Button { id: "pane-equipment-outside-action", variant: ButtonVariant::Secondary,
+                onclick: move |_| outside_actions += 1,
+                "Independent workspace action"
+            }
+            output { id: "pane-equipment-outside-actions", "data-count": outside_actions().to_string(), "Workspace actions: {outside_actions()}" }
             div { id: "pane-equipment-frame", style: if narrow() { "width:340px;max-width:100%;min-width:0" } else { "width:960px;max-width:100%;min-width:0" },
                 gallery_equipment::PaneEquipmentExample {}
             }
@@ -65,6 +71,7 @@ try {
  const decision=()=>status()?.dataset.decision==='discard';
  const saved=()=>({name:record()?.dataset.name,location:record()?.dataset.location,note:record()?.dataset.note});
  const draft=()=>({name:get('name')?.value,location:get('location')?.value,note:get('note')?.value});
+ const outsideActions=()=>Number(get('outside-actions')?.dataset.count);
  const saves=()=>Number(status()?.dataset.saves),assert=(condition,label)=>{if(!condition)throw Error(label)};
  const hold=ms=>new Promise(resolve=>setTimeout(resolve,ms));
  const wait=async(label,predicate)=>{for(let n=0;n<180;n++){if(predicate())return;await hold(20)}throw Error(label+'; focus='+(active()?.id||active()?.tagName)+'; status='+status()?.outerHTML)};
@@ -103,6 +110,17 @@ try {
  await wait('native Save updates real record once',()=>saves()===1&&same(saved(),updated));
  await closed('Save closes and returns registered opener');const payload=JSON.parse(get('payload').textContent);assert(same(payload,updated),'actual FormEvent payload matches native submitted fields');snapshots.save={...capture(),nativeFormData:formData,payload};
 
+ // A normal inside click keeps the clean editor open; independent actions
+ // execute even when their outside fact requests a close.
+ await open('clean outside close');
+ await focus(get('note'),'clean inside note');get('note').click();
+ await input('note','Inside editing remains usable.');await wait('inside click retains editable Pane',()=>opened()&&status().dataset.dirty==='true');
+ await input('note',updated.note);await wait('restored clean draft remains open',()=>opened()&&status().dataset.dirty==='false');
+ click('outside-action');
+ await wait('clean outside close preserves independent action',()=>!opened()&&outsideActions()===1);
+ assert(same(saved(),updated)&&saves()===1,'clean outside close preserves saved record');
+ snapshots.cleanOutside={...capture(),outsideActions:outsideActions()};
+
  await open('dirty header close');await input('name','Uncommitted motor draft');await wait('dirty draft registered before close request',()=>status().dataset.dirty==='true');await focus(header(),'Pane header close');header().click();
  await wait('dirty header request is vetoed and offers real Keep/Discard controls',()=>opened()&&decision()&&visible(get('keep'))&&visible(get('discard')));
  await focus(get('keep'),'Keep editing');click('keep');
@@ -123,10 +141,11 @@ try {
  keys.boundaryTab={synthetic:true,forwardDefaultPrevented:forward.defaultPrevented,reverseDefaultPrevented:reverse.defaultPrevented,first:first.id,last:last.id};
  await input('location','Unsaved outside-close location');await wait('outside-close draft registered',()=>status().dataset.dirty==='true');await focus(get('preparation'),'independent outside preparation');const outsideFocusBefore=active().id;get('preparation').click();
  await wait('actual outside click veto preserves dirty editor',()=>opened()&&decision());
+ click('outside-action');await wait('veto leaves outside Dioxus action usable once',()=>opened()&&decision()&&outsideActions()===2);
  assert(active()===get('preparation'),'outside close veto preserves independently focused preparation');
  await focus(get('keep'),'Keep after outside request');click('keep');await wait('outside Keep retains draft',()=>opened()&&!decision()&&get('location').value==='Unsaved outside-close location');
  await focus(get('cancel'),'explicit Cancel');click('cancel');await closed('explicit Cancel discards and returns opener');
- assert(same(saved(),updated)&&get('preparation').value==='Bring the local inspection checklist.','Cancel retains saved record and independent preparation');snapshots.outsideAndCancel={...capture(),outsideFocusBefore};
+ assert(same(saved(),updated)&&get('preparation').value==='Bring the local inspection checklist.','Cancel retains saved record and independent preparation');snapshots.outsideAndCancel={...capture(),outsideFocusBefore,outsideActions:outsideActions()};
 
  click('floating');await wait('inline presentation is actual Pane state',()=>actualPane()?.dataset.floating==='false');
  await focus(get('edit'),'inline opener');click('edit');await wait('inline editor opens with saved values',()=>opened()&&same(draft(),updated));
@@ -146,7 +165,7 @@ try {
  geometry.narrow.pane=rect(actualPane());geometry.narrow.content=rect(actualPane().querySelector('.ix-pane-content'));
  await focus(get('cancel'),'narrow Cancel');click('cancel');await closed('narrow Cancel closes and returns opener');
  snapshots.final=capture();
- return {ok:true,snapshots,geometry,keys,checks:['native required validation protects saved record; FormData and exact FormEvent Save update visible equipment values','dirty header/Escape/outside requests are vetoed; Keep retains and Discard/Cancel restore saved values','existing mounted Pane focus return and synthetic boundary Tab; dirty outside veto preserves independent focus','scoped Reset retains preparation/options; actual narrow-frame fields/actions fit and receive native center hits'],input:'Excluded native DOM clicks, focus and input events; Escape/Tab are untrusted synthetic keydowns exercising Dioxus handlers, without fabricating trusted interior Tab or Enter defaults.',viewportQualification:'340px is an actual gallery frame inside the unchanged desktop WebKitGTK viewport; data-mobile and actual Pane bounds are reported. Lead Chromium covers a true narrow viewport and trusted keys.',renderer:navigator.userAgent};
+ return {ok:true,snapshots,geometry,keys,checks:['native required validation protects saved record; FormData and exact FormEvent Save update visible equipment values','dirty header/Escape/outside requests are vetoed; Keep retains and Discard/Cancel restore saved values','existing mounted Pane focus return and synthetic boundary Tab; dirty outside veto preserves independent focus','inside clicks retain editor; clean and vetoed outside clicks preserve independent Dioxus action','scoped Reset retains preparation/options; actual narrow-frame fields/actions fit and receive native center hits'],input:'Excluded native DOM clicks, focus and input events; Escape/Tab are untrusted synthetic keydowns exercising Dioxus handlers, without fabricating trusted interior Tab or Enter defaults.',viewportQualification:'340px is an actual gallery frame inside the unchanged desktop WebKitGTK viewport; data-mobile and actual Pane bounds are reported. Lead Chromium covers a true narrow viewport and trusted keys.',renderer:navigator.userAgent};
 } catch(error){return {ok:false,error:String(error),snapshots,geometry,keys,focus:document.activeElement?.id||document.activeElement?.tagName,viewport:{width:innerWidth,height:innerHeight},status:document.getElementById('pane-equipment-status')?.outerHTML}}
 
 "#;

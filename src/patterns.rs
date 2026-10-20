@@ -755,17 +755,6 @@ fn place_filter_popup(metrics: Option<FilterPopupMetrics>, native: bool) -> Filt
     }
 }
 
-// Pinned Dioxus has no document click subscription. Only native outside-click
-// containment is reported; Rust owns closing and the stream's component lifetime.
-#[cfg(any(feature = "web", feature = "desktop"))]
-const FILTER_OUTSIDE_CLICK: &str = r#"
-const rootId = await dioxus.recv(), root = document.getElementById(rootId);
-if (!root?.isConnected) return;
-const outside = event => { if (!event.composedPath().includes(root)) dioxus.send(null); };
-document.addEventListener('click', outside, true);
-try { await dioxus.recv(); } finally { document.removeEventListener('click', outside, true); }
-"#;
-
 #[component]
 fn FilterOptionsSurface(
     anchor_id: String,
@@ -864,17 +853,13 @@ fn FilterOptionsSurface(
         }
         measure.call(());
     });
-    let _ = &anchor_id;
-    let outside_transport = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
-    let drop_outside = outside_transport.clone();
+    let outside_mount =
+        crate::outside_click::use_outside_click(format!("{anchor_id}-root"), true, onclose);
     let lifetime = alive.clone();
     use_drop(move || {
         lifetime.set(false);
         if let Ok(mut ready) = ready.try_write() {
             *ready = false;
-        }
-        if let Some(stream) = drop_outside.borrow_mut().take() {
-            let _ = stream.send(());
         }
     });
     let mounted_id = surface_id.clone();
@@ -887,11 +872,7 @@ fn FilterOptionsSurface(
             onmounted:move |event|{
                 ready.set(false);
                 mounted.set(Some(event.data()));
-                #[cfg(any(feature="web",feature="desktop"))]
-                {
-                    let lifetime=mounted_alive.clone();let root_id=format!("{anchor_id}-root");let transport=outside_transport.clone();
-                    spawn(async move{if !lifetime.get(){return;}let mut stream=dioxus::document::eval(FILTER_OUTSIDE_CLICK);if stream.send(root_id).is_err(){return;}*transport.borrow_mut()=Some(stream);while stream.recv::<()>().await.is_ok(){if !lifetime.get(){break;}onclose.call(());}});
-                }
+                outside_mount.call(event);
                 if !enable_top_layer{return;}
                 let alive=mounted_alive.clone();let id=mounted_id.clone();
                 spawn(async move {

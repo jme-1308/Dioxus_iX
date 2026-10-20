@@ -96,6 +96,8 @@ pub fn FilterLayoutReview() -> Element {
     let mut clears = use_signal(|| 0_usize);
     let mut acks = use_signal(|| 0_usize);
     let mut plain_changes = use_signal(|| 0_usize);
+    let mut outside_actions = use_signal(|| 0_usize);
+    let mut plain_top_layer = use_signal(|| true);
     let mut controller_status = use_signal(|| "Ready".to_string());
     let mut native_errors = use_signal(Vec::<String>::new);
 
@@ -277,8 +279,15 @@ pub fn FilterLayoutReview() -> Element {
                         "Remount plain filter (F6)"
                     }
                     Button {
+                        id: "r0264-plain-layer",
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| plain_top_layer.toggle(),
+                        if plain_top_layer() { "Use inline plain popup" } else { "Use top-layer plain popup" }
+                    }
+                    Button {
                         id: "r0235-outside",
                         variant: ButtonVariant::Secondary,
+                        onclick: move |_| outside_actions += 1,
                         "Outside focus target"
                     }
                 }
@@ -356,7 +365,7 @@ pub fn FilterLayoutReview() -> Element {
                             CategoryFilter {
                                 suggestions: sample_suggestions(),
                                 state: Some(plain_state()),
-                                enable_top_layer: true,
+                                enable_top_layer: plain_top_layer(),
                                 placeholder: "Filter by plain suggestion".to_string(),
                                 label: "Plain suggestion filter".to_string(),
                                 onchange: move |next: FilterState| {
@@ -395,6 +404,8 @@ pub fn FilterLayoutReview() -> Element {
                     "data-controller-status": controller_status(),
                     "data-plain-count": plain_count.to_string(),
                     "data-plain-changes": plain_changes().to_string(),
+                    "data-outside-actions": outside_actions().to_string(),
+                    "data-plain-top-layer": plain_top_layer().to_string(),
                     "data-native-errors": native_errors().len().to_string(),
                     "data-last-native-error": last_error.clone(),
                     span {
@@ -598,7 +609,31 @@ await wait('plain suggestion option present', () => Boolean(sealOption()));
 activate(sealOption(), 'Enter');
 await wait('plain suggestion committed', () => status()?.dataset.plainCount === '1' && status()?.dataset.plainChanges === '1');
 byId('r0235-outside').click();
-await wait('outside click closes popups', () => !catPanel() && !plainPanel());
+await wait('outside click closes popups and executes underlying Dioxus action once', () => !catPanel() && !plainPanel() && status()?.dataset.outsideActions === '1');
+
+// Reuse the same plain filter in inline presentation; inside clicks retain the
+// current draft and outside dismissal must not consume the independent action.
+byId('r0264-plain-layer').click();
+await wait('inline plain presentation selected', () => status()?.dataset.plainTopLayer === 'false');
+plainInput().click();
+await wait('inline plain surface opens', () => plainPanel()?.dataset.topLayer === 'false' && getComputedStyle(plainPanel()).visibility === 'visible');
+plainPanel().click();
+plainInput().value = 'Bearing';
+plainInput().dispatchEvent(new Event('input', { bubbles: true }));
+await wait('inside inline click retains usable draft and suggestions', () => plainPanel()?.querySelector('.ix-category-filter-option[data-id="Bearing temperature"]') && plainInput()?.value === 'Bearing');
+byId('r0235-outside').click();
+await wait('inline outside dismissal preserves draft and selected token while action runs once', () => !plainPanel() && plainInput()?.value === 'Bearing' && status()?.dataset.plainCount === '1' && status()?.dataset.plainChanges === '1' && status()?.dataset.outsideActions === '2');
+plainInput().click();
+await wait('inline surface reopens with retained draft', () => plainPanel()?.querySelector('.ix-category-filter-option[data-id="Bearing temperature"]') && plainInput()?.value === 'Bearing');
+// Clearing the draft is an ordinary input action and opens the current
+// inline surface. Acknowledge it, then close before changing presentation.
+plainInput().value = '';
+plainInput().dispatchEvent(new Event('input', { bubbles: true }));
+await wait('inline draft cleared with unfiltered suggestions', () => plainInput()?.value === '' && plainPanel()?.querySelector('.ix-category-filter-option[data-id="High vibration"]'));
+key(plainInput(), 'Escape');
+await wait('inline Escape closes before presentation changes', () => !plainPanel());
+byId('r0264-plain-layer').click();
+await wait('top-layer plain presentation restored', () => status()?.dataset.plainTopLayer === 'true');
 
 // Shared viewport lifetime: two live consumers, then one closes/retires while the other measures.
 const popupReady = panel => panel?.matches(':popover-open') && getComputedStyle(panel).visibility === 'visible';
@@ -696,6 +731,8 @@ return {
     wideWidth: Math.round(wideWidth),
     viewportClampAndFlipTop: true,
     categoryAndPlainSelection: true,
+    inlineInsideOutsideAndDraftRetention: true,
+    outsideUnderlyingActionCount: Number(status().dataset.outsideActions),
     activationKeysUnprevented: true,
     nativeDefaultClickEmulated: true,
     operatorEnterAndSpace: true,

@@ -86,6 +86,7 @@ pub mod message_dialog;
 mod native_surface;
 pub mod notifications;
 mod number_input_styles;
+mod outside_click;
 mod overlay_completion;
 mod overlay_domain;
 mod overlay_registry;

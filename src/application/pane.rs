@@ -604,15 +604,17 @@ pub fn Pane(
     }
     focus.transition(expanded, variant == PaneVariant::Floating);
     let current_focus = focus.current();
-    let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
+    let outside_mount = crate::outside_click::use_outside_click(
+        root_id.clone(),
+        expanded && close_on_click_outside,
+        use_callback(move |()| {
+            if *state.peek() && close_on_click_outside {
+                request.call(false);
+            }
+        }),
+    );
     let cleanup_focus = focus.clone();
-    let cleanup_bridge = bridge.clone();
-    use_drop(move || {
-        cleanup_focus.dispose();
-        if let Some(bridge) = cleanup_bridge.borrow_mut().take() {
-            let _ = bridge.send("finish");
-        }
-    });
+    use_drop(move || cleanup_focus.dispose());
     let sync_focus = focus.clone();
     use_effect(use_reactive((&variant,), move |(variant,)| {
         sync_focus.transition(state(), variant == PaneVariant::Floating);
@@ -663,17 +665,10 @@ pub fn Pane(
                 "data-mobile": mobile.to_string(), "data-hide-on-collapse": hide_on_collapse.to_string(),
                 "data-close-on-outside": close_on_click_outside.to_string(),"data-pane-focus-current":current_focus,
                 "data-borderless": borderless.to_string(), style: "--ix-pane-size:{size}px",
-                onmounted: move |_| {
-                    let mut task_bridge = dioxus::document::eval(PANE_OUTSIDE_EVENTS);
-                    if task_bridge.send(root_id.clone()).is_err() { return; }
-                    *bridge.borrow_mut() = Some(task_bridge);
+                onmounted: move |event| {
+                    outside_mount.call(event);
                     mount_focus.transition(*state.peek(),variant == PaneVariant::Floating);
                     mount_focus.refresh();
-                    spawn(async move {
-                        while task_bridge.recv::<()>().await.is_ok() {
-                            request.call(false);
-                        }
-                    });
                 },
                 onfocusin: move |_| focused.refresh(),
                 onfocusout: move |_| blurred.refresh(),
@@ -714,25 +709,6 @@ fn pane_expanded_size(size: &str, parent: f64) -> f64 {
         pixels
     }
 }
-
-// Pinned Dioxus has no global click subscription with capture/bubble phases.
-// Capture the expanded/close-on-outside state before target handlers can change
-// it; Rust owns dismissal. Canonical shared observations supply all focus facts.
-const PANE_OUTSIDE_EVENTS: &str = r#"
-const pane=document.getElementById(await dioxus.recv());
-if(!pane)return;
-let disposed=false;
-const outsideEvents=new WeakSet();
-const captureOutside=event=>{if(pane.dataset.expanded==='true'&&pane.dataset.closeOnOutside==='true'&&!event.composedPath().includes(pane))outsideEvents.add(event);};
-const outside=event=>{if(!outsideEvents.has(event))return;outsideEvents.delete(event);if(!disposed&&pane.dataset.expanded==='true')dioxus.send(null);};
-window.addEventListener('click',captureOutside,true);window.addEventListener('click',outside);
-try{
-    await dioxus.recv();
-}finally{
-    disposed=true;
-    window.removeEventListener('click',captureOutside,true);window.removeEventListener('click',outside);
-}
-"#;
 
 fn pane_size(size: &str) -> &str {
     match size {
