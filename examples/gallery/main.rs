@@ -9,6 +9,7 @@ mod application;
 mod application_scenarios;
 mod asset_flip_tile;
 mod asset_hierarchy;
+mod asset_workspace;
 mod button_review;
 mod card_collections;
 mod chart_scenarios;
@@ -252,6 +253,7 @@ fn Gallery() -> Element {
         style { {service_package::STYLES} }
         style { {equipment_events::STYLES} }
         style { {maintenance_launch::STYLES} }
+        style { {asset_workspace::STYLES} }
         IxTheme {
             scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
             density: if compact { Density::Compact } else { Density::Normal },
@@ -297,7 +299,7 @@ fn Gallery() -> Element {
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
                         GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
-                        GalleryPage::Layout => rsx! { maintenance_launch::MaintenanceLaunchExample {} equipment_events::EquipmentEventsExample {} service_package::ServicePackageExample {} asset_hierarchy::AssetHierarchyExample {} paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
+                        GalleryPage::Layout => rsx! { asset_workspace::AssetWorkspaceExample {} maintenance_launch::MaintenanceLaunchExample {} equipment_events::EquipmentEventsExample {} service_package::ServicePackageExample {} asset_hierarchy::AssetHierarchyExample {} paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { grid_custom_editors::GridCustomEditorsExample {} grid_numeric_values::GridNumericValuesExample {} grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
                         GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },

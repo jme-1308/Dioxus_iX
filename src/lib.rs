@@ -84,6 +84,7 @@ mod overlay_registry;
 mod overlay_registry_dom;
 mod overlay_runtime;
 pub mod overlays;
+mod page_layout;
 mod pagination;
 pub mod patterns;
 mod popover_focus;

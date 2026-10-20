@@ -87,41 +87,9 @@ pub use crate::disclosure::{Blind, BlindProps, CardAccordion, CardAccordionProps
 pub use crate::card_list::{CardList, CardListProps};
 pub use crate::card_list_model::*;
 
-/// Default-density tile height.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TileSize {
-    Small,
-    #[default]
-    Medium,
-    Big,
-}
-impl TileSize {
-    fn class(self) -> &'static str {
-        match self {
-            Self::Small => "small",
-            Self::Medium => "medium",
-            Self::Big => "big",
-        }
-    }
-}
-
-/// Fixed-width information tile with header, subheader and footer areas.
-#[component]
-pub fn Tile(
-    children: Element,
-    #[props(default)] header: Option<String>,
-    #[props(default)] header_actions: Option<Element>,
-    #[props(default)] subheader: Option<String>,
-    #[props(default)] footer: Option<Element>,
-    #[props(default)] size: TileSize,
-) -> Element {
-    rsx! { article { class: "ix-tile ix-tile-{size.class()}",
-        if let Some(header) = header { header { class: "ix-tile-header", span { "{header}" } {header_actions} } }
-        if let Some(subheader) = subheader { div { class: "ix-tile-subheader", "{subheader}" } }
-        div { class: "ix-tile-content", {children} }
-        if let Some(footer) = footer { footer { class: "ix-tile-footer", {footer} } }
-    } }
-}
+pub use crate::page_layout::{
+    ContentHeader, ContentHeaderProps, ContentHeaderVariant, Tile, TileProps, TileSize,
+};
 
 pub use crate::task_cards::{ActionCard, ActionCardProps, PushCard, PushCardProps};
 
@@ -129,24 +97,6 @@ pub use crate::task_cards::{ActionCard, ActionCardProps, PushCard, PushCardProps
 #[component]
 pub fn Content(children: Element, #[props(default)] class: String) -> Element {
     rsx! { main { class: "ix-content {class}", {children} } }
-}
-
-/// Content title, subtitle, optional back action and composed header actions.
-#[component]
-pub fn ContentHeader(
-    title: String,
-    #[props(default)] subtitle: Option<String>,
-    #[props(default)] show_back: bool,
-    #[props(default)] onback: EventHandler<()>,
-    #[props(default)] header_content: Option<Element>,
-    #[props(default)] ellipsis: bool,
-    #[props(default = VNode::empty())] children: Element,
-) -> Element {
-    rsx! { header { class: "ix-content-header", "data-ellipsis": ellipsis,
-        if show_back { button { class: "ix-layout-icon-button", r#type: "button", "aria-label": "Go back", onclick: move |_| onback.call(()), Icon { name: "arrow-left" } } }
-        div { class: "ix-content-header-titles", div { class: "ix-content-header-title-line", h1 { title: title.clone(), "{title}" } {header_content} } if let Some(subtitle) = subtitle { p { title: subtitle.clone(), "{subtitle}" } } }
-        div { class: "ix-content-header-actions", {children} }
-    } }
 }
 
 /// Stable-keyed tab definition for [`Tabs`].
@@ -1079,6 +1029,10 @@ pub(crate) const STYLES: &str = r#"
 @media(prefers-reduced-motion:reduce){.ix-event-row[data-animated=true]{animation:none}}
 
 .ix-card[data-passive=true]>.ix-card-body{pointer-events:auto}
+
+.ix-content-header[data-variant=secondary] h1{font:var(--si-sys-typography-h4,20px/28px var(--ix-font));font-weight:600}
+.ix-content-header-title-line>h1,.ix-content-header-titles>p{overflow-wrap:anywhere;max-width:100%}.ix-content-header[data-ellipsis=false] .ix-content-header-title-line{flex-wrap:wrap}
+.ix-tile-header{gap:8px;flex-wrap:wrap;min-width:0}.ix-tile-header>span,.ix-tile-subheader,.ix-tile-content,.ix-tile-footer{min-width:0;overflow-wrap:anywhere}
 
 "#;
 
