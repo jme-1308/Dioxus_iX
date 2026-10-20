@@ -102,6 +102,8 @@ mod modal_focus_review;
 mod operator_profile_review;
 #[path = "dioxus_first_probe/pagination_workflow_review.rs"]
 mod pagination_workflow_review;
+#[path = "dioxus_first_probe/pane_equipment_review.rs"]
+mod pane_equipment_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
 mod pane_layout_review;
 #[path = "dioxus_first_probe/release_popover_review.rs"]
@@ -363,6 +365,9 @@ fn Preview() -> Element {
     }
     if scope == "?applicationshell" || scope.starts_with("?applicationshell&destination=") {
         return rsx! { application_shell_review::ApplicationShellReview {} };
+    }
+    if scope == "?paneequipment" {
+        return rsx! { pane_equipment_review::PaneEquipmentPreview {} };
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };

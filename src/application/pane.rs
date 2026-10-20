@@ -553,10 +553,11 @@ pub fn Pane(
     let layout = try_consume_context::<PaneLayoutContext>();
     let mut state = use_signal(|| expanded);
     let previous_expanded = use_hook(|| Rc::new(Cell::new(expanded)));
-    let incoming_expansion = (previous_expanded.replace(expanded) != expanded).then_some(expanded);
-    use_effect(use_reactive((&expanded,), move |(expanded,)| {
-        state.set(expanded)
-    }));
+    // Reconcile a changed owner prop before rendering or scheduling focus work.
+    // An unchanged prop leaves accepted mutable/user-request state authoritative.
+    if previous_expanded.replace(expanded) != expanded && *state.peek() != expanded {
+        state.set(expanded);
+    }
     let slot = context
         .map(|_| composition.class().to_string())
         .unwrap_or_default();
@@ -601,13 +602,7 @@ pub fn Pane(
     if let Some(capture) = try_consume_context::<PaneFocusCapture>() {
         *capture.0.borrow_mut() = Some(focus.clone());
     }
-    // A controlled prop can change before its state-copy effect runs. Reject
-    // focus queued for the old presentation during this render, rather than
-    // allowing that focus effect to race the prop synchronization effect.
-    focus.transition(
-        incoming_expansion.unwrap_or(expanded),
-        variant == PaneVariant::Floating,
-    );
+    focus.transition(expanded, variant == PaneVariant::Floating);
     let current_focus = focus.current();
     let bridge = use_hook(|| Rc::new(RefCell::new(None::<dioxus::document::Eval>)));
     let cleanup_focus = focus.clone();

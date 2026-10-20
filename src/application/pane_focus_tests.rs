@@ -259,6 +259,35 @@
     }
 
     #[test]
+    fn controlled_close_keeps_return_focus_across_native_revision_before_effects() {
+        let _guard = crate::test_event_converter_guard();
+        let mut h = Harness::new();
+        h.expanded(true);
+        h.report(h.facts(Some("pane-opener"), false));
+        h.report(h.facts(Some("pane-action"), true));
+        h.log.borrow_mut().clear();
+
+        // A form Save closes through the owner prop, rather than Pane's request.
+        h.dom.in_scope(ScopeId::ROOT, || {
+            h.config.borrow().expanded.unwrap().set(false)
+        });
+        h.dom.render_immediate_to_vec();
+
+        // Pinned Dioxus drains effects on the following idle scheduler pass.
+        // Native focus facts can dirty Pane first, before that effect pass;
+        // the return must survive the resulting actual component rerender.
+        h.report_pending(h.facts(None, false));
+        h.dom.render_immediate_to_vec();
+        h.settle();
+
+        assert_eq!(*h.log.borrow(), ["pane-opener"]);
+        let html = dioxus_ssr::render(&h.dom);
+        assert!(html.contains("data-expanded=\"false\""));
+        let content = html.split('<').find(|tag| tag.starts_with("div ") && tag.contains("class=\"ix-pane-content\"")).unwrap().split('>').next().unwrap();
+        assert!(content.split_whitespace().any(|attr| attr == "hidden" || attr.starts_with("hidden=")), "closed content must be hidden: {content}");
+    }
+
+    #[test]
     fn pane_close_returns_registered_programmatic_opener_without_enrolling_it_in_tab_order() {
         let _guard = crate::test_event_converter_guard();
         let mut h = Harness::new();
