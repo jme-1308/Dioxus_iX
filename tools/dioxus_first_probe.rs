@@ -52,6 +52,8 @@ mod equipment_events_review;
 mod equipment_readings_review;
 #[path = "dioxus_first_probe/external_work_order_review.rs"]
 mod external_work_order_review;
+#[path = "dioxus_first_probe/field_composition_review.rs"]
+mod field_composition_review;
 #[path = "../examples/gallery/filter_keyboard_review.rs"]
 mod filter_keyboard_review;
 #[path = "dioxus_first_probe/filter_layout_review.rs"]
@@ -431,6 +433,9 @@ fn Preview() -> Element {
     }
     if scope == "?contentcolumns" {
         return rsx! { content_columns_review::ContentColumnsPreview {} };
+    }
+    if scope == "?fieldcomposition" {
+        return rsx! { field_composition_review::FieldCompositionPreview {} };
     }
     if scope == "?releasepopover" {
         return rsx! { release_popover_review::ReleasePopoverPreview {} };

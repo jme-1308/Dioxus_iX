@@ -264,16 +264,19 @@ fn use_text_commit(
 }
 
 /// Label associated with a native control through `html_for`.
+/// Composed `children` take precedence over plain `text`.
 #[component]
 pub fn FieldLabel(
-    text: String,
+    #[props(default)] text: String,
+    #[props(default)] children: Option<Element>,
     #[props(default)] html_for: Option<String>,
     #[props(default)] required: bool,
     #[props(default)] invalid: bool,
 ) -> Element {
     rsx! {
         label { class: if invalid { "ix-field-label ix-field-invalid" } else { "ix-field-label" },
-            r#for: html_for, "{text}"
+            r#for: html_for,
+            if let Some(content) = children { {content} } else { "{text}" }
             if required { span { class: "ix-required", "aria-hidden": "true", " *" } }
         }
     }
@@ -306,6 +309,9 @@ pub fn HelperText(
 pub fn FieldWrapper(
     children: Element,
     #[props(default)] label: Option<String>,
+    /// Rich label content, taking precedence over `label`.
+    #[props(default)]
+    label_content: Option<Element>,
     #[props(default)] html_for: Option<String>,
     #[props(default)] required: bool,
     #[props(default)] helper_text: Option<String>,
@@ -313,13 +319,30 @@ pub fn FieldWrapper(
     #[props(default)] valid_text: Option<String>,
     #[props(default)] info_text: Option<String>,
     #[props(default)] warning_text: Option<String>,
+    /// ID of the rendered helper/validation text. Controls can reference this
+    /// explicitly with `aria-describedby` and `aria-errormessage`.
+    #[props(default)]
+    helper_id: Option<String>,
+    /// Independent content beside the helper text, outside the native label.
+    #[props(default)]
+    bottom_right: Option<Element>,
     #[props(default)] state: FieldState,
 ) -> Element {
+    let helper = rsx! { HelperText { id: helper_id, helper_text, invalid_text, valid_text, info_text, warning_text, state } };
     rsx! {
         div { class: "ix-field {state.class()}",
-            if let Some(text) = label { FieldLabel { text, html_for, required, invalid: state == FieldState::Invalid } }
+            if let Some(content) = label_content {
+                FieldLabel { html_for, required, invalid: state == FieldState::Invalid, {content} }
+            } else if let Some(text) = label {
+                FieldLabel { text, html_for, required, invalid: state == FieldState::Invalid }
+            }
             {children}
-            HelperText { helper_text, invalid_text, valid_text, info_text, warning_text, state }
+            if let Some(content) = bottom_right {
+                div { class: "ix-field-composed-footer",
+                    {helper}
+                    div { class: "ix-field-bottom-right", {content} }
+                }
+            } else { {helper} }
         }
     }
 }
@@ -331,6 +354,7 @@ pub fn FieldWrapper(
 pub fn CustomField(
     children: Element,
     #[props(default)] label: Option<String>,
+    #[props(default)] label_content: Option<Element>,
     #[props(default)] html_for: Option<String>,
     #[props(default)] required: bool,
     #[props(default)] helper_text: Option<String>,
@@ -338,13 +362,15 @@ pub fn CustomField(
     #[props(default)] valid_text: Option<String>,
     #[props(default)] info_text: Option<String>,
     #[props(default)] warning_text: Option<String>,
+    #[props(default)] helper_id: Option<String>,
+    #[props(default)] bottom_right: Option<Element>,
     #[props(default)] state: FieldState,
     #[props(default)] class: String,
 ) -> Element {
     let id = field_id(None);
     let state = crate::form_control::use_custom_field_validation(state, &class);
     rsx! { div { id, class: "ix-custom-field {class}",
-        FieldWrapper { label, html_for, required, helper_text, invalid_text, valid_text, info_text, warning_text, state,
+        FieldWrapper { label, label_content, html_for, required, helper_text, invalid_text, valid_text, info_text, warning_text, helper_id, bottom_right, state,
             div { "data-custom-control": "true", {children} }
         }
     } }
@@ -3552,6 +3578,10 @@ mod group_token_tests;
 mod toggle_token_tests;
 
 pub(crate) const STYLES: &str = include_str!("styles/forms.css");
+
+#[cfg(test)]
+#[path = "forms/field_composition_tests.rs"]
+mod field_composition_tests;
 
 #[cfg(test)]
 mod tests;
