@@ -85,11 +85,30 @@ class Package:
         }
 
 
-def parse_bundle(source):
+def parse_bundle(source, source_path=None):
     # Parse this data declaration only, not Rust test fixtures or runtime code.
     declaration = source.split('const ICONS: &[(&str, &str)] = &[', 1)[1]
     declaration = declaration.rsplit("];", 1)[0]
-    entries = re.findall(r'\(\s*"([^"\n]+)",\s*r##"(.*?)"##,?\s*\)', declaration, re.S)
+    tuples = re.findall(
+        r'\(\s*"([^"\n]+)",\s*(?:r##"(.*?)"##|include_str!\("([^"\n]+)"\)),?\s*\)',
+        declaration, re.S,
+    )
+    entries = []
+    for name, geometry, included in tuples:
+        if included:
+            if source_path is None:
+                raise ValueError("include_str icon tuples require the Rust source path")
+            if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+                raise ValueError(f"Unsafe bundled icon name: {name!r}")
+            if included != f"icons/bundled/{name}.svg":
+                raise ValueError(f"Unexpected bundled icon include target: {included!r}")
+            base = Path(source_path).resolve().parent
+            target = (base / included).resolve(strict=True)
+            if not target.is_relative_to(base / "icons" / "bundled") or not target.is_file():
+                raise ValueError(f"Bundled icon include escapes its source directory: {included!r}")
+            # Decode bytes directly: newline translation would alter SVG fragments.
+            geometry = target.read_bytes().decode("utf-8")
+        entries.append((name, geometry))
     if not entries or len({name for name, _ in entries}) != len(entries):
         raise ValueError("Missing or duplicate Rust icon tuples")
     if [name for name, _ in entries] != sorted(name for name, _ in entries):
@@ -167,8 +186,9 @@ def check(args):
         "text": license_text, "retained_notice_matches": retained_text == license_text.rstrip("\n"),
     }
 
-    source_bytes = (args.repo / "src/icons.rs").read_bytes()
-    bundle = parse_bundle(source_bytes.decode())
+    source_path = args.repo / "src/icons.rs"
+    source_bytes = source_path.read_bytes()
+    bundle = parse_bundle(source_bytes.decode(), source_path=source_path)
     source_names = package.svg_names()
     missing = sorted((source_names - EXCLUDED) - bundle.keys())
     unexpected = sorted(bundle.keys() - (source_names - EXCLUDED))

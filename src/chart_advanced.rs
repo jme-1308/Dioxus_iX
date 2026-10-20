@@ -1679,9 +1679,7 @@ pub fn ZoomChart(
     } }
 }
 
-pub(crate) const STYLES: &str = r#"
-.ix-surface-chart,.ix-zoom-chart{position:relative;min-width:0;width:100%;color:var(--ix-color-text);background:transparent}.ix-chart-viewport{margin:0;padding:0;border:0;width:100%}.ix-chart-viewport>svg{display:block;width:100%;max-width:100%;font:12px var(--ix-font)}.ix-chart-instructions{font-size:12px;color:var(--ix-color-text-secondary);margin:8px 0}.ix-zoom-toolbar{display:flex;justify-content:flex-end;gap:4px}.ix-zoom-handle{fill:var(--ix-color-surface-2);stroke:var(--ix-color-border);cursor:ew-resize}.ix-zoom-selection{fill:color-mix(in srgb,var(--ix-color-primary) 20%,transparent);stroke:var(--ix-color-primary)}.ix-zoom-handle:focus-visible{outline:2px solid var(--ix-color-focus)}
-"#;
+pub(crate) const STYLES: &str = include_str!("styles/chart_advanced.css");
 
 #[cfg(test)]
 mod tests;

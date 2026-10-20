@@ -25,7 +25,7 @@ This applies to **every task, agent and delegation**. Simplifying the existing h
 ## Scope
 
 - Use Brand, not Classic. Exclude deprecated APIs, Siemens marks, and separately licensed corporate fonts/assets; preserve MIT notices.
-- Keep behavior, state, styles, examples, and assets in Rust. Embedded JavaScript is limited to native DOM plumbing. Development tooling stays outside the published crate.
+- Keep behavior, state and examples in Rust. Styles and SVG assets may live in separate files bundled with the crate and embedded at compile time where appropriate; consuming applications must not need manual asset copying. Embedded JavaScript is limited to demonstrated native capability gaps. Development tooling stays outside the published crate.
 - Nightly settings remain local and gitignored. Ask before changing profiles, toolchains, linkers, or pinned Dioxus versions; never run `cargo clean`.
 
 ## Records and tools

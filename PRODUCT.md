@@ -13,7 +13,7 @@ The library must support both Dioxus web and Dioxus desktop applications while r
 - Rust with Dioxus **v0.8.0-alpha.2**, explicitly selected by the user.
 - Release reference: https://github.com/DioxusLabs/dioxus/releases/tag/v0.8.0-alpha.2
 - Do not silently substitute another Dioxus release.
-- Native Rust/Dioxus components and Rust-embedded styles/assets; no upstream Web Component runtime. Dioxus owns normal DOM/lifecycle/event work. Small custom JavaScript bindings are permitted only for demonstrated missing or broken framework capabilities. Existing substantial bridges are the first simplification priority.
+- Native Rust/Dioxus components with bundled library CSS/SVG files embedded at compile time; no manual consumer asset copy, runtime asset URLs, asset loader, or upstream Web Component runtime. Dioxus owns normal DOM/lifecycle/event work. Small custom JavaScript bindings are permitted only for demonstrated missing or broken framework capabilities. Existing substantial bridges are the first simplification priority.
 - A library and interactive gallery exist. `just --list` is the command index; preserve build caches and the existing dependency/toolchain configuration.
 
 ## Users
@@ -46,7 +46,7 @@ Bring the Siemens iX interface system to the explicitly selected Dioxus release,
 
 - Support Dioxus web and desktop consumers.
 - No JavaScript fallback paths, across every component, task and agent. Use Dioxus composition and explicit mounted-element registration; report unsupported capabilities instead of silently routing them to JavaScript.
-- Keep authored implementation in Rust source files. Use Dioxus APIs for rendering, lifecycle, events, focus, measurements and native inputs/files first. A custom JavaScript binding requires a specific demonstrated framework gap, must remain small, and must be documented. Simplifying existing oversized bridges takes precedence over other tasks; preserve functionality while replacing their implementation. Do not introduce standalone JavaScript or TypeScript runtime files.
+- Keep behavior, state, component logic, and examples in Rust source files. Library CSS and SVG fragments live in bundled files embedded at compile time. Use Dioxus APIs for rendering, lifecycle, events, focus, measurements and native inputs/files first. A custom JavaScript binding requires a specific demonstrated framework gap, must remain small, and must be documented. Simplifying existing oversized bridges takes precedence over other tasks; preserve functionality while replacing their implementation. Do not introduce standalone JavaScript or TypeScript runtime files.
 - Broad intended scope includes components, patterns, and useful examples. IMPLEMENTATION.md records current capability coverage and priorities.
 - Preserve familiar terminology and interaction capabilities. Adapt APIs to Rust/Dioxus rather than copying JavaScript syntax; track unsupported functionality explicitly. A focused rewrite of overbuilt subsystems is acceptable while retaining working components, styles/assets, public behavior and useful tests.
 - Check representative web and desktop workflows separately. Do not infer usability from compilation alone.

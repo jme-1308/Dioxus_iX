@@ -1,0 +1,126 @@
+
+.ix-theme .ix-button.ix-icon-button-native {
+  --ix-icon-button-extra-small--size: var(--si-sys-sizing-size-50, 16px);
+  --ix-icon-button-small--size: var(--si-sys-sizing-size-70, 24px);
+  --ix-icon-button-large--size: var(--si-sys-sizing-size-80, var(--_ix-button-height, 32px));
+  --ix-icon-button-btn-oval--border-radius: var(--si-sys-sizing-border-radius-full, 50%);
+  width: var(--ix-icon-button-large--size);
+  height: var(--ix-icon-button-large--size);
+  min-width: var(--ix-icon-button-large--size);
+  min-height: var(--ix-icon-button-large--size);
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  justify-content: center;
+  align-items: center;
+  flex-shrink: 0;
+  border-top-left-radius: var(--ix-button-border-radius-left);
+  border-bottom-left-radius: var(--ix-button-border-radius-left);
+  border-top-right-radius: var(--ix-button-border-radius-right);
+  border-bottom-right-radius: var(--ix-button-border-radius-right);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-12,
+.ix-theme .ix-button.ix-icon-button-native.btn-icon-12 {
+  width: var(--ix-icon-button-extra-small--size);
+  height: var(--ix-icon-button-extra-small--size);
+  min-width: var(--ix-icon-button-extra-small--size);
+  min-height: var(--ix-icon-button-extra-small--size);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-16,
+.ix-theme .ix-button.ix-icon-button-native.btn-icon-16 {
+  width: var(--ix-icon-button-small--size);
+  height: var(--ix-icon-button-small--size);
+  min-width: var(--ix-icon-button-small--size);
+  min-height: var(--ix-icon-button-small--size);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-20,
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-24,
+.ix-theme .ix-button.ix-icon-button-native.btn-icon-32 {
+  width: var(--ix-icon-button-large--size);
+  height: var(--ix-icon-button-large--size);
+  min-width: var(--ix-icon-button-large--size);
+  min-height: var(--ix-icon-button-large--size);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-oval,
+.ix-theme .ix-button.ix-icon-button-native.btn-oval {
+  border-radius: var(--ix-icon-button-btn-oval--border-radius);
+}
+.ix-theme .ix-button.ix-icon-button-native > .ix-icon-button-glyph,
+.ix-theme .ix-button.ix-icon-button-native > svg {
+  width: var(--si-sys-sizing-size-60, 20px);
+  height: var(--si-sys-sizing-size-60, 20px);
+  min-width: var(--si-sys-sizing-size-60, 20px);
+  min-height: var(--si-sys-sizing-size-60, 20px);
+  margin: 0;
+  pointer-events: none;
+  flex-shrink: 0;
+  color: var(--ix-icon-button-color, currentColor);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-12 > .ix-icon-button-glyph,
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-12 > svg,
+.ix-theme .ix-button.ix-icon-button-native.btn-icon-12 > .ix-icon-button-glyph,
+.ix-theme .ix-button.ix-icon-button-native.btn-icon-12 > svg {
+  width: var(--si-sys-sizing-size-40, 12px);
+  height: var(--si-sys-sizing-size-40, 12px);
+  min-width: var(--si-sys-sizing-size-40, 12px);
+  min-height: var(--si-sys-sizing-size-40, 12px);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-16 > .ix-icon-button-glyph,
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-16 > svg,
+.ix-theme .ix-button.ix-icon-button-native.btn-icon-16 > .ix-icon-button-glyph,
+.ix-theme .ix-button.ix-icon-button-native.btn-icon-16 > svg {
+  width: var(--si-sys-sizing-size-50, 16px);
+  height: var(--si-sys-sizing-size-50, 16px);
+  min-width: var(--si-sys-sizing-size-50, 16px);
+  min-height: var(--si-sys-sizing-size-50, 16px);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-20 > .ix-icon-button-glyph,
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-20 > svg {
+  width: var(--si-sys-sizing-size-60, 20px);
+  height: var(--si-sys-sizing-size-60, 20px);
+  min-width: var(--si-sys-sizing-size-60, 20px);
+  min-height: var(--si-sys-sizing-size-60, 20px);
+}
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-24 > .ix-icon-button-glyph,
+.ix-theme .ix-button.ix-icon-button-native.ix-icon-size-24 > svg {
+  width: var(--si-sys-sizing-size-70, 24px);
+  height: var(--si-sys-sizing-size-70, 24px);
+  min-width: var(--si-sys-sizing-size-70, 24px);
+  min-height: var(--si-sys-sizing-size-70, 24px);
+}
+.ix-theme .ix-button.ix-icon-button-native > .ix-spinner {
+  --ix-spinner-extra-extra-small--size: var(--si-sys-sizing-size-40, 12px);
+  --ix-spinner-extra-small--size: var(--si-sys-sizing-size-50, 16px);
+  --ix-spinner-small--size: var(--si-sys-sizing-size-60, 20px);
+  margin: 0;
+  width: var(--ix-spinner-small--size);
+  height: var(--ix-spinner-small--size);
+  min-width: var(--ix-spinner-small--size);
+  min-height: var(--ix-spinner-small--size);
+  max-width: var(--ix-spinner-small--size);
+  max-height: var(--ix-spinner-small--size);
+}
+.ix-theme .ix-button.ix-icon-button-native > .ix-spinner.ix-spinner-xxs {
+  width: var(--ix-spinner-extra-extra-small--size);
+  height: var(--ix-spinner-extra-extra-small--size);
+  min-width: var(--ix-spinner-extra-extra-small--size);
+  min-height: var(--ix-spinner-extra-extra-small--size);
+  max-width: var(--ix-spinner-extra-extra-small--size);
+  max-height: var(--ix-spinner-extra-extra-small--size);
+}
+.ix-theme .ix-button.ix-icon-button-native > .ix-spinner.ix-spinner-xs {
+  width: var(--ix-spinner-extra-small--size);
+  height: var(--ix-spinner-extra-small--size);
+  min-width: var(--ix-spinner-extra-small--size);
+  min-height: var(--ix-spinner-extra-small--size);
+  max-width: var(--ix-spinner-extra-small--size);
+  max-height: var(--ix-spinner-extra-small--size);
+}
+.ix-theme .ix-button.ix-icon-button-native > .ix-spinner.ix-spinner-sm {
+  width: var(--ix-spinner-small--size);
+  height: var(--ix-spinner-small--size);
+  min-width: var(--ix-spinner-small--size);
+  min-height: var(--ix-spinner-small--size);
+  max-width: var(--ix-spinner-small--size);
+  max-height: var(--ix-spinner-small--size);
+}

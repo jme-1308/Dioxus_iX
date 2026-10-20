@@ -2889,52 +2889,7 @@ pub fn DropdownItem(
     }}
 }
 
-pub(crate) const STYLES: &str = r#"
-.ix-theme .ix-select-item{display:block;position:relative}
-.ix-theme .ix-select-item>.ix-select-item-option{width:100%;color:var(--ix-select-item--color,var(--ix-color-text))}
-.ix-theme .ix-select-item .select-item-checked{background-color:var(--ix-select-item--background--selected,var(--ix-color-surface-2))}
-.ix-theme .ix-select-item[disabled]{pointer-events:none;cursor:default}
-.ix-dropdown { display:inline-block;position:relative; }
-
-.ix-dropdown-trigger { position:relative;z-index:19; }
-.ix-dropdown-trigger { display:flex;align-items:center;gap:12px;padding:6px 12px;min-height:var(--ix-control-height);border:1px solid var(--ix-color-primary);border-radius:var(--ix-radius);color:var(--ix-color-primary);background:transparent; }
-.ix-dropdown-menu { color:var(--ix-color-text);font:inherit;margin:0;position:absolute;top:calc(100% + 4px);left:0;z-index:20;min-width:200px;max-height:320px;overflow:auto;padding:4px 0;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:var(--ix-color-surface-1);box-shadow:0 6px 20px #0004; }
-.ix-dropdown-external-trigger{position:relative;z-index:19}
-.ix-dropdown-root-menu{position:fixed;inset:50% auto auto 50%;transform:translate(-50%,-50%);box-sizing:border-box;width:max-content;min-width:min(200px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:min(320px,calc(100dvh - 16px))}
-@supports(position-anchor:--example) and (position-area:bottom){
- .ix-dropdown-root-menu{inset:auto;transform:none;position-area:var(--ix-dropdown-area);justify-self:start;align-self:start;margin:4px;position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline,--ix-dropdown-contained}
- .ix-dropdown-root-menu[data-placement^=top]{align-self:end}
- .ix-dropdown-root-menu[data-placement=bottom-end],.ix-dropdown-root-menu[data-placement=top-end],.ix-dropdown-root-menu[data-placement^=left]{justify-self:end}
- .ix-dropdown-root-menu[data-placement=left-end],.ix-dropdown-root-menu[data-placement=right-end]{align-self:end}
- @position-try --ix-dropdown-contained{position-area:none;inset:8px;margin:auto;height:max-content;max-width:calc(100% - 16px);max-height:min(320px,calc(100dvh - 16px))}
-}
-[data-ix-item-key][hidden]{display:none!important}
-.ix-dropdown-item { display:flex;align-items:center;gap:8px;width:100%;padding:8px 16px;border:0;text-align:left;color:var(--ix-color-text);background:transparent; }
-.ix-dropdown-item>span { flex:1; }
-.ix-dropdown-item.ix-dropdown-quick-action { width:40px;height:40px;justify-content:center;padding:8px; }
-.ix-dropdown-item:hover:not(:disabled) { background:var(--ix-color-surface-2); }
-.ix-dropdown-item:disabled { opacity:.45; }
-.ix-dropdown-header { padding:8px 16px;font-size:14px;color:var(--ix-color-text-secondary); }
-.ix-dropdown-submenu-menu{position:fixed;inset:50% auto auto 50%;transform:translate(-50%,-50%);box-sizing:border-box;width:min(200px,calc(100vw - 16px));min-width:0;max-width:calc(100vw - 16px);max-height:min(320px,calc(100dvh - 16px));z-index:21}
-.ix-dropdown-submenu-trigger[aria-expanded=true],.ix-dropdown-item.ix-dropdown-submenu-trigger-active{background:var(--ix-color-surface-2)}
-@supports (position-anchor:--example) and (position-area:right){
- .ix-dropdown-submenu-menu{inset:auto;transform:none;position-area:right span-bottom;align-self:start;margin:0 4px;position-try-fallbacks:flip-inline,flip-block,flip-inline flip-block,--ix-submenu-contained,--ix-submenu-contained-above}
- @position-try --ix-submenu-contained{position-area:bottom span-right;inset:auto;justify-self:start;align-self:start;margin:4px 0;width:min(200px,calc(100vw - 16px));height:max-content;max-width:calc(100vw - 16px);max-height:min(320px,calc(100dvh - 16px))}
- @position-try --ix-submenu-contained-above{position-area:top span-right;inset:auto;justify-self:start;align-self:end;margin:4px 0;width:min(200px,calc(100vw - 16px));height:max-content;max-width:calc(100vw - 16px);max-height:min(320px,calc(100dvh - 16px))}
-}
-/* Closed content remains mounted but absent from layout/focus and hit testing. */
-.ix-dropdown-menu[hidden]{display:none!important}
-.ix-dropdown-menu:not([hidden]):not([popover]){display:block}
-.ix-dropdown-menu[popover]:not(:popover-open){display:none}
-.ix-dropdown-menu:popover-open{display:block}
-.ix-dropdown>.ix-dropdown-trigger[inert]{pointer-events:none}
-.ix-dropdown[role=button]:focus-visible,.ix-dropdown-item:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}
-.ix-dropdown-item[data-active=true]{background:var(--ix-color-surface-2);outline:2px solid var(--ix-color-focus);outline-offset:-2px}
-.ix-dropdown-item[aria-disabled=true]{opacity:.45;pointer-events:none;cursor:default}
-.ix-dropdown[aria-disabled=true]{cursor:default}
-
-.ix-theme .ix-dropdown-trigger.ix-dropdown-trigger-icon-only{box-sizing:border-box;width:var(--ix-control-height);height:var(--ix-control-height);min-width:0;justify-content:center;gap:0;padding:0}
-"#;
+pub(crate) const STYLES: &str = include_str!("styles/dropdown.css");
 
 #[cfg(test)]
 mod tests;

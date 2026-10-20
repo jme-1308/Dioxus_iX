@@ -1118,24 +1118,7 @@ fn HeaderOwnershipScope(
     rsx! {{children}}
 }
 
-pub(crate) const STYLES: &str = r"
-.ix-header-layout{display:grid;grid-template-columns:minmax(0,1fr) max-content max-content max-content;align-items:center;flex:1 1 auto;min-width:min-content;height:100%;gap:.25rem}
-.ix-header-popup-host{color:inherit;font:inherit}
-.ix-header-popup-small{display:contents}
-.ix-header-slot-group,.ix-header-avatar-slot{display:flex;align-items:center;gap:.25rem;min-width:0}
-.ix-header-slot-secondary{grid-column:1;overflow:hidden}
-.ix-header-slot-default{grid-column:2;margin-inline-start:auto}
-.ix-header-avatar-slot{grid-column:4;flex:0 0 auto}
-.ix-header-more-button{grid-column:3;flex:0 0 auto;margin-inline-start:auto}
-.ix-header-more-button[hidden]{display:none}
-.ix-header-popup-host[data-active=true]{display:none;position:fixed;inset:auto;margin:0;box-sizing:border-box;min-width:12rem;max-width:calc(100vw - 1rem);max-height:calc(100dvh - 4rem);overflow:auto;padding:var(--ix-dropdown--padding,.25rem 0);border:0;border-radius:var(--ix-dropdown--border-radius,.25rem);background:var(--ix-dropdown--background,var(--si-sys-color-background-3,var(--ix-color-surface-1)));color:var(--ix-color-text);box-shadow:var(--ix-dropdown--box-shadow,var(--si-sys-color-effects-shadow-4,0 4px 16px #0004));z-index:1060;height:auto;flex:none}
-.ix-header-popup-host[data-active=true][data-open=true]{display:flex;flex-direction:column;align-items:stretch;gap:0}
-.ix-header-layout[data-small=true]{display:flex;justify-content:flex-end}
-.ix-header-layout[data-small=true] .ix-header-popup-large{display:contents}
-.ix-header-popup-host[data-active=true] .ix-header-slot-group{flex:none;overflow:visible;flex-direction:column;align-items:stretch;margin:0}
-.ix-header-popup-host[data-active=true] .ix-header-slot-group[data-populated=true]{padding:var(--ix-application-header-slot-content-active--padding,.5rem 1.5rem)}
-.ix-header-layout[data-small=true] [data-separator=true]{border-top:var(--ix-application-header-dropdown-item--border-width,1px) solid var(--ix-color-border)}
-";
+pub(crate) const STYLES: &str = include_str!("styles/header_layout.css");
 
 #[cfg(test)]
 mod tests;

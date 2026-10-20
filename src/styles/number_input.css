@@ -1,0 +1,16 @@
+
+.ix-theme .ix-number-field {
+  display: contents;
+}
+.ix-theme .ix-number-input-native.ix-number-has-steppers .ix-input-wrap > input[type=number] {
+  min-width: var(--ix-input-show-stepper-buttons--min-width);
+}
+.ix-theme .ix-number-input-native .ix-input-end > .ix-number-steppers {
+  display: flex;
+  position: relative;
+  flex-direction: row;
+  flex-wrap: nowrap;
+}
+.ix-theme .ix-number-input-native .ix-input-end > .ix-number-steppers[data-hidden=true] {
+  display: none;
+}

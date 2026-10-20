@@ -427,11 +427,7 @@ fn ToolboxIcon(kind: ToolboxGlyph) -> Element {
     rsx! { svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "1.4", "aria-hidden": "true", path { d: path } } }
 }
 
-pub(crate) const STYLES: &str = r#"
-.ix-chart-toolbox{position:relative;width:100%;min-width:0}.ix-chart-toolbox-controls{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;padding:8px 8px 0;position:relative;z-index:2}.ix-chart-toolbox-controls button{display:grid;place-items:center;width:28px;height:28px;padding:3px;border:0;background:transparent;color:var(--ix-color-text);cursor:pointer}.ix-chart-toolbox-controls button:hover,.ix-chart-toolbox-controls button[aria-pressed=true]{color:var(--ix-color-primary)}.ix-chart-toolbox-controls button:disabled{opacity:.35;cursor:default}.ix-chart-toolbox-controls svg{display:block}.ix-chart-toolbox-brush-hint,.ix-chart-toolbox-export-status{margin:8px 0 0;color:var(--ix-color-text-secondary);font:12px var(--ix-font)}.ix-chart-toolbox-brush-hint[hidden],.ix-chart-toolbox-export-status[hidden]{display:none}
-.ix-chart-toolbox-download{display:inline-block;padding:8px 0;font:14px var(--ix-font);text-underline-offset:3px}
-.ix-chart-data-editor{position:absolute;inset:0 0 auto;z-index:5;display:flex;flex-direction:column;gap:12px;padding:20px;height:100%;max-height:calc(100dvh - 32px);overflow:hidden;scroll-margin-block:16px;background:var(--ix-color-surface-1);color:var(--ix-color-text);box-sizing:border-box}.ix-chart-data-editor h4{flex:none;margin:0;font-size:16px}.ix-chart-data-editor>p{flex:none;margin:0;font-size:12px}.ix-chart-data-editor textarea{flex:1 1 0;min-height:0;width:100%;resize:none;box-sizing:border-box;padding:12px;border:1px solid var(--ix-color-border);background:var(--ix-color-surface);color:var(--ix-color-text);font:14px/1.6 ui-monospace,monospace;tab-size:12}.ix-chart-data-editor-actions{display:flex;flex:none;justify-content:flex-end;gap:12px}.ix-chart-data-editor-actions button{padding:6px 12px;background:var(--ix-color-primary);color:var(--ix-color-on-primary);border:0;border-radius:3px;cursor:pointer}.ix-chart-data-error{color:var(--ix-color-danger-text)}.ix-chart-data-error[hidden]{display:none}
-"#;
+pub(crate) const STYLES: &str = include_str!("styles/chart_toolbox.css");
 
 #[cfg(test)]
 #[path = "chart_toolbox_tests.rs"]
