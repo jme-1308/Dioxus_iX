@@ -64,6 +64,7 @@ mod native_field_review;
 mod navigation;
 mod number_input_review;
 mod number_input_token_review;
+mod operator_profile;
 mod paged_equipment;
 mod pattern_scenarios;
 mod patterns;
@@ -256,6 +257,7 @@ fn Gallery() -> Element {
         style { {maintenance_launch::STYLES} }
         style { {asset_workspace::STYLES} }
         style { {inspection_groups::STYLES} }
+        style { {operator_profile::STYLES} }
         IxTheme {
             scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
             density: if compact { Density::Compact } else { Density::Normal },
@@ -297,7 +299,7 @@ fn Gallery() -> Element {
                     }
                     p { class: "review-intro", "Interactive Rust ports of iX examples, with recognizable styling and useful core interactions. This independent port uses public theme fallbacks." }
                     match page {
-                        GalleryPage::Actions => rsx! { split_work_orders::SplitWorkOrdersExample {} chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
+                        GalleryPage::Actions => rsx! { operator_profile::OperatorProfileExample {} split_work_orders::SplitWorkOrdersExample {} chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
                         GalleryPage::Forms => rsx! { service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
         expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },

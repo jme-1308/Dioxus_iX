@@ -635,24 +635,7 @@ pub fn Badge(
     } }
 }
 
-/// Profile image, initials, or a generic user icon. Failed images fall back.
-#[component]
-pub fn Avatar(
-    username: Option<String>,
-    initials: Option<String>,
-    image: Option<String>,
-    #[props(default = 32)] size: u32,
-    tooltip: Option<String>,
-) -> Element {
-    let mut failed = use_signal(|| false);
-    let label = username.clone().unwrap_or_else(|| "User profile".into());
-    let title = tooltip.or(username);
-    rsx! { span { class: "ix-avatar", style: "--ix-avatar-size:{size}px", role: "img", aria_label: label.clone(), title,
-        if let Some(image) = image.filter(|_| !failed()) { img { src: image, alt: "", onerror: move |_| failed.set(true) } }
-        else if let Some(initials) = initials { span { aria_hidden: true, "{initials}" } }
-        else { crate::Icon { name: "user".to_string(), size: 20 } }
-    } }
-}
+pub use crate::avatar::{Avatar, AvatarProps};
 
 /// Horizontal or vertical content separator.
 #[component]
@@ -848,6 +831,12 @@ pub(crate) const STYLES: &str = r#"
 .ix-theme .ix-avatar{display:inline-flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;vertical-align:middle;width:var(--ix-avatar-size);height:var(--ix-avatar-size);border-radius:50%;background:var(--ix-color-surface-2);color:var(--ix-color-text);font:600 14px/1 var(--ix-font)}.ix-theme .ix-avatar img{width:100%;height:100%;object-fit:cover}.ix-theme .ix-divider{height:1px;background:var(--ix-color-border);margin:16px 0;flex-shrink:0}.ix-theme .ix-divider-vertical{height:auto;min-height:24px;width:1px;margin:0 16px;align-self:stretch}
 .ix-theme .ix-typography{display:block;position:relative;font:var(--si-sys-typography-body,14px/20px var(--ix-font));margin:0;overflow-wrap:break-word}.ix-theme .ix-type-body{font:var(--si-sys-typography-body,14px/20px var(--ix-font))}.ix-theme .ix-type-body-sbold{font:var(--si-sys-typography-body-sbold,600 14px/20px var(--ix-font))}.ix-theme .ix-type-body-paragraph{font:var(--si-sys-typography-body-paragraph,14px/24px var(--ix-font))}.ix-theme .ix-type-body-paragraph-sbold{font:var(--si-sys-typography-body-paragraph-sbold,600 14px/24px var(--ix-font))}.ix-theme .ix-type-body-sm{font:var(--si-sys-typography-body-sm,12px/16px var(--ix-font))}.ix-theme .ix-type-body-sm-sbold{font:var(--si-sys-typography-body-sm-sbold,600 12px/16px var(--ix-font))}.ix-theme .ix-type-body-lg{font:var(--si-sys-typography-body-lg,16px/24px var(--ix-font))}.ix-theme .ix-type-body-lg-sbold{font:var(--si-sys-typography-body-lg-sbold,600 16px/24px var(--ix-font))}.ix-theme .ix-type-display{font:var(--si-sys-typography-display,40px/48px var(--ix-font))}.ix-theme .ix-type-display-sbold{font:var(--si-sys-typography-display-sbold,600 40px/48px var(--ix-font))}.ix-theme .ix-type-display-lg{font:var(--si-sys-typography-display-lg,48px/56px var(--ix-font))}.ix-theme .ix-type-display-lg-sbold{font:var(--si-sys-typography-display-lg-sbold,600 48px/56px var(--ix-font))}.ix-theme .ix-type-display-xl{font:var(--si-sys-typography-display-xl,56px/64px var(--ix-font))}.ix-theme .ix-type-display-xl-sbold{font:var(--si-sys-typography-display-xl-sbold,600 56px/64px var(--ix-font))}.ix-theme .ix-type-display-xxl{font:var(--si-sys-typography-display-xxl,64px/72px var(--ix-font))}.ix-theme .ix-type-display-xxl-sbold{font:var(--si-sys-typography-display-xxl-sbold,600 64px/72px var(--ix-font))}.ix-theme .ix-type-h1{font:var(--si-sys-typography-h1,40px/48px var(--ix-font))}.ix-theme .ix-type-h2{font:var(--si-sys-typography-h2,32px/40px var(--ix-font))}.ix-theme .ix-type-h3{font:var(--si-sys-typography-h3,24px/32px var(--ix-font))}.ix-theme .ix-type-h4{font:var(--si-sys-typography-h4,20px/28px var(--ix-font))}.ix-theme .ix-type-h5{font:var(--si-sys-typography-h5,16px/24px var(--ix-font))}.ix-theme .ix-type-h5-bold{font:var(--si-sys-typography-h5-bold,600 16px/24px var(--ix-font))}.ix-theme .ix-type-h6{font:var(--si-sys-typography-h6,600 14px/20px var(--ix-font))}.ix-theme .ix-type-code{font:var(--si-sys-typography-code,14px/20px monospace)}.ix-theme .ix-type-code-sm{font:var(--si-sys-typography-code-sm,12px/16px monospace)}.ix-theme .ix-type-code-lg{font:var(--si-sys-typography-code-lg,16px/24px monospace)}.ix-theme .ix-typography{font-feature-settings:"clig" off,"liga" off;font-style:normal;letter-spacing:var(--si-ref-typography-letter-spacing-normal,normal);-webkit-font-smoothing:antialiased}.ix-theme .ix-type-bold{font-weight:var(--ix-typography-weight-bold--font-weight,var(--si-ref-typography-font-weight-bold,700))!important}.ix-theme .ix-text-std,.ix-theme .ix-text-contrast{color:var(--si-sys-color-text-primary,var(--ix-color-text))}.ix-theme .ix-text-soft{color:var(--si-sys-color-text-secondary,var(--ix-color-text-secondary))}.ix-theme .ix-text-weak{color:var(--si-sys-color-text-disabled,var(--ix-color-text-disabled,var(--ix-color-text-secondary)))}.ix-theme .ix-text-alarm{color:var(--si-sys-color-text-danger,var(--ix-color-danger-text))}.ix-theme .ix-text-alarm-contrast{color:var(--si-sys-color-text-on-danger,var(--ix-color-on-danger,#fff))}.ix-theme .ix-text-critical-contrast{color:var(--si-sys-color-text-on-critical,var(--ix-color-on-critical,#000028))}.ix-theme .ix-text-info-contrast{color:var(--si-sys-color-text-on-information,var(--ix-color-on-info,#fff))}.ix-theme .ix-text-inv-contrast,.ix-theme .ix-text-inv-soft,.ix-theme .ix-text-inv-std,.ix-theme .ix-text-inv-weak,.ix-theme .ix-text-inverse{color:var(--si-sys-color-text-inverse,var(--ix-color-on-primary))}.ix-theme .ix-text-neutral-contrast{color:var(--si-sys-color-text-on-neutral,var(--ix-color-text))}.ix-theme .ix-text-primary-contrast{color:var(--si-sys-color-text-on-accent,var(--ix-color-on-primary))}.ix-theme .ix-text-success-contrast{color:var(--si-sys-color-text-on-success,var(--ix-color-on-success,#fff))}.ix-theme .ix-text-warning-contrast{color:var(--si-sys-color-text-on-warning,var(--ix-color-on-warning,#000028))}
 @media(prefers-reduced-motion:reduce){.ix-theme .ix-badge-animated .ix-badge-indicator::after{animation:none;opacity:0}.ix-theme .ix-button,.ix-theme .ix-progress-fill,.ix-theme .ix-progress-circle-fill{transition:none}}
+.ix-theme .ix-avatar-menu{position:relative;display:inline-flex;vertical-align:middle;flex-shrink:0;max-width:100%}
+.ix-theme .ix-avatar-menu>.ix-avatar-trigger{width:var(--ix-avatar-size);min-width:var(--ix-avatar-size);height:var(--ix-avatar-size);min-height:var(--ix-avatar-size);padding:0;border:0;border-radius:50%;background:transparent;flex-shrink:0}
+.ix-theme .ix-avatar-trigger>.ix-avatar{pointer-events:none}.ix-theme .ix-avatar-trigger[aria-expanded=true]{outline:2px solid var(--ix-color-primary);outline-offset:2px}.ix-theme .ix-avatar-trigger:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}
+.ix-theme .ix-avatar-menu-surface>.ix-dropdown-menu{min-width:min(280px,calc(100vw - 32px));max-width:calc(100vw - 32px)}
+.ix-theme .ix-avatar-profile{display:flex;align-items:center;gap:12px;padding:12px 16px;min-width:0;max-width:100%;box-sizing:border-box}.ix-theme .ix-avatar-profile-text{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}.ix-theme .ix-avatar-username{font-weight:600}.ix-theme .ix-avatar-extra{font-size:14px;line-height:20px;color:var(--ix-color-text-secondary)}.ix-theme .ix-avatar-divider>.ix-divider{margin:8px 0}
+
 "#;
 
 #[cfg(test)]

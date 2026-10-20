@@ -72,6 +72,8 @@ mod menu_focus_review;
 mod menu_order_review;
 #[path = "dioxus_first_probe/modal_focus_review.rs"]
 mod modal_focus_review;
+#[path = "dioxus_first_probe/operator_profile_review.rs"]
+mod operator_profile_review;
 #[path = "dioxus_first_probe/pagination_workflow_review.rs"]
 mod pagination_workflow_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
@@ -218,6 +220,9 @@ fn Preview() -> Element {
     }
     if scope == "?assetworkspace" {
         return rsx! { asset_workspace_review::AssetWorkspacePreview {} };
+    }
+    if scope == "?operatorprofile" {
+        return rsx! { operator_profile_review::OperatorProfilePreview {} };
     }
     if scope == "?inspectiongroups" {
         return rsx! { inspection_groups_review::InspectionGroupsPreview {} };
