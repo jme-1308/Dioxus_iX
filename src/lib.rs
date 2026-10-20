@@ -55,6 +55,7 @@ mod data_grid_render;
 mod data_grid_value;
 pub mod datetime;
 pub mod dialogs;
+mod disclosure;
 mod document_viewport;
 mod dom_query;
 mod dropdown;

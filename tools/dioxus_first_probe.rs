@@ -25,6 +25,8 @@ mod cue_review;
 mod custom_validation_review;
 #[path = "dioxus_first_probe/descendant_review.rs"]
 mod descendant_review;
+#[path = "dioxus_first_probe/disclosure_package_review.rs"]
+mod disclosure_package_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
@@ -196,6 +198,9 @@ fn Preview() -> Element {
     }
     if scope == "?splitactions" {
         return rsx! { split_actions_review::SplitActionsPreview {} };
+    }
+    if scope == "?disclosurepackage" {
+        return rsx! { disclosure_package_review::DisclosurePackagePreview {} };
     }
     if scope == "?gridnumeric" {
         return rsx! { grid_numeric_values_review::GridNumericValuesPreview {} };

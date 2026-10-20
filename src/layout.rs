@@ -26,7 +26,7 @@ pub enum CardVariant {
     Primary,
 }
 impl CardVariant {
-    fn class(self) -> &'static str {
+    pub(crate) fn class(self) -> &'static str {
         match self {
             Self::Outline => "outline",
             Self::Filled => "filled",
@@ -82,25 +82,7 @@ pub fn CardTitle(
     rsx! { div { class: "ix-card-title", div { class: "ix-card-title-text", {children} } div { class: "ix-card-title-actions", {actions} } } }
 }
 
-/// Accessible disclosure in a card footer. Supply `expanded` for controlled state.
-#[component]
-pub fn CardAccordion(
-    children: Element,
-    #[props(default = "Details".to_string())] label: String,
-    #[props(default)] expanded: Option<bool>,
-    #[props(default)] default_expanded: bool,
-    #[props(default)] onexpand: EventHandler<bool>,
-) -> Element {
-    let mut local = use_signal(|| default_expanded);
-    let open = expanded.unwrap_or(local());
-    rsx! { div { class: "ix-card-accordion",
-        button { class: "ix-disclosure-button", r#type: "button", "aria-expanded": open,
-            onclick: move |event| { event.stop_propagation(); local.set(!open); onexpand.call(!open); },
-            span { class: "ix-chevron", "data-open": open, Icon { name: "chevron-down" } } "{label}"
-        }
-        div { class: "ix-card-accordion-content", hidden: !open, {children} }
-    } }
-}
+pub use crate::disclosure::{Blind, BlindProps, CardAccordion, CardAccordionProps};
 
 // Preserve the original layout module import paths.
 pub use crate::card_list::{CardList, CardListProps};
@@ -501,29 +483,6 @@ pub use crate::breadcrumb::{
 };
 
 pub use crate::pagination::{Pagination, PaginationChangeEvent, PaginationLabels, PaginationProps};
-
-/// Expandable information section with optional status treatment.
-#[component]
-pub fn Blind(
-    label: String,
-    children: Element,
-    #[props(default)] sublabel: Option<String>,
-    #[props(default)] icon: Option<String>,
-    #[props(default = CardVariant::Filled)] variant: CardVariant,
-    #[props(default)] header_actions: Option<Element>,
-    #[props(default)] expanded: Option<bool>,
-    #[props(default)] default_expanded: bool,
-    #[props(default)] onexpand: EventHandler<bool>,
-) -> Element {
-    let mut local = use_signal(|| default_expanded);
-    let open = expanded.unwrap_or(local());
-    rsx! { section { class: "ix-blind ix-card-{variant.class()}",
-        div { class: "ix-blind-heading", button { class: "ix-blind-header", r#type: "button", "aria-expanded": open, onclick: move |_| { local.set(!open); onexpand.call(!open); },
-            span { class: "ix-chevron", "data-open": open, Icon { name: "chevron-down" } } if let Some(icon) = icon { Icon { name: icon } }
-            span { class: "ix-blind-label", strong { "{label}" } if let Some(text) = sublabel { span { "{text}" } } }
-        } if let Some(actions) = header_actions { div { class: "ix-blind-actions", {actions} } } } div { class: "ix-blind-content", hidden: !open, {children} }
-    } }
-}
 
 /// Collapsible collection of selectable [`GroupItem`] rows.
 #[component]
@@ -1166,6 +1125,19 @@ pub(crate) const STYLES: &str = r#"
 .ix-card-list-item{width:320px;max-width:100%;min-width:0;flex-shrink:0}.ix-card-list-item[hidden]{display:none}.ix-card-list-item:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-card-list-more{width:320px;max-width:100%;min-width:0;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px 16px;min-height:160px;border:1px solid var(--ix-color-border);border-radius:var(--ix-radius);background:transparent;color:var(--ix-color-text);font:inherit;text-align:center;cursor:pointer}.ix-card-list-more:hover{background:var(--ix-color-surface-2)}.ix-card-list-more:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-card-list-more>.ix-icon{width:32px;height:32px}
 
 .ix-breadcrumb-menu{display:flex;align-items:center;min-width:0}.ix-breadcrumb-menu>.ix-dropdown-trigger{max-width:100%;gap:4px}.ix-breadcrumb[data-subtle=true] .ix-breadcrumb-item>a,.ix-breadcrumb[data-subtle=true] .ix-breadcrumb-item>button,.ix-breadcrumb-item[data-subtle=true]>a,.ix-breadcrumb-item[data-subtle=true]>button,.ix-breadcrumb-menu[data-subtle=true]>.ix-dropdown-trigger{background:transparent}.ix-breadcrumb-menu[data-subtle=true]>.ix-dropdown-trigger:hover{background:var(--ix-color-surface-2)}.ix-breadcrumb-menu>.ix-dropdown-trigger[aria-current=page]{color:var(--ix-color-text)}
+
+.ix-card-accordion{background:var(--ix-card-bg,transparent);color:var(--ix-card-fg,inherit)}
+.ix-blind.ix-card-outline{--ix-card-bg:transparent;--ix-card-fg:var(--ix-color-text)}
+.ix-card-accordion.ix-card-outline{--ix-card-bg:transparent;--ix-card-fg:inherit}
+.ix-blind.ix-card-filled,.ix-card-accordion.ix-card-filled{--ix-card-bg:var(--ix-color-surface-1);--ix-card-fg:var(--ix-color-text)}
+.ix-blind.ix-card-alarm,.ix-card-accordion.ix-card-alarm{--ix-card-bg:var(--ix-color-danger);--ix-card-fg:var(--ix-color-on-danger,#fff)}
+.ix-blind.ix-card-critical,.ix-card-accordion.ix-card-critical{--ix-card-bg:var(--ix-color-critical,#eb780a);--ix-card-fg:var(--ix-color-on-critical,#000028)}
+.ix-blind.ix-card-warning,.ix-card-accordion.ix-card-warning{--ix-card-bg:var(--ix-color-warning);--ix-card-fg:var(--ix-color-on-warning,#000028)}
+.ix-blind.ix-card-success,.ix-card-accordion.ix-card-success{--ix-card-bg:var(--ix-color-success);--ix-card-fg:var(--ix-color-on-success,#000028)}
+.ix-blind.ix-card-info,.ix-card-accordion.ix-card-info{--ix-card-bg:var(--ix-color-info);--ix-card-fg:var(--ix-color-on-info,#000028)}
+.ix-blind.ix-card-neutral,.ix-card-accordion.ix-card-neutral{--ix-card-bg:var(--ix-color-secondary);--ix-card-fg:var(--ix-color-on-secondary,#000028)}
+.ix-blind.ix-card-primary,.ix-card-accordion.ix-card-primary{--ix-card-bg:var(--ix-color-primary);--ix-card-fg:var(--ix-color-on-primary)}
+.ix-blind-custom-header{display:block;min-width:0;flex:1;overflow-wrap:anywhere}.ix-blind-label{min-width:0;overflow-wrap:anywhere}
 
 "#;
 
