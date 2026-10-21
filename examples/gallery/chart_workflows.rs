@@ -118,9 +118,19 @@ pub fn ChartWorkflows() -> Element {
     let mut changes = use_signal(|| 0usize);
     let mut exported = use_signal(|| None::<ExportSummary>);
     let mut epoch = use_signal(|| 0u64);
+    let mut reversed_series = use_signal(|| false);
 
     let current_dataset = dataset();
     let base_data = dataset_data(current_dataset);
+    let mut comparison_series = base_data.series.clone();
+    if reversed_series() {
+        comparison_series.reverse();
+    }
+    let comparison_order = comparison_series
+        .iter()
+        .map(|series| series.name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
     let current_state = state();
     let window = current_state.window();
     let visible = current_state.visible_data();
@@ -171,6 +181,7 @@ pub fn ChartWorkflows() -> Element {
                     variant: ButtonVariant::Secondary,
                     onclick: move |_| {
                         dataset.set(EnergyDataset::Week1);
+                        reversed_series.set(false);
                         state.set(ChartToolboxState::new(dataset_data(EnergyDataset::Week1)));
                         changes.set(0);
                         exported.set(None);
@@ -206,14 +217,20 @@ pub fn ChartWorkflows() -> Element {
                             exported.set(summary);
                         },
                     }
-                    div { class: "chart-workflows-companion",
+                    div { class: "chart-workflows-companion", "data-series-order": comparison_order.clone(),
                         h3 { "Energy comparison" }
                         p {
                             "Compare the loaded week. Toggle a series in the legend, inspect samples with arrow keys, or expand the data table. Edits in the history chart leave this comparison unchanged."
                         }
+                        Button {
+                            id: "energy-reorder-series",
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| reversed_series.toggle(),
+                            if reversed_series() { "Restore series order" } else { "Reverse series order" }
+                        }
                         CartesianChart {
                             categories: base_data.categories.clone(),
-                            series: base_data.series.clone(),
+                            series: comparison_series.clone(),
                             label: "Energy comparison",
                             y_title: "Energy (kWh)",
                             axis_tooltip: true,

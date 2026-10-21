@@ -61,6 +61,8 @@ impl ChartBrushSelection {
 /// One Cartesian data series. Non-finite samples are treated as missing data.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChartSeries {
+    /// Legend identity and visible label. Equal names share visibility; choices
+    /// follow reordered/replaced data until this chart owner unmounts.
     pub name: String,
     pub values: Vec<f64>,
     pub kind: ChartKind,
@@ -486,7 +488,7 @@ pub fn CartesianChart(
 ) -> Element {
     let id = use_hook(|| NEXT_CHART_ID.fetch_add(1, Ordering::Relaxed));
     let width = use_signal(|| 720.0_f64);
-    let mut hidden = use_signal(Vec::<usize>::new);
+    let mut hidden = use_signal(Vec::<String>::new);
     let mut active = use_signal(|| None::<(usize, usize)>);
     let mut keyboard_point = use_signal(|| None::<(usize, usize)>);
     let mut canvas_focused = use_signal(|| false);
@@ -521,8 +523,9 @@ pub fn CartesianChart(
             cancel_brush.call(None);
         }
     }));
-    let visible: Vec<bool> = (0..series.len())
-        .map(|index| !hidden.read().contains(&index))
+    let visible: Vec<bool> = series
+        .iter()
+        .map(|item| !hidden.read().contains(&item.name))
         .collect();
     let valid_points: Vec<(usize, usize)> = series
         .iter()
@@ -1099,7 +1102,7 @@ pub fn CartesianChart(
             }
             if legend { div { class: "ix-chart-legend", "aria-label": "Chart series",
                 for (index, item) in series.iter().enumerate().filter(|(_, item)| !item.name.is_empty()) {
-                    button { r#type: "button", "aria-pressed": visible[index], class: if visible[index] { "" } else { "is-hidden" }, onclick: move |_| { let mut values = hidden.write(); if let Some(position) = values.iter().position(|value| *value == index) { values.remove(position); } else { values.push(index); } active.set(None); },
+                    button { r#type: "button", "aria-pressed": visible[index], class: if visible[index] { "" } else { "is-hidden" }, onclick: { let name = item.name.clone(); move |_| { let mut values = hidden.write(); if let Some(position) = values.iter().position(|value| value == &name) { values.remove(position); } else { values.push(name.clone()); } active.set(None); } },
                         span { class: "ix-chart-swatch", style: format!("background:{}", if item.color.is_empty() { chart_color(index) } else { item.color.clone() }) }
                         "{item.name}"
                     }
@@ -1137,6 +1140,8 @@ fn finite_extrema(values: &[f64]) -> Option<(usize, usize)> {
 /// A positive slice in a pie or doughnut chart.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChartSlice {
+    /// Legend identity and visible label. Equal names share visibility; choices
+    /// follow reordered/replaced data until this chart owner unmounts.
     pub name: String,
     pub value: f64,
 }
@@ -1149,7 +1154,7 @@ pub fn PieChart(
     #[props(default = "Chart".into())] label: String,
 ) -> Element {
     let id = use_hook(|| NEXT_CHART_ID.fetch_add(1, Ordering::Relaxed));
-    let mut hidden = use_signal(Vec::<usize>::new);
+    let mut hidden = use_signal(Vec::<String>::new);
     let mut active = use_signal(|| None::<usize>);
     let mut keyboard_point = use_signal(|| None::<usize>);
     let mut canvas_focused = use_signal(|| false);
@@ -1158,8 +1163,8 @@ pub fn PieChart(
     let valid_points: Vec<(usize, usize)> = slices
         .iter()
         .enumerate()
-        .filter(|(index, slice)| {
-            !hidden.read().contains(index) && slice.value.is_finite() && slice.value > 0.0
+        .filter(|(_, slice)| {
+            !hidden.read().contains(&slice.name) && slice.value.is_finite() && slice.value > 0.0
         })
         .map(|(index, _)| (0, index))
         .collect();
@@ -1168,18 +1173,17 @@ pub fn PieChart(
         .or_else(|| valid_points.first().map(|point| point.1));
     let total: f64 = slices
         .iter()
-        .enumerate()
-        .filter(|(i, slice)| {
-            !hidden.read().contains(i) && slice.value.is_finite() && slice.value > 0.0
+        .filter(|slice| {
+            !hidden.read().contains(&slice.name) && slice.value.is_finite() && slice.value > 0.0
         })
-        .map(|(_, slice)| slice.value)
+        .map(|slice| slice.value)
         .sum();
     let chart_width = width();
     let radius = (chart_width * 0.36).min(if donut { 240.0 } else { 224.0 });
     let center = (chart_width / 2.0, 290.0);
     let mut start = 0.0;
     let segments: Vec<Element> = slices.iter().enumerate().filter_map(|(index, slice)| {
-        if hidden.read().contains(&index) || slice.value <= 0.0 || !slice.value.is_finite() || total <= 0.0 { return None; }
+        if hidden.read().contains(&slice.name) || slice.value <= 0.0 || !slice.value.is_finite() || total <= 0.0 { return None; }
         let end = start + slice.value / total * std::f64::consts::TAU;
         let middle = (start + end) / 2.0;
         let outer = if active() == Some(index) { radius + 5.0 } else { radius };
@@ -1218,7 +1222,7 @@ pub fn PieChart(
             }
             svg { width: "100%", height: "580", view_box: "0 0 {chart_width} 580", role: "group", "aria-label": label.clone(), {segments.into_iter()} }
         }
-        div { class: "ix-chart-legend", "aria-label": "Chart series", for (index, slice) in slices.iter().enumerate() { button { r#type: "button", "aria-pressed": !hidden.read().contains(&index), class: if hidden.read().contains(&index) { "is-hidden" } else { "" }, onclick: move |_| { let mut values = hidden.write(); if let Some(position) = values.iter().position(|value| *value == index) { values.remove(position); } else { values.push(index); } active.set(None); }, span { class: "ix-chart-swatch", style: "background:{chart_color(index)}" } "{slice.name}" } } }
+        div { class: "ix-chart-legend", "aria-label": "Chart series", for (index, slice) in slices.iter().enumerate() { button { r#type: "button", "aria-pressed": !hidden.read().contains(&slice.name), class: if hidden.read().contains(&slice.name) { "is-hidden" } else { "" }, onclick: { let name = slice.name.clone(); move |_| { let mut values = hidden.write(); if let Some(position) = values.iter().position(|value| value == &name) { values.remove(position); } else { values.push(name.clone()); } active.set(None); } }, span { class: "ix-chart-swatch", style: "background:{chart_color(index)}" } "{slice.name}" } } }
         details { class: "ix-chart-data",
             summary { "View chart data" }
             table { caption { "{label}" }
@@ -1460,3 +1464,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod legend_tests;
