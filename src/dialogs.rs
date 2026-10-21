@@ -358,10 +358,7 @@ impl ModalHandle {
             all(feature = "desktop", not(target_arch = "wasm32"))
         ))]
         {
-            let id = crate::dom_query::eval("return document.activeElement?.id||'';")
-                .join::<String>()
-                .await
-                .ok();
+            let id = crate::focus_containment::active_id().await.ok();
             self.surface.remember_invoker(
                 id.as_deref()
                     .and_then(|id| self.focus_runtime.peek().capture_registered_focus(id)),

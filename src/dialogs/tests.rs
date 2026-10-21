@@ -509,6 +509,7 @@ fn a_delayed_native_open_reply_cannot_restore_a_closed_generation_or_its_focus_t
     struct DelayedNativeReply {
         reply: Rc<RefCell<Option<serde_json::Value>>>,
         acknowledgements: Rc<std::cell::Cell<usize>>,
+        active_focus: bool,
     }
     impl Evaluator for DelayedNativeReply {
         fn poll_join(&mut self, _: &mut Context<'_>) -> Poll<Result<serde_json::Value, EvalError>> {
@@ -529,10 +530,14 @@ fn a_delayed_native_open_reply_cannot_restore_a_closed_generation_or_its_focus_t
                 self.acknowledgements.set(self.acknowledgements.get() + 1);
             } else {
                 assert_eq!(message["kind"], "data");
-                assert_eq!(
-                    message["value"][2],
-                    serde_json::json!(["data-surface-generation", "0"])
-                );
+                if self.active_focus {
+                    assert_eq!(message["value"], serde_json::json!([null, null]));
+                } else {
+                    assert_eq!(
+                        message["value"][2],
+                        serde_json::json!(["data-surface-generation", "0"])
+                    );
+                }
             }
             Ok(())
         }
@@ -544,16 +549,18 @@ fn a_delayed_native_open_reply_cannot_restore_a_closed_generation_or_its_focus_t
     }
     impl Document for DelayedDocument {
         fn eval(&self, script: String) -> Eval {
-            let reply = if script.contains("document.activeElement") {
-                Rc::new(RefCell::new(Some(serde_json::json!(
-                    "retained-focus-target"
-                ))))
+            let active_focus = script.contains("document.activeElement");
+            let reply = if active_focus {
+                Rc::new(RefCell::new(Some(serde_json::json!({
+                    "connected": false, "inside": false, "active_id": "retained-focus-target"
+                }))))
             } else {
                 self.reply.clone()
             };
             Eval::new(self.owner.insert(Box::new(DelayedNativeReply {
                 reply,
                 acknowledgements: self.acknowledgements.clone(),
+                active_focus,
             }) as Box<dyn Evaluator>))
         }
     }

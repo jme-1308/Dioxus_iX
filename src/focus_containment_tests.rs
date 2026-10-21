@@ -92,7 +92,7 @@ fn containment_reads_share_transport_and_send_root_and_optional_marker_as_data()
     dom.in_scope(ScopeId::ROOT, || {
         for (connected, inside, required_attribute) in cases {
             wire.borrow_mut().reply =
-                Some(serde_json::json!({"connected":connected,"inside":inside}));
+                Some(serde_json::json!({"connected":connected,"inside":inside,"active_id":"owned-control"}));
             assert_eq!(
                 ready(read(id, required_attribute)).unwrap(),
                 FocusContainment { connected, inside }
@@ -159,5 +159,56 @@ fn cancelled_pending_containment_read_releases_the_live_channel() {
             serde_json::json!({"kind":"data","value":["category","data-menu-category-root"]}),
             serde_json::json!({"kind":"finish"}),
         ]
+    );
+}
+
+#[test]
+fn active_only_query_uses_nullable_root_and_returns_arbitrary_or_empty_identity() {
+    let (dom, wire) = environment();
+    let unusual_id = "opener\"};throw new Error('injected');//";
+    dom.in_scope(ScopeId::ROOT, || {
+        for id in [unusual_id, ""] {
+            wire.borrow_mut().reply = Some(serde_json::json!({
+                "connected": false, "inside": false, "active_id": id
+            }));
+            assert_eq!(ready(active_id()).unwrap(), id);
+        }
+    });
+    let wire = wire.borrow();
+    assert_eq!(
+        wire.sent,
+        vec![
+            serde_json::json!({"kind":"data","value":[null,null]}),
+            serde_json::json!({"kind":"finish"}),
+            serde_json::json!({"kind":"data","value":[null,null]}),
+            serde_json::json!({"kind":"finish"}),
+        ]
+    );
+    assert_eq!(wire.scripts.len(), 2);
+    assert_eq!(wire.scripts[0], wire.scripts[1]);
+    assert!(!wire.scripts[0].contains(unusual_id));
+}
+
+#[test]
+fn active_identity_failures_and_retirement_close_the_same_acknowledged_channel() {
+    let (dom, wire) = environment();
+    dom.in_scope(ScopeId::ROOT, || {
+        wire.borrow_mut().native_error = Some("active read failed".into());
+        assert!(matches!(ready(active_id()), Err(EvalError::InvalidJs(error)) if error == "active read failed"));
+        wire.borrow_mut().native_error = None;
+        wire.borrow_mut().reply = Some(serde_json::json!({"connected":false,"inside":false,"active_id":null}));
+        assert!(matches!(ready(active_id()), Err(EvalError::Serialization(_))));
+        wire.borrow_mut().reply = None;
+        let mut future = Box::pin(active_id());
+        assert!(future.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        drop(future);
+    });
+    assert_eq!(
+        wire.borrow()
+            .sent
+            .iter()
+            .filter(|message| message["kind"] == "finish")
+            .count(),
+        3
     );
 }
