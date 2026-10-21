@@ -2,6 +2,9 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
+#[path = "tree_catalog.rs"]
+mod catalog;
+
 fn sample_tree(custom: bool) -> Vec<TreeNode> {
     let mut sample = TreeNode::branch(
         "sample",
@@ -99,7 +102,7 @@ fn editable_model() -> TreeModel<String> {
 }
 
 #[component]
-fn MutableTreeExample() -> Element {
+pub fn MutableTreeExample() -> Element {
     let controller = use_tree_model(editable_model);
     use_hook(move || {
         let mut context = controller.context();
@@ -111,7 +114,46 @@ fn MutableTreeExample() -> Element {
     let mut event = use_signal(|| "Select a device to rename or remove it.".to_string());
     let mut refreshes = use_signal(|| 0usize);
     let mut removals = use_signal(|| 0usize);
-    let mut load_epoch = use_signal(|| 0usize);
+    let mut catalog_text = use_signal(|| catalog::DEFAULT_REMOTE_CATALOG.to_string());
+    let mut catalog_error = use_signal(|| None::<String>);
+    let mut catalog_state = use_signal(|| "idle");
+    let mut catalog_count = use_signal(|| 0_usize);
+    let mut catalog_message =
+        use_signal(|| String::from("Expand Remote devices or load the catalog below."));
+    let load_catalog = use_callback(move |(): ()| {
+        let result = catalog::replace_remote_catalog(
+            &controller.model(),
+            "model-remote",
+            &catalog_text.peek(),
+        );
+        match result {
+            Ok((next, count)) => match controller.replace(next) {
+                Ok(()) => {
+                    catalog_error.set(None);
+                    catalog_state.set("loaded");
+                    catalog_count.set(count);
+                    catalog_message
+                        .set(format!("Loaded {count} remote device(s) from the catalog."));
+                    event.set(
+                        "Remote device catalog applied; surviving item context retained.".into(),
+                    );
+                }
+                Err(error) => {
+                    catalog_error.set(Some(error.to_string()));
+                    catalog_state.set("error");
+                    catalog_message
+                        .set("Catalog was not loaded. Correct the catalog and retry.".into());
+                }
+            },
+            Err(error) => {
+                catalog_error.set(Some(error));
+                catalog_state.set("error");
+                catalog_message
+                    .set("Catalog was not loaded. Correct the catalog and retry.".into());
+            }
+        }
+    });
+    let remote_exists = controller.model().items.contains_key("model-remote");
     let selected = controller
         .context()
         .into_iter()
@@ -152,12 +194,42 @@ fn MutableTreeExample() -> Element {
                         }
                     }, "Rename selected" }
                     Button { variant: ButtonVariant::Tertiary, disabled: selected.is_none() || selected.as_deref() == Some("model-plant"), onclick: move |_| {
-                        if let Some(id) = remove_id.as_deref() { match controller.remove(id) { Ok(()) => { if id == "model-remote" { load_epoch += 1; } event.set(format!("Removed {id}")); }, Err(error) => event.set(error.to_string()) } }
+                        if let Some(id) = remove_id.as_deref() { match controller.remove(id) { Ok(()) => {
+                            if id == "model-remote" {
+                                catalog_error.set(None); catalog_state.set("idle"); catalog_count.set(0);
+                                catalog_message.set("Remote branch removed. Restore inventory before loading its catalog.".into());
+                            }
+                            event.set(format!("Removed {id}"));
+                        }, Err(error) => event.set(error.to_string()) } }
                     }, "Remove selected" }
                     Button { variant: ButtonVariant::Tertiary, onclick: move |_| { controller.refresh(true); event.set("Refreshed current model and renderer context.".into()); }, "Refresh tree" }
                     Button { variant: ButtonVariant::Tertiary, onclick: move |_| {
-                        match controller.replace(editable_model()) { Ok(()) => { load_epoch += 1; sequence.set(3); event.set("Restored inventory; surviving item context retained.".into()); }, Err(error) => event.set(error.to_string()) }
+                        match controller.replace(editable_model()) { Ok(()) => {
+                            sequence.set(3); catalog_error.set(None); catalog_state.set("idle"); catalog_count.set(0);
+                            catalog_message.set("Inventory restored. Your catalog draft is kept for the next load.".into());
+                            event.set("Restored inventory; surviving item context retained.".into());
+                        }, Err(error) => event.set(error.to_string()) }
                     }, "Restore inventory" }
+                }
+            }
+            div { class: "tree-catalog-editor",
+                Textarea { id: "tree-catalog-input", class: "tree-catalog-input", label: "Remote device catalog",
+                    value: catalog_text(), rows: 6, resize: "vertical", width: "100%",
+                    helper_text: "Local JSON entries use id and label; optional children and disabled values describe nested devices. Loading replaces only the Remote devices branch.",
+                    onvaluechange: move |value| catalog_text.set(value),
+                }
+                div { class: "tree-example-actions",
+                    Button { id: "tree-catalog-load", variant: ButtonVariant::Secondary, disabled: !remote_exists,
+                        onclick: move |_| load_catalog.call(()),
+                        if catalog_error().is_some() { "Retry loading" } else { "Load remote devices" }
+                    }
+                }
+                if let Some(error) = catalog_error() {
+                    p { id: "tree-catalog-error", class: "tree-catalog-error", role: "alert", "{error}" }
+                }
+                p { id: "tree-catalog-status", class: "tree-catalog-status", role: "status", "aria-live": "polite",
+                    "data-state": catalog_state(), "data-count": catalog_count(), "data-remote-exists": remote_exists,
+                    "{catalog_message}"
                 }
             }
             div { class: "tree-example-surface",
@@ -166,20 +238,7 @@ fn MutableTreeExample() -> Element {
                     onremove: move |items: Vec<TreeModelItem<String>>| removals += items.len(),
                     onload: move |id: String| {
                         if id != "model-remote" { return; }
-                        let start = controller.update(|model| { model.items.get_mut(&id).ok_or_else(|| TreeModelError::MissingItem(id.clone()))?.loading = true; Ok(()) });
-                        if let Err(error) = start { event.set(error.to_string()); return; }
-                        load_epoch += 1;
-                        let request = load_epoch();
-                        spawn(async move {
-                            futures_timer::Delay::new(std::time::Duration::from_millis(350)).await;
-                            // Removal while a request is pending must not resurrect a branch.
-                            if load_epoch() != request || !controller.model().items.contains_key(&id) { return; }
-                            match controller.update(|model| {
-                                model.append(&id, TreeModelItem::new("model-remote-1", "Remote drive 001".into()))?;
-                                model.append(&id, TreeModelItem::new("model-remote-2", "Remote drive 002".into()))?;
-                                model.items.get_mut(&id).unwrap().loading = false; Ok(())
-                            }) { Ok(()) => event.set("Loaded two remote devices.".into()), Err(error) => event.set(error.to_string()) }
-                        });
+                        load_catalog.call(());
                     },
                     render_item: move |row: TreeRenderContext<String>| rsx! {
                         span { class: "tree-model-item", "data-model-render-index": row.index,
@@ -189,7 +248,9 @@ fn MutableTreeExample() -> Element {
                     },
                 }
             }
-            p { role: "status", class: "tree-model-status", "Selected: {selected_label}. Revision: {revision}. Refresh callbacks: {refreshes}. Removed items: {removals}. {event}" }
+            p { id: "tree-model-status", role: "status", class: "tree-model-status", "data-selected": selected.clone().unwrap_or_else(|| "none".into()),
+                "Selected: {selected_label}. Revision: {revision}. Refresh callbacks: {refreshes}. Removed items: {removals}. {event}"
+            }
         }
     }
 }

@@ -172,6 +172,8 @@ mod tooltip_mounted_review;
 mod transport_lifetime_review;
 #[path = "dioxus_first_probe/tree_actions_review.rs"]
 mod tree_actions_review;
+#[path = "dioxus_first_probe/tree_catalog_review.rs"]
+mod tree_catalog_review;
 #[path = "dioxus_first_probe/trigger_placement_review.rs"]
 mod trigger_placement_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
@@ -432,6 +434,9 @@ fn Preview() -> Element {
     }
     if scope == "?treeactions" {
         return rsx! { tree_actions_review::TreeActionsPreview {} };
+    }
+    if scope == "?treecatalog" {
+        return rsx! { tree_catalog_review::TreeCatalogPreview {} };
     }
     if scope == "?toastlifetime" {
         return rsx! { toast_lifetime_review::ToastLifetimePreview {} };

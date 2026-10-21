@@ -5,7 +5,7 @@ use dioxus_ix::*;
 #[path = "../../examples/gallery/tree.rs"]
 // The gallery module also contains independent examples outside this preview.
 #[allow(dead_code)]
-mod gallery_tree;
+pub(super) mod gallery_tree;
 
 #[component]
 pub fn TreeActionsPreview() -> Element {
