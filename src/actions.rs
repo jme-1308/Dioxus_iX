@@ -883,6 +883,13 @@ pub fn ProgressIndicator(
     let binding = crate::use_tooltip_anchor(tooltip.clone(), format!("{helper_id}-anchor"));
     let tooltip_mode =
         show_text_as_tooltip && helper_text.as_ref().is_some_and(|text| !text.is_empty());
+    let observations = if tooltip_mode {
+        Vec::<Attribute>::new()
+            .onresize(binding.onresize)
+            .onvisible(binding.onvisible)
+    } else {
+        Vec::new()
+    };
     let composed = helper_content.is_some();
     let description = (tooltip_mode || composed).then(|| helper_id.clone());
     let mount_tooltip = binding.onmounted;
@@ -910,9 +917,9 @@ pub fn ProgressIndicator(
         id, tabindex, "aria-describedby": description,
         style: "text-align:{text_alignment.as_str()};--ix-progress-size:{size.pixels()}px",
         onmounted: move |event: MountedEvent| { mount_tooltip.call(event.clone()); if let Some(handler) = onmounted { handler.call(event); } },
-        onresize: binding.onresize, onvisible: binding.onvisible,
         onmouseenter: binding.onmouseenter, onmouseleave: binding.onmouseleave,
         onfocusin: binding.onfocusin, onfocusout: binding.onfocusout, onkeydown: binding.onkeydown,
+        ..observations,
         if let Some(label) = label { div { class: "ix-progress-label", "{label}" } }
         div { class: "ix-progress-content",
             if progress_type == ProgressType::Linear {

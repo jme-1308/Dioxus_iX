@@ -296,21 +296,21 @@ macro_rules! progress_converter {
 }
 dioxus::html::with_html_event_groups!(progress_converter);
 fn progress_targets(
-    edits: Vec<dioxus::core::Mutation>,
+    edits: &[dioxus::core::Mutation],
     targets: &mut BTreeMap<String, dioxus::core::ElementId>,
 ) {
     let mut current = dioxus::core::ElementId::ROOT;
     for edit in edits {
         match edit {
             dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
-                current = id
+                current = *id
             }
             dioxus::core::Mutation::SetAttribute {
                 name,
                 value: dioxus::core::AttributeValue::Text(value),
                 ..
             } if name == "id" => {
-                targets.insert(value, current);
+                targets.insert(value.clone(), current);
             }
             _ => {}
         }
@@ -332,13 +332,13 @@ fn progress_setup(
     *data.text.borrow_mut() = Some("Review connection".into());
     let mut dom = VirtualDom::new_with_props(progress_fixture, data.clone());
     let mut ids = BTreeMap::new();
-    progress_targets(dom.rebuild_to_vec().edits, &mut ids);
+    progress_targets(&dom.rebuild_to_vec().edits, &mut ids);
     (dom, data, ids)
 }
 fn progress_refresh(dom: &mut VirtualDom, ids: &mut BTreeMap<String, dioxus::core::ElementId>) {
     dom.mark_dirty(ScopeId::APP);
     for _ in 0..6 {
-        progress_targets(dom.render_immediate_to_vec().edits, ids);
+        progress_targets(&dom.render_immediate_to_vec().edits, ids);
         dom.process_events();
     }
 }
@@ -504,4 +504,116 @@ fn progress_shared_tooltip_modes_messages_and_cleanup_keep_one_description_targe
     data.visible.set(false);
     progress_refresh(&mut dom, &mut ids);
     assert!(!dioxus_ssr::render(&dom).contains("progress-owner"));
+}
+
+#[test]
+fn progress_observes_geometry_only_while_its_shared_tooltip_exists() {
+    use dioxus::core::{ElementId, Mutation};
+    use std::collections::BTreeSet;
+
+    // Observe only explicitly registered/selected root mutations. Template or
+    // child stack operations must not attribute their listeners to this root.
+    fn observation_changes(edits: &[Mutation], root: ElementId) -> BTreeSet<(String, bool)> {
+        let mut current = None;
+        let mut changes = BTreeSet::new();
+        for edit in edits {
+            match edit {
+                Mutation::SetId { id } | Mutation::PushId { id } => current = Some(*id),
+                Mutation::NewEventListener { name } | Mutation::RemoveEventListener { name }
+                    if current == Some(root) && matches!(name.as_str(), "resize" | "visible") =>
+                {
+                    changes.insert((
+                        name.clone(),
+                        matches!(edit, Mutation::NewEventListener { .. }),
+                    ));
+                }
+                Mutation::SetAttribute { .. }
+                | Mutation::SetText { .. }
+                | Mutation::NewEventListener { .. }
+                | Mutation::RemoveEventListener { .. } => {}
+                _ => current = None,
+            }
+        }
+        changes
+    }
+    fn refresh(
+        dom: &mut VirtualDom,
+        ids: &mut BTreeMap<String, ElementId>,
+        root: ElementId,
+    ) -> BTreeSet<(String, bool)> {
+        dom.mark_dirty(ScopeId::APP);
+        let mut changes = BTreeSet::new();
+        for _ in 0..6 {
+            let mutations = dom.render_immediate_to_vec();
+            changes.extend(observation_changes(&mutations.edits, root));
+            progress_targets(&mutations.edits, ids);
+            dom.process_events();
+        }
+        assert_eq!(
+            ids["progress-owner"], root,
+            "mode changes retain the actual root"
+        );
+        changes
+    }
+    let expected = |enabled| {
+        BTreeSet::from([
+            (String::from("resize"), enabled),
+            (String::from("visible"), enabled),
+        ])
+    };
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(ProgressConverter));
+    let data = Rc::new(ProgressFixture::default());
+    data.visible.set(true);
+    let mut dom = VirtualDom::new_with_props(progress_fixture, data.clone());
+    let initial = dom.rebuild_to_vec();
+    let mut ids = BTreeMap::new();
+    // Existing target registration is shared with the interactive regressions.
+    progress_targets(&initial.edits, &mut ids);
+    let root = ids["progress-owner"];
+    assert!(observation_changes(&initial.edits, root).is_empty());
+    progress_event(&dom, "mounted", root, ProgressMount(data.focuses.clone()));
+    let mounted = data.mounted.borrow().clone().unwrap();
+    assert!(refresh(&mut dom, &mut ids, root).is_empty());
+
+    *data.text.borrow_mut() = Some("Inline transfer help".into());
+    assert!(refresh(&mut dom, &mut ids, root).is_empty());
+    assert!(!dioxus_ssr::render(&dom).contains("role=\"tooltip\""));
+
+    data.tooltip.set(true);
+    assert_eq!(refresh(&mut dom, &mut ids, root), expected(true));
+    let html = dioxus_ssr::render(&dom);
+    let helper = progress_attribute(progress_id_tag(&html, "progress-owner"), "aria-describedby")
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        progress_attribute(progress_id_tag(&html, &helper), "role"),
+        Some("tooltip")
+    );
+
+    data.tooltip.set(false);
+    assert_eq!(refresh(&mut dom, &mut ids, root), expected(false));
+    assert!(dioxus_ssr::render(&dom).contains("Inline transfer help"));
+    data.tooltip.set(true);
+    *data.text.borrow_mut() = Some(String::new());
+    assert!(refresh(&mut dom, &mut ids, root).is_empty());
+    assert!(!dioxus_ssr::render(&dom).contains("role=\"tooltip\""));
+
+    *data.text.borrow_mut() = Some("Current transfer help".into());
+    assert_eq!(refresh(&mut dom, &mut ids, root), expected(true));
+    let html = dioxus_ssr::render(&dom);
+    assert_eq!(
+        progress_attribute(progress_id_tag(&html, "progress-owner"), "aria-describedby"),
+        Some(helper.as_str())
+    );
+    assert_eq!(
+        progress_attribute(progress_id_tag(&html, &helper), "role"),
+        Some("tooltip")
+    );
+    assert!(html.contains("Current transfer help"));
+    assert_eq!(data.root_mounts.get(), 1);
+    assert!(Rc::ptr_eq(
+        &mounted,
+        data.mounted.borrow().as_ref().unwrap()
+    ));
 }
