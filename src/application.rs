@@ -1969,10 +1969,39 @@ fn ApplicationSwitchOpener(
     }
 }
 
+/// Built-in navigation control labels. Clone the same value into `Menu.labels`
+/// and `ApplicationHeader.menu_labels` to keep their expansion controls aligned.
+/// Menu/overlay headings and navigation hints retain their separate props.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuLabels {
+    pub expand: String,
+    pub collapse: String,
+    pub settings: String,
+    pub about: String,
+    pub toggle_theme: String,
+    pub collapse_navigation: String,
+}
+impl Default for MenuLabels {
+    fn default() -> Self {
+        Self {
+            expand: "Expand".into(),
+            collapse: "Collapse".into(),
+            settings: "Settings".into(),
+            about: "About & legal information".into(),
+            toggle_theme: "Toggle theme".into(),
+            collapse_navigation: "Collapse navigation".into(),
+        }
+    }
+}
+
 // These controls own their registration scope because responsive/optional
 // controls can disappear while ApplicationHeader itself remains mounted.
 #[component]
-fn HeaderMenuToggle(expanded: Signal<bool>, onmenutoggle: EventHandler<bool>) -> Element {
+fn HeaderMenuToggle(
+    expanded: Signal<bool>,
+    labels: MenuLabels,
+    onmenutoggle: EventHandler<bool>,
+) -> Element {
     let mut expanded = expanded;
     let context = try_consume_context::<ApplicationContext>();
     let id = use_hook(|| {
@@ -1986,7 +2015,7 @@ fn HeaderMenuToggle(expanded: Signal<bool>, onmenutoggle: EventHandler<bool>) ->
     let cleanup_alive = alive.clone();
     use_drop(move || cleanup_alive.set(false));
     rsx! {
-        button { id, onmounted:mounted, class: "ix-app-icon-button ix-header-menu-toggle", r#type: "button", "data-header-menu-toggle":expanded().to_string(), "aria-label": if expanded() { "Collapse" } else { "Expand" },
+        button { id, onmounted:mounted, class: "ix-app-icon-button ix-header-menu-toggle", r#type: "button", "data-header-menu-toggle":expanded().to_string(), "aria-label": if expanded() { labels.collapse.clone() } else { labels.expand.clone() },
             "aria-expanded": expanded().to_string(), onclick: move |_| {
                 let previous = *expanded.peek();
                 if let Some(context) = context {
@@ -2099,6 +2128,9 @@ pub fn ApplicationHeader(
     #[props(default)]
     show_menu: ReadSignal<bool>,
     #[props(default)] show_app_switch: bool,
+    /// Shared expansion control names; clone this value into `Menu.labels`.
+    #[props(default)]
+    menu_labels: MenuLabels,
     #[props(default)] onmenutoggle: EventHandler<bool>,
     #[props(default)] onopenappswitch: EventHandler<MouseEvent>,
 ) -> Element {
@@ -2136,7 +2168,7 @@ pub fn ApplicationHeader(
                     } else if let Some(icon)=app_icon {span {class:"ix-application-app-icon",crate::Icon{name:icon,size:32}}}
                 }
                 if effective_show_menu() || (small && context.is_some()) {
-                    HeaderMenuToggle {expanded,onmenutoggle}
+                    HeaderMenuToggle {expanded,labels:menu_labels,onmenutoggle}
                 }
                 if let Some(context) = context.filter(|context| !small && (context.has_app_switch)()) {
                     ApplicationSwitchOpener {modal:context.app_switch,authority:context.app_switch_config,
@@ -2187,6 +2219,9 @@ pub fn Menu(
     #[props(default = "Use Up and Down arrow keys to navigate between menu items".to_string())]
     navigation_hint: String,
     #[props(default)] enable_toggle_theme: bool,
+    /// Built-in controls; independent of the menu name/hint and overlay headings.
+    #[props(default)]
+    labels: MenuLabels,
     #[props(default)] onexpandchange: EventHandler<bool>,
     /// Veto Header/own expansion controls before changing shared state.
     #[props(default)]
@@ -2299,13 +2334,18 @@ pub fn Menu(
             previous_expanded.set(next);
         }
     });
+    let expansion_label = if expanded() {
+        labels.collapse.clone()
+    } else {
+        labels.expand.clone()
+    };
     rsx! {
         nav { id: menu_id.clone(), class: "ix-menu", "aria-label": application_name.clone(), "data-menu-root":"", "data-expanded": expanded().to_string(),
             if let Some(name) = application_name.clone() { div { class: "ix-menu-app-name", "{name}" } }
-            button { class: "ix-menu-toggle ix-menu-item", r#type: "button", "data-menu-expansion-control":menu_id.clone(), "aria-label": if expanded() { "Collapse" } else { "Expand" }, "aria-expanded": expanded().to_string(),
+            button { class: "ix-menu-toggle ix-menu-item", r#type: "button", "data-menu-expansion-control":menu_id.clone(), "aria-label": expansion_label.clone(), "aria-expanded": expanded().to_string(),
                 onclick: move |_| request_expansion.call(None),
                 span { class: "ix-menu-item-icon", crate::Icon { name: (if expanded() { "double-chevron-left" } else { "double-chevron-right" }).to_string(), size: 24 } }
-                span { class: "ix-menu-label", if expanded() { "Collapse" } else { "Expand" } }
+                span { class: "ix-menu-label", "{expansion_label}" }
             }
             div {class:"ix-menu-navigation",role:"menubar","aria-orientation":"vertical","aria-label":label,"aria-description":navigation_hint,tabindex:"0",
                 onfocus:move |_|focus_roving.bar_focus(true),
@@ -2316,15 +2356,15 @@ pub fn Menu(
                     div {"data-menu-light":"bottom", MenuSectionContent {section:MenuSection::Bottom,{bottom}}}
                     div {"data-menu-utilities":"",MenuSectionContent {section:MenuSection::Utility,
                 if settings.is_some() {
-                    MenuItem { id: settings_invoker, label: "Settings", icon: "cogwheel", close_on_select: false, active: overlay() == Some(MenuOverlayKind::Settings), onclick: move |_| {
+                    MenuItem { id: settings_invoker, label: labels.settings, icon: "cogwheel", close_on_select: false, active: overlay() == Some(MenuOverlayKind::Settings), onclick: move |_| {
                         if let Some(next) = request_menu_overlay(overlay(), MenuOverlayKind::Settings, onbeforeopensettings) {
                             if next.is_some() { overlay_context.remember(settings_focus_runtime.capture_registered_focus(&settings_focus_id)); }
                             overlay.set(next); onopensettings.call(());
                         }
                     } }
                 }
-                if enable_toggle_theme { MenuItem { label: "Toggle theme", icon: "light-dark", close_on_select: false, onclick: move |_| ontoggletheme.call(()) } }
-                if about.is_some() { MenuItem { id: about_invoker, label: "About & legal information", icon: "info", close_on_select: false, active: overlay() == Some(MenuOverlayKind::About), onclick: move |_| {
+                if enable_toggle_theme { MenuItem { label: labels.toggle_theme, icon: "light-dark", close_on_select: false, onclick: move |_| ontoggletheme.call(()) } }
+                if about.is_some() { MenuItem { id: about_invoker, label: labels.about, icon: "info", close_on_select: false, active: overlay() == Some(MenuOverlayKind::About), onclick: move |_| {
                     if let Some(next) = request_menu_overlay(overlay(), MenuOverlayKind::About, onbeforeopenabout) {
                         if next.is_some() { overlay_context.remember(about_focus_runtime.capture_registered_focus(&about_focus_id)); }
                         overlay.set(next); onopenabout.call(());
@@ -2335,7 +2375,7 @@ pub fn Menu(
                 }
             }
         }
-        if expanded() && !pinned { button { class: "ix-menu-scrim", r#type: "button", tabindex: "-1", "aria-label": "Collapse navigation", onclick: move |_| { expanded.set(false); } } }
+        if expanded() && !pinned { button { class: "ix-menu-scrim", r#type: "button", tabindex: "-1", "aria-label": labels.collapse_navigation, onclick: move |_| { expanded.set(false); } } }
         if overlay() == Some(MenuOverlayKind::Settings) { div { class: "ix-menu-overlay", "data-menu-owner": owner_id, {settings} } }
         if overlay() == Some(MenuOverlayKind::About) { div { class: "ix-menu-overlay", "data-menu-owner": about_owner_id, {about} } }
     }

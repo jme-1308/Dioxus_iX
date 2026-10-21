@@ -158,6 +158,8 @@ mod maintenance_notices_review;
 mod maintenance_schedule_review;
 #[path = "dioxus_first_probe/menu_focus_review.rs"]
 mod menu_focus_review;
+#[path = "dioxus_first_probe/menu_labels_review.rs"]
+mod menu_labels_review;
 #[path = "dioxus_first_probe/menu_order_review.rs"]
 mod menu_order_review;
 #[path = "dioxus_first_probe/modal_focus_review.rs"]
@@ -564,6 +566,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatmessages" {
         return rsx! { chat_messages_review::ChatMessagesPreview {} };
+    }
+    if scope == "?menulabels" {
+        return rsx! { menu_labels_review::MenuLabelsPreview {} };
     }
     if scope == "?applicationfocus" {
         return rsx! { application_focus_review::ApplicationFocusPreview {} };

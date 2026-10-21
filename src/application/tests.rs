@@ -1,3 +1,6 @@
+mod menu_labels_tests {
+    include!("menu_labels_tests.rs");
+}
 mod menu_overlay_focus_tests {
     include!("menu_overlay_focus_tests.rs");
 }
