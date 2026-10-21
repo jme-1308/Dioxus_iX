@@ -2386,7 +2386,14 @@ fn MenuSectionContent(children: Element, section: MenuSection) -> Element {
 /// no DOM order or wrapper/style discovery is performed.
 #[component]
 pub fn MenuItem(
+    /// Required semantic name used by `aria-label` and the default tooltip.
     label: String,
+    /// Optional visible label content owned and rendered by Dioxus. Use only
+    /// noninteractive content; buttons, links and inputs belong outside the
+    /// native menu item. This replaces visible text without changing `label`'s
+    /// semantic name. Omit it to display `label` unchanged.
+    #[props(default)]
+    children: Option<Element>,
     #[props(default)] icon: Option<String>,
     #[props(default)] active: bool,
     #[props(default)] disabled: bool,
@@ -2482,7 +2489,7 @@ pub fn MenuItem(
     let title = tooltip_text.unwrap_or(label.clone());
     let content = rsx! {
         span { class: "ix-menu-item-icon", if let Some(icon) = icon { crate::Icon { name: icon, size: 24 } } }
-        span { class: "ix-menu-label", "{label}" }
+        span { class: "ix-menu-label", if let Some(children) = children { {children} } else { "{label}" } }
         if let Some(count) = notifications.filter(|count| *count > 0) { span { class: "ix-menu-notifications", "aria-label": format!("{count} notifications"), "{count.min(99)}" } }
     };
     let class = if active {
@@ -3268,6 +3275,10 @@ pub(crate) const STYLES: &str = include_str!("styles/application.css");
 #[cfg(test)]
 #[path = "application/col_width_tests.rs"]
 mod col_width_tests;
+
+#[cfg(test)]
+#[path = "application/menu_label_content_tests.rs"]
+mod menu_label_content_tests;
 
 #[cfg(test)]
 mod tests;

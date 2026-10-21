@@ -86,10 +86,14 @@ pub fn ApplicationExamples() -> Element {
                                     p { "Component library version: 0.1.0. Dioxus: 0.8.0-alpha.2." }
                                     p { "This example does not include vendor logos or claim vendor affiliation." }
                                 } },
-                                MenuItem { label: "Home", icon: "home", home: true, active: content() == "home", onclick: move |_| content.set("home".into()) }
+                                MenuItem { label: "Home", icon: "home", home: true, active: content() == "home", onclick: move |_| content.set("home".into()),
+                                    strong { id: "application-home-label", "Home" }
+                                }
                                 MenuItem { label: "Alarm", icon: "alarm-bell", notifications: 3, active: content() == "alarm", onclick: move |_| content.set("alarm".into()) }
                                 MenuCategory { label: "Analysis", icon: "piechart", active: content() == "plant" || content() == "network",
-                                    MenuItem { label: "Plant", icon: "plant", active: content() == "plant", onclick: move |_| content.set("plant".into()) }
+                                    MenuItem { label: "Plant", icon: "plant", active: content() == "plant", onclick: move |_| content.set("plant".into()),
+                                        span { id: "application-plant-label", span { "Plant" } small { " · Operations" } }
+                                    }
                                     MenuItem { label: "Network", icon: "network-device", active: content() == "network", onclick: move |_| content.set("network".into()) }
                                 }
                                 MenuItem { label: "Disabled item", icon: "lock", disabled: true }
