@@ -78,6 +78,11 @@ macro_rules! slider_value_converter {
     (@data Focus, $convert:ident, $event:ident) => { dioxus::html::FocusData::new(SliderValueFocus) };
     (@data Mounted, $convert:ident, $event:ident) => { MountedData::new(SliderValueMount) };
     (@data Pointer, $convert:ident, $event:ident) => { dioxus::html::PointerData::new(GroupFeedbackMouse) };
+    (@data Visible, $convert:ident, $event:ident) => {
+        dioxus::html::VisibleData::new(crate::test_native_surface::Visibility(
+            *$event.downcast::<bool>().expect("native visibility fact"),
+        ))
+    };
     (@data $other:ident, $convert:ident, $event:ident) => {
         <PaneFormsConverter as dioxus::html::HtmlEventConverter>::$convert(&PaneFormsConverter, $event)
     };
@@ -122,12 +127,15 @@ struct SliderValueHarness {
     settings: Rc<SliderValueSettings>,
     range: dioxus::core::ElementId,
     id: String,
+    native: crate::test_native_surface::NativeSurfaceFixture,
 }
 impl SliderValueHarness {
     fn new(feedback: bool) -> Self {
         let settings = Rc::new(SliderValueSettings::default());
         settings.feedback.set(feedback);
-        let mut dom = VirtualDom::new_with_props(slider_value_fixture, settings.clone());
+        let native = crate::test_native_surface::NativeSurfaceFixture::default();
+        let mut dom = VirtualDom::new_with_props(slider_value_fixture, settings.clone())
+            .with_root_context(native.document());
         let changes = dom.rebuild_to_vec();
         let html = dioxus_ssr::render(&dom);
         let id = feedback_attribute(slider_value_range(&html), "id")
@@ -148,18 +156,23 @@ impl SliderValueHarness {
                 _ => {}
             }
         }
-        mount_pane_forms(&mut dom, changes);
-        feedback_refresh(&mut dom);
+        slider_value_mount_and_settle(&mut dom, changes);
         Self {
             dom,
             settings,
             range: range.expect("native range event target"),
             id,
+            native,
         }
+    }
+    fn refresh(&mut self) {
+        self.dom.mark_dirty(ScopeId::APP);
+        let changes = self.dom.render_immediate_to_vec();
+        slider_value_mount_and_settle(&mut self.dom, changes);
     }
     fn event(&mut self, event: &str, payload: impl std::any::Any) -> bool {
         let allowed = feedback_event(&self.dom, event, self.range, payload);
-        feedback_refresh(&mut self.dom);
+        self.refresh();
         allowed
     }
     fn html(&self) -> String {
@@ -172,6 +185,84 @@ impl SliderValueHarness {
         feedback_attribute(feedback_tag(&self.html(), &self.panel_id()), "data-open")
             == Some("true")
     }
+    fn assert_presented(&self) {
+        let html = self.html();
+        let panel_id = self.panel_id();
+        let panel = feedback_tag(&html, &panel_id);
+        assert_eq!(feedback_attribute(panel, "data-positioned"), Some("true"));
+        assert_eq!(
+            feedback_attribute(panel, "data-anchor"),
+            Some(format!("{}-thumb", self.id).as_str()),
+            "the actual native range uses its mounted thumb proxy",
+        );
+        #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+        {
+            let marker = feedback_attribute(panel, "data-ix-tooltip-native").unwrap();
+            assert!(self.native.requests().iter().any(|request| {
+                request[0] == panel_id
+                    && request[1] == true
+                    && request[2][0] == "data-ix-tooltip-native"
+                    && request[2][1] == marker
+                    && request[3].is_null()
+                    && request[4] == "popover"
+            }), "the current owned value panel receives its guarded native presentation");
+        }
+        self.assert_native_receipts();
+    }
+    fn assert_native_receipts(&self) {
+        let requests = self.native.requests();
+        assert_eq!(
+            self.native.acknowledgements(),
+            requests.len(),
+            "every validated native presentation receives its completion receipt",
+        );
+        let panel_id = self.panel_id();
+        let feedback_id = format!("{}-feedback", self.id);
+        for request in &requests {
+            assert!(request[0] == panel_id || request[0] == feedback_id);
+            assert_eq!(request[2][0], "data-ix-tooltip-native");
+            assert!(request[2][1].as_str().is_some_and(|marker| !marker.is_empty()));
+            assert!(request[3].is_null(), "help must not supply a focus-stealing invoker");
+            assert_eq!(request[4], "popover");
+        }
+    }
+}
+
+fn slider_value_mount_and_settle(dom: &mut VirtualDom, mut changes: dioxus::core::Mutations) {
+    for _ in 0..8 {
+        let mut current = dioxus::core::ElementId::ROOT;
+        let mut mounted = Vec::new();
+        let mut visible = Vec::new();
+        for edit in changes.edits {
+            match edit {
+                dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
+                    current = id;
+                }
+                dioxus::core::Mutation::NewEventListener { name } if name == "mounted" => {
+                    mounted.push(current);
+                }
+                dioxus::core::Mutation::NewEventListener { name } if name == "visible" => {
+                    visible.push(current);
+                }
+                _ => {}
+            }
+        }
+        for target in mounted {
+            let data: Rc<dyn std::any::Any> =
+                Rc::new(dioxus::html::PlatformEventData::new(Box::new(())));
+            dom.runtime().handle_event("mounted", Event::new(data, false), target);
+        }
+        // These are the actual VDOM listeners on the thumb proxy, feedback
+        // container and panel. Native range interaction remains on the input.
+        // Root/intersection facts are renderer inputs, not controller mutation.
+        for target in visible {
+            let data: Rc<dyn std::any::Any> =
+                Rc::new(dioxus::html::PlatformEventData::new(Box::new(true)));
+            dom.runtime().handle_event("visible", Event::new(data, false), target);
+        }
+        dom.process_events();
+        changes = dom.render_immediate_to_vec();
+    }
 }
 fn slider_value_range(html: &str) -> &str {
     html.split('<')
@@ -183,7 +274,7 @@ fn slider_value_body<'a>(html: &'a str, id: &str) -> &'a str {
     html.split_once(&format!("id=\"{id}\""))
         .unwrap()
         .1
-        .split("ix-tooltip-arrow")
+        .split("class=\"ix-tooltip-arrow\"")
         .next()
         .unwrap()
 }
@@ -217,6 +308,7 @@ fn slider_shared_value_panel_tracks_controlled_native_input_and_dismisses_withou
         h.panel_open(),
         "native keyboard focus opens the registered value panel"
     );
+    h.assert_presented();
     assert!(
         h.event("keydown", Key::ArrowRight),
         "native range defaults remain available"
@@ -247,6 +339,7 @@ fn slider_shared_value_panel_tracks_controlled_native_input_and_dismisses_withou
     assert!(h.panel_open(), "later focus can open again after Escape");
     h.event("blur", ());
     assert!(!h.panel_open());
+    h.assert_native_receipts();
 }
 
 #[test]
@@ -259,9 +352,10 @@ fn slider_value_panel_guards_prop_changes_and_owner_removal() {
         h.panel_open(),
         "native pointer entry activates the thumb's value panel"
     );
+    h.assert_presented();
     let panel_id = h.panel_id();
     h.settings.show_tooltip.set(false);
-    feedback_refresh(&mut h.dom);
+    h.refresh();
     let hidden = h.html();
     assert!(!hidden.contains(&format!("id=\"{panel_id}\"")));
     assert!(
@@ -271,11 +365,11 @@ fn slider_value_panel_guards_prop_changes_and_owner_removal() {
     h.event("focus", ());
     assert!(!h.html().contains(&format!("id=\"{panel_id}\"")));
     h.settings.show_tooltip.set(true);
-    feedback_refresh(&mut h.dom);
+    h.refresh();
     h.event("pointerenter", ());
     assert!(h.panel_open());
     h.settings.disabled.set(true);
-    feedback_refresh(&mut h.dom);
+    h.refresh();
     assert!(!h.html().contains(&format!("id=\"{panel_id}\"")));
     h.event("input", String::from("80"));
     h.event("focus", ());
@@ -284,15 +378,16 @@ fn slider_value_panel_guards_prop_changes_and_owner_removal() {
     assert!(h.settings.requests.borrow().is_empty());
     assert!(!h.html().contains(&format!("id=\"{panel_id}\"")));
     h.settings.disabled.set(false);
-    feedback_refresh(&mut h.dom);
+    h.refresh();
     h.event("blur", ());
     h.event("focus", ());
     assert!(h.panel_open());
     h.settings.visible.set(false);
-    feedback_refresh(&mut h.dom);
+    h.refresh();
     let removed = h.html();
     assert!(!removed.contains("role=\"tooltip\""));
     assert!(!removed.contains("type=\"range\""));
+    h.assert_native_receipts();
 }
 
 #[test]
@@ -318,11 +413,12 @@ fn slider_value_tooltip_and_validation_feedback_have_independent_lifetimes_and_d
     assert!(html.contains("Maintain safe flow"));
     h.event("focus", ());
     assert!(h.panel_open());
+    h.assert_presented();
     h.event("keydown", Key::Escape);
     assert!(!h.panel_open());
     assert!(h.html().contains(&format!("id=\"{feedback_id}\"")));
     h.settings.show_tooltip.set(false);
-    feedback_refresh(&mut h.dom);
+    h.refresh();
     let feedback_only = h.html();
     assert_eq!(feedback_only.matches("role=\"tooltip\"").count(), 1);
     assert_eq!(
@@ -330,4 +426,5 @@ fn slider_value_tooltip_and_validation_feedback_have_independent_lifetimes_and_d
         Some(feedback_id.as_str())
     );
     assert!(feedback_only.contains("Maintain safe flow"));
+    h.assert_native_receipts();
 }

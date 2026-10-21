@@ -529,14 +529,30 @@ fn popover_pointer_close_reopen_and_retired_owner_reject_pending_opening_observa
 
 #[test]
 fn popover_close_returns_registered_trigger_and_hover_focus_does_not_reopen() {
+    fn settle_focus(dom: &mut VirtualDom) {
+        // This close-return fixture crosses native presentation. Drive normal
+        // Dioxus tasks and post-render effects as well as rendering updates.
+        for _ in 0..8 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+        }
+    }
+    let native = crate::test_native_surface::NativeSurfaceFixture::default();
     let fixture = FocusFixture::default();
-    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone());
+    let mut dom = VirtualDom::new_with_props(focus_fixture, fixture.clone())
+        .with_root_context(native.document());
     dom.rebuild_in_place();
     let calls = Rc::new(RefCell::new(Vec::new()));
     mount_focus(&fixture, "body", &calls);
     mounted_trigger(&dom, &fixture, "second-trigger", &calls);
     let (mut popover, generation) = present_focus(&dom, &fixture);
     dom.in_scope(ScopeId::ROOT, || {
+        // The controller-only fixture owns no rendered surface. Supply its
+        // mounted handle explicitly before exercising the real native hide.
+        popover
+            .surface
+            .node
+            .set(Some(Rc::new(MountedData::new(()))));
         popover.apply_opening_focus(generation, &[candidate("body", 0, false)])
     });
     settle_focus(&mut dom);
@@ -566,6 +582,10 @@ fn popover_close_returns_registered_trigger_and_hover_focus_does_not_reopen() {
     settle_focus(&mut dom);
     assert!(popover.is_open());
     assert_eq!(*calls.borrow(), ["body"]);
+    assert!(
+        native.requests().is_empty(),
+        "veto does not issue native presentation"
+    );
     veto.set(false);
     dom.in_scope(ScopeId::ROOT, || {
         popover.hover_mode.set(true);
@@ -575,6 +595,7 @@ fn popover_close_returns_registered_trigger_and_hover_focus_does_not_reopen() {
             true
         ));
     });
+    let escape_generation = *popover.surface.generation.peek();
     assert!(
         events.borrow().is_empty(),
         "completion is owned by a Dioxus effect"
@@ -596,12 +617,47 @@ fn popover_close_returns_registered_trigger_and_hover_focus_does_not_reopen() {
             false
         ));
     });
+    let outside_generation = *popover.surface.generation.peek();
     settle_focus(&mut dom);
     assert_eq!(
         *calls.borrow(),
         ["body", "second-trigger"],
         "outside dismissal cancels pending opening and preserves the outside destination"
     );
+    assert_eq!(
+        *events.borrow(),
+        [false, false],
+        "each accepted close completes once"
+    );
+    let native_path = cfg!(any(
+        all(feature = "web", target_arch = "wasm32"),
+        all(feature = "desktop", not(target_arch = "wasm32"))
+    ));
+    if native_path {
+        assert_eq!(
+            native.requests(),
+            vec![
+                serde_json::json!([
+                    popover.id(),
+                    false,
+                    ["data-surface-generation", escape_generation.to_string()],
+                    null,
+                    "popover"
+                ]),
+                serde_json::json!([
+                    popover.id(),
+                    false,
+                    ["data-surface-generation", outside_generation.to_string()],
+                    null,
+                    "popover"
+                ]),
+            ]
+        );
+        assert_eq!(native.acknowledgements(), 2);
+    } else {
+        assert!(native.requests().is_empty(), "SSR needs no native hide");
+        assert_eq!(native.acknowledgements(), 0);
+    }
 }
 
 #[test]

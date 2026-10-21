@@ -36,6 +36,7 @@ impl Default for Config {
 }
 #[derive(Default)]
 struct Fixture {
+    surface: crate::test_native_surface::NativeSurfaceFixture,
     config: RefCell<Config>,
     veto: Cell<bool>,
     before: RefCell<Vec<bool>>,
@@ -196,6 +197,7 @@ macro_rules! converter {
         (@data Image,$event:ident) => { dioxus::html::ImageData::new(ImageFailure) };
         (@data Keyboard,$event:ident) => { dioxus::html::KeyboardData::new($event.downcast::<RawKey>().unwrap().clone()) };
         (@data Mounted,$event:ident) => { MountedData::new(AvatarMount) };
+        (@data Visible,$event:ident) => { dioxus::html::VisibleData::new(crate::test_native_surface::Visibility(*$event.downcast::<bool>().unwrap())) };
         (@data Form,$event:ident) => { dioxus::html::FormData::new(RawForm($event.downcast::<String>().unwrap().clone())) };
         (@data $other:ident,$event:ident) => { panic!("Unexpected avatar test event") };
     }
@@ -204,6 +206,7 @@ dioxus::html::with_html_event_groups!(converter);
 struct Targets {
     attrs: BTreeMap<usize, BTreeMap<String, String>>,
     mounted: Vec<dioxus::core::ElementId>,
+    visible: Vec<dioxus::core::ElementId>,
 }
 impl Targets {
     fn collect(&mut self, changes: dioxus::core::Mutations) {
@@ -225,6 +228,9 @@ impl Targets {
                 }
                 dioxus::core::Mutation::NewEventListener { name } if name == "mounted" => {
                     self.mounted.push(current)
+                }
+                dioxus::core::Mutation::NewEventListener { name } if name == "visible" => {
+                    self.visible.push(current)
                 }
                 _ => {}
             }
@@ -249,7 +255,7 @@ fn dispatch(
 ) -> bool {
     let event = Event::new(
         Rc::new(dioxus::html::PlatformEventData::new(data)) as Rc<dyn std::any::Any>,
-        !matches!(name, "mounted" | "error"),
+        !matches!(name, "mounted" | "visible" | "error"),
     );
     dom.runtime().handle_event(name, event.clone(), id);
     event.default_action_enabled()
@@ -257,6 +263,14 @@ fn dispatch(
 fn settle(dom: &mut VirtualDom, targets: &mut Targets) {
     for _ in 0..4 {
         targets.collect(dom.render_immediate_to_vec());
+        // Supply renderer facts to each newly rendered anchor or panel, including
+        // a tooltip recreated after closing the retained Avatar menu.
+        for id in std::mem::take(&mut targets.mounted) {
+            dispatch(dom, "mounted", id, Box::new(()));
+        }
+        for id in std::mem::take(&mut targets.visible) {
+            dispatch(dom, "visible", id, Box::new(true));
+        }
         dom.process_events();
     }
 }
@@ -266,12 +280,10 @@ fn refresh(dom: &mut VirtualDom, targets: &mut Targets) {
 }
 
 fn setup(data: Rc<Fixture>) -> (VirtualDom, Targets) {
-    let mut dom = VirtualDom::new_with_props(fixture, data);
+    let document = data.surface.document();
+    let mut dom = VirtualDom::new_with_props(fixture, data).with_root_context(document);
     let mut targets = Targets::default();
     targets.collect(dom.rebuild_to_vec());
-    for id in targets.mounted.clone() {
-        dispatch(&dom, "mounted", id, Box::new(()));
-    }
     settle(&mut dom, &mut targets);
     (dom, targets)
 }

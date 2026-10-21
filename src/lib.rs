@@ -20,6 +20,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod test_native_surface;
+
 // Dioxus's HTML event converter is process-global. Actual-listener regressions
 // hold this guard once per test, before their DOMs, so parallel test modules
 // cannot replace the converter while another test dispatches an event.

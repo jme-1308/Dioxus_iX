@@ -1,4 +1,23 @@
 // Uses Avatar's existing actual-VDOM fixture and event converter.
+#[cfg(feature = "desktop")]
+fn assert_avatar_tooltip_receipt(data: &Fixture, html: &str, shown: bool) {
+    let panel = tag(html, "role", "tooltip");
+    let attribute = |name: &str| {
+        panel.split(&format!("{name}=\"")).nth(1).unwrap().split('"').next().unwrap().to_string()
+    };
+    let id = attribute("id");
+    let marker = attribute("data-ix-tooltip-native");
+    assert!(data.surface.requests().iter().any(|request| {
+        request[0] == id
+            && request[1] == shown
+            && request[2][0] == "data-ix-tooltip-native"
+            && request[2][1] == marker
+            && request[3].is_null()
+            && request[4] == "popover"
+    }), "missing owned Avatar tooltip presentation receipt");
+    assert!(data.surface.acknowledgements() > 0);
+}
+
 #[test]
 fn avatar_styled_tooltip_tracks_text_labels_and_removal_without_a_native_title() {
     let _guard = crate::test_event_converter_guard();
@@ -23,6 +42,8 @@ fn avatar_styled_tooltip_tracks_text_labels_and_removal_without_a_native_title()
     dispatch(&dom, "mouseenter", anchor, Box::new(()));
     settle(&mut dom, &mut targets);
     assert!(tag(&dioxus_ssr::render(&dom), "role", "tooltip").contains("data-open=\"true\""));
+    #[cfg(feature = "desktop")]
+    assert_avatar_tooltip_receipt(&data, &dioxus_ssr::render(&dom), true);
     assert!(dispatch(
         &dom,
         "keydown",
@@ -31,6 +52,8 @@ fn avatar_styled_tooltip_tracks_text_labels_and_removal_without_a_native_title()
     ));
     settle(&mut dom, &mut targets);
     assert!(tag(&dioxus_ssr::render(&dom), "role", "tooltip").contains("data-open=\"false\""));
+    #[cfg(feature = "desktop")]
+    assert_avatar_tooltip_receipt(&data, &dioxus_ssr::render(&dom), false);
     {
         let mut config = data.config.borrow_mut();
         config.tooltip = None;
@@ -67,6 +90,8 @@ fn avatar_menu_open_suppresses_tooltip_and_descendant_reentry_preserving_draft()
     let html = dioxus_ssr::render(&dom);
     assert!(trigger(&html).contains("aria-describedby="));
     assert!(tag(&html, "role", "tooltip").contains("data-open=\"true\""));
+    #[cfg(feature = "desktop")]
+    assert_avatar_tooltip_receipt(&data, &html, true);
     assert_eq!(html.matches("role=\"tooltip\"").count(), 1);
     data.veto.set(true);
     dispatch(&dom, "click", button, Box::new(()));
@@ -99,6 +124,8 @@ fn avatar_menu_open_suppresses_tooltip_and_descendant_reentry_preserving_draft()
     settle(&mut dom, &mut targets);
     let html = dioxus_ssr::render(&dom);
     assert!(tag(&html, "role", "tooltip").contains("data-open=\"true\""));
+    #[cfg(feature = "desktop")]
+    assert_avatar_tooltip_receipt(&data, &html, true);
     assert!(tag(&html, "id", "avatar-draft").contains("value=\"Prepared shift\""));
     assert_eq!(data.mounts.get(), 1);
     assert!(dispatch(
@@ -109,4 +136,6 @@ fn avatar_menu_open_suppresses_tooltip_and_descendant_reentry_preserving_draft()
     ));
     settle(&mut dom, &mut targets);
     assert!(tag(&dioxus_ssr::render(&dom), "role", "tooltip").contains("data-open=\"false\""));
+    #[cfg(feature = "desktop")]
+    assert_avatar_tooltip_receipt(&data, &dioxus_ssr::render(&dom), false);
 }
