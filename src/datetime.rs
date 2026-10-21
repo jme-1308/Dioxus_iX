@@ -719,6 +719,13 @@ pub fn DatePicker(
     let mut focused = use_signal(|| initial);
     let mut focus_requested = use_signal(|| auto_focus);
     let day_refs = use_hook(|| Rc::new(RefCell::new(BTreeMap::<IxDate, Rc<MountedData>>::new())));
+    // Registrations belong to the currently rendered month. Every calendar
+    // row contains only that month's days; retire historical native handles
+    // while leaving normal mounted registration and focus unchanged.
+    let mounted_month = *month.peek();
+    day_refs
+        .borrow_mut()
+        .retain(|date, _| date.month_start() == mounted_month);
     let initial_focus_pending = use_hook(|| Rc::new(Cell::new(auto_focus)));
     let focus_initial_visible_day = {
         let day_refs = day_refs.clone();
@@ -2333,3 +2340,7 @@ mod clock_composition_tests;
 #[cfg(test)]
 #[path = "datetime/clock_reveal_tests.rs"]
 mod clock_reveal_tests;
+
+#[cfg(test)]
+#[path = "datetime/calendar_mount_tests.rs"]
+mod calendar_mount_tests;

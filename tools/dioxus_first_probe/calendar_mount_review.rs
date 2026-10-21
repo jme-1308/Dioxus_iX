@@ -1,0 +1,49 @@
+//! Excluded normal calendar workflows over the unchanged shared gallery module.
+use super::clock_composition_review::gallery_datetime;
+use dioxus::prelude::*;
+use dioxus_ix::*;
+
+#[component]
+pub fn CalendarMountPreview() -> Element {
+    #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+    let window = dioxus::desktop::window();
+    rsx! {
+        style { {STYLES} }
+        style { {gallery_datetime::STYLES} }
+        IxTheme { class:"calendar-mount-review",
+            gallery_datetime::DateTimeExamples {}
+            div { onmounted:move |_| {
+                #[cfg(all(feature="desktop",not(target_arch="wasm32")))]
+                {let window=window.clone();spawn(async move {
+                    let query=crate::dom_query::eval(NATIVE_CALENDAR_CHECK);let _=query.send("calendarmount");
+                    match query.join::<serde_json::Value>().await {
+                        Ok(value)if value["ok"]==true=>{println!("Dioxus native Calendar mounts: {value}");window.close();}
+                        value=>{eprintln!("Dioxus native Calendar mounts failed: {value:?}");std::process::exit(1);}
+                    }
+                });spawn(async move {futures_timer::Delay::new(std::time::Duration::from_secs(40)).await;eprintln!("Calendar mounts native replay timed out");std::process::exit(1);});}
+            } }
+        }
+    }
+}
+const STYLES: &str = "body{margin:0}.calendar-mount-review{box-sizing:border-box;min-height:100vh;padding:24px}@media(max-width:600px){.calendar-mount-review{padding:16px}}";
+
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+const NATIVE_CALENDAR_CHECK: &str = r#"
+let snapshots={};
+try{
+ await dioxus.recv();
+ const section=()=>document.getElementById('date-picker'),wrappers=()=>section()?.querySelector('.demo-date-row')?.children,first=()=>wrappers()?.[0],range=()=>wrappers()?.[1],sunday=()=>wrappers()?.[2],calendar=host=>host?.querySelector('.ix-calendar-grid'),day=(host,label)=>host?.querySelector('.ix-calendar-day[aria-label="'+label+'"]'),month=host=>host?.querySelector('.ix-calendar-month'),year=host=>host?.querySelector('.ix-calendar-year'),button=(host,label)=>host?.querySelector('button[aria-label="'+label+'"]'),result=()=>document.querySelector('#date-dropdown p[role="status"]');
+ const assert=(value,label)=>{if(!value)throw Error(label)},wait=async(label,predicate)=>{for(let i=0;i<180;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20))}throw Error(label+'; active='+(document.activeElement?.getAttribute('aria-label')||document.activeElement?.id||document.activeElement?.tagName))};
+ const key=(node,value)=>node.dispatchEvent(new KeyboardEvent('keydown',{key:value,code:value,bubbles:true,cancelable:true}));
+ const focus=async node=>{assert(node,'current native calendar control exists');node.scrollIntoView({block:'center'});node.focus();await wait('actual focus on current control',()=>document.activeElement===node)};
+ const change=async(node,value,label)=>{await focus(node);node.value=String(value);node.dispatchEvent(new Event('change',{bubbles:true}));await wait(label,()=>calendar(first()).getAttribute('aria-label')===label)};
+ const snapshot=host=>({month:calendar(host).getAttribute('aria-label'),selected:[...host.querySelectorAll('.ix-calendar-day[aria-selected="true"]')].map(n=>n.getAttribute('aria-label')),roving:[...host.querySelectorAll('.ix-calendar-day[tabindex="0"]')].map(n=>n.getAttribute('aria-label'))});
+ await wait('actual three gallery calendars mounted',()=>day(first(),'16 October 2026')&&range()&&sunday());
+ await focus(button(first(),'Next month'));button(first(),'Next month').click();await wait('normal next month mounted',()=>calendar(first()).getAttribute('aria-label')==='November 2026');assert(document.activeElement===button(first(),'Next month'),'header month browsing retains its control focus');button(first(),'Previous month').click();await wait('normal previous month restored',()=>calendar(first()).getAttribute('aria-label')==='October 2026');await change(month(first()),9,'September 2026');await change(year(first()),2027,'September 2027');assert(document.activeElement===year(first()),'year browsing never steals focus into a day');await change(year(first()),2026,'September 2026');await change(month(first()),10,'October 2026');snapshots.browsed=snapshot(first());
+ await focus(day(first(),'31 October 2026'));key(document.activeElement,'ArrowRight');await wait('cross-month Arrow focuses new current November day',()=>document.activeElement===day(first(),'1 November 2026'));key(document.activeElement,'PageDown');await wait('PageDown focuses December current day',()=>document.activeElement===day(first(),'1 December 2026'));key(document.activeElement,'PageUp');await wait('PageUp focuses remounted November current day',()=>document.activeElement===day(first(),'1 November 2026'));document.activeElement.click();await wait('actual single callback updates shared Sunday picker',()=>day(first(),'1 November 2026')?.getAttribute('aria-selected')==='true'&&day(sunday(),'1 November 2026')?.getAttribute('aria-selected')==='true'&&result()?.textContent.includes('Selected date: 2026-11-01'));assert(sunday().querySelector('.ix-calendar-weekday[title]')?.title==='Sunday','third shared picker retains Sunday-first configuration');assert(first().contains(document.activeElement),'shared controlled update never steals current picker focus');snapshots.shared={first:snapshot(first()),sunday:snapshot(sunday())};
+ await focus(day(range(),'30 October 2026'));day(range(),'30 October 2026').click();await wait('range first endpoint leaves confirmation disabled',()=>range().querySelector('.ix-date-card-footer button').disabled&&day(range(),'30 October 2026').getAttribute('aria-selected')==='true');button(range(),'Next month').click();await wait('bounded November range days mounted',()=>day(range(),'2 November 2026'));assert(button(range(),'Next month').disabled,'maximum November30 prevents later month');day(range(),'2 November 2026').click();await wait('second range endpoint permits actual confirmation',()=>!range().querySelector('.ix-date-card-footer button').disabled&&day(range(),'2 November 2026').getAttribute('aria-selected')==='true');range().querySelector('.ix-date-card-footer button').click();await wait('actual range payload contains both months',()=>result().textContent.includes('month: 10, day: 30')&&result().textContent.includes('month: 11, day: 2'));snapshots.range={...snapshot(range()),payload:result().textContent};button(range(),'Previous month').click();await wait('range October browsing',()=>calendar(range()).getAttribute('aria-label')==='October 2026');button(range(),'Previous month').click();await wait('range minimum September browsing',()=>calendar(range()).getAttribute('aria-label')==='September 2026');assert(button(range(),'Previous month').disabled&&!day(range(),'1 September 2026').disabled&&month(range()).querySelector('option[value="8"]').disabled,'minimum September1 blocks earlier month while bound day remains usable');
+ const input=document.querySelector('#date-input input[aria-haspopup="dialog"]'),field=input.closest('.ix-temporal-field'),toggle=()=>field.querySelector('button.ix-temporal-toggle'),popup=()=>document.getElementById(input.getAttribute('aria-controls')),open=()=>input.getAttribute('aria-expanded')==='true'&&!popup()?.hidden,closed=()=>input.getAttribute('aria-expanded')==='false'&&popup()?.hidden;
+ await focus(toggle());toggle().click();await wait('actual date input opens current calendar with mounted focus',()=>open()&&document.activeElement===day(popup(),'16 October 2026'));key(document.activeElement,'PageDown');await wait('input current next-month focus',()=>document.activeElement===day(popup(),'16 November 2026'));key(document.activeElement,'ArrowRight');await wait('input current adjacent day focus',()=>document.activeElement===day(popup(),'17 November 2026'));document.activeElement.click();await wait('input callback commits slash text and returns actual toggle focus',()=>input.value==='2026/11/17'&&closed()&&document.activeElement===toggle());await focus(toggle());toggle().click();await wait('reopen uses current remounted selected day',()=>open()&&document.activeElement===day(popup(),'17 November 2026'));key(document.activeElement,'PageUp');await wait('current prior-month input day',()=>document.activeElement===day(popup(),'17 October 2026'));key(document.activeElement,'Escape');await wait('input Escape preserves accepted text and returns current toggle',()=>closed()&&input.value==='2026/11/17'&&document.activeElement===toggle());snapshots.input={value:input.value,expanded:input.getAttribute('aria-expanded'),focus:document.activeElement.id};
+ return{ok:true,snapshots,checks:['actual month/year controls browse repeatedly and keep native header focus','cross-month Arrow/PageDown/PageUp use current mounted days; single selection updates shared Sunday picker without stealing focus','bounded cross-month range selection/confirmation preserves both endpoints and usable min/max months','actual DateInput opens current mounted day, commits through normal selection, reopens current date and Escape returns focus without changing accepted text'],input:'Excluded synthetic DOM change/click/keydown with explicit native focus and normal scrolling invokes actual unchanged DateTimeExamples controls. Native .click supplies day activation separately because synthetic keydown does not reproduce trusted Enter defaults. Chromium separately exercises trusted Enter, typing and native control actions. No application/controller/callback/CSS injection; mounted-handle retirement is proven by focused Rust lifetime tests, not inferred from visible runtime alone.',renderer:navigator.userAgent};
+}catch(error){return{ok:false,error:String(error),snapshots}}
+"#;

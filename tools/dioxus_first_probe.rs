@@ -21,6 +21,8 @@ mod badge_alert_queue_review;
 mod breadcrumb_workflow_review;
 #[path = "dioxus_first_probe/bundled_images_review.rs"]
 mod bundled_images_review;
+#[path = "dioxus_first_probe/calendar_mount_review.rs"]
+mod calendar_mount_review;
 #[path = "dioxus_first_probe/card_collections_review.rs"]
 mod card_collections_review;
 #[path = "dioxus_first_probe/chart_review.rs"]
@@ -437,6 +439,9 @@ fn Preview() -> Element {
     }
     if scope == "?localizeddates" {
         return rsx! { localized_date_review::LocalizedDatesPreview {} };
+    }
+    if scope == "?calendarmount" {
+        return rsx! { calendar_mount_review::CalendarMountPreview {} };
     }
     if scope == "?chipworkflows" {
         return rsx! { chip_workflows_review::ChipWorkflowsPreview {} };
