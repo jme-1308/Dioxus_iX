@@ -5,7 +5,7 @@ use dioxus::prelude::*;
     all(feature = "desktop", not(target_arch = "wasm32"))
 ))]
 use serde_json::Value;
-#[path = "../examples/gallery/checkbox_review.rs"]
+#[path = "checkbox_review.rs"]
 mod checkbox_review;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]

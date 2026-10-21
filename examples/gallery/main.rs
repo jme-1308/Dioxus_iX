@@ -21,7 +21,6 @@ mod chat;
 mod chat_composer_review;
 mod chat_scenarios;
 mod chat_workspace;
-mod checkbox_review;
 mod chip_workflows;
 mod composition;
 mod css_grid_workspace;
@@ -39,7 +38,6 @@ mod dropdown_review;
 mod equipment_events;
 mod equipment_readings;
 mod equipment_search_layout;
-mod expanding_search_review;
 mod external_work_order;
 mod feedback_scenarios;
 mod filter_keyboard_review;
@@ -57,7 +55,6 @@ mod grid_typed_editors;
 mod grid_worklist;
 mod group_composition;
 mod group_feedback;
-mod group_review;
 mod header_layout_review;
 mod header_nested_review;
 mod header_switch_review;
@@ -66,7 +63,6 @@ mod icon_button_review;
 mod icon_catalog;
 mod icon_scenarios;
 mod icon_toggle_button_review;
-mod input_review;
 mod inspection_groups;
 mod inspection_report;
 mod layout;
@@ -83,7 +79,6 @@ mod menu_overlay_review;
 mod native_field_review;
 mod navigation;
 mod number_input_review;
-mod number_input_token_review;
 mod operator_profile;
 mod page_recovery;
 mod paged_equipment;
@@ -92,15 +87,12 @@ mod pattern_scenarios;
 mod patterns;
 mod progress_review;
 mod progress_transfer;
-mod radio_review;
 mod release_news;
 mod select_item_review;
-mod select_visual_review;
 mod service_dialogs;
 mod service_package;
 mod service_request;
 mod slider_limits;
-mod slider_review;
 mod source_examples;
 mod spinner_review;
 mod split_work_orders;
@@ -111,7 +103,6 @@ mod text_commit_review;
 mod theme_review;
 mod toast_review;
 mod toggle_button_review;
-mod toggle_review;
 mod tree;
 mod upload_review;
 mod wide_equipment_grid;
@@ -345,8 +336,19 @@ fn Gallery() -> Element {
                     match page {
                         GalleryPage::Actions => rsx! { badge_alert_queue::BadgeAlertQueueExample {} progress_transfer::ProgressTransferExample {} link_navigation::MaintenanceReferencesExample {} operator_profile::OperatorProfileExample {} split_work_orders::SplitWorkOrdersExample {} chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
-                        GalleryPage::Forms => rsx! { custom_field_workflow::CustomFieldWorkflowExample {} slider_limits::SliderLimitsExample {} external_work_order::ExternalWorkOrderExample {} select_item_review::SelectItemReviewExample {} group_feedback::GroupFeedbackExample {} service_request::ServiceRequestExample {} upload_review::UploadReview {} select_visual_review::SelectVisualReview {} slider_review::SliderReview {}
-        expanding_search_review::ExpandingSearchReview {} number_input_token_review::NumberInputTokenReview {} input_review::InputReview {} group_review::GroupReview {} toggle_review::ToggleReview {} radio_review::RadioReview {} checkbox_review::CheckboxReview {} text_commit_review::TextCommitReview {} native_field_review::NativeFieldReview {} number_input_review::NumberInputReview {} forms::FormExamples {} },
+                        GalleryPage::Forms => rsx! {
+                            custom_field_workflow::CustomFieldWorkflowExample {}
+                            slider_limits::SliderLimitsExample {}
+                            external_work_order::ExternalWorkOrderExample {}
+                            select_item_review::SelectItemReviewExample {}
+                            group_feedback::GroupFeedbackExample {}
+                            service_request::ServiceRequestExample {}
+                            upload_review::UploadReview {}
+                            text_commit_review::TextCommitReview {}
+                            native_field_review::NativeFieldReview {}
+                            number_input_review::NumberInputReview {}
+                            forms::FormExamples {}
+                        },
                         GalleryPage::Layout => rsx! { page_recovery::PageRecoveryExample {} equipment_search_layout::EquipmentSearchLayoutExample {} equipment_readings::EquipmentReadingsExample {} asset_properties::AssetPropertiesExample {} group_composition::GroupCompositionExample {} inspection_groups::InspectionGroupsExample {} asset_workspace::AssetWorkspaceExample {} maintenance_launch::MaintenanceLaunchExample {} equipment_events::EquipmentEventsExample {} service_package::ServicePackageExample {} asset_hierarchy::AssetHierarchyExample {} paged_equipment::PagedEquipmentExample {} card_collections::CardCollectionsExample {} workflow_review::WorkflowReview {}  layout::LayoutExamples {} },
                         GalleryPage::DateTime => rsx! { custom_temporal_formats::CustomTemporalFormatsExample {} date_time_card::DateTimeCardExample {} inspection_report::InspectionReportExample {} temporal_work_order::TemporalWorkOrderExample {} maintenance_schedule::MaintenanceScheduleExample {} localized_dates::LocalizedDatesExample {} date_dropdown_review::DateDropdownReview {} datetime::DateTimeExamples {} },
                         GalleryPage::DataGrid => rsx! { host_paged_grid::HostPagedGridExample {} wide_equipment_grid::WideEquipmentGridExample {} grid_custom_editors::GridCustomEditorsExample {} grid_numeric_values::GridNumericValuesExample {} grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },

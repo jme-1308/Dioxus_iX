@@ -8,7 +8,7 @@ use serde_json::Value;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 #[path = "../src/dom_query.rs"]
 mod dom_query;
-#[path = "../examples/gallery/group_review.rs"]
+#[path = "group_review.rs"]
 mod group_review;
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
