@@ -83,3 +83,8 @@
 .ix-kpi:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}.ix-kpi{max-width:100%}.ix-kpi-label,.ix-kpi-measurement,.ix-kpi-measurement>strong,.ix-kpi-measurement>span{min-width:0;overflow-wrap:anywhere}.ix-kpi-measurement{max-width:100%;flex-wrap:wrap}
 .ix-empty-state{min-width:0;box-sizing:border-box}.ix-empty-state-labels{overflow-wrap:anywhere}.ix-empty-state-action{max-width:100%;overflow-wrap:anywhere}.ix-empty-state-action:disabled{cursor:default;opacity:.55}.ix-empty-state-action:disabled:hover{background:transparent}.ix-empty-state-action[aria-busy=true]{gap:8px}
 
+/* Content keeps stable regions; normal flow retains its original boxes. */
+.ix-content>.ix-content-header-region,.ix-content>.ix-content-body{display:contents}
+.ix-content.ix-content-scrollable{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.ix-content-scrollable>.ix-content-header-region{display:block;flex:none;min-width:0}
+.ix-content-scrollable>.ix-content-body{display:block;flex:1;min-height:0;min-width:0;overflow:auto}

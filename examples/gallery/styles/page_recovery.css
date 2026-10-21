@@ -28,3 +28,8 @@
 .page-recovery-saved li>p{max-width:72ch;margin:8px 0 0;white-space:pre-wrap;font-size:14px;line-height:21px}
 .page-recovery-example .ix-button{max-width:100%;height:auto;min-height:32px;white-space:normal;overflow-wrap:anywhere}
 @media(max-width:576px){.page-recovery-lookup{align-items:stretch;flex-direction:column}.page-recovery-lookup>.ix-button{margin-top:0;align-self:flex-start}.page-recovery-lookup>.ix-field{flex:auto}.page-recovery-content .ix-content-header-titles{flex-basis:100%}}
+
+/* Bound the editor only when the user opts into independent body scrolling. */
+.page-recovery-scroll-option{margin-inline-start:24px}
+.page-recovery-content.ix-content-scrollable form>.ix-field{display:flex;width:100%}
+@media(max-width:576px){.page-recovery-content{--page-recovery-editor-height:440px}.page-recovery-scroll-option{margin-inline-start:0;display:flex}}

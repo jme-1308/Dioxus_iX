@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 
 #[path = "../../examples/gallery/page_recovery.rs"]
-mod gallery_recovery;
+pub(super) mod gallery_recovery;
 
 #[component]
 pub fn PageRecoveryPreview() -> Element {

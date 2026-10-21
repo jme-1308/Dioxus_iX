@@ -95,19 +95,24 @@ pub use crate::task_cards::{ActionCard, ActionCardProps, PushCard, PushCardProps
 
 /// Application main content inset with optional header composition before its body.
 /// Native global attributes and `onmounted` apply to the actual `main` element.
+/// Set `scrollable` and bound the main element's height to keep the header
+/// visible while the body scrolls. `onbodymounted` receives its stable body div;
+/// in ordinary flow that div uses `display: contents` and has no layout box.
 #[component]
 pub fn Content(
     children: Element,
     #[props(default)] header: Option<Element>,
+    #[props(default)] scrollable: bool,
     #[props(default)] class: String,
     #[props(default)] onmounted: EventHandler<MountedEvent>,
+    #[props(default)] onbodymounted: EventHandler<MountedEvent>,
     #[props(extends = GlobalAttributes)] mut attributes: Vec<Attribute>,
 ) -> Element {
     // A spread must not replace the required class; use the typed class prop.
     attributes.retain(|attribute| attribute.name != "class");
-    rsx! { main { class: "ix-content {class}", onmounted, ..attributes,
-        if let Some(header) = header { {header} }
-        {children}
+    rsx! { main { class:format!("ix-content{} {class}",if scrollable {" ix-content-scrollable"}else{""}), onmounted, ..attributes,
+        div { class:"ix-content-header-region", if let Some(header) = header { {header} } }
+        div { class:"ix-content-body", onmounted:onbodymounted, {children} }
     } }
 }
 

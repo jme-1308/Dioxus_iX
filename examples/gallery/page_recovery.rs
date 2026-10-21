@@ -92,24 +92,36 @@ fn EquipmentPage(
     asset: Equipment,
     draft: InspectionDraft,
     disabled: bool,
+    scrollable: bool,
     ontitlechange: EventHandler<String>,
     onnotechange: EventHandler<String>,
     onsubmit: EventHandler<FormEvent>,
     oncontentmounted: EventHandler<MountedEvent>,
+    onbodymounted: EventHandler<MountedEvent>,
     ontitlemounted: EventHandler<MountedEvent>,
     onreview: EventHandler<()>,
+    onformstart: EventHandler<()>,
 ) -> Element {
     let header = rsx! {
         ContentHeader { title: asset.label, subtitle: asset.description,
             Button { id: "page-recovery-review", button_type: ButtonType::Button, variant: ButtonVariant::Tertiary,
                 onclick: move |_| onreview.call(()), "Review equipment"
             }
+            if scrollable {
+                Button { id: "page-recovery-form-start", button_type: ButtonType::Button, variant: ButtonVariant::Secondary,
+                    disabled, onclick: move |_| onformstart.call(()), "Form start"
+                }
+                Button { id: "page-recovery-save", button_type: ButtonType::Submit, form: "page-recovery-editor-form",
+                    disabled, "Save inspection"
+                }
+            }
         }
     };
     rsx! {
-        Content { id: "page-recovery-content", class: "page-recovery-content", style: "min-height:0", tabindex: "-1",
+        Content { id: "page-recovery-content", class: "page-recovery-content",
+            style: if scrollable { "min-height:0;height:var(--page-recovery-editor-height,380px)" } else { "min-height:0" }, tabindex: "-1",
             "aria-label": "Equipment editor", "data-equipment": asset.id,
-            onmounted: oncontentmounted, header,
+            onmounted: oncontentmounted, onbodymounted, scrollable, header,
             form { id: "page-recovery-editor-form", onsubmit,
                 input { r#type: "hidden", name: "equipment", value: asset.id, disabled }
                 Input { id: "page-recovery-title", name: "title", label: "Inspection title", required: true,
@@ -120,7 +132,9 @@ fn EquipmentPage(
                     max_length: 400, value: draft.note, disabled, resize: "vertical", onvaluechange: onnotechange,
                 }
                 p { class: "page-recovery-hint", "Each asset keeps its own draft. Saved inspections are snapshots of the fields submitted below." }
-                Button { id: "page-recovery-save", button_type: ButtonType::Submit, disabled, "Save inspection" }
+                if !scrollable {
+                    Button { id: "page-recovery-save", button_type: ButtonType::Submit, disabled, "Save inspection" }
+                }
             }
         }
     }
@@ -133,11 +147,13 @@ fn RecoveryWorkspace(generation: usize) -> Element {
     let mut last_known = use_signal(|| String::from("pump"));
     let mut drafts = use_signal(initial_drafts);
     let mut disabled = use_signal(|| false);
+    let mut scrollable = use_signal(|| false);
     let mut saved = use_signal(Vec::<SavedInspection>::new);
     let mut payload = use_signal(BTreeMap::<String, String>::new);
     let mut message = use_signal(|| String::from("No inspections saved yet."));
     let mut focus_target = use_signal(|| None::<(String, Rc<MountedData>)>);
     let mut content_node = use_signal(|| None::<(String, Rc<MountedData>)>);
+    let mut body_node = use_signal(|| None::<(String, Rc<MountedData>)>);
     let mut focus_requested = use_signal(|| false);
     let navigate = use_callback(move |requested: String| {
         let requested = requested.trim().to_ascii_lowercase();
@@ -162,6 +178,7 @@ fn RecoveryWorkspace(generation: usize) -> Element {
         }
         focus_target.set(None);
         content_node.set(None);
+        body_node.set(None);
         focus_requested.set(true);
         route.set(requested);
     });
@@ -208,20 +225,44 @@ fn RecoveryWorkspace(generation: usize) -> Element {
                 }
                 "Pause editing"
             }
+            label { class: "page-recovery-option page-recovery-scroll-option",
+                input { id: "page-recovery-scrollable", r#type: "checkbox", checked: scrollable(),
+                    onchange: move |event: FormEvent| scrollable.set(event.checked()),
+                }
+                "Keep header visible"
+            }
             div { class: "page-recovery-page-area",
                 if let Some(asset) = asset {
                     for owner in [asset.id] {
                         EquipmentPage { key: "{owner}", asset,
-                            draft: drafts().get(owner).cloned().expect("known assets have a draft"), disabled: disabled(),
+                            draft: drafts().get(owner).cloned().expect("known assets have a draft"), disabled: disabled(), scrollable: scrollable(),
                             ontitlechange: move |value| { if let Some(draft) = drafts.write().get_mut(owner) { draft.title = value; } },
                             onnotechange: move |value| { if let Some(draft) = drafts.write().get_mut(owner) { draft.note = value; } },
                             ontitlemounted: move |event: MountedEvent| register_target.call((owner.into(), event)),
                             oncontentmounted: move |event: MountedEvent| {
                                 if route.peek().as_str() == owner { content_node.set(Some((owner.into(), event.data()))); }
                             },
+                            onbodymounted: move |event: MountedEvent| {
+                                if route.peek().as_str() == owner { body_node.set(Some((owner.into(), event.data()))); }
+                            },
                             onreview: move |_| {
                                 let node = content_node.peek().as_ref().filter(|(current, _)| current == owner).map(|(_, node)| node.clone());
                                 if let Some(node) = node { spawn(async move { if route.peek().as_str() == owner { let _ = node.set_focus(true).await; } }); }
+                            },
+                            onformstart: move |_| {
+                                if *disabled.peek() || route.peek().as_str() != owner { return; }
+                                let body = body_node.peek().as_ref().filter(|(current, _)| current == owner).map(|(_, node)| node.clone());
+                                let title = focus_target.peek().as_ref().filter(|(current, _)| current == owner).map(|(_, node)| node.clone());
+                                if let (Some(body), Some(title)) = (body, title) {
+                                    spawn(async move {
+                                        if *disabled.peek() || route.peek().as_str() != owner { return; }
+                                        if !body_node.peek().as_ref().is_some_and(|(current, node)| current == owner && Rc::ptr_eq(node, &body)) { return; }
+                                        let _ = body.scroll(dioxus::html::geometry::PixelsVector2D::zero(), ScrollBehavior::Instant).await;
+                                        if *disabled.peek() || route.peek().as_str() != owner { return; }
+                                        if !focus_target.peek().as_ref().is_some_and(|(current, node)| current == owner && Rc::ptr_eq(node, &title)) { return; }
+                                        let _ = title.set_focus(true).await;
+                                    });
+                                }
                             },
                             onsubmit: move |event: FormEvent| {
                                 event.prevent_default();
@@ -261,7 +302,7 @@ fn RecoveryWorkspace(generation: usize) -> Element {
             p { id: "page-recovery-status", class: "page-recovery-status", role: "status", "aria-live": "polite",
                 "data-route": current_route, "data-state": if asset.is_some() { "ready" } else { "missing" },
                 "data-equipment": last_known(), "data-saved-count": records.len(), "data-payload": serialized,
-                "data-disabled": disabled(), "{message}"
+                "data-disabled": disabled(), "data-scrollable": scrollable(), "{message}"
             }
             div { class: "page-recovery-saved",
                 h3 { "Saved inspections" }

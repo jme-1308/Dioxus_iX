@@ -35,6 +35,8 @@ mod chat_workspace_review;
 mod chip_workflows_review;
 #[path = "dioxus_first_probe/content_columns_review.rs"]
 mod content_columns_review;
+#[path = "dioxus_first_probe/content_scroll_review.rs"]
+mod content_scroll_review;
 #[path = "dioxus_first_probe/css_grid_workspace_review.rs"]
 mod css_grid_workspace_review;
 #[path = "dioxus_first_probe/cue_review.rs"]
@@ -402,6 +404,9 @@ fn Preview() -> Element {
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };
+    }
+    if scope == "?contentscroll" {
+        return rsx! { content_scroll_review::ContentScrollPreview {} };
     }
     if scope == "?pagerecovery" {
         return rsx! { page_recovery_review::PageRecoveryPreview {} };
