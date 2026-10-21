@@ -215,3 +215,6 @@ pub(crate) fn use_application_viewport(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pane_layout_tests;

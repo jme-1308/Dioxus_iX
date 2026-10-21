@@ -243,6 +243,9 @@ pub fn PaneLayout(
     #[props(default)] variant: PaneVariant,
     #[props(default)] borderless: bool,
 ) -> Element {
+    // Reuse an ancestor's responsive policy or own one for this layout; Pane
+    // descendants inherit it while their mounted layout measurements stay local.
+    let _viewport = crate::application_viewport::use_application_viewport(None, None);
     let mut close_requested = use_signal(|| 0_u64);
     let dimensions = use_signal(|| None::<(f64, f64)>);
     let opening_layout = use_memo(use_reactive!(|layout|layout));
