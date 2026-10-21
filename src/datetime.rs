@@ -600,21 +600,32 @@ impl DateTimeCorners {
 }
 
 /// Structural card used by the calendar and time picker.
+///
+/// `has_footer` defaults to whether footer content was supplied. Set it
+/// explicitly to reserve an empty footer or suppress supplied footer content.
+/// `onmounted` exposes the actual card div for native Dioxus composition.
 #[component]
 pub fn DateTimeCard(
     children: Element,
     header: Option<Element>,
     footer: Option<Element>,
+    #[props(default)] has_footer: Option<bool>,
     #[props(default)] embedded: bool,
     #[props(default)] hide_header: bool,
+    #[props(default)] time_picker_appearance: bool,
     #[props(default)] no_padding: bool,
     #[props(default)] corners: DateTimeCorners,
+    id: Option<String>,
+    #[props(default)] class: String,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
 ) -> Element {
-    rsx! { div { class: "ix-date-time-card ix-date-corners-{corners.class()}",
+    let show_footer = has_footer.unwrap_or(footer.is_some());
+    rsx! { div { id, onmounted, class: "ix-date-time-card ix-date-corners-{corners.class()} {class}",
         class: if embedded { "ix-date-embedded" }, class: if no_padding { "ix-date-no-padding" },
+        class: if time_picker_appearance { "ix-date-time-picker-appearance" },
         if !hide_header { if let Some(header) = header { div { class: "ix-date-card-header", {header} } } }
         div { class: "ix-date-card-content", {children} }
-        if let Some(footer) = footer { div { class: "ix-date-card-footer", {footer} } }
+        if show_footer { div { class: "ix-date-card-footer", {footer} } }
     } }
 }
 
@@ -2211,3 +2222,7 @@ mod date_dropdown_surface_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "datetime/card_tests.rs"]
+mod card_tests;

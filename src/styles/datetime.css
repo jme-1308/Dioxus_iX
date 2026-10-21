@@ -24,3 +24,5 @@
 .ix-theme .ix-temporal-surface{display:contents}
 .ix-theme .ix-temporal-surface>.ix-dropdown-root-menu{padding:0;border:0;min-width:0;max-width:min(660px,calc(100vw - 32px));max-height:calc(100dvh - 32px);z-index:71;box-shadow:0 6px 24px #0004}
 .ix-theme .ix-temporal-surface>.ix-dropdown-root-menu>.ix-date-time-card{border:0}
+
+.ix-theme .ix-date-time-card.ix-date-time-picker-appearance:not(.ix-date-no-padding)>.ix-date-card-content{padding:var(--ix-date-time-card-time-picker--padding,0 12px)}

@@ -45,6 +45,8 @@ mod cue_review;
 mod custom_field_workflow;
 #[path = "dioxus_first_probe/custom_validation_review.rs"]
 mod custom_validation_review;
+#[path = "dioxus_first_probe/date_time_card_review.rs"]
+mod date_time_card_review;
 #[path = "dioxus_first_probe/descendant_review.rs"]
 mod descendant_review;
 #[path = "dioxus_first_probe/disclosure_package_review.rs"]
@@ -286,6 +288,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridautopage" {
         return rsx! { grid_auto_page_review::GridAutoPagePreview {} };
+    }
+    if scope == "?cardcomposition" {
+        return rsx! { date_time_card_review::DateTimeCardPreview {} };
     }
     if scope == "?gridhelp" {
         return rsx! { grid_help_review::GridHelpPreview {} };

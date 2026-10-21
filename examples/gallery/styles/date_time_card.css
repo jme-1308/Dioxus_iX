@@ -1,0 +1,26 @@
+.date-time-card-example{min-width:0;max-width:100%;margin-bottom:48px}
+.date-card-intro{max-width:72ch;line-height:1.55}
+.date-card-options{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;max-width:800px;margin:24px 0;font-size:14px;line-height:20px}
+.date-card-options label{display:inline-flex;align-items:center;gap:8px;max-width:100%}
+.date-card-options input{width:16px;height:16px;flex:none;margin:0;accent-color:var(--ix-color-primary)}
+.date-card-options input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}
+#date-time-card-example .date-card-options select{width:auto;max-width:100%}
+#date-time-card-demo{width:100%;min-width:0;max-width:640px;box-sizing:border-box}
+.date-card-heading h3{margin:0;font-size:20px;line-height:28px;font-weight:600}
+.date-card-heading p{margin:6px 0 0;font-size:14px;line-height:21px;max-width:72ch;color:var(--ix-color-text-secondary)}
+.date-card-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;min-width:0;margin-bottom:16px}
+#date-time-card-demo .date-card-fields>.ix-field{display:flex;width:100%;min-width:0}
+#date-time-card-demo .date-card-fields :is(.ix-text-field-wrapper,.ix-text-field-slot,.ix-input-wrap){width:100%;min-width:0}
+.date-card-note-label{display:block;margin-bottom:6px;font-size:14px;line-height:20px}
+#date-time-card-demo .date-card-note{width:100%;max-width:100%;min-width:0;box-sizing:border-box;resize:vertical}
+.date-card-hint{margin:12px 0 0;max-width:72ch;color:var(--ix-color-text-secondary);font-size:14px;line-height:21px}
+.date-card-footer-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;width:100%;min-width:0}
+.date-card-footer-actions>span{font-size:12px;line-height:18px;color:var(--ix-color-text-secondary)}
+.date-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+.date-card-status{max-width:72ch;margin:20px 0;font-size:14px;line-height:21px;overflow-wrap:anywhere}
+.date-card-snapshot{max-width:640px;margin:20px 0 28px;font-size:14px;line-height:21px}
+.date-card-snapshot>div{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--ix-color-border)}
+.date-card-snapshot dt{color:var(--ix-color-text-secondary)}
+.date-card-snapshot dd{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
+.date-time-card-example .ix-button{max-width:100%;height:auto;min-height:32px;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:576px){.date-card-options{flex-direction:column;align-items:flex-start}.date-card-fields{grid-template-columns:minmax(0,1fr)}.date-card-snapshot>div{grid-template-columns:minmax(0,1fr);gap:4px}}
