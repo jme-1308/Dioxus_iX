@@ -1,6 +1,53 @@
-//! Pure client-side page projection over the grid's full typed row model.
+//! Controlled page metadata and client or host-owned row projection.
 use crate::{DataGridColumn, DataGridRow, DataGridState};
 use std::ops::Range;
+
+/// Source of the grid's accepted row projection.
+///
+/// `Page` receives one already filtered, sorted and ordered page. Supply
+/// `DataGridState::pagination`; `total_rows` is the full matching result count.
+/// Accept query state and its rows together. The application owns fetching,
+/// pending/error presentation, stale-response rejection and cancellation.
+/// Selection remains stable-ID based across pages; header selection and
+/// autosizing cover only the loaded page. Managed row dragging is unavailable.
+/// Client-side projection and CSV helpers remain client-side operations on
+/// their explicitly supplied rows; they do not fetch unloaded host pages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DataGridRowModel {
+    #[default]
+    Client,
+    Page {
+        total_rows: usize,
+    },
+}
+impl DataGridRowModel {
+    pub(crate) fn projected_rows<'a>(
+        self,
+        state: &DataGridState,
+        rows: &'a [DataGridRow],
+        columns: &[DataGridColumn],
+    ) -> Vec<&'a DataGridRow> {
+        match self {
+            Self::Client => state.paged_rows_with_columns(rows, columns),
+            Self::Page { total_rows } => state.pagination.map_or_else(Vec::new, |request| {
+                rows.iter()
+                    .take(request.info(total_rows).range.len())
+                    .collect()
+            }),
+        }
+    }
+    pub(crate) fn selection_rows<'a>(
+        self,
+        state: &DataGridState,
+        rows: &'a [DataGridRow],
+        columns: &[DataGridColumn],
+    ) -> Vec<&'a DataGridRow> {
+        match self {
+            Self::Client => state.visible_rows_with_columns(rows, columns),
+            Self::Page { .. } => self.projected_rows(state, rows, columns),
+        }
+    }
+}
 
 /// Controlled zero-based page and requested page size. Invalid sizes and pages
 /// are clamped when projected; the consumer's stored request is not rewritten.

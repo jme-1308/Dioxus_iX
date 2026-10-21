@@ -104,6 +104,8 @@ mod header_choice_review;
 mod header_group_review;
 #[path = "dioxus_first_probe/header_tab_review.rs"]
 mod header_tab_review;
+#[path = "dioxus_first_probe/host_paged_grid_review.rs"]
+mod host_paged_grid_review;
 #[path = "dioxus_first_probe/icon_catalog_review.rs"]
 mod icon_catalog_review;
 #[path = "dioxus_first_probe/inspection_groups_review.rs"]
@@ -291,6 +293,9 @@ fn Preview() -> Element {
     }
     if scope == "?cardcomposition" {
         return rsx! { date_time_card_review::DateTimeCardPreview {} };
+    }
+    if scope == "?hostgrid" {
+        return rsx! { host_paged_grid_review::HostPagedGridPreview {} };
     }
     if scope == "?gridhelp" {
         return rsx! { grid_help_review::GridHelpPreview {} };
