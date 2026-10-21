@@ -90,27 +90,11 @@ pub(crate) enum NativeFormControl {
     Select,
 }
 
-// Pinned Dioxus alpha.2 MountedData has focus/geometry/scrolling only;
-// FormData exposes aggregate validity, not the associated form or noValidate.
-// Read only those missing native facts here; callers own validation in Rust.
 pub(crate) async fn read_associated_form(
     id: &str,
     control: NativeFormControl,
 ) -> Result<Option<NativeFormElement>, String> {
-    let task = crate::dom_query::eval(
-        r#"
-        const [id,allowTextarea]=await dioxus.recv(), input=document.getElementById(id);
-        if (!(input instanceof HTMLInputElement || (allowTextarea && input instanceof HTMLTextAreaElement)))
-            throw new Error(allowTextarea ? 'Text control is not mounted' : 'Select input is not mounted');
-        const form=input.form;
-        return form?{id:form.id,name:form.name,method:form.method,action:form.action,no_validate:form.noValidate}:null;
-    "#,
-    );
-    task.send((id, matches!(control, NativeFormControl::Text)))
-        .map_err(|error| error.to_string())?;
-    task.join::<Option<NativeFormElement>>()
-        .await
-        .map_err(|error| error.to_string())
+    read_native_facts(id, control).await.map(|facts| facts.form)
 }
 
 #[derive(Clone)]
@@ -292,21 +276,39 @@ struct Snapshot {
     no_validate: bool,
     validation_message: String,
 }
-// Pinned MountedData has no native validity flags, validation message or
-// associated-form validation setting API; this adapter only reads those facts.
-async fn read_snapshot(id: &str) -> Result<Snapshot, TextControlError> {
+#[derive(serde::Deserialize)]
+struct NativeFacts {
+    #[serde(flatten)]
+    snapshot: Snapshot,
+    form: Option<NativeFormElement>,
+}
+// Pinned dioxus-html alpha.2 FormData supplies aggregate validity, not the
+// individual flags, validation message or associated form/noValidate metadata.
+// MountedData exposes focus/geometry/scrolling but cannot read those facts.
+// One native read serves both callers; Rust retains validation and ownership.
+async fn read_native_facts(id: &str, control: NativeFormControl) -> Result<NativeFacts, String> {
     let task = crate::dom_query::eval(
         r#"
-        const id=await dioxus.recv(), input=document.getElementById(id);
-        if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) throw new Error('Text control is not mounted');
-        const v=input.validity;
+        const [id,allowTextarea]=await dioxus.recv(), input=document.getElementById(id);
+        if (!(input instanceof HTMLInputElement || (allowTextarea && input instanceof HTMLTextAreaElement)))
+            throw new Error(allowTextarea ? 'Text control is not mounted' : 'Select input is not mounted');
+        const v=input.validity, form=input.form;
         return {validity:{bad_input:v.badInput,custom_error:v.customError,pattern_mismatch:v.patternMismatch,
             range_overflow:v.rangeOverflow,range_underflow:v.rangeUnderflow,step_mismatch:v.stepMismatch,
-            too_long:v.tooLong,too_short:v.tooShort,type_mismatch:v.typeMismatch,value_missing:v.valueMissing,valid:v.valid},no_validate:!!input.form?.noValidate,validation_message:input.validationMessage};
+            too_long:v.tooLong,too_short:v.tooShort,type_mismatch:v.typeMismatch,value_missing:v.valueMissing,valid:v.valid},
+            no_validate:!!form?.noValidate,validation_message:input.validationMessage,
+            form:form?{id:form.id,name:form.name,method:form.method,action:form.action,no_validate:form.noValidate}:null};
     "#,
     );
-    task.send(id).map_err(dom_error)?;
-    task.join::<Snapshot>().await.map_err(dom_error)
+    task.send((id, matches!(control, NativeFormControl::Text)))
+        .map_err(|error| error.to_string())?;
+    task.join().await.map_err(|error| error.to_string())
+}
+async fn read_snapshot(id: &str) -> Result<Snapshot, TextControlError> {
+    read_native_facts(id, NativeFormControl::Text)
+        .await
+        .map(|facts| facts.snapshot)
+        .map_err(TextControlError::Dom)
 }
 
 pub(crate) struct ControlLifecycle {
@@ -573,3 +575,7 @@ pub(crate) fn use_custom_field_validation(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "form_control/native_facts_tests.rs"]
+mod native_facts_tests;

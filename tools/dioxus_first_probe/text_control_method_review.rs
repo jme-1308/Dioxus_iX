@@ -18,6 +18,7 @@ pub fn TextControlMethodReview() -> Element {
     let number = use_number_input();
     let focus_controllers = [input.clone(), textarea.clone(), number.clone()];
     let capture_controllers = focus_controllers.clone();
+    let inspect_controllers = focus_controllers.clone();
     let mut kind = use_signal(|| 0_usize);
     let mut mounted = use_signal(|| true);
     let mut epoch = use_signal(|| 0_u64);
@@ -39,6 +40,7 @@ pub fn TextControlMethodReview() -> Element {
     let mut method = use_signal(|| "None".to_string());
     let mut result = use_signal(|| "Ready".to_string());
     let mut completed = use_signal(|| 0_usize);
+    let mut native_facts = use_signal(|| String::from("Not inspected"));
     let changed = use_callback(move |value: String| {
         values.with_mut(|values| values[kind()] = value);
         value_events += 1;
@@ -130,6 +132,29 @@ pub fn TextControlMethodReview() -> Element {
                     button {id:"r0236-focus",r#type:"button",class:"ix-button ix-button-secondary",onclick:move |_|focus_current.call(()),"Focus current control"}
                     button {id:"r0236-capture",r#type:"button",class:"ix-button ix-button-secondary",onclick:move |_|capture.call(()),"Capture descriptor"}
                     button {id:"r0236-saved-focus",r#type:"button",class:"ix-button ix-button-secondary",onclick:move |_|focus_saved.call(()),"Focus saved descriptor"}
+                    button {id:"r0236-inspect-facts",r#type:"button",class:"ix-button ix-button-secondary",onclick:move |_|{
+                        let controller=inspect_controllers[kind()].clone();
+                        method.set("facts".into());result.set("Pending".into());
+                        spawn(async move {
+                            let inspected=async {
+                                let touched=controller.is_touched()?;
+                                let has_value=controller.has_valid_value()?;
+                                let validity=controller.get_validity_state().await?;
+                                let form=controller.get_associated_form_element().await?;
+                                Ok::<_,TextControlError>(serde_json::json!({
+                                    "touched":touched,"has_value":has_value,
+                                    "validity":{"valid":validity.valid,"value_missing":validity.value_missing,
+                                        "custom_error":validity.custom_error,"type_mismatch":validity.type_mismatch,
+                                        "range_overflow":validity.range_overflow,"range_underflow":validity.range_underflow,
+                                        "step_mismatch":validity.step_mismatch},
+                                    "form":form.map(|form|serde_json::json!({"id":form.id,"name":form.name,
+                                        "method":form.method,"action":form.action,"no_validate":form.no_validate}))
+                                }).to_string())
+                            }.await;
+                            match inspected {Ok(facts)=>{native_facts.set(facts);result.set("Ok".into());},Err(error)=>result.set(result_status(Err(error)))}
+                            completed+=1;
+                        });
+                    },"Inspect native facts"}
                     button {id:"r0236-readonly",r#type:"button",class:"ix-button ix-button-secondary","aria-pressed":readonly().to_string(),onclick:move |_|readonly.toggle(),"Toggle readonly"}
                     button {id:"r0236-disabled",r#type:"button",class:"ix-button ix-button-secondary","aria-pressed":disabled().to_string(),onclick:move |_|disabled.toggle(),"Toggle disabled"}
                     button {id:"r0236-visibility",r#type:"button",class:"ix-button ix-button-secondary",onclick:move |_|mounted.toggle(),if mounted(){"Hide control"}else{"Show control"}}
@@ -138,7 +163,7 @@ pub fn TextControlMethodReview() -> Element {
                 label {r#for:"r0236-outside","Outside focus destination"}
                 input {id:"r0236-outside",class:"text-method-outside",r#type:"text",value:"Independent field"}
                 output {id:"r0236-result",role:"status","aria-live":"polite",
-                    "data-kind":kind_name,"data-method":method(),"data-result":result(),"data-completed":completed().to_string(),
+                    "data-kind":kind_name,"data-method":method(),"data-native-facts":native_facts(),"data-result":result(),"data-completed":completed().to_string(),
                     "data-mounted":mounted().to_string(),"data-epoch":epoch().to_string(),"data-readonly":readonly().to_string(),"data-disabled":disabled().to_string(),
                     "data-value":value,"data-value-events":value_events().to_string(),"data-focuses":focuses().to_string(),"data-blurs":blurs().to_string(),"data-commits":commits().to_string(),"data-committed":committed(),"data-saved-id":saved_id.clone(),
                     span {"Control: {kind_name}; method: {method()}; result: {result()}; calls completed: {completed()}"}
@@ -231,5 +256,17 @@ for(const kind of ['input','textarea','number']){
     await wait(kind+' fresh descriptor focus',()=>active()===field());
     records.push({kind,controller:true,repeat:true,descriptor:true,typingAndBlurCommit:true,readonly:true,disabledError:true,staleAfterHideAndRemount:true,freshFocus:true});
 }
-return {ok:true,syntheticEvents:true,controls:records};
+// One bounded native-facts workflow reuses the same Input/controller. Native
+// metadata/constraints below are explicit test setup, not application callbacks.
+outside().focus();byId('r0236-kind-input').click();await wait('facts current Input mount',()=>output().dataset.kind==='input'&&field());
+const nativeForm=byId('r0236-form');nativeForm.name='native-facts-review';nativeForm.method='post';nativeForm.setAttribute('action','/native-facts?fixture=text');
+const inspect=async expected=>{const node=field(),focused=active(),value=node?.value;await run(()=>byId('r0236-inspect-facts').click(),'facts',expected);if(expected==='Ok'){if(field()!==node||node.value!==value||active()!==focused)throw Error('native read changed current control/value/focus');return JSON.parse(output().dataset.nativeFacts)}};
+field().required=true;field().value='';field().dispatchEvent(new Event('input',{bubbles:true}));await wait('required empty controlled value',()=>output().dataset.value==='');const factsBlurs=Number(output().dataset.blurs);field().focus();outside().focus();await wait('required native blur reaches Rust touched state',()=>Number(output().dataset.blurs)>factsBlurs);
+let facts=await inspect('Ok');if(!facts.touched||facts.has_value||facts.validity.valid||!facts.validity.value_missing||facts.form.id!==nativeForm.id||facts.form.name!=='native-facts-review'||facts.form.method!=='post'||facts.form.action!==nativeForm.action||facts.form.no_validate)throw Error('native empty required/touched/form facts mismatch '+JSON.stringify(facts));
+field().value='Corrected input';field().dispatchEvent(new Event('input',{bubbles:true}));await wait('corrected controlled value',()=>output().dataset.value==='Corrected input');field().setCustomValidity('Review required');facts=await inspect('Ok');if(facts.validity.valid||!facts.validity.custom_error||facts.validity.value_missing)throw Error('native custom constraint facts mismatch '+JSON.stringify(facts));
+field().setCustomValidity('');facts=await inspect('Ok');if(!facts.validity.valid||!facts.has_value)throw Error('corrected native validity/value mismatch '+JSON.stringify(facts));
+nativeForm.noValidate=true;facts=await inspect('Ok');if(!facts.form.no_validate)throw Error('live noValidate was stale');nativeForm.noValidate=false;facts=await inspect('Ok');if(facts.form.no_validate)throw Error('restored noValidate was stale');
+field().setAttribute('form',nativeForm.id);nativeForm.removeAttribute('id');facts=await inspect('Ok');if(facts.form!==null)throw Error('removed explicit owner should return no associated form');nativeForm.id='r0236-form';field().removeAttribute('form');facts=await inspect('Ok');if(facts.form.id!=='r0236-form')throw Error('restored current owner not observed');
+const retiredFactsField=field();key(outside(),'F7');await wait('facts owner unmounted',()=>!field()&&!retiredFactsField.isConnected);await run(()=>byId('r0236-inspect-facts').click(),'facts','NotMounted');key(outside(),'F8');await wait('facts owner remounted',()=>field()&&field()!==retiredFactsField);facts=await inspect('Ok');if(!facts.validity.valid||facts.form.id!=='r0236-form')throw Error('fresh current facts unavailable');
+return {ok:true,syntheticEvents:true,controls:records,nativeFacts:{requiredAndTouched:true,customConstraint:true,correctedValid:true,currentFormMetadata:true,liveNoValidate:true,removedOwnerNone:true,retiredNotMounted:true,freshOwner:true,readHasNoInteractionSideEffects:true},qualification:'Excluded native DOM metadata/constraint setup and synthetic events exercise actual public TextController queries. Physical typing, normal feedback and form submission are separate Chromium evidence.'};
 "#;
