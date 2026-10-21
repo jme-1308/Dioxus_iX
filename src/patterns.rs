@@ -1436,6 +1436,7 @@ pub use crate::flip_tile::{
 };
 
 /// Full-page information/error explanation with optional illustration and actions.
+/// Native global attributes and `onmounted` apply to the actual `section` element.
 #[component]
 pub fn InfoPage(
     title_text: String,
@@ -1445,8 +1446,13 @@ pub fn InfoPage(
     #[props(default="var(--ix-color-warning)".to_string())] icon_color: String,
     #[props(default)] image: Option<Element>,
     #[props(default)] actions: Option<Element>,
+    #[props(default)] class: String,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
+    #[props(extends = GlobalAttributes)] mut attributes: Vec<Attribute>,
 ) -> Element {
-    rsx! {section{class:"ix-info-page",div{class:"ix-info-page-content",
+    // A spread must not replace the required class; use the typed class prop.
+    attributes.retain(|attribute| attribute.name != "class");
+    rsx! {section{class:"ix-info-page {class}",onmounted,..attributes,div{class:"ix-info-page-content",
         div{class:"ix-info-page-image",if let Some(image)=image{{image}}else{span{style:format!("color:{icon_color}"),Icon{name:icon,size:64}}}}
         div{class:"ix-info-page-message",h1{"{title_text}"}if let Some(copy)=copy_text{p{class:"ix-info-page-copy","{copy}"}}if let Some(instructions)=instructions{p{class:"ix-info-page-instructions","{instructions}"}}}
         if let Some(actions)=actions{div{class:"ix-info-page-actions",{actions}}}

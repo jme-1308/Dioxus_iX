@@ -93,10 +93,22 @@ pub use crate::page_layout::{
 
 pub use crate::task_cards::{ActionCard, ActionCardProps, PushCard, PushCardProps};
 
-/// Application main content inset.
+/// Application main content inset with optional header composition before its body.
+/// Native global attributes and `onmounted` apply to the actual `main` element.
 #[component]
-pub fn Content(children: Element, #[props(default)] class: String) -> Element {
-    rsx! { main { class: "ix-content {class}", {children} } }
+pub fn Content(
+    children: Element,
+    #[props(default)] header: Option<Element>,
+    #[props(default)] class: String,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
+    #[props(extends = GlobalAttributes)] mut attributes: Vec<Attribute>,
+) -> Element {
+    // A spread must not replace the required class; use the typed class prop.
+    attributes.retain(|attribute| attribute.name != "class");
+    rsx! { main { class: "ix-content {class}", onmounted, ..attributes,
+        if let Some(header) = header { {header} }
+        {children}
+    } }
 }
 
 /// Stable-keyed tab definition for [`Tabs`].

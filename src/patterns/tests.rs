@@ -1,3 +1,6 @@
+#[path = "page_root_tests.rs"]
+mod page_root_tests;
+
 #[path = "css_grid_tests.rs"]
 mod css_grid_tests;
 

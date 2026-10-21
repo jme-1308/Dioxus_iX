@@ -118,6 +118,8 @@ mod menu_order_review;
 mod modal_focus_review;
 #[path = "dioxus_first_probe/operator_profile_review.rs"]
 mod operator_profile_review;
+#[path = "dioxus_first_probe/page_recovery_review.rs"]
+mod page_recovery_review;
 #[path = "dioxus_first_probe/pagination_workflow_review.rs"]
 mod pagination_workflow_review;
 #[path = "dioxus_first_probe/pane_equipment_review.rs"]
@@ -400,6 +402,9 @@ fn Preview() -> Element {
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };
+    }
+    if scope == "?pagerecovery" {
+        return rsx! { page_recovery_review::PageRecoveryPreview {} };
     }
     if scope == "?cssgridworkspace" {
         return rsx! { css_grid_workspace_review::CssGridWorkspacePreview {} };
