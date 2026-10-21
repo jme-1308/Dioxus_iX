@@ -980,6 +980,10 @@ mod scheduling_tests {
     include!("../datetime_scheduling_tests.rs");
     include!("../temporal_form_tests.rs");
     include!("../temporal_mount_tests.rs");
+    mod date_dropdown_entry_tests {
+        use super::*;
+        include!("date_dropdown_entry_tests.rs");
+    }
     mod picker_roots_tests {
         use super::*;
         include!("picker_roots_tests.rs");

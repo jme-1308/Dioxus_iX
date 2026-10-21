@@ -1766,6 +1766,11 @@ impl DropdownHandle {
             .and_then(|context| context.open.try_read().ok().map(|open| *open))
             .unwrap_or(false)
     }
+    /// Current scoped input modality for composed controls' opening focus.
+    pub(crate) fn keyboard_mode(self) -> bool {
+        self.try_context()
+            .is_some_and(|context| context.keyboard_mode())
+    }
     /// Persistent menu ID for an explicitly bound custom trigger's `aria-controls`.
     /// Returns `None` after the controller owner's Dioxus scope has been dropped.
     pub fn menu_id(self) -> Option<String> {

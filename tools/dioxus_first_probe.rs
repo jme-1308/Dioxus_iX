@@ -55,6 +55,8 @@ mod custom_field_workflow;
 mod custom_temporal_formats_review;
 #[path = "dioxus_first_probe/custom_validation_review.rs"]
 mod custom_validation_review;
+#[path = "dioxus_first_probe/date_dropdown_entry_review.rs"]
+mod date_dropdown_entry_review;
 #[path = "dioxus_first_probe/date_time_card_review.rs"]
 mod date_time_card_review;
 #[path = "dioxus_first_probe/descendant_review.rs"]
@@ -568,6 +570,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatmessages" {
         return rsx! { chat_messages_review::ChatMessagesPreview {} };
+    }
+    if scope == "?datedropdownentry" {
+        return rsx! { date_dropdown_entry_review::DateDropdownEntryPreview {} };
     }
     if scope == "?pickerroots" {
         return rsx! { picker_roots_review::PickerRootsPreview {} };

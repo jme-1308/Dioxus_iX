@@ -2293,7 +2293,9 @@ pub fn DateDropdown(
         draft,
         draft_id,
     );
-    let mut picker_epoch = use_signal(|| 0_u64);
+    // Keep focus admission with the existing keyed opening. Preset remounts
+    // restore the viewed month without claiming their activating button's focus.
+    let mut picker_epoch = use_signal(|| (0_u64, false));
     use_effect(use_reactive!(|committed, date_range_id| {
         // The initial effect already agrees with the initial signals. Avoid
         // scheduling an extra render, and do not subscribe this effect to local
@@ -2317,7 +2319,8 @@ pub fn DateDropdown(
         if open {
             // A new opening presents the committed/current range's month,
             // while the shared surface itself keeps its mounted identity.
-            picker_epoch += 1;
+            let epoch = picker_epoch.peek().0;
+            picker_epoch.set((epoch.wrapping_add(1), dropdown.keyboard_mode()));
         } else {
             onrangechange.call(DateRangeChange {
                 id: draft_id(),
@@ -2342,6 +2345,7 @@ pub fn DateDropdown(
         )
     });
     let button_class = format!("ix-button ix-button-{} ix-align-center", variant.as_str());
+    let (picker_key, focus_on_entry) = picker_epoch();
     rsx! { div { id, class: "ix-date-dropdown {class}",
         button { id: trigger_id.clone(), class: button_class, r#type: "button", disabled: disabled || loading,
             aria_expanded: dropdown.is_open(), aria_controls: dropdown.menu_id(), aria_haspopup: "dialog", aria_busy: loading,
@@ -2371,7 +2375,8 @@ pub fn DateDropdown(
                                     draft.set(selection);
                                     // A repeated preset selection also restores its viewed
                                     // year/month after navigating the calendar elsewhere.
-                                    picker_epoch += 1;
+                                    let epoch = picker_epoch.peek().0;
+                                    picker_epoch.set((epoch.wrapping_add(1), false));
                                     onrangechange.call(DateRangeChange { id: option.id.clone(), dates: selection });
                                 },
                                 "{option.label}"
@@ -2379,8 +2384,11 @@ pub fn DateDropdown(
                         }
                     } }
                     div { class: "ix-date-dropdown-calendar", aria_label: custom_label,
-                        DatePicker { key: "{picker_epoch}", today, from: draft().from, to: draft().to, min_date, max_date, single_selection, week_start_index, show_week_numbers, labels: labels.clone(), embedded: true,
-                            ondatechange: move |selection| { draft_id.set("custom".into()); draft.set(selection); } }
+                        // A keyed fragment gives each opening/preset epoch its own picker scope.
+                        for picker_key in [picker_key] {
+                            DatePicker { key: "{picker_key}", auto_focus: focus_on_entry, today, from: draft().from, to: draft().to, min_date, max_date, single_selection, week_start_index, show_week_numbers, labels: labels.clone(), embedded: true,
+                                ondatechange: move |selection| { draft_id.set("custom".into()); draft.set(selection); } }
+                        }
                         div { class: "ix-date-card-footer", crate::Button { aria_label: labels.done.clone(), onclick: move |_| done.call(()), "{labels.done}" } }
                     }
                 }
