@@ -86,9 +86,7 @@ pub fn DateTimeExamples() -> Element {
                     TimePicker { time: clock(), ontimechange: move |value| clock.set(value),
                         onselect: move |value: IxTime| last_selection.set(format!("Confirmed time: {value}")), }
                 }
-                div { h3 { "12-hour clock" }
-                    TimePicker { time: clock(), format: TimeFormat::Hms12, ontimechange: move |value| clock.set(value) }
-                }
+                ClockCompositionExample { time: clock(), ontimechange: move |value| clock.set(value) }
                 div { h3 { "15-minute intervals, 08:30–17:00" }
                     TimePicker { time: clock(), format: TimeFormat::Hm, minute_interval: 15,
                         min_time: IxTime::new(8,30,0,0), max_time: IxTime::new(17,0,0,0), ontimechange: move |value| clock.set(value) }
@@ -116,6 +114,86 @@ pub fn DateTimeExamples() -> Element {
                 DateDropdown { today, loading: true, onrangechange: |_| {} }
             }
             p { role: "status", "{last_selection}" }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ClockCompositionState {
+    hide_heading: bool,
+    embedded: bool,
+    show_confirmation: bool,
+    confirmed: Option<IxTime>,
+}
+
+impl Default for ClockCompositionState {
+    fn default() -> Self {
+        Self {
+            hide_heading: true,
+            embedded: true,
+            show_confirmation: true,
+            confirmed: None,
+        }
+    }
+}
+
+/// An inspection-time draft shares its controlled clock with the adjacent examples.
+#[component]
+pub fn ClockCompositionExample(time: IxTime, ontimechange: EventHandler<IxTime>) -> Element {
+    let mut preparation = use_signal(ClockCompositionState::default);
+    let current = preparation();
+    let draft_text = TimeFormat::Hms.format(time);
+    let confirmed_value = current
+        .confirmed
+        .map(|value| TimeFormat::Hms.format(value))
+        .unwrap_or_default();
+    let confirmation_text = current.confirmed.map_or_else(
+        || "No inspection time confirmed.".to_string(),
+        |value| {
+            format!(
+                "Confirmed inspection time: {}.",
+                TimeFormat::Hms12.format(value)
+            )
+        },
+    );
+    rsx! {
+        div { id: "clock-composition", class: "clock-composition",
+            h3 { "Inspection time · 12-hour clock" }
+            div { class: "clock-composition-options", role: "group", "aria-label": "Clock presentation",
+                label { r#for: "clock-hide-heading",
+                    input { id: "clock-hide-heading", r#type: "checkbox", checked: current.hide_heading,
+                        onchange: move |event: FormEvent| preparation.write().hide_heading = event.checked(),
+                    }
+                    "Hide heading"
+                }
+                label { r#for: "clock-embedded",
+                    input { id: "clock-embedded", r#type: "checkbox", checked: current.embedded,
+                        onchange: move |event: FormEvent| preparation.write().embedded = event.checked(),
+                    }
+                    "Embedded appearance"
+                }
+                label { r#for: "clock-show-confirmation",
+                    input { id: "clock-show-confirmation", r#type: "checkbox", checked: current.show_confirmation,
+                        onchange: move |event: FormEvent| preparation.write().show_confirmation = event.checked(),
+                    }
+                    "Show confirmation"
+                }
+            }
+            TimePicker { time, format: TimeFormat::Hms12, hide_header: current.hide_heading,
+                embedded: current.embedded, has_footer: current.show_confirmation,
+                ontimechange,
+                onselect: move |value| preparation.write().confirmed = Some(value),
+            }
+            p { id: "clock-composition-status", class: "clock-composition-status", role: "status", "aria-live": "polite",
+                "data-draft": draft_text.clone(), "data-confirmed": confirmed_value,
+                "data-hide-heading": current.hide_heading, "data-embedded": current.embedded,
+                "data-show-confirmation": current.show_confirmation,
+                "Draft {draft_text}. {confirmation_text} Confirm stores this time locally; changing the draft keeps the last confirmation."
+            }
+            Button { id: "clock-restore", variant: ButtonVariant::Secondary,
+                onclick: move |_| { preparation.set(ClockCompositionState::default()); ontimechange.call(IxTime::new(13, 7, 4, 0).unwrap()); },
+                "Restore clock"
+            }
         }
     }
 }

@@ -1313,6 +1313,9 @@ pub fn TimePicker(
     #[props(default = 1)] second_interval: u8,
     #[props(default = 100)] millisecond_interval: u16,
     #[props(default)] embedded: bool,
+    /// Override confirmation presence independently of embedded appearance.
+    /// When omitted, standalone clocks show confirmation and embedded clocks omit it.
+    has_footer: Option<bool>,
     #[props(default)] hide_header: bool,
     #[props(default)] disabled: bool,
     #[props(default)] auto_focus: bool,
@@ -1420,15 +1423,15 @@ pub fn TimePicker(
             (unit, interval, label, roving)
         })
         .collect();
-    let header = rsx! { div { class: "ix-clock-header", "{labels.header}"
-        if format.is_twelve_hour() { div { class: "ix-clock-meridiem",
-            crate::ToggleButton { pressed: time.hour < 12, disabled: disabled || !IxTime { hour: time.hour % 12, ..time }.within(min_time, max_time),
+    let period = format.is_twelve_hour().then(|| rsx! { div { class: "ix-clock-meridiem",
+            crate::ToggleButton { aria_label: labels.am.clone(), pressed: time.hour < 12, disabled: disabled || !IxTime { hour: time.hour % 12, ..time }.within(min_time, max_time),
                 onpressedchange: move |_| ontimechange.call(IxTime { hour: time.hour % 12, ..time }), "{labels.am}" }
-            crate::ToggleButton { pressed: time.hour >= 12, disabled: disabled || !IxTime { hour: time.hour % 12 + 12, ..time }.within(min_time, max_time),
+            crate::ToggleButton { aria_label: labels.pm.clone(), pressed: time.hour >= 12, disabled: disabled || !IxTime { hour: time.hour % 12 + 12, ..time }.within(min_time, max_time),
                 onpressedchange: move |_| ontimechange.call(IxTime { hour: time.hour % 12 + 12, ..time }), "{labels.pm}" }
-        } }
-    } };
-    let footer = if !embedded {
+    } });
+    let header_period = if hide_header { None } else { period.clone() };
+    let header = rsx! { div { class: "ix-clock-header", "{labels.header}" {header_period} } };
+    let footer = if has_footer.unwrap_or(!embedded) {
         Some(
             rsx! { crate::Button { disabled: disabled || !time.within(min_time, max_time), onclick: move |_| { if let Some(handler) = onselect { handler.call(time); } }, "{labels.confirm}" } },
         )
@@ -1436,6 +1439,7 @@ pub fn TimePicker(
         None
     };
     rsx! { DateTimeCard { header, footer, corners, embedded, hide_header,
+        if hide_header { if let Some(period) = period { div { class: "ix-clock-period-body", {period} } } }
         div { class: "ix-clock-columns",
             for (unit, interval, label, roving) in columns {
                 div { class: "ix-clock-column",
@@ -2262,3 +2266,7 @@ mod card_tests;
 #[cfg(test)]
 #[path = "datetime/text_format_tests.rs"]
 mod text_format_tests;
+
+#[cfg(test)]
+#[path = "datetime/clock_composition_tests.rs"]
+mod clock_composition_tests;
