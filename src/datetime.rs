@@ -619,10 +619,12 @@ pub fn DateTimeCard(
     #[props(default)] corners: DateTimeCorners,
     id: Option<String>,
     #[props(default)] class: String,
+    /// An optional accessible name for the existing card root.
+    aria_label: Option<String>,
     #[props(default)] onmounted: EventHandler<MountedEvent>,
 ) -> Element {
     let show_footer = has_footer.unwrap_or(footer.is_some());
-    rsx! { div { id, onmounted, class: "ix-date-time-card ix-date-corners-{corners.class()} {class}",
+    rsx! { div { id, onmounted, role: aria_label.as_ref().map(|_| "group"), aria_label, class: "ix-date-time-card ix-date-corners-{corners.class()} {class}",
         class: if embedded { "ix-date-embedded" }, class: if no_padding { "ix-date-no-padding" },
         class: if time_picker_appearance { "ix-date-time-picker-appearance" },
         if !hide_header { if let Some(header) = header { div { class: "ix-date-card-header", {header} } } }
@@ -709,6 +711,13 @@ pub fn DatePicker(
     #[props(default)] embedded: bool,
     #[props(default)] corners: DateTimeCorners,
     #[props(default)] labels: CalendarLabels,
+    /// Identity and native mount access for the existing picker root.
+    /// Mounted handles support host measurement and scrolling; no tab stop is added.
+    id: Option<String>,
+    #[props(default)] class: String,
+    /// Name the picker as a group without changing its internal control labels.
+    aria_label: Option<String>,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
     ondatechange: EventHandler<DateSelection>,
     onselect: Option<EventHandler<DateSelection>>,
 ) -> Element {
@@ -849,7 +858,7 @@ pub fn DatePicker(
     } else {
         None
     };
-    rsx! { DateTimeCard { header, footer, corners, embedded,
+    rsx! { DateTimeCard { header, footer, corners, embedded, id, class, aria_label, onmounted,
         div { class: "ix-calendar-grid", role: "grid", aria_label: format!("{} {}", labels.months[usize::from(visible.month - 1)], visible.year),
             onvisible: focus_initial_visible_day,
             div { class: "ix-calendar-row", role: "row",
@@ -1331,6 +1340,13 @@ pub fn TimePicker(
     #[props(default)] auto_focus: bool,
     #[props(default)] corners: DateTimeCorners,
     #[props(default)] labels: TimeLabels,
+    /// Identity and native mount access for the existing picker root.
+    /// Mounted handles support host measurement and scrolling; no tab stop is added.
+    id: Option<String>,
+    #[props(default)] class: String,
+    /// Name the picker as a group without changing its internal control labels.
+    aria_label: Option<String>,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
     ontimechange: EventHandler<IxTime>,
     onselect: Option<EventHandler<IxTime>>,
 ) -> Element {
@@ -1552,7 +1568,7 @@ pub fn TimePicker(
     } else {
         None
     };
-    rsx! { DateTimeCard { header, footer, corners, embedded, hide_header,
+    rsx! { DateTimeCard { header, footer, corners, embedded, hide_header, id, class, aria_label, onmounted,
         if hide_header { if let Some(period) = period { div { class: "ix-clock-period-body", {period} } } }
         div { class: "ix-clock-columns",
             for (unit, interval, label, roving, _) in columns {
@@ -1630,6 +1646,13 @@ pub fn DateTimePicker(
     #[props(default)] calendar_labels: CalendarLabels,
     #[props(default)] time_labels: TimeLabels,
     #[props(default = "Done".to_string())] done_label: String,
+    /// Identity and native mount access for the existing picker root.
+    /// Mounted handles support host measurement and scrolling; no tab stop is added.
+    id: Option<String>,
+    #[props(default)] class: String,
+    /// Name the picker as a group without changing its internal control labels.
+    aria_label: Option<String>,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
     ondatechange: EventHandler<DateSelection>,
     ontimechange: EventHandler<IxTime>,
     onselect: EventHandler<DateTimeSelection>,
@@ -1641,7 +1664,12 @@ pub fn DateTimePicker(
     } else {
         (None, None)
     };
-    rsx! { div { class: "ix-datetime-picker",
+    let root_class = if class.is_empty() {
+        "ix-datetime-picker".to_string()
+    } else {
+        format!("ix-datetime-picker {class}")
+    };
+    rsx! { div { id, class: root_class, role: aria_label.as_ref().map(|_| "group"), aria_label, onmounted,
         div { class: "ix-datetime-pickers",
             DatePicker { today, from, to, min_date, max_date, single_selection, disabled, auto_focus, week_start_index, show_week_numbers,
                 embedded: true, labels: calendar_labels, ondatechange }

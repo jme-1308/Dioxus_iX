@@ -178,6 +178,8 @@ mod pane_layers_review;
 mod pane_layout_review;
 #[path = "dioxus_first_probe/pane_opening_review.rs"]
 mod pane_opening_review;
+#[path = "dioxus_first_probe/picker_roots_review.rs"]
+mod picker_roots_review;
 #[path = "dioxus_first_probe/progress_transfer_review.rs"]
 mod progress_transfer_review;
 #[path = "dioxus_first_probe/release_news_review.rs"]
@@ -566,6 +568,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatmessages" {
         return rsx! { chat_messages_review::ChatMessagesPreview {} };
+    }
+    if scope == "?pickerroots" {
+        return rsx! { picker_roots_review::PickerRootsPreview {} };
     }
     if scope == "?menulabels" {
         return rsx! { menu_labels_review::MenuLabelsPreview {} };

@@ -45,7 +45,7 @@ pub fn DateTimeExamples() -> Element {
             p { "Single date, date range, bounds, and week numbers. The review clock is fixed to 16 October 2026." }
             div { class: "demo-date-row",
                 div { h3 { "Single selection" }
-                    DatePicker { today, from: single(), single_selection: true,
+                    DatePicker { id: "inspection-date-picker", aria_label: "Inspection date", today, from: single(), single_selection: true,
                         ondatechange: move |value: DateSelection| single.set(value.from),
                         onselect: move |value: DateSelection| last_selection.set(format!("Selected date: {}", value.from.unwrap())),
                     }
@@ -83,7 +83,7 @@ pub fn DateTimeExamples() -> Element {
             h2 { "Time picker" }
             div { class: "demo-date-row",
                 div { h3 { "Hours, minutes, seconds" }
-                    TimePicker { time: clock(), ontimechange: move |value| clock.set(value),
+                    TimePicker { id: "inspection-time-picker", aria_label: "Inspection time", time: clock(), ontimechange: move |value| clock.set(value),
                         onselect: move |value: IxTime| last_selection.set(format!("Confirmed time: {value}")), }
                 }
                 ClockCompositionExample { time: clock(), ontimechange: move |value| clock.set(value) }
@@ -179,7 +179,7 @@ pub fn ClockCompositionExample(time: IxTime, ontimechange: EventHandler<IxTime>)
                     "Show confirmation"
                 }
             }
-            TimePicker { time, format: TimeFormat::Hms12, hide_header: current.hide_heading,
+            TimePicker { id: "composed-time-picker", aria_label: "Inspection clock", time, format: TimeFormat::Hms12, hide_header: current.hide_heading,
                 embedded: current.embedded, has_footer: current.show_confirmation,
                 ontimechange,
                 onselect: move |value| preparation.write().confirmed = Some(value),
@@ -241,8 +241,7 @@ fn BoundaryDateTimeExample(today: IxDate) -> Element {
                     dates.set(DateSelection { from: Some(if enabled { first } else { today }), to: enabled.then_some(last) });
                 }, "Range selection" }
             }
-            div { id: "boundary-datetime-picker",
-                DateTimePicker { today, from: dates().from, to: dates().to,
+                DateTimePicker { id: "boundary-datetime-picker", aria_label: "Date-aware time selection", today, from: dates().from, to: dates().to,
                     min_date: Some(first), max_date: Some(last),
                     min_time: IxTime::new(13,10,0,0), max_time: IxTime::new(17,30,0,0),
                     time: time(), time_format: TimeFormat::Hm, single_selection: !range(),
@@ -250,7 +249,6 @@ fn BoundaryDateTimeExample(today: IxDate) -> Element {
                     ontimechange: move |value| time.set(value),
                     onselect: move |value: DateTimeSelection| confirmed.set(format!("Confirmed {}.", date_time_summary(value.dates, value.time))),
                 }
-            }
             p { role: "status", id: "boundary-datetime-status", "Selected {selected}. {confirmed}" }
             div { class: "demo-date-input-grid",
                 DateTimeInput { today, id: "boundary-datetime-input", label: "Validate a typed date and time",
