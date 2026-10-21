@@ -1550,7 +1550,7 @@ pub struct GridTemplates {
     pub lg: Option<GridTemplate>,
 }
 impl GridTemplates {
-    fn css(&self, id: &str) -> String {
+    fn css(&self, scope: &str) -> String {
         let rule = |template: Option<&GridTemplate>| {
             template
                 .map(|template| {
@@ -1566,25 +1566,39 @@ impl GridTemplates {
         let medium = rule(self.md.as_ref().or(self.lg.as_ref()));
         let small = rule(self.sm.as_ref().or(self.md.as_ref()).or(self.lg.as_ref()));
         format!(
-            "#{id}{{{large}}}@media(max-width:768px){{#{id}{{{medium}}}}}@media(max-width:576px){{#{id}{{{small}}}}}"
+            "[data-ix-grid-scope=\"{scope}\"]{{{large}}}@media(max-width:768px){{[data-ix-grid-scope=\"{scope}\"]{{{medium}}}}}@media(max-width:576px){{[data-ix-grid-scope=\"{scope}\"]{{{small}}}}}"
         )
     }
 }
 /// Responsive named-area grid. Use [`GridArea`] for area assignment.
+///
+/// `id` and `style` apply to the grid div; `onmounted` receives that div's
+/// Dioxus handle. Responsive rules retain a private scope when the ID changes.
 #[component]
 pub fn CssGrid(
     children: Element,
     #[props(default)] templates: GridTemplates,
+    #[props(default)] id: Option<String>,
     #[props(default)] class: String,
+    #[props(default)] style: String,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
 ) -> Element {
-    let id = use_signal(|| pattern_id("css-grid"))();
-    let css = templates.css(&id);
-    rsx! {style{{css}}div{id,class:"ix-css-grid {class}",{children}}}
+    let scope = use_hook(|| pattern_id("css-grid"));
+    let id = id.unwrap_or_else(|| scope.clone());
+    let css = templates.css(&scope);
+    rsx! {style{{css}}div{id,class:"ix-css-grid {class}",style,"data-ix-grid-scope":scope,onmounted,{children}}}
 }
 /// Item assigned to an area in a [`CssGrid`]. Invalid names fall back to auto placement.
+/// `id`, `class` and `onmounted` refer to the area div containing its children.
 #[component]
-pub fn GridArea(children: Element, name: String) -> Element {
-    rsx! {div{class:"ix-grid-area",style:if valid_grid_area(&name){Some(format!("grid-area:{name}"))}else{None},{children}}}
+pub fn GridArea(
+    children: Element,
+    name: String,
+    #[props(default)] id: Option<String>,
+    #[props(default)] class: String,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
+) -> Element {
+    rsx! {div{id,class:"ix-grid-area {class}",style:if valid_grid_area(&name){Some(format!("grid-area:{name}"))}else{None},onmounted,{children}}}
 }
 
 /// Viewport breakpoint and number of columns in [`LayoutAuto`].

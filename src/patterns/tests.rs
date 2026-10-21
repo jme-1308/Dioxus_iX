@@ -1,3 +1,6 @@
+#[path = "css_grid_tests.rs"]
+mod css_grid_tests;
+
 use super::*;
 use std::cell::RefCell;
 

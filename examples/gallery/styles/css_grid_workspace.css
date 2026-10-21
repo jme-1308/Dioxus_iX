@@ -1,0 +1,31 @@
+.css-grid-workspace-example{min-width:0;max-width:100%;margin-bottom:48px}
+.css-grid-workspace-example .css-grid-intro{max-width:72ch;line-height:1.55}
+.css-grid-workspace-options{display:flex;flex-wrap:wrap;gap:12px 24px;margin:20px 0 16px;font-size:14px;line-height:20px}
+.css-grid-workspace-options label{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.css-grid-workspace-options input{width:16px;height:16px;margin:0;flex:none;accent-color:var(--ix-color-primary)}
+.css-grid-workspace-options input:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}
+.css-grid-workspace-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:0 0 24px}
+.css-grid-space-status{font-size:12px;line-height:18px;color:var(--ix-color-text-secondary);font-variant-numeric:tabular-nums}
+.css-grid-inspection-layout{min-width:0;max-width:100%}
+.css-grid-inspection-layout>.ix-grid-area{min-width:0;overflow-wrap:anywhere}
+.css-grid-inspection-layout h3,.css-grid-saved h3{margin:0 0 12px;font-size:20px;line-height:28px;font-weight:600}
+.css-grid-inspection-layout p{font-size:14px;line-height:21px;max-width:72ch;margin:0 0 12px}
+.css-grid-overview{padding:16px 0;border-bottom:1px solid var(--ix-color-border)}
+.css-grid-overview .css-grid-selected{margin-bottom:0}
+.css-grid-equipment-list{display:flex;flex-direction:column;align-items:stretch;gap:8px;max-width:280px}
+.css-grid-equipment-list>.ix-button{justify-content:flex-start}
+.css-grid-editor{padding:20px;background:var(--ix-color-surface-1)}
+.css-grid-editor>.ix-field{margin-bottom:16px}
+.css-grid-editor .css-grid-hint{color:var(--ix-color-text-secondary);margin-top:12px}
+.css-grid-activity{padding:8px 0}
+.css-grid-activity p{color:var(--ix-color-text-secondary)}
+.css-grid-workspace-example .css-grid-status{margin:24px 0;font-size:14px;line-height:21px;overflow-wrap:anywhere}
+.css-grid-saved{margin:28px 0 20px;min-width:0}
+.css-grid-saved>p{font-size:14px;line-height:21px;max-width:72ch;color:var(--ix-color-text-secondary)}
+.css-grid-saved ol{margin:0;padding:0;list-style:none}
+.css-grid-saved li{padding:12px 0;border-bottom:1px solid var(--ix-color-border);overflow-wrap:anywhere}
+.css-grid-saved li>strong{display:block;font-size:16px;line-height:24px}
+.css-grid-saved li>span{font-size:14px;line-height:21px;color:var(--ix-color-text-secondary)}
+.css-grid-saved li>p{max-width:72ch;margin:8px 0 0;white-space:pre-wrap;font-size:14px;line-height:21px}
+.css-grid-workspace-example .ix-button{max-width:100%;white-space:normal;overflow-wrap:anywhere;height:auto;min-height:32px}
+@media(max-width:576px){.css-grid-workspace-options{flex-direction:column;gap:12px}.css-grid-editor{padding:16px}.css-grid-equipment-list{max-width:none}.css-grid-space-status{flex-basis:100%}}
