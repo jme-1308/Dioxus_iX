@@ -4,6 +4,7 @@ use dioxus_ix::*;
 
 #[path = "../../examples/gallery/chat_composer_review.rs"]
 mod gallery_composer;
+pub(super) use gallery_composer::{ChatComposerExample, STYLES as CHAT_COMPOSER_STYLES};
 
 #[component]
 pub fn ChatComposerPreview() -> Element {

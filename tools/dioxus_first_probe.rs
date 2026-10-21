@@ -31,6 +31,8 @@ mod chart_review;
 mod chart_workflows_review;
 #[path = "dioxus_first_probe/chat_composer_review.rs"]
 mod chat_composer_review;
+#[path = "dioxus_first_probe/chat_messages_review.rs"]
+mod chat_messages_review;
 #[path = "dioxus_first_probe/chat_workspace_review.rs"]
 mod chat_workspace_review;
 #[path = "dioxus_first_probe/chip_workflows_review.rs"]
@@ -541,6 +543,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatcomposer" {
         return rsx! { chat_composer_review::ChatComposerPreview {} };
+    }
+    if scope == "?chatmessages" {
+        return rsx! { chat_messages_review::ChatMessagesPreview {} };
     }
     if scope == "?applicationfocus" {
         return rsx! { application_focus_review::ApplicationFocusPreview {} };
