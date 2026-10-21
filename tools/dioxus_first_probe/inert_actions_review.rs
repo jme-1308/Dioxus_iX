@@ -2,9 +2,7 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
-#[allow(dead_code)]
-#[path = "../../examples/gallery/actions.rs"]
-mod gallery_actions;
+use crate::gallery_actions;
 
 #[component]
 pub fn InertActionsPreview() -> Element {

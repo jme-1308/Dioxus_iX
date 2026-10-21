@@ -35,7 +35,7 @@ pub fn ActionExamples() -> Element {
     rsx! {
         section { class: "demo-section", id: "buttons",
             h2 { "Buttons" }
-            p { "Primary, secondary, tertiary, subtle, and danger variants from the upstream button examples." }
+            p { id: "actions-help", "Primary, secondary, tertiary, subtle, and danger variants from the upstream button examples." }
             for variant in variants {
                 div { class: "demo-row",
                     span { class: "demo-label", "{variant.as_str()}" }
@@ -46,19 +46,20 @@ pub fn ActionExamples() -> Element {
                 }
             }
             div { class: "demo-row",
-                Button { loading: loading(), onclick: move |_| loading.set(true), "Start action" }
-                Button { variant: ButtonVariant::SubtleSecondary, onclick: move |_| { loading.set(false); last_action.set("Action reset".into()); }, "Reset loading" }
-                LinkButton { url: "https://github.com/siemens/ix", target: "_blank", "Upstream project" }
+                Button { id: "actions-start", aria_controls: "actions-status", "data-inspection-mode": toggle().to_string(), loading: loading(), onclick: move |_| loading.set(true), "Start action" }
+                Button { id: "actions-reset-loading", aria_controls: "actions-status", variant: ButtonVariant::SubtleSecondary, onclick: move |_| { loading.set(false); last_action.set("Action reset".into()); }, "Reset loading" }
+                LinkButton { id: "actions-upstream", aria_describedby: "actions-upstream-help", url: "https://github.com/siemens/ix", target: "_blank", "Upstream project" }
                 LinkButton { url: "#buttons", disabled: true, "Disabled link" }
             }
-            p { role: "status", "{last_action}" }
+            p { id: "actions-upstream-help", "Upstream project opens the Siemens iX repository in a new tab." }
+            p { id: "actions-status", role: "status", "{last_action}" }
             InertActionsExample {}
         }
         section { class: "demo-section", id: "icon-buttons",
             h2 { "Icon buttons" }
             div { class: "demo-row",
                 for size in [ButtonIconSize::Twelve, ButtonIconSize::Sixteen, ButtonIconSize::Twenty, ButtonIconSize::TwentyFour] {
-                    IconButton { icon: "add", label: format!("Add, {} pixel icon", size.pixels()), size, onclick: move |_| last_action.set(format!("{} pixel button clicked", size.pixels())) }
+                    IconButton { id: format!("actions-icon-{}", size.pixels()), aria_controls: "actions-status", aria_describedby: "actions-help", icon: "add", label: format!("Add, {} pixel icon", size.pixels()), size, onclick: move |_| last_action.set(format!("{} pixel button clicked", size.pixels())) }
                 }
                 IconButton { icon: "add", label: "Add item", variant: ButtonVariant::Primary, oval: true }
                 IconButton { icon: "trashcan", label: "Delete item", variant: ButtonVariant::DangerSecondary }
@@ -68,13 +69,14 @@ pub fn ActionExamples() -> Element {
         }
         section { class: "demo-section", id: "toggle-buttons",
             h2 { "Toggle buttons" }
+            p { id: "toggle-actions-help", "Toggle the pressed button and favorite states independently." }
             div { class: "demo-row",
-                ToggleButton { pressed: toggle(), icon: "check", onpressedchange: move |value| toggle.set(value), "Toggle button" }
+                ToggleButton { id: "actions-toggle", aria_controls: "toggle-status", aria_describedby: "toggle-actions-help", pressed: toggle(), icon: "check", onpressedchange: move |value| toggle.set(value), "Toggle button" }
                 ToggleButton { pressed: true, disabled: true, onpressedchange: |_| {}, "Disabled pressed" }
-                IconToggleButton { icon: "star", label: "Favorite", pressed: favorite(), onpressedchange: move |value| favorite.set(value) }
+                IconToggleButton { id: "actions-favorite", aria_controls: "toggle-status", aria_describedby: "toggle-actions-help", icon: "star", label: "Favorite", pressed: favorite(), onpressedchange: move |value| favorite.set(value) }
                 IconToggleButton { icon: "star", label: "Disabled favorite", pressed: true, disabled: true, onpressedchange: |_| {} }
             }
-            p { role: "status", "Toggle pressed: {toggle}. Favorite: {favorite}." }
+            p { id: "toggle-status", role: "status", "Toggle pressed: {toggle}. Favorite: {favorite}." }
         }
         section { class: "demo-section", id: "split-buttons",
             h2 { "Split button" }

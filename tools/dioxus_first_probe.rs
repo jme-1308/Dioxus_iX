@@ -3,6 +3,8 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 #[path = "dioxus_first_probe/account_menu_review.rs"]
 mod account_menu_review;
+#[path = "dioxus_first_probe/action_attributes_review.rs"]
+mod action_attributes_review;
 #[path = "dioxus_first_probe/application_focus_review.rs"]
 mod application_focus_review;
 #[path = "dioxus_first_probe/application_shell_review.rs"]
@@ -90,6 +92,9 @@ mod filter_keyboard_review;
 mod filter_layout_review;
 #[path = "dioxus_first_probe/flip_tile_workflow_review.rs"]
 mod flip_tile_workflow_review;
+#[allow(dead_code)]
+#[path = "../examples/gallery/actions.rs"]
+mod gallery_actions;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
 #[path = "dioxus_first_probe/grid_auto_page_review.rs"]
@@ -471,6 +476,9 @@ fn Preview() -> Element {
     }
     if scope == "?groupfeedback" {
         return rsx! { group_feedback_review::GroupFeedbackPreview {} };
+    }
+    if scope == "?actionattributes" {
+        return rsx! { action_attributes_review::ActionAttributesPreview {} };
     }
     if scope == "?inertactions" {
         return rsx! { inert_actions_review::InertActionsPreview {} };

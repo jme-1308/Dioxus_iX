@@ -121,6 +121,11 @@ impl StatusVariant {
     }
 }
 
+fn retain_native_action_attributes(attributes: &mut Vec<Attribute>, owned: &[&str]) {
+    // Optional typed props remain authoritative even when their value is None.
+    attributes.retain(|attribute| !owned.contains(&attribute.name));
+}
+
 /// A native button or styled anchor. Loading prevents activation just like disabled.
 ///
 /// Regular buttons consume the source `--ix-button-*` sizing and state variables,
@@ -128,6 +133,9 @@ impl StatusVariant {
 /// The `hover` and `active` classes expose the source visual-state aliases;
 /// `active` locks the pressed appearance without introducing a toggle state.
 /// Missing Brand values retain provisional public-source fallbacks.
+/// Global attributes and unowned events apply to the native control. Its class,
+/// id, navigation/form fields, native state, typed ARIA and click/mount handlers
+/// remain controlled by props, even when an optional prop is omitted.
 #[component]
 pub fn Button(
     children: Element,
@@ -152,7 +160,34 @@ pub fn Button(
     #[props(default)] class: String,
     #[props(default)] onmounted: Option<EventHandler<MountedEvent>>,
     onclick: Option<EventHandler<MouseEvent>>,
+    /// Native global metadata and events not owned by this component. Use typed
+    /// props for owned attributes, including optional values; raw aliases cannot
+    /// replace native state, classes, identity or internal activation handlers.
+    #[props(extends = GlobalAttributes)]
+    mut attributes: Vec<Attribute>,
 ) -> Element {
+    retain_native_action_attributes(
+        &mut attributes,
+        &[
+            "class",
+            "id",
+            "role",
+            "href",
+            "target",
+            "rel",
+            "form",
+            "type",
+            "disabled",
+            "inert",
+            "tabindex",
+            "aria-disabled",
+            "aria-busy",
+            "aria-label",
+            "aria-describedby",
+            "onclick",
+            "onmounted",
+        ],
+    );
     let binding = crate::dropdown::use_item_host("native-opt-in");
     let actual_id = id
         .filter(|id| !id.is_empty())
@@ -207,6 +242,7 @@ pub fn Button(
                 }
             },
             onclick: move |event| { if blocked || inert { event.prevent_default(); event.stop_propagation(); } else if let Some(handler) = onclick { handler.call(event); } },
+            ..attributes,
             {content}
         } }
     } else {
@@ -224,6 +260,7 @@ pub fn Button(
                 }
             },
             onclick: move |event| { if inert { event.prevent_default(); event.stop_propagation(); } else if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
+            ..attributes,
             {content}
         } }
     }
@@ -236,6 +273,9 @@ pub fn Button(
 /// theme or a component rule can also supply `--ix-icon-button-color` directly.
 /// Loading replaces the icon and prevents activation like disabled. Native form
 /// controls and the required explicit name remain Rust accessibility adapters.
+/// Global attributes and unowned events apply to the button. Its class, id,
+/// style, title/name, native state and typed events remain owned by props, even
+/// when omitted. Use `icon_color` or `class` for styling instead of raw `style`.
 #[component]
 pub fn IconButton(
     icon: String,
@@ -260,7 +300,35 @@ pub fn IconButton(
     onkeydown: Option<EventHandler<KeyboardEvent>>,
     onmounted: Option<EventHandler<MountedEvent>>,
     aria_hidden: Option<bool>,
+    /// Native global metadata and events not owned by this component. Use typed
+    /// props for owned attributes, including optional values; raw aliases cannot
+    /// replace native state, classes, identity or internal activation handlers.
+    #[props(extends = GlobalAttributes)]
+    mut attributes: Vec<Attribute>,
 ) -> Element {
+    retain_native_action_attributes(
+        &mut attributes,
+        &[
+            "class",
+            "id",
+            "style",
+            "title",
+            "type",
+            "disabled",
+            "inert",
+            "tabindex",
+            "aria-disabled",
+            "aria-busy",
+            "aria-label",
+            "aria-pressed",
+            "aria-expanded",
+            "aria-hidden",
+            "onclick",
+            "onmounted",
+            "onkeydown",
+            "onmousedown",
+        ],
+    );
     let binding = crate::dropdown::use_item_host("native-opt-in");
     let actual_id = id
         .filter(|id| !id.is_empty())
@@ -312,6 +380,7 @@ pub fn IconButton(
         },
         onclick: move |event| { if inert { event.prevent_default(); event.stop_propagation(); } else if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
         ..native_events,
+        ..attributes,
         if loading { Spinner { size: loading_size, hide_track: true } }
         else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }
     } }
@@ -321,6 +390,9 @@ pub fn IconButton(
 ///
 /// Omit `url` for a destination-free link. Native anchor keyboard behavior is
 /// preserved; consumers can cancel navigation by calling `event.prevent_default()` in `onclick`.
+/// Global metadata, ids, mount events and other unowned events reach the anchor.
+/// Class, navigation fields, role/tabindex, disabled state and clicks remain
+/// controlled by typed props, including omitted optional values.
 #[component]
 pub fn LinkButton(
     children: Element,
@@ -329,12 +401,32 @@ pub fn LinkButton(
     #[props(default = "_self".to_string())] target: String,
     #[props(default)] class: String,
     onclick: Option<EventHandler<MouseEvent>>,
+    /// Native global metadata and events not owned by this component. Use typed
+    /// props for owned attributes, including optional values; raw aliases cannot
+    /// replace native state, classes, identity or internal activation handlers.
+    #[props(extends = GlobalAttributes)]
+    mut attributes: Vec<Attribute>,
 ) -> Element {
+    retain_native_action_attributes(
+        &mut attributes,
+        &[
+            "class",
+            "href",
+            "target",
+            "rel",
+            "role",
+            "tabindex",
+            "aria-disabled",
+            "disabled",
+            "onclick",
+        ],
+    );
     rsx! { a {
         class: "ix-link-button {class}", href: if disabled { None } else { url },
         target, rel: "noopener noreferrer", aria_disabled: disabled,
         role: disabled.then_some("link"), tabindex: disabled.then_some(-1),
         onclick: move |event| { if disabled { event.prevent_default(); event.stop_propagation(); } else if let Some(handler) = onclick { handler.call(event); } },
+        ..attributes,
         crate::Icon {name:"chevron-right-small",size:16,class:"ix-link-button-icon"}
         span {class:"ix-link-button-label",{children}}
     } }
@@ -345,6 +437,8 @@ pub fn LinkButton(
 /// Supports the six current source variants and semantic selected-state tokens.
 /// A click requests the inverse of the supplied `pressed` value; it never changes
 /// that value internally. Disabled and loading controls do not emit requests.
+/// Global metadata, ids, mount events and unowned events reach the native button;
+/// typed classes, pressed/disabled/loading state, name and activation stay owned.
 /// `active` locks the source host active appearance; `ix-toggle-active` exposes
 /// the source inner active diagnostic alias independently of the selected state.
 #[component]
@@ -359,7 +453,26 @@ pub fn ToggleButton(
     aria_label: Option<String>,
     #[props(default)] class: String,
     onpressedchange: EventHandler<bool>,
+    /// Native global metadata and events not owned by this component. Use typed
+    /// props for owned attributes, including optional values; raw aliases cannot
+    /// replace native state, classes, identity or internal activation handlers.
+    #[props(extends = GlobalAttributes)]
+    mut attributes: Vec<Attribute>,
 ) -> Element {
+    retain_native_action_attributes(
+        &mut attributes,
+        &[
+            "class",
+            "type",
+            "disabled",
+            "tabindex",
+            "aria-pressed",
+            "aria-disabled",
+            "aria-busy",
+            "aria-label",
+            "onclick",
+        ],
+    );
     let blocked = disabled || loading;
     rsx! { button {
         class: "ix-button ix-button-tokenized ix-button-selectable ix-toggle-button-native ix-button-{variant.as_str()} {class}",
@@ -367,6 +480,7 @@ pub fn ToggleButton(
         r#type: "button", disabled: blocked, tabindex: if blocked { -1 } else { 0 },
         aria_pressed: pressed, aria_disabled: blocked, aria_busy: loading, aria_label,
         onclick: move |_| { if !blocked { onpressedchange.call(!pressed); } },
+        ..attributes,
         if loading { span { class: "ix-button-loading", Spinner { size: SpinnerSize::Sm, hide_track: true } } }
         else if let Some(name) = icon.filter(|name| !name.is_empty()) {
             span { class: "ix-button-icon-start ix-toggle-button-icon", crate::Icon { name, size: 20, class: "ix-toggle-button-glyph" } }
@@ -385,6 +499,8 @@ pub fn ToggleButton(
 /// stays constant as `pressed` changes. Loading replaces the glyph and blocks
 /// requests. `active` locks the source host active look; `ix-toggle-active`
 /// exposes its separate inner active diagnostic alias.
+/// Global metadata, ids, mount events and unowned events reach the native button;
+/// typed classes, title/name, pressed/disabled/loading state and activation stay owned.
 #[component]
 pub fn IconToggleButton(
     icon: String,
@@ -397,7 +513,27 @@ pub fn IconToggleButton(
     #[props(default)] loading: bool,
     #[props(default)] class: String,
     onpressedchange: EventHandler<bool>,
+    /// Native global metadata and events not owned by this component. Use typed
+    /// props for owned attributes, including optional values; raw aliases cannot
+    /// replace native state, classes, identity or internal activation handlers.
+    #[props(extends = GlobalAttributes)]
+    mut attributes: Vec<Attribute>,
 ) -> Element {
+    retain_native_action_attributes(
+        &mut attributes,
+        &[
+            "class",
+            "title",
+            "type",
+            "disabled",
+            "tabindex",
+            "aria-pressed",
+            "aria-disabled",
+            "aria-busy",
+            "aria-label",
+            "onclick",
+        ],
+    );
     let blocked = disabled || loading;
     let loading_size = match (!icon.is_empty(), size) {
         (true, ButtonIconSize::Twelve) => SpinnerSize::Xxs,
@@ -411,6 +547,7 @@ pub fn IconToggleButton(
         aria_disabled: blocked, aria_pressed: pressed, aria_label: label.clone(),
         title: label, aria_busy: loading,
         onclick: move |_| { if !blocked { onpressedchange.call(!pressed); } },
+        ..attributes,
         if loading { Spinner { size: loading_size, hide_track: true } }
         else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }
     } }
@@ -1047,3 +1184,6 @@ mod status_help_tests;
 
 #[cfg(test)]
 mod inert_tests;
+
+#[cfg(test)]
+mod native_attribute_tests;
