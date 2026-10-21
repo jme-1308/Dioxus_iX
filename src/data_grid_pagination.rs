@@ -10,6 +10,9 @@ use std::ops::Range;
 /// pending/error presentation, stale-response rejection and cancellation.
 /// Selection remains stable-ID based across pages; header selection and
 /// autosizing cover only the loaded page. Managed row dragging is unavailable.
+/// Grouped pages additionally supply full matching group summaries; group
+/// selection and CSV/global member access remain application-owned. Treegrid
+/// positions are page-local, while pagination announces global logical rows.
 /// Client-side projection and CSV helpers remain client-side operations on
 /// their explicitly supplied rows; they do not fetch unloaded host pages.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,11 +32,11 @@ impl DataGridRowModel {
     ) -> Vec<&'a DataGridRow> {
         match self {
             Self::Client => state.expanded_page_rows_with_columns(rows, columns),
-            Self::Page { total_rows } => state.pagination.map_or_else(Vec::new, |request| {
-                rows.iter()
-                    .take(request.info(total_rows).range.len())
-                    .collect()
-            }),
+            Self::Page { .. } => self
+                .selection_rows(state, rows, columns)
+                .into_iter()
+                .filter(|row| state.grouping.row_visible(row))
+                .collect(),
         }
     }
     pub(crate) fn selection_rows<'a>(
@@ -44,7 +47,11 @@ impl DataGridRowModel {
     ) -> Vec<&'a DataGridRow> {
         match self {
             Self::Client => state.visible_rows_with_columns(rows, columns),
-            Self::Page { .. } => self.projected_rows(state, rows, columns),
+            Self::Page { total_rows } => state.pagination.map_or_else(Vec::new, |request| {
+                rows.iter()
+                    .take(request.info(total_rows).range.len())
+                    .collect()
+            }),
         }
     }
 }
@@ -155,4 +162,10 @@ pub(crate) fn auto_page_request_for_size(
     let first = pagination.info(total_rows).range.start;
     let effective = DataGridPagination::new(first / page_size, page_size).info(total_rows);
     Some(DataGridPagination::new(effective.page, page_size))
+}
+
+// Each loaded record can require all of its ancestors. This conservative bound
+// does not change when the owner loads a different page or collapses groups.
+pub(crate) fn host_group_page_size(slot_budget: usize, group_depth: usize) -> usize {
+    (slot_budget / group_depth.saturating_add(1)).max(1)
 }

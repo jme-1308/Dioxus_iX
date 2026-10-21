@@ -209,7 +209,7 @@ fn actual_group_auto_refreshes_on_expansion_filter_and_current_membership_with_c
 }
 
 #[test]
-fn actual_group_auto_defers_until_edit_release_and_never_accepts_host_grouping() {
+fn actual_group_auto_defers_until_edit_release_and_rejects_host_groups_without_metadata() {
     let _guard = crate::test_event_converter_guard();
     dioxus::html::set_event_converter(Box::new(GroupAutoConverter));
     let (mut dom, data, mut attrs) = group_setup();
@@ -259,6 +259,6 @@ fn actual_group_auto_defers_until_edit_release_and_never_accepts_host_grouping()
     settle_render(&mut dom, &mut attrs);
     assert!(data.requests.borrow().is_empty());
     let html = dioxus_ssr::render(&dom);
-    assert!(html.contains("Grouping requires client rows."));
+    assert!(html.contains("Grouped host pages require group metadata."));
     assert!(!html.contains("data-row-id="));
 }

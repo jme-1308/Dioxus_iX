@@ -114,7 +114,7 @@ fn actual_group_edits_regroup_by_identity_and_unsupported_modes_never_render_fal
     assert_eq!(data.rows.get().unwrap().peek().iter().find(|item|item.id==row).unwrap().value("status"),"Warning");
     assert_eq!(data.state.get().unwrap().peek().group_rows(&data.rows.get().unwrap().peek(),&grouping_columns(),&path(&[("status","Warning")])).len(),2);
     dom.in_runtime(||data.model.get().unwrap().set(crate::DataGridRowModel::Page{total_rows:50}));settle_render(&mut dom,&mut attrs);
-    let html=dioxus_ssr::render(&dom);assert!(html.contains("Grouping requires client rows."));assert!(!html.contains("data-row-id=")&&!html.contains("data-group-path="));
+    let html=dioxus_ssr::render(&dom);assert!(html.contains("Grouped host pages require group metadata."));assert!(!html.contains("data-row-id=")&&!html.contains("data-group-path="));
     dom.in_runtime(||{data.model.get().unwrap().set(crate::DataGridRowModel::Client);data.auto.get().unwrap().set(true);});settle_render(&mut dom,&mut attrs);
     let html=dioxus_ssr::render(&dom);assert!(!html.contains("Automatic page sizing is unavailable while grouping."));assert!(html.contains("data-row-id="));
     dom.in_runtime(||{data.auto.get().unwrap().set(false);data.state.get().unwrap().with_mut(|state|state.grouping=DataGridGrouping::default());});settle_render(&mut dom,&mut attrs);
@@ -124,4 +124,9 @@ fn actual_group_edits_regroup_by_identity_and_unsupported_modes_never_render_fal
 mod group_auto_tests {
     use super::*;
     include!("group_auto_tests.rs");
+}
+
+mod host_group_tests {
+    use super::*;
+    include!("host_group_tests.rs");
 }

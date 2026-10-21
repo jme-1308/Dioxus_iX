@@ -4,7 +4,7 @@
 //! resizing, content autosizing and stable-ID row/column movement. It is an independent Dioxus component;
 //! it does not embed the AG Grid JavaScript engine or implement its plugin API.
 use crate::data_grid_columns::{ColumnTrack, column_widths, column_window};
-use crate::data_grid_group::{GroupSlot, group_slots};
+use crate::data_grid_group::{GroupSlot, group_slots, validate_page_groups};
 use crate::{
     DataGridCellContext, DataGridCellEditor, DataGridCellRender, DataGridEditorContext,
     DataGridRowModel, DataGridValueType, Icon,
@@ -420,7 +420,8 @@ pub struct DataGridState {
     /// Additional priorities after the primary. Use `sort_chain` for the
     /// normalized effective order and `cycle_sort_with_append` for Shift sorting.
     pub secondary_sorts: Vec<(String, DataGridSortDirection)>,
-    /// Opt-in client grouping. Collapse affects visual slots, not logical records.
+    /// Opt-in grouping. Host `Page` rows require explicit group metadata.
+    /// Collapse affects visual slots, not logical records.
     pub grouping: DataGridGrouping,
     pub filters: BTreeMap<String, DataGridTextFilter>,
     /// IDs absent here follow the rows' input order. Stale IDs are ignored.
@@ -1338,6 +1339,15 @@ pub fn DataGrid(
     /// Pagination is required; no client projection is used as a fallback.
     #[props(default)]
     row_model: DataGridRowModel,
+    /// Required for grouped `Page` rows: global matching group counts and
+    /// selections accepted atomically with the already clustered loaded page.
+    /// The grid validates metadata and never applies a client query fallback.
+    #[props(default)]
+    page_groups: Option<Vec<crate::DataGridPageGroup>>,
+    /// Host-wide group selection request. Without this handler host group
+    /// checkboxes are disabled; header selection still covers loaded records.
+    #[props(default)]
+    onpagegroupselect: Option<EventHandler<crate::DataGridPageGroupSelection>>,
     /// Accepted edits are requests; apply them to the controlled `rows`.
     /// Client rows are sorted/filtered again; host pages keep accepted order.
     /// Enter/F2, double-click and
@@ -1386,7 +1396,9 @@ pub fn DataGrid(
     /// Request a controlled page size that fits the measured scroll surface.
     /// Grouped client rows use a conservative logical size fitting every page
     /// window, counting expanded ancestors as visual rows. At least one logical
-    /// record is retained even when its ancestry requires scrolling.
+    /// record is retained even when its ancestry requires scrolling. Host groups
+    /// conservatively budget one record plus every ancestor, independent of
+    /// current page content or expansion.
     /// Active edits defer requests until saved/canceled. Disabling auto keeps
     /// the current controlled size; no manual preference is stored internally.
     #[props(default)]
@@ -1461,18 +1473,30 @@ pub fn DataGrid(
     let missing_host_pagination =
         matches!(row_model, DataGridRowModel::Page { .. }) && state.pagination.is_none();
     let grouping_requested = !state.grouping.columns.is_empty();
-    let grouping_error = if grouping_requested && row_model != DataGridRowModel::Client {
-        Some("Grouping requires client rows.")
-    } else {
-        None
-    };
+    let host_group_metadata =
+        (grouping_requested && row_model != DataGridRowModel::Client).then(|| {
+            page_groups
+                .as_deref()
+                .ok_or("Grouped host pages require group metadata.")
+                .and_then(|summaries| {
+                    validate_page_groups(&full_visible, &state.grouping, summaries)
+                })
+        });
+    let grouping_error = host_group_metadata
+        .as_ref()
+        .and_then(|result| result.as_ref().err())
+        .copied();
+    let host_group_metadata = host_group_metadata.and_then(Result::ok).unwrap_or_default();
     let grouped = grouping_requested && grouping_error.is_none();
-    let auto_capacity = (grouped && auto_page_size).then(|| {
-        Rc::new(crate::data_grid_group::GroupAutoCapacity::new(
-            &full_visible,
-            &state.grouping,
-        ))
-    });
+    let host_group_depth =
+        (grouped && row_model != DataGridRowModel::Client).then(|| state.grouping.columns().len());
+    let auto_capacity =
+        (grouped && row_model == DataGridRowModel::Client && auto_page_size).then(|| {
+            Rc::new(crate::data_grid_group::GroupAutoCapacity::new(
+                &full_visible,
+                &state.grouping,
+            ))
+        });
     let measured_height = use_hook(|| Rc::new(Cell::new(None::<f64>)));
     let auto_state = state.clone();
     let capacity_profile = auto_capacity.clone();
@@ -1489,7 +1513,15 @@ pub fn DataGrid(
         let Some((pagination, height)) = auto_state.pagination.zip(measured_height.get()) else {
             return;
         };
-        let request = if let Some(capacity) = &capacity_profile {
+        let request = if let Some(depth) = host_group_depth {
+            crate::data_grid_pagination::auto_page_capacity(height, row_height).and_then(|budget| {
+                crate::data_grid_pagination::auto_page_request_for_size(
+                    pagination,
+                    full_count,
+                    crate::data_grid_pagination::host_group_page_size(budget, depth),
+                )
+            })
+        } else if let Some(capacity) = &capacity_profile {
             crate::data_grid_pagination::auto_page_capacity(height, row_height).and_then(|budget| {
                 crate::data_grid_pagination::auto_page_request_for_size(
                     pagination,
@@ -1519,17 +1551,28 @@ pub fn DataGrid(
             &state.pagination,
             &full_count,
             &edit_active,
+            &host_group_depth,
         ),
         move |_| report_capacity.call(None),
     ));
     let page = state.pagination_info(full_count);
+    let page_start = if page.range.is_empty() {
+        0
+    } else {
+        page.range.start + 1
+    };
     let page_rows = if row_model == DataGridRowModel::Client && state.pagination.is_some() {
         Rc::new(full_visible[page.range.clone()].to_vec())
     } else {
         full_visible.clone()
     };
     let (slots, aria_rows) = if grouped {
-        group_slots(&full_visible, &state.grouping, page.range.clone())
+        let range = if row_model == DataGridRowModel::Client {
+            page.range.clone()
+        } else {
+            0..full_visible.len()
+        };
+        group_slots(&full_visible, &state.grouping, range)
     } else if grouping_error.is_some() {
         (Vec::new(), full_count)
     } else {
@@ -1942,16 +1985,17 @@ pub fn DataGrid(
             let displayed = row_model.projected_rows(&edit_state, records, &edit_columns);
             if let Some(index) = displayed.iter().position(|row| row.id == session.row) {
                 let (visual_index, visual_total) = if grouped {
-                    let full: Vec<_> = edit_state
-                        .visible_rows_with_columns(records, &edit_columns)
+                    let full: Vec<_> = row_model
+                        .selection_rows(&edit_state, records, &edit_columns)
                         .into_iter()
                         .cloned()
                         .collect();
-                    let (slots, _) = group_slots(
-                        &full,
-                        &edit_state.grouping,
-                        edit_state.pagination_info(full.len()).range,
-                    );
+                    let range = if row_model == DataGridRowModel::Client {
+                        edit_state.pagination_info(full.len()).range
+                    } else {
+                        0..full.len()
+                    };
+                    let (slots, _) = group_slots(&full, &edit_state.grouping, range);
                     let index=slots.iter().position(|slot|matches!(slot,GroupSlot::Record{row,..} if full[*row].id==session.row)).unwrap_or(index);
                     (index, slots.len())
                 } else {
@@ -2243,11 +2287,11 @@ pub fn DataGrid(
                 div { class: "ix-data-grid-body", role: "rowgroup", style: "height:{slot_count as u64 * u64::from(row_height)}px",
                     for slot_index in rendered {
                         match &slots[slot_index] {
-                            GroupSlot::Group {path,count,aria_index,range} => rsx! { GridGroupRecord {key:"group:{path.key()}",path:path.clone(),count:*count,index:slot_index,aria_index:*aria_index,row_height,members:full_visible[range.clone()].iter().map(|row|row.id.clone()).collect::<Vec<_>>(),rows:callback_rows.clone(),columns:columns.clone(),state:record_state.clone(),onstatechange,focused,onnavigate:navigate_group,editing,edit_action} },
+                            GroupSlot::Group {path,count,aria_index,range} => rsx! { GridGroupRecord {key:"group:{path.key()}",path:path.clone(),count:host_group_metadata.get(path).map_or(*count,|group|group.count),host_selected_count:host_group_metadata.get(path).map(|group|group.selected_count),onpagegroupselect,index:slot_index,aria_index:*aria_index,row_height,members:full_visible[range.clone()].iter().map(|row|row.id.clone()).collect::<Vec<_>>(),rows:callback_rows.clone(),columns:columns.clone(),state:record_state.clone(),onstatechange,focused,onnavigate:navigate_group,editing,edit_action} },
                             GroupSlot::Record {row,aria_index} => {
                                 let index=record_slots.iter().position(|slot|*slot==slot_index).expect("record slot");
                                 rsx! { GridRecord { key: "row:{visible[index].id.len()}:{visible[index].id}", row: visible[index].clone(), row_label_column: row_label_column.clone(), columns: columns.clone(), column_indices:column_indices.clone(), rows: callback_rows.clone(), state: record_state.clone(),
-                                    onstatechange, row_model, dragging, drop_target, tooltip_delay_ms, index, visual_index:grouped.then_some(slot_index),logical_index:grouped.then_some(*row),aria_index:grouped.then_some(*aria_index),level:grouped.then_some(state.grouping.columns().len()+1),page_offset:page.range.start, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: if grouped {index==0} else {index==window.start}, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
+                                    onstatechange, row_model, dragging, drop_target, tooltip_delay_ms, index, visual_index:grouped.then_some(slot_index),logical_index:grouped.then_some(if row_model==DataGridRowModel::Client {*row} else {page.range.start.saturating_add(*row)}),aria_index:grouped.then_some(*aria_index),level:grouped.then_some(state.grouping.columns().len()+1),page_offset:page.range.start, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: if grouped {index==0} else {index==window.start}, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
                                 } }
                             }
                         }
@@ -2270,6 +2314,9 @@ pub fn DataGrid(
                             next.pagination=Some(crate::DataGridPagination::new(0,requested.max(1)));
                             onstatechange.call(next);
                         }
+                    }
+                    if grouped && row_model != DataGridRowModel::Client {
+                        span {class:"ix-data-grid-page-position",role:"status","{page_start}–{page.range.end} of {full_count} {capacity_label}"}
                     }
                     if auto_page_size {span {class:"ix-data-grid-page-capacity","{page.page_size} {capacity_label}"}}
                 }
@@ -2645,6 +2692,8 @@ fn GridFilterInput(
 fn GridGroupRecord(
     path: DataGridGroupPath,
     count: usize,
+    host_selected_count: Option<usize>,
+    onpagegroupselect: Option<EventHandler<crate::DataGridPageGroupSelection>>,
     index: usize,
     aria_index: usize,
     row_height: u32,
@@ -2670,13 +2719,16 @@ fn GridGroupRecord(
     let mounted = use_grid_focus_lane(Some(focus.clone()), None);
     let selection_mounted = use_grid_focus_lane(Some(selection_focus.clone()), None);
     let expanded = state.group_expanded(&path);
-    let selected = members
-        .iter()
-        .filter(|id| state.selected.contains(*id))
-        .count();
+    let host_owned = host_selected_count.is_some();
+    let selected = host_selected_count.unwrap_or_else(|| {
+        members
+            .iter()
+            .filter(|id| state.selected.contains(*id))
+            .count()
+    });
     let (checked, mixed) = (
-        !members.is_empty() && selected == members.len(),
-        selected > 0 && selected < members.len(),
+        count > 0 && selected == count,
+        selected > 0 && selected < count,
     );
     let (column, value) = path
         .as_slice()
@@ -2714,9 +2766,12 @@ fn GridGroupRecord(
             }
         },
         div {class:"ix-data-grid-selection",role:"gridcell","aria-colindex":1,
-            GridCheckbox {label:format!("Select group {label}"),checked,mixed,onmounted:selection_mounted,
+            GridCheckbox {label:format!("Select group {label}"),checked,mixed,disabled:host_owned&&onpagegroupselect.is_none(),onmounted:selection_mounted,
                 onfocus:move |_|{context.focused(Some(selection_focus.clone()));focused.set(Some(selection_focus.clone()));if editing.peek().is_some(){edit_action.call(GridEditAction::Commit{tab:None,restore_focus:false});}},
-                onchange:move |_|{let mut next=selection_state.as_ref().clone();next.select_group(&selection_rows,&selection_columns,&selection_path,!checked);onstatechange.call(next);}
+                onchange:move |_|{
+                    if host_owned {if let Some(handler)=onpagegroupselect {handler.call(crate::DataGridPageGroupSelection{path:selection_path.clone(),checked:!checked});}}
+                    else {let mut next=selection_state.as_ref().clone();next.select_group(&selection_rows,&selection_columns,&selection_path,!checked);onstatechange.call(next);}
+                }
             }
         }
         div {role:"gridcell","aria-colindex":2,"aria-colspan":columns.len().max(1),

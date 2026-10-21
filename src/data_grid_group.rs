@@ -1,4 +1,4 @@
-//! Pure controlled grouping for client-side grid rows.
+//! Pure controlled grouping and explicit host-page group summaries.
 use crate::{DataGridColumn, DataGridRow, DataGridState};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -31,6 +31,21 @@ impl DataGridGroupPath {
             .map(|(column, value)| format!("{}:{column}{}:{value}", column.len(), value.len()))
             .collect()
     }
+}
+/// Full matching descendants of a host-page group, including unloaded and
+/// collapsed records. Accept these summaries atomically with the host page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataGridPageGroup {
+    pub path: DataGridGroupPath,
+    pub count: usize,
+    pub selected_count: usize,
+}
+/// Host-owned selection request. The application owns global selection policy
+/// and accepts updated rows, state and summaries; the grid never fetches members.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataGridPageGroupSelection {
+    pub path: DataGridGroupPath,
+    pub checked: bool,
 }
 /// Group by raw cell values in these columns. Duplicate column IDs use their
 /// first occurrence; missing/blank values form an explicit empty-string group.
@@ -107,6 +122,36 @@ pub(crate) fn cluster_rows<'a>(
     cluster(rows, &grouping.columns())
 }
 impl DataGridState {
+    /// Summarize this explicitly supplied full client model in grouped display
+    /// order, after the current typed query. Includes collapsed/off-page leaves
+    /// and current stable-ID selection; this helper never fetches host records.
+    pub fn page_group_metadata(
+        &self,
+        rows: &[DataGridRow],
+        columns: &[DataGridColumn],
+    ) -> Vec<DataGridPageGroup> {
+        let mut positions = BTreeMap::new();
+        let mut summaries: Vec<DataGridPageGroup> = Vec::new();
+        let grouping_columns = self.grouping.columns();
+        for row in self.visible_rows_with_columns(rows, columns) {
+            let mut path = DataGridGroupPath::default();
+            for column in &grouping_columns {
+                path.0.push(((*column).into(), row.value(column).into()));
+                let index = *positions.entry(path.clone()).or_insert_with(|| {
+                    let index = summaries.len();
+                    summaries.push(DataGridPageGroup {
+                        path: path.clone(),
+                        count: 0,
+                        selected_count: 0,
+                    });
+                    index
+                });
+                summaries[index].count += 1;
+                summaries[index].selected_count += usize::from(self.selected.contains(&row.id));
+            }
+        }
+        summaries
+    }
     /// All matching group paths in display order, including collapsed groups.
     pub fn group_paths(
         &self,
@@ -216,6 +261,56 @@ impl DataGridState {
             .collect()
     }
 }
+/// Validate the supplied page itself without refiltering, sorting or clustering
+/// it. Off-page summaries are allowed; every loaded ancestor must be covered.
+pub(crate) fn validate_page_groups(
+    rows: &[DataGridRow],
+    grouping: &DataGridGrouping,
+    summaries: &[DataGridPageGroup],
+) -> Result<BTreeMap<DataGridGroupPath, DataGridPageGroup>, &'static str> {
+    let mut metadata = BTreeMap::new();
+    for summary in summaries {
+        if !grouping.accepts(&summary.path) {
+            return Err("Host group metadata contains an invalid path.");
+        }
+        if summary.selected_count > summary.count {
+            return Err("Host group selection exceeds its row count.");
+        }
+        if metadata
+            .insert(summary.path.clone(), summary.clone())
+            .is_some()
+        {
+            return Err("Host group metadata contains duplicate paths.");
+        }
+    }
+    let columns = grouping.columns();
+    let mut last = vec![None::<DataGridGroupPath>; columns.len()];
+    let mut seen = BTreeSet::new();
+    let mut counts = BTreeMap::<DataGridGroupPath, usize>::new();
+    for row in rows {
+        let mut path = DataGridGroupPath::default();
+        for (depth, column) in columns.iter().enumerate() {
+            path.0.push(((*column).into(), row.value(column).into()));
+            if last[depth].as_ref() != Some(&path) {
+                if !seen.insert(path.clone()) {
+                    return Err("Host page groups must be contiguous.");
+                }
+                last[depth] = Some(path.clone());
+            }
+            *counts.entry(path.clone()).or_default() += 1;
+        }
+    }
+    for (path, loaded) in counts {
+        let summary = metadata
+            .get(&path)
+            .ok_or("Host group metadata is missing a loaded ancestor.")?;
+        if summary.count < loaded {
+            return Err("Host group count is smaller than its loaded records.");
+        }
+    }
+    Ok(metadata)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GroupSlot {
     Group {
