@@ -14,7 +14,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
 };
 
 static GRID_ID: AtomicUsize = AtomicUsize::new(1);
@@ -2458,15 +2457,15 @@ fn GridCell(
         }),
         None,
     );
-    let mut generation = use_signal(|| 0_u64);
-    let mut show_tooltip = use_signal(|| false);
-    let mut point = use_signal(|| (0.0_f64, 0.0_f64));
     let tooltip_id = use_hook(|| {
         format!(
             "ix-grid-tooltip-{}",
             GRID_ID.fetch_add(1, Ordering::Relaxed)
         )
     });
+    let tooltip_controller = crate::use_tooltip(tooltip_id.clone());
+    let anchor_id = format!("{tooltip_id}-anchor");
+    let tooltip_binding = crate::use_tooltip_anchor(tooltip_controller.clone(), anchor_id.clone());
     let drag_id = row_id.clone();
     let key_id = row_id.clone();
     let can_reorder = state.can_reorder();
@@ -2527,24 +2526,55 @@ fn GridCell(
     let content_focus_column = column.id.clone();
     let text_entry = matches!(&column.cell_editor, DataGridCellEditor::Text);
     let type_to_edit = text_entry || matches!(&column.cell_editor, DataGridCellEditor::Number(_));
-    rsx! { div { onmounted: cell_mount, class: "ix-data-grid-cell", role: "gridcell", "data-column-id": column.id.clone(), style:"grid-column:{column_index+2}", "aria-colindex":column_index+2,
-        "aria-readonly": (!editable).to_string(), "data-editing": session.is_some().to_string(), "aria-describedby": if show_tooltip() { Some(tooltip_id.clone()) } else { None },
+    let help_enabled = editing.read().is_none() && session.is_none() && !tooltip.trim().is_empty();
+    let actual_cell_focus = !suppress_cell_focus
+        && focus_context
+            .state
+            .read()
+            .active
+            .as_ref()
+            .is_some_and(|focus| {
+                focus.row == row_id && focus.lane == GridLane::Cell(column.id.clone())
+            });
+    let focus_help = tooltip_binding.clone();
+    // Native return focus can arrive while the outgoing editor is retained.
+    // Admit help once its panel returns; dismissal alone changes neither input.
+    use_effect(use_reactive!(|help_enabled, actual_cell_focus| {
+        if help_enabled && actual_cell_focus {
+            focus_help.show();
+        }
+    }));
+    let describedby = if help_enabled {
+        tooltip_binding.describedby("")
+    } else {
+        None
+    };
+    let observations = if help_enabled {
+        Vec::<Attribute>::new()
+            .onresize(tooltip_binding.onresize)
+            .onvisible(tooltip_binding.onvisible)
+    } else {
+        Vec::new()
+    };
+    rsx! { div { id: anchor_id, onmounted: move |event: MountedEvent| { cell_mount.call(event.clone()); tooltip_binding.onmounted.call(event); }, class: "ix-data-grid-cell", role: "gridcell", "data-column-id": column.id.clone(), style:"grid-column:{column_index+2}", "aria-colindex":column_index+2,
+        "aria-readonly": (!editable).to_string(), "data-editing": session.is_some().to_string(), "aria-describedby": describedby,
         tabindex: if suppress_cell_focus { None } else { Some(if session.is_none() && (is_active || (entry_cell && !focused.read().as_ref().is_some_and(|focus| matches!(focus.lane, GridLane::Cell(_) | GridLane::Editor(_))))) { "0" } else { "-1" }) },
-        onfocus: move |_| if !suppress_cell_focus {
+        onfocus: move |event: FocusEvent| if !suppress_cell_focus {
             let current=editing.peek().clone();
             let own=current.as_ref().is_some_and(|session|session.row==focus_row && session.column==focus_column);
             let focus = GridFocus {row:focus_row.clone(),lane:if own {GridLane::Editor(focus_column.clone())} else {GridLane::Cell(focus_column.clone())}};
             focus_context.focused(Some(focus.clone())); focused.set(Some(focus));
             if current.is_some() && !own { edit_action.call(GridEditAction::Commit {tab:None,restore_focus:false}); }
+            if help_enabled && editing.peek().is_none() { tooltip_binding.onfocusin.call(event); }
         },
+        onblur: tooltip_binding.onfocusout,
         onmouseenter: move |event: MouseEvent| {
-            let current = generation.peek().wrapping_add(1); generation.set(current);
-            let coordinates = event.client_coordinates(); point.set((coordinates.x + 12.0, coordinates.y + 18.0));
-            spawn(async move { futures_timer::Delay::new(Duration::from_millis(tooltip_delay_ms as u64)).await; if *generation.peek() == current { show_tooltip.set(true); } });
+            if help_enabled && editing.peek().is_none() { tooltip_binding.onmouseenter.call(event); }
         },
-        onmouseleave: move |_| { let next = generation.peek().wrapping_add(1); generation.set(next); show_tooltip.set(false); },
+        onmouseleave: tooltip_binding.onmouseleave,
         ondoubleclick: move |event: MouseEvent| if editable && !suppress_cell_focus { event.stop_propagation(); edit_action.call(GridEditAction::Start {row:double_row.clone(),column:double_column.clone(),initial:None}); },
         onkeydown: move |event: KeyboardEvent| {
+            tooltip_binding.onkeydown.call(event.clone());
             if interactive && event.key() == Key::Tab {
                 // Native Tab enters the cell's composed controls rather than
                 // being translated into virtual row/cell navigation.
@@ -2555,11 +2585,11 @@ fn GridCell(
                 let initial=match event.key() {Key::Enter|Key::F2=>Some(None),Key::Backspace if type_to_edit=>Some(Some(String::new())),Key::Character(ref value) if type_to_edit && (text_entry || value != " ") && value.chars().count()==1=>Some(Some(value.clone())),_=>None};
                 if let Some(initial)=initial {event.prevent_default();event.stop_propagation();edit_action.call(GridEditAction::Start {row:edit_row.clone(),column:edit_column.clone(),initial});return;}
             }
-            if event.key() == Key::Escape { let next = generation.peek().wrapping_add(1); generation.set(next); show_tooltip.set(false); }
             if !suppress_cell_focus && event.key() == Key::Character(" ".into()) && focused.peek().as_ref().is_some_and(|focus| matches!(focus.lane,GridLane::Cell(_))) {
                 event.prevent_default(); event.stop_propagation(); let mut next=select_state.as_ref().clone(); let checked=!next.selected.contains(&select_id); next.select_row_with_columns(&select_rows,&select_columns,&select_id,checked,event.modifiers().shift()); onstatechange.call(next);
             }
         },
+        ..observations,
         if column.row_drag { button { onmounted: drag_mount, class: "ix-data-grid-drag", r#type: "button", draggable: can_reorder.to_string(), disabled: !can_reorder,
             onfocus: move |event: FocusEvent| { event.stop_propagation(); let focus = GridFocus {row:drag_focus_row.clone(),lane:GridLane::Drag(drag_focus_column.clone())}; focus_context.focused(Some(focus.clone())); focused.set(Some(focus)); },
             "aria-label": "Move {row_label}", title: if can_reorder { "Drag to move. Keyboard: Alt+Up or Alt+Down." } else { "Row movement is unavailable while sorting or filtering." },
@@ -2613,7 +2643,7 @@ fn GridCell(
             }
         }
         else { {grid_cell_text(&text,false)} }
-        if editing.read().is_none() && show_tooltip() && !tooltip.is_empty() { span { id: tooltip_id.clone(), class: "ix-data-grid-tooltip", role: "tooltip", style: "--ix-grid-tip-x:{point().0}px;--ix-grid-tip-y:{point().1}px", "{tooltip}" } }
+        if help_enabled { crate::TooltipFor { id: tooltip_id, controller: tooltip_controller, class: "ix-data-grid-cell-help", show_delay: u64::from(tooltip_delay_ms), "{tooltip}" } }
     } }
 }
 
@@ -2852,3 +2882,7 @@ mod tests;
 #[cfg(test)]
 #[path = "data_grid/pagination_tests.rs"]
 mod pagination_tests;
+
+#[cfg(test)]
+#[path = "data_grid/tooltip_tests.rs"]
+mod tooltip_tests;

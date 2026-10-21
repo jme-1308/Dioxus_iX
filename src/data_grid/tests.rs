@@ -620,9 +620,13 @@ fn collect_render_ids(
     let mut current = dioxus::core::ElementId::ROOT;
     for edit in edits.edits {
         match edit {
-            dioxus::core::Mutation::SetId { id } | dioxus::core::Mutation::PushId { id } => {
-                current = id
+            dioxus::core::Mutation::SetId { id } => {
+                // Renderer-local IDs may be reused after removal. Registration
+                // starts a new node identity; old test markers must not survive.
+                attrs.insert(id.raw(), BTreeMap::new());
+                current = id;
             }
+            dioxus::core::Mutation::PushId { id } => current = id,
             dioxus::core::Mutation::SetAttribute {
                 name,
                 value: dioxus::core::AttributeValue::Text(value),

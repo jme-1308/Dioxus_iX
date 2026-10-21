@@ -7,6 +7,15 @@ use dioxus_ix::{
 };
 use std::collections::BTreeSet;
 
+fn worklist_status_help(status: &str) -> &'static str {
+    match status {
+        "Normal" => "Normal operation. No maintenance action is marked for this asset.",
+        "Warning" => "Warning recorded. Review this asset before the next service window.",
+        "Maintenance" => "Marked for maintenance. Coordinate this asset's next service window.",
+        _ => "Current maintenance status for this asset.",
+    }
+}
+
 fn worklist_rows() -> Vec<DataGridRow> {
     (0..96)
         .map(|index| {
@@ -20,9 +29,14 @@ fn worklist_rows() -> Vec<DataGridRow> {
                 .cell("asset", format!("Asset {index:03}"))
                 .cell("status", status)
                 .cell("owner", owner)
-                .cell("ticket", format!("IX-{index:05}"));
+                .cell("ticket", format!("IX-{index:05}"))
+                .tooltip("status", worklist_status_help(status));
             if index == 1 {
                 row.read_only_cells.insert("owner".into());
+                row.tooltips.insert(
+                    "owner".into(),
+                    "Team 2 owns this asset. Its assignment is locked in this worklist.".into(),
+                );
             }
             row
         })
@@ -89,6 +103,8 @@ fn mark_selected_for_service(rows: &mut [DataGridRow], state: &DataGridState) ->
     for row in rows {
         if state.selected.contains(&row.id) {
             row.cells.insert("status".into(), "Maintenance".into());
+            row.tooltips
+                .insert("status".into(), worklist_status_help("Maintenance").into());
             updated += 1;
             if !visible_ids.contains(&row.id) {
                 hidden += 1;
@@ -232,7 +248,7 @@ pub fn GridWorklistExample() -> Element {
     rsx! {
         section { class: "grid-worklist-example", id: "grid-worklist",
             h2 { "Maintenance worklist" }
-            p { "96 illustrative maintenance records; actions update local component state only. Sort or filter columns, select records across filters, and mark all selected records (including selections hidden by active filters) for Maintenance. Double-click an editable cell or press Enter/F2 to edit; Enter saves, Escape cancels, and Tab/Shift+Tab moves to the next editable cell. Asset is required; Status, Ticket, and Asset 001's owner are read-only." }
+            p { "96 illustrative maintenance records; actions update local component state only. Sort or filter columns, select records across filters, and mark all selected records (including selections hidden by active filters) for Maintenance. Double-click an editable cell or press Enter/F2 to edit; Enter saves, Escape cancels, and Tab/Shift+Tab moves to the next editable cell. Asset is required; Status, Ticket, and Asset 001's owner are read-only. Hover or focus a cell for help; Escape hides it." }
             div { class: "grid-worklist-toolbar",
                 Button {
                     id: "worklist-mark-service",
