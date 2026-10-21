@@ -48,6 +48,27 @@ fn DocumentPreparation() -> Element {
     }
 }
 
+#[component]
+fn DocumentTabLabel(
+    document_key: String,
+    title: String,
+    documents: Signal<Vec<InspectionDocument>>,
+) -> Element {
+    // Read in this child scope: the label callback itself does not subscribe
+    // the tab owner to the documents signal when it renders custom content.
+    let unsaved = documents()
+        .iter()
+        .find(|document| document.key == document_key)
+        .is_some_and(|document| document.draft != document.saved);
+    rsx! {span { "data-document-tab-status": document_key,
+        span { "{title}" }
+        " "
+        Pill { variant: if unsaved { StatusVariant::Warning } else { StatusVariant::Success },
+            if unsaved { "Unsaved" } else { "Saved" }
+        }
+    }}
+}
+
 /// Edit illustrative local documents without losing drafts when switching tabs.
 #[component]
 pub fn DocumentWorkspaceExample() -> Element {
@@ -59,6 +80,7 @@ pub fn DocumentWorkspaceExample() -> Element {
     let mut all_tabs = use_signal(|| false);
     let mut german = use_signal(|| false);
     let mut icon_only = use_signal(|| false);
+    let mut rich_labels = use_signal(|| false);
     let mut disable_reference = use_signal(|| false);
     let mut next_id = use_signal(|| 4_usize);
     let mut saves = use_signal(|| 0_usize);
@@ -70,6 +92,11 @@ pub fn DocumentWorkspaceExample() -> Element {
     let mut fields = use_signal(BTreeMap::<String, Rc<MountedData>>::new);
     let mut add_button = use_signal(|| None::<Rc<MountedData>>);
     let mut focus_request = use_signal(|| None::<String>);
+    let render_document_label = use_callback(move |item: TabItem| {
+        rsx! {
+            DocumentTabLabel { document_key: item.key, title: item.label, documents }
+        }
+    });
     use_effect(move || {
         let wanted = focus_request();
         let selection = selected();
@@ -215,6 +242,7 @@ pub fn DocumentWorkspaceExample() -> Element {
                         documents.set(initial_documents()); selected.set(Some("motor".into())); pending_close.set(None);
                         manual.set(false); top.set(false); all_tabs.set(false); german.set(false); disable_reference.set(false);
                         icon_only.set(false);
+                        rich_labels.set(false);
                         next_id.set(4); saves.set(0); closes.set(0); additions.set(0); close_requests.set(0);
                         focus_request.set(None); fields.write().clear(); let next = epoch.peek().wrapping_add(1); epoch.set(next);
                     }, "Restore documents"
@@ -241,6 +269,7 @@ pub fn DocumentWorkspaceExample() -> Element {
             details { id: "documents-options", class: "documents-options",
                 summary { "Workspace options" }
                 div { class: "documents-option-fields",
+                    label { input { id: "documents-rich-labels", r#type: "checkbox", checked: rich_labels(), onchange: move |event: FormEvent| rich_labels.set(event.checked()) } "Show draft status in tabs" }
                     label { input { id: "documents-icon-only", r#type: "checkbox", checked: icon_only(), onchange: move |event: FormEvent| icon_only.set(event.checked()) } "Icon-only document tabs" }
                     label { input { id: "documents-manual", r#type: "checkbox", checked: manual(), onchange: move |event: FormEvent| manual.set(event.checked()) } "Manual tab activation" }
                     label { input { id: "documents-top", r#type: "checkbox", checked: top(), onchange: move |event: FormEvent| top.set(event.checked()) } "Top indicator" }
@@ -260,6 +289,7 @@ pub fn DocumentWorkspaceExample() -> Element {
             div { id: "documents-tabs", class: "documents-tabs",
                 for generation in [epoch()] {
                     TabSet { key: "document-tabs-{generation}", items: items.clone(), selection: selected().map_or(TabKeySelection::Empty, TabKeySelection::Key), label: "Inspection documents",
+                        render_label: rich_labels().then_some(render_document_label),
                         keyboard_navigation: if manual() { TabKeyboardNavigation::Manual } else { TabKeyboardNavigation::Automatic },
                         placement: if top() { TabPlacement::Top } else { TabPlacement::Bottom }, overflow_menu: all_tabs(),
                         aria_label_more_tabs: if german() { "Alle Dokumente" } else { "Show all documents" },

@@ -66,6 +66,11 @@ pub fn TabSet(
     /// Format each native close button's accessible label from its current item.
     #[props(default)]
     close_label: Option<Callback<TabItem, String>>,
+    /// Compose noninteractive primary tab content, forwarded to [`Tabs`].
+    /// Keep each item's label meaningful for native/overflow/close names; return
+    /// a reactive child component for live values rather than calling hooks here.
+    #[props(default)]
+    render_label: Option<Callback<TabItem, Element>>,
     /// Force the all-tabs menu, including when every tab fits.
     #[props(default)]
     overflow_menu: bool,
@@ -106,7 +111,7 @@ pub fn TabSet(
     rsx! {
         div { class: "ix-tab-set {class}",
             Tabs { items, selection: selected_index.map_or(TabSelection::Empty, TabSelection::Index), small, rounded, stretched, keyboard_navigation, placement, label, id_prefix: prefix,
-                close_label, overflow_menu, aria_label_more_tabs,
+                close_label, render_label, overflow_menu, aria_label_more_tabs,
                 onbeforechange: move |event: TabSelectionChange| {
                     let keyed = TabKeySelectionChange::new(
                         event.previous.and_then(|index| before_items.get(index).map(|item| item.key.clone())),

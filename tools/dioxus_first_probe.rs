@@ -41,6 +41,8 @@ mod chip_workflows_review;
 mod clock_composition_review;
 #[path = "dioxus_first_probe/clock_reveal_review.rs"]
 mod clock_reveal_review;
+#[path = "dioxus_first_probe/composed_tabs_review.rs"]
+mod composed_tabs_review;
 #[path = "dioxus_first_probe/content_columns_review.rs"]
 mod content_columns_review;
 #[path = "dioxus_first_probe/content_scroll_review.rs"]
@@ -576,6 +578,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatmessages" {
         return rsx! { chat_messages_review::ChatMessagesPreview {} };
+    }
+    if scope == "?composedtabs" {
+        return rsx! { composed_tabs_review::ComposedTabsPreview {} };
     }
     if scope == "?icontabs" {
         return rsx! { icon_tabs_review::IconTabsPreview {} };

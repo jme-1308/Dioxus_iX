@@ -305,6 +305,15 @@ pub fn Tabs(
     /// Format each close button's accessible label from the current tab item.
     #[props(default)]
     close_label: Option<Callback<TabItem, String>>,
+    /// Replace the primary icon/text body with noninteractive content. Counters
+    /// and close controls remain library-owned; `item.label` still supplies the
+    /// native name/title and overflow/close names. Icon-only mode shows its native
+    /// icon and hides, but retains, the composed content.
+    ///
+    /// Return a reactive child component for live content. Do not call hooks
+    /// inside this callback, which executes in its originating Dioxus scope.
+    #[props(default)]
+    render_label: Option<Callback<TabItem, Element>>,
     #[props(default)] small: bool,
     #[props(default)] rounded: bool,
     #[props(default)] stretched: bool,
@@ -394,7 +403,7 @@ pub fn Tabs(
         for (index, item, icon_only) in items.iter().enumerate().map(|(index,item)| (index,item,!rounded && item.icon_only && item.icon.as_ref().is_some_and(|icon| !icon.trim().is_empty()))) {
             div { key: "{item.key}", class: "ix-tab-wrapper", "data-tab-key": item.key.clone(), "data-selected": active == Some(index),
                 onresize: move |_| measure.call(()),
-                button { class: "ix-tab", r#type: "button", role: "tab", disabled: item.disabled, "aria-label": if rounded || icon_only { Some(item.label.clone()) } else { None }, title: if rounded || icon_only { Some(item.label.clone()) } else { None }, "data-icon-only": icon_only.then_some(true), "aria-selected": active == Some(index), tabindex: if active.or_else(|| items.iter().position(|item| !item.disabled)) == Some(index) { 0 } else { -1 },
+                button { class: "ix-tab", r#type: "button", role: "tab", disabled: item.disabled, "aria-label": if rounded || icon_only || render_label.is_some() { Some(item.label.clone()) } else { None }, title: if rounded || icon_only || render_label.is_some() { Some(item.label.clone()) } else { None }, "data-icon-only": icon_only.then_some(true), "aria-selected": active == Some(index), tabindex: if active.or_else(|| items.iter().position(|item| !item.disabled)) == Some(index) { 0 } else { -1 },
                     id: format!("{prefix}-tab-{}", crate::composition::tab_key_id(&item.key)),
                     "aria-controls": id_prefix.as_ref().map(|prefix| format!("{prefix}-panel-{}", crate::composition::tab_key_id(&item.key))),
                     onmounted: { let key = item.key.clone(); move |event| { mounted.write().insert(key.clone(), event.data()); } },
@@ -415,8 +424,16 @@ pub fn Tabs(
                             if let Some(node) = node { reveal_tab(node, true); }
                         }
                     } },
-                    if rounded { span { class: "ix-tab-rounded-circle", if let Some(icon) = &item.icon { Icon { name: icon.clone(), size: 32 } } else { "{item.label}" } } }
-                    else { if let Some(icon) = &item.icon { Icon { name: icon.clone() } } if !icon_only { span { "{item.label}" } } }
+                    if let Some(renderer) = render_label {
+                        if rounded { span { class: "ix-tab-rounded-circle", {renderer.call(item.clone())} } }
+                        else {
+                            if icon_only { if let Some(icon) = &item.icon { Icon { name: icon.clone() } } }
+                            span { class: "ix-tab-custom-label", hidden: icon_only, {renderer.call(item.clone())} }
+                        }
+                    } else {
+                        if rounded { span { class: "ix-tab-rounded-circle", if let Some(icon) = &item.icon { Icon { name: icon.clone(), size: 32 } } else { "{item.label}" } } }
+                        else { if let Some(icon) = &item.icon { Icon { name: icon.clone() } } if !icon_only { span { "{item.label}" } } }
+                    }
                     if let Some(counter) = item.counter { span { class: "ix-tab-counter", "{counter}" } }
                 }
                 if item.closable && !rounded { button { class: "ix-tab-close", r#type: "button", disabled: item.disabled,

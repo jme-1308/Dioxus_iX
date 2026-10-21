@@ -678,6 +678,10 @@ fn tab_navigation_skips_disabled_and_wraps() {
 mod tab_workspace_tests {
     use super::*;
     include!("../tab_workspace_tests.rs");
+    mod composed_tab_tests {
+        use super::*;
+        include!("composed_tab_tests.rs");
+    }
     mod icon_tab_tests {
         use super::*;
         include!("icon_tab_tests.rs");
