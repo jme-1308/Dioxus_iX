@@ -1,1 +1,12 @@
 .grid-worklist-example{margin-bottom:48px;min-width:0;max-width:100%}.grid-worklist-example>p{max-width:72ch;line-height:1.55;overflow-wrap:anywhere}.grid-worklist-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px 16px;margin:20px 0 12px;min-width:0;max-width:100%}.grid-worklist-toolbar>label{display:inline-flex;align-items:center;gap:8px;max-width:100%;font-size:14px;cursor:pointer}.grid-worklist-toolbar input[type="checkbox"]{width:16px;height:16px;margin:0;flex:none;accent-color:var(--ix-color-primary)}.grid-worklist-toolbar input[type="checkbox"]:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:3px}.maintenance-worklist-grid{width:100%;min-width:0;max-width:100%}.grid-worklist-status,.grid-worklist-feedback{min-height:1.5em;margin:12px 0 0;color:var(--ix-color-text-secondary);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}@media(max-width:420px){.grid-worklist-toolbar{align-items:flex-start;gap:10px 12px}.grid-worklist-toolbar .ix-button{max-width:100%}}
+/* CSV is a full-width, copyable worklist snapshot; keep existing grid styles intact. */
+.grid-worklist-csv{min-width:0;max-width:100%;margin-top:28px}
+.grid-worklist-csv h3{margin:0 0 12px;font-size:20px;line-height:28px}
+.grid-worklist-csv>p{max-width:72ch;line-height:1.55;overflow-wrap:anywhere}
+.grid-worklist-csv .grid-worklist-csv-preview{display:flex;width:100%;max-width:100%;min-width:0}
+.grid-worklist-csv select{width:auto;max-width:100%}
+@media(max-width:420px){.grid-worklist-csv .grid-worklist-toolbar>label{flex-wrap:wrap}.grid-worklist-csv .ix-button{white-space:normal;overflow-wrap:anywhere;height:auto;min-height:32px}}
+
+/* Keep this copyable preview wide despite the later intrinsic native-field rules. */
+#worklist-csv .grid-worklist-csv-preview{display:flex;width:100%;min-width:0}
+#worklist-csv .grid-worklist-csv-preview :is(.ix-text-field-wrapper,.ix-text-field-slot,.ix-input-wrap){width:100%;min-width:0}

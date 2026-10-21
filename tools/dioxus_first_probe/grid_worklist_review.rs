@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 
 #[path = "../../examples/gallery/grid_worklist.rs"]
-mod gallery_worklist;
+pub(super) mod gallery_worklist;
 
 #[component]
 pub fn GridWorklistPreview() -> Element {

@@ -1,8 +1,9 @@
 //! Controlled maintenance worklist combining sorting, filtering, selection, and cell editing.
 use dioxus::prelude::*;
 use dioxus_ix::{
-    Button, ButtonVariant, DataGrid, DataGridCellValueChanged, DataGridColumn, DataGridRow,
-    DataGridSortDirection, DataGridState, DataGridTextEditor, DataGridTextFilter,
+    Button, ButtonVariant, DataGrid, DataGridCellValueChanged, DataGridColumn, DataGridCsv,
+    DataGridCsvOptions, DataGridCsvRowScope, DataGridRow, DataGridSortDirection, DataGridState,
+    DataGridTextEditor, DataGridTextFilter, Textarea,
 };
 use std::collections::BTreeSet;
 
@@ -65,6 +66,15 @@ fn sort_token(state: &DataGridState) -> String {
         Some((column, DataGridSortDirection::Ascending)) => format!("{column}-ascending"),
         Some((column, DataGridSortDirection::Descending)) => format!("{column}-descending"),
         None => "none".to_string(),
+    }
+}
+
+fn csv_scope_token(scope: DataGridCsvRowScope) -> &'static str {
+    match scope {
+        DataGridCsvRowScope::Displayed => "displayed",
+        DataGridCsvRowScope::SelectedDisplayed => "selected-displayed",
+        DataGridCsvRowScope::SelectedAll => "selected-all",
+        DataGridCsvRowScope::All => "all",
     }
 }
 
@@ -131,6 +141,27 @@ pub fn GridWorklistExample() -> Element {
     let mut last_column = use_signal(|| "none".to_string());
     let mut feedback = use_signal(|| "No worklist actions or cell edits recorded.".to_string());
     let mut epoch = use_signal(|| 0u64);
+    let mut csv_scope = use_signal(|| DataGridCsvRowScope::Displayed);
+    let mut csv_snapshot = use_signal(|| None::<(DataGridCsvRowScope, DataGridCsv)>);
+    let mut csv_generation = use_signal(|| 0_u64);
+    let mut csv_downloading = use_signal(|| false);
+    let mut csv_task = use_signal(|| None::<dioxus::core::Task>);
+    let mut csv_status = use_signal(|| "empty");
+    let mut csv_feedback = use_signal(|| {
+        String::from("Generate a snapshot to preview or download the current worklist.")
+    });
+    let clear_csv = use_callback(move |(): ()| {
+        let next = csv_generation.peek().wrapping_add(1);
+        csv_generation.set(next);
+        let pending = csv_task.write().take();
+        if let Some(task) = pending {
+            task.cancel();
+        }
+        csv_downloading.set(false);
+        csv_snapshot.set(None);
+        csv_status.set("empty");
+        csv_feedback.set("Generate a snapshot to preview or download the current worklist.".into());
+    });
 
     let current_rows = rows();
     let current_state = state();
@@ -147,6 +178,37 @@ pub fn GridWorklistExample() -> Element {
         .values()
         .any(DataGridTextFilter::is_active);
     let current_sort = sort_token(&current_state);
+    let snapshot = csv_snapshot();
+    let snapshot_scope = snapshot
+        .as_ref()
+        .map(|(scope, _)| csv_scope_token(*scope))
+        .unwrap_or("none");
+    let snapshot_rows = snapshot
+        .as_ref()
+        .map(|(_, snapshot)| snapshot.row_ids.len())
+        .unwrap_or(0);
+    let snapshot_columns = snapshot
+        .as_ref()
+        .map(|(_, snapshot)| snapshot.column_ids.len())
+        .unwrap_or(0);
+    let snapshot_content = snapshot
+        .as_ref()
+        .map(|(_, snapshot)| snapshot.content.clone())
+        .unwrap_or_default();
+    let snapshot_row_ids = serde_json::to_string(
+        snapshot
+            .as_ref()
+            .map(|(_, snapshot)| snapshot.row_ids.as_slice())
+            .unwrap_or(&[]),
+    )
+    .unwrap_or_default();
+    let snapshot_column_ids = serde_json::to_string(
+        snapshot
+            .as_ref()
+            .map(|(_, snapshot)| snapshot.column_ids.as_slice())
+            .unwrap_or(&[]),
+    )
+    .unwrap_or_default();
 
     rsx! {
         section { class: "grid-worklist-example", id: "grid-worklist",
@@ -213,6 +275,8 @@ pub fn GridWorklistExample() -> Element {
                         last_column.set("none".into());
                         hold_edits.set(false);
                         read_only.set(false);
+                        clear_csv.call(());
+                        csv_scope.set(DataGridCsvRowScope::Displayed);
                         let next_epoch = epoch.peek().wrapping_add(1);
                         epoch.set(next_epoch);
                         feedback.set("Worklist restored.".into());
@@ -293,6 +357,75 @@ pub fn GridWorklistExample() -> Element {
                 id: "worklist-feedback",
                 class: "grid-worklist-feedback",
                 "{feedback}"
+            }
+            section { id: "worklist-csv", class: "grid-worklist-csv",
+                h3 { "Export worklist" }
+                p { "Save any cell edits first. The CSV snapshot stays unchanged until you generate it again." }
+                div { class: "grid-worklist-toolbar",
+                    label { r#for: "worklist-csv-scope", "Rows"
+                        select { id: "worklist-csv-scope", class: "ix-input", value: csv_scope_token(csv_scope()),
+                            onchange: move |event: FormEvent| csv_scope.set(match event.value().as_str() {
+                                "selected-displayed" => DataGridCsvRowScope::SelectedDisplayed,
+                                "selected-all" => DataGridCsvRowScope::SelectedAll,
+                                "all" => DataGridCsvRowScope::All,
+                                _ => DataGridCsvRowScope::Displayed,
+                            }),
+                            option { value: "displayed", "Displayed rows" }
+                            option { value: "selected-displayed", "Selected displayed rows" }
+                            option { value: "selected-all", "All selected rows" }
+                            option { value: "all", "All rows" }
+                        }
+                    }
+                    Button { id: "worklist-csv-generate", disabled: csv_downloading(),
+                        onclick: move |_| {
+                            if *csv_downloading.peek() { return; }
+                            let scope = *csv_scope.peek();
+                            let snapshot = state.peek().export_csv(&rows.peek(), &worklist_columns(), &DataGridCsvOptions { row_scope: scope, ..Default::default() });
+                            let next = csv_generation.peek().wrapping_add(1);
+                            csv_generation.set(next);
+                            csv_feedback.set(format!("Snapshot: {} rows, {} columns. Ready to copy or download.", snapshot.row_ids.len(), snapshot.column_ids.len()));
+                            csv_snapshot.set(Some((scope, snapshot)));
+                            csv_status.set("ready");
+                        },
+                        "Generate CSV"
+                    }
+                    Button { id: "worklist-csv-download", variant: ButtonVariant::Secondary,
+                        disabled: snapshot.is_none() || csv_downloading(),
+                        onclick: move |_| {
+                            if *csv_downloading.peek() { return; }
+                            let Some((_, snapshot)) = csv_snapshot.peek().clone() else { return; };
+                            let generation = *csv_generation.peek();
+                            csv_downloading.set(true); csv_status.set("downloading");
+                            csv_feedback.set("Requesting the CSV snapshot download…".into());
+                            let task = spawn(async move {
+                                let result = snapshot.download("maintenance-worklist.csv").await;
+                                if *csv_generation.peek() != generation { return; }
+                                csv_task.set(None); csv_downloading.set(false);
+                                match result {
+                                    Ok(()) => { csv_status.set("dispatched"); csv_feedback.set("CSV download requested.".into()); }
+                                    Err(error) => { csv_status.set("failed"); csv_feedback.set(format!("Could not request the CSV download: {error}")); }
+                                }
+                            });
+                            csv_task.set(Some(task));
+                        },
+                        "Download snapshot"
+                    }
+                    Button { id: "worklist-csv-clear", variant: ButtonVariant::Tertiary,
+                        disabled: snapshot.is_none() && !csv_downloading(),
+                        onclick: move |_| clear_csv.call(()), "Clear snapshot"
+                    }
+                }
+                Textarea { id: "worklist-csv-preview", label: "CSV preview", value: snapshot_content,
+                    readonly: true, rows: 6, resize: "vertical", width: "100%", class: "grid-worklist-csv-preview",
+                    placeholder: "Generate a snapshot to preview its CSV.",
+                }
+                p { id: "worklist-csv-status", class: "grid-worklist-status", role: "status", "aria-live": "polite",
+                    "data-state": csv_status(), "data-scope": snapshot_scope,
+                    "data-rows": snapshot_rows, "data-columns": snapshot_columns,
+                    "data-row-ids": snapshot_row_ids, "data-column-ids": snapshot_column_ids,
+                    "data-generation": csv_generation(), "data-downloading": csv_downloading(),
+                    "{csv_feedback}"
+                }
             }
         }
     }

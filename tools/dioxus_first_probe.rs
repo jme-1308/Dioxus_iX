@@ -76,6 +76,8 @@ mod flip_tile_workflow_review;
 mod generic_focus_review;
 #[path = "dioxus_first_probe/grid_cell_renderers_review.rs"]
 mod grid_cell_renderers_review;
+#[path = "dioxus_first_probe/grid_csv_review.rs"]
+mod grid_csv_review;
 #[path = "dioxus_first_probe/grid_custom_editors_review.rs"]
 mod grid_custom_editors_review;
 #[path = "dioxus_first_probe/grid_numeric_values_review.rs"]
@@ -265,6 +267,9 @@ fn Preview() -> Element {
     }
     if scope == "?tooltip" {
         return rsx! { tooltip_mounted_review::TooltipMountedReview {} };
+    }
+    if scope == "?gridcsv" {
+        return rsx! { grid_csv_review::GridCsvPreview {} };
     }
     if scope == "?gridworklist" {
         return rsx! { grid_worklist_review::GridWorklistPreview {} };

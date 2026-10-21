@@ -77,37 +77,14 @@ impl ChartPng {
     /// Success means the request was dispatched, not that a file was saved.
     pub async fn download(&self, file_name: &str) -> Result<(), ChartExportError> {
         self.bytes()?;
-        #[derive(Serialize)]
-        struct Download<'a> {
-            data_url: &'a str,
-            file_name: String,
-        }
-        let task = crate::dom_query::eval(DOWNLOAD);
-        task.send(Download {
-            data_url: &self.data_url,
-            file_name: png_file_name(file_name),
-        })
-        .map_err(renderer_error)?;
-        let result: BridgeResult = task.join().await.map_err(renderer_error)?;
-        result.into_result()
+        crate::native_download::download(&self.data_url, &png_file_name(file_name))
+            .await
+            .map_err(renderer_error)
     }
 }
 
 fn png_file_name(file_name: &str) -> String {
-    let clean: String = file_name
-        .chars()
-        .filter(|c| {
-            !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
-        })
-        .take(180)
-        .collect();
-    let clean = clean.trim().trim_matches('.');
-    let clean = if clean.is_empty() { "chart" } else { clean };
-    if clean.to_ascii_lowercase().ends_with(".png") {
-        clean.into()
-    } else {
-        format!("{clean}.png")
-    }
+    crate::native_download::file_name(file_name, "png", "chart")
 }
 
 fn renderer_error(error: impl fmt::Display) -> ChartExportError {
@@ -240,14 +217,6 @@ try {
   return {data_url:canvas.toDataURL('image/png'), width, height};
 } catch (error) { return {error:String(error?.message || error)}; }
 finally { if (url) URL.revokeObjectURL(url); }
-"#;
-
-const DOWNLOAD: &str = r#"
-const {data_url, file_name} = await dioxus.recv();
-try {
-  const link = document.createElement('a'); link.href = data_url; link.download = file_name;
-  link.hidden = true; document.body.append(link); link.click(); link.remove(); return {};
-} catch (error) { return {error:String(error?.message || error)}; }
 "#;
 
 const POINTER_CAPTURE: &str = r#"
