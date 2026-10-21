@@ -7,7 +7,7 @@ use std::time::Duration;
 
 #[path = "../src/dom_query.rs"]
 mod dom_query;
-#[path = "../examples/gallery/menu_hover_review.rs"]
+#[path = "menu_hover_review.rs"]
 mod menu_hover_review;
 
 fn main() {

@@ -70,7 +70,6 @@ mod maintenance_launch;
 mod maintenance_notices;
 mod maintenance_schedule;
 mod menu_category_review;
-mod menu_hover_review;
 mod menu_navigation_review;
 mod menu_overlay_review;
 mod native_field_review;
@@ -358,7 +357,17 @@ fn Gallery() -> Element {
                         GalleryPage::DataGrid => rsx! { host_paged_grid::HostPagedGridExample {} wide_equipment_grid::WideEquipmentGridExample {} grid_custom_editors::GridCustomEditorsExample {} grid_numeric_values::GridNumericValuesExample {} grid_cell_renderers::GridCellRenderersExample {} grid_typed_editors::GridTypedEditorsExample {} grid_scenarios::GridExamples {} },
                         GalleryPage::Charts => rsx! { chart_workflows::ChartWorkflows {} },
                         GalleryPage::Tree => rsx! { tree::TreeExamples {} },
-                        GalleryPage::Application => rsx! { pane_equipment::PaneEquipmentExample {} account_workspace::AccountWorkspaceExample {} header_nested_review::HeaderNestedReview {} header_layout_review::HeaderLayoutReview {} header_switch_review::HeaderSwitchReview {} menu_hover_review::MenuHoverReview {} menu_category_review::MenuCategoryReview {} menu_navigation_review::MenuNavigationReview {} menu_overlay_review::MenuOverlayReview {} application::ApplicationExamples {} },
+                        GalleryPage::Application => rsx! {
+                            pane_equipment::PaneEquipmentExample {}
+                            account_workspace::AccountWorkspaceExample {}
+                            header_nested_review::HeaderNestedReview {}
+                            header_layout_review::HeaderLayoutReview {}
+                            header_switch_review::HeaderSwitchReview {}
+                            menu_category_review::MenuCategoryReview {}
+                            menu_navigation_review::MenuNavigationReview {}
+                            menu_overlay_review::MenuOverlayReview {}
+                            application::ApplicationExamples {}
+                        },
                         GalleryPage::Feedback => rsx! { maintenance_notices::MaintenanceNoticesExample {} dropdown_review::DropdownOrderReview {} FeedbackExamples {} },
                         GalleryPage::Composition => rsx! { composition::DropdownTaskActionsExample {} document_workspace::DocumentWorkspaceExample {} tabs_review::TabsReviewExamples {} composition::CompositionExamples {} },
                         GalleryPage::Chat => rsx! { chat_workspace::ChatWorkspaceExample {} chat::ChatExamples {} },

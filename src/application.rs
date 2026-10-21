@@ -1200,17 +1200,6 @@ impl CategoryNavigation {
             return false;
         }
         self.keyboard_input(&event.key().to_string());
-        if matches!(event.key().to_string().as_str(), "Enter" | " ") {
-            event.prevent_default();
-            event.stop_propagation();
-            if self.is_expanded() {
-                self.activate_parent(false);
-            } else {
-                self.close_flyout();
-            }
-            self.focus(None);
-            return true;
-        }
         self.apply_key(event, false, Some(id))
     }
     fn apply_key(&self, event: KeyboardEvent, parent: bool, child: Option<usize>) -> bool {
@@ -2667,7 +2656,8 @@ pub fn MenuItem(
 /// Category panels expand independently; collapsed mode presents one flyout.
 /// Expanded child arrows/Tab use raw current child order, including ARIA-disabled
 /// native buttons. Collapsed navigation uses its separate eligible-item domain.
-/// Child Enter/Space returns through the registered mounted parent control.
+/// Child buttons and links retain native activation to select their item.
+/// Escape returns through the registered mounted parent control.
 /// Child elements remain in one fixed native body/parent. The expanded panel
 /// wins while a separately open popup keeps an empty heading/shell. The native
 /// popup host switches between the content host and empty shell, an explicit

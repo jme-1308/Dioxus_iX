@@ -1691,37 +1691,69 @@ fn menu_category_collapsed_arrows_filter_disabled_but_tab_and_repeated_present_s
 }
 
 #[test]
-fn menu_category_return_closes_and_focuses_parent_without_native_child_defaults() {
+fn menu_category_child_activation_keeps_native_defaults_and_click_selects_once() {
     let _event_converter_guard = crate::test_event_converter_guard();
-    let mut harness = MenuHarness::new();
-    let category = harness.category("Category");
+    for expanded in [true, false] {
+        for key in [Key::Enter, Key::Character(" ".into())] {
+            let mut h = MenuHarness::new();
+            if !expanded {
+                h.toggle_expanded();
+            }
+            let category = h.category("Category");
+            h.click("Category");
+            h.focus_control("Child");
+            h.focuses.borrow_mut().clear();
+            assert!(category.is_open());
 
-    harness.settle();
-    for (_sequence, key, expanded) in [
-        (1, "Enter", true),
-        (2, " ", true),
-        (3, "Enter", false),
-        (4, " ", false),
-    ] {
-        if category.is_expanded() != expanded {
-            harness.toggle_expanded();
+            let flags = h.key(h.target("Child"), key.clone());
+            assert!(
+                !flags.0,
+                "child {key:?} leaves native activation enabled in expanded={expanded}"
+            );
+            assert!(
+                category.is_open(),
+                "keydown cannot close the child's surface"
+            );
+            assert!(
+                h.focuses.borrow().is_empty(),
+                "keydown cannot return focus early"
+            );
+            assert_eq!(h.config.borrow().activations, 0);
+
+            // The VDOM does not synthesize browser defaults. Dispatch the ordinary
+            // click separately to verify the existing real MenuItem callback.
+            h.click("Child");
+            assert_eq!(h.config.borrow().activations, 1);
+            assert_eq!(category.is_open(), expanded);
+            assert!(
+                h.focuses.borrow().is_empty(),
+                "selection does not invent focus"
+            );
+
+            if !category.is_open() {
+                h.click("Category");
+            }
+            h.config.borrow_mut().child_disabled = true;
+            h.update();
+            h.focuses.borrow_mut().clear();
+            assert!(!h.key(h.target("Child"), key).0);
+            assert!(category.is_open());
+            assert_eq!(h.config.borrow().activations, 1);
+            assert!(
+                h.click("Child").0,
+                "disabled activation still cancels its click"
+            );
+            assert_eq!(
+                h.config.borrow().activations,
+                1,
+                "disabled callback is guarded"
+            );
+            assert!(
+                category.is_open(),
+                "disabled selection cannot dismiss the category"
+            );
+            assert!(h.focuses.borrow().is_empty());
         }
-        harness.click("Category");
-        assert!(category.is_open());
-        assert_eq!(
-            harness.category_key(key, "Category", Some("Child")),
-            (true, false)
-        );
-        assert!(!category.is_open());
-        assert_eq!(
-            harness.focuses.borrow().last().copied(),
-            Some(category.0.id)
-        );
-        assert_eq!(
-            harness.config.borrow().activations,
-            0,
-            "return does not activate the child"
-        );
     }
 }
 

@@ -137,22 +137,16 @@ fn mounted_category_panel_navigation_and_return_reach_mounted_parent_and_childre
         Some(h.id("Disabled child")),
         "expanded native buttons retain their ordinary ARIA-disabled traversal"
     );
-    assert_eq!(
-        h.category_key("Enter", "Category", Some("Child")),
-        (true, false)
-    );
-    assert_eq!(h.focuses.borrow().last().copied(), Some(h.id("Category")));
-    assert!(
-        !category.is_open(),
-        "expanded Enter explicitly toggles the panel closed"
-    );
-    assert_eq!(
-        h.config.borrow().activations,
-        0,
-        "the original child default cannot also activate"
-    );
-    h.click("Category");
-    assert!(category.is_open());
+    let focused = h.focuses.borrow().clone();
+    for key in ["Enter", " "] {
+        assert!(
+            !h.category_key(key, "Category", Some("Child")).0,
+            "child activation keeps its native default"
+        );
+        assert!(category.is_open(), "keydown must not close the expanded panel");
+        assert_eq!(*h.focuses.borrow(), focused, "keydown cannot return focus early");
+        assert_eq!(h.config.borrow().activations, 0);
+    }
     assert_eq!(
         h.category_key("Escape", "Category", Some("Child")),
         (true, false)

@@ -290,8 +290,8 @@ fn logical_return_clears_old_child_cue_and_keeps_the_parent_cue_after_rerender()
     h.category_key("Enter", "Category", None);
     let before_return = mark_rendered_child(&h, &runtime, "Child");
     assert_eq!(
-        h.category_key("Enter", "Category", Some("Child")),
-        (true, false)
+        h.category_key("Escape", "Category", Some("Child")),
+        (false, false)
     );
     assert!(!category.is_open());
     assert!(!runtime.item_visual_matches(&before_return));
