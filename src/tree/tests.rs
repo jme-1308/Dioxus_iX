@@ -1012,3 +1012,8 @@ fn embedded_row_controls_cancel_click_and_contain_keys_and_focusin_while_preserv
     settle(&mut dom, &mut attrs);
     assert_eq!(focused_rows.borrow().as_slice(), ["child-2", "child-1"]);
 }
+
+mod root_tests {
+    use super::*;
+    include!("root_tests.rs");
+}

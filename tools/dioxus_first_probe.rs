@@ -228,6 +228,8 @@ mod transport_lifetime_review;
 mod tree_actions_review;
 #[path = "dioxus_first_probe/tree_catalog_review.rs"]
 mod tree_catalog_review;
+#[path = "dioxus_first_probe/tree_roots_review.rs"]
+mod tree_roots_review;
 #[path = "dioxus_first_probe/trigger_placement_review.rs"]
 mod trigger_placement_review;
 #[path = "dioxus_first_probe/trigger_review.rs"]
@@ -572,6 +574,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatmessages" {
         return rsx! { chat_messages_review::ChatMessagesPreview {} };
+    }
+    if scope == "?treeroots" {
+        return rsx! { tree_roots_review::TreeRootsPreview {} };
     }
     if scope == "?selectedhover" {
         return rsx! { selected_hover_review::SelectedHoverPreview {} };

@@ -1,6 +1,7 @@
 //! Upstream Sample and custom-renderer trees, plus cascade and lazy-load reviews.
 use dioxus::prelude::*;
 use dioxus_ix::*;
+use std::rc::Rc;
 
 #[path = "tree_catalog.rs"]
 mod catalog;
@@ -233,7 +234,7 @@ pub fn MutableTreeExample() -> Element {
                 }
             }
             div { class: "tree-example-surface",
-                ModelTree { controller, item_label: |data: String| data, label: "Mutable inventory tree", max_height: 256,
+                ModelTree { id: "mutable-inventory-tree", controller, item_label: |data: String| data, label: "Mutable inventory tree", max_height: 256,
                     onrefresh: move |_| refreshes += 1,
                     onremove: move |items: Vec<TreeModelItem<String>>| removals += items.len(),
                     onload: move |id: String| {
@@ -334,6 +335,7 @@ pub fn TreeRowActionsExample() -> Element {
 
 #[component]
 pub fn TreeExamples() -> Element {
+    let mut inventory_root = use_signal(|| None::<Rc<MountedData>>);
     let mut inventory_state = use_signal(|| {
         let mut state = TreeState::default();
         state.expand_all(&large_tree());
@@ -408,8 +410,17 @@ pub fn TreeExamples() -> Element {
             div { class: "tree-example-actions",
                 Button { variant: ButtonVariant::Tertiary, onclick: move |_| { let mut next = inventory_state(); next.expand_all(&large_tree()); inventory_state.set(next); }, "Expand inventory" }
                 Button { variant: ButtonVariant::Tertiary, onclick: move |_| { let mut next = inventory_state(); next.collapse_all(); inventory_state.set(next); }, "Collapse inventory" }
+                Button { id: "inventory-tree-top", variant: ButtonVariant::Tertiary, button_type: ButtonType::Button, disabled: inventory_root().is_none(),
+                    onclick: move |_| {
+                        if let Some(root) = inventory_root.peek().clone() {
+                            spawn(async move { let _ = root.scroll(dioxus::html::geometry::PixelsVector2D::zero(), ScrollBehavior::Instant).await; });
+                        }
+                    }, "Back to top"
+                }
             }
-            div { class: "tree-example-surface", Tree { nodes: large_tree(), state: inventory_state(), onstatechange: move |next| inventory_state.set(next), max_height: 320, label: "Large device tree" } }
+            div { class: "tree-example-surface", Tree { id: "inventory-tree", nodes: large_tree(), state: inventory_state(), onstatechange: move |next| inventory_state.set(next), max_height: 320, label: "Large device tree",
+                onmounted: move |event: MountedEvent| inventory_root.set(Some(event.data())),
+            } }
             p { role: "status", "Selected inventory node: {inventory_selected}" }
         }
         section { class: "gallery-section", id: "tree-lazy",

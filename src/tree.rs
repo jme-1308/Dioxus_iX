@@ -476,7 +476,12 @@ pub fn ModelTree<T: Clone + PartialEq + 'static>(
     #[props(default = 4)] overscan: usize,
     #[props(default = 640)] max_height: u32,
     #[props(default = "Tree".to_string())] label: String,
+    /// Identity for the existing native tree root.
+    id: Option<String>,
     #[props(default)] class: String,
+    /// Actual root mount, after internal viewport registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
 ) -> Element {
     let snapshot = controller.store.read().clone();
     let nodes = model_tree_nodes(&snapshot.model, &snapshot.context, |data| {
@@ -519,7 +524,7 @@ pub fn ModelTree<T: Clone + PartialEq + 'static>(
         }
     }));
     rsx! { Tree {
-        nodes, state, selected_ids, refresh_revision: snapshot.refresh.revision, label, class, virtualized, overscan, max_height, toggle_on_item_click,
+        nodes, state, selected_ids, refresh_revision: snapshot.refresh.revision, label, id, class, onmounted, virtualized, overscan, max_height, toggle_on_item_click,
         onstatechange: move |next: TreeState| {
             let mut context = controller.context();
             for (id, item) in &mut context { item.is_selected = next.selected.as_ref() == Some(id); item.is_expanded = next.expanded.contains(id); }
@@ -1153,11 +1158,17 @@ pub fn Tree(
     #[props(default = 640)]
     max_height: u32,
     #[props(default = "Tree".to_string())] label: String,
+    /// Identity for the existing native tree root.
+    id: Option<String>,
     #[props(default)] class: String,
+    /// Actual root mount, after internal viewport registration.
+    #[props(default)]
+    onmounted: EventHandler<MountedEvent>,
 ) -> Element {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static TREE_ID: AtomicUsize = AtomicUsize::new(1);
-    let root_id = use_hook(|| format!("ix-tree-{}", TREE_ID.fetch_add(1, Ordering::Relaxed)));
+    let generated_id = use_hook(|| format!("ix-tree-{}", TREE_ID.fetch_add(1, Ordering::Relaxed)));
+    let root_id = id.unwrap_or(generated_id);
     let mut viewport = use_signal(|| TreeViewport {
         top: 0.0,
         height: f64::from(max_height.max(32)),
@@ -1262,7 +1273,10 @@ pub fn Tree(
         ul { id: root_id, class: "ix-tree {class}", role: "tree", "aria-label": label, "aria-multiselectable": checkboxes,
             style: format!("max-height:{}px", max_height.max(32)),
             "data-virtualized": virtualized, "data-visible-count": total, "data-refresh-revision": refresh_revision,
-            onmounted: move |event:MountedEvent| {mount_dom.state.borrow_mut().root=Some(event.data());},
+            onmounted: move |event:MountedEvent| {
+                mount_dom.state.borrow_mut().root=Some(event.data());
+                onmounted.call(event);
+            },
             onscroll: move |event:ScrollEvent| {
                 scroll_dom.state.borrow_mut().scroll_left=event.scroll_left();
                 let measured=TreeViewport {top:event.scroll_top(),height:f64::from(event.client_height())};
