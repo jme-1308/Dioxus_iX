@@ -141,6 +141,8 @@ pub fn GridWorklistExample() -> Element {
     let mut last_column = use_signal(|| "none".to_string());
     let mut feedback = use_signal(|| "No worklist actions or cell edits recorded.".to_string());
     let mut epoch = use_signal(|| 0u64);
+    let mut auto_page_size = use_signal(|| false);
+    let mut grid_height = use_signal(|| 420_u32);
     let mut csv_scope = use_signal(|| DataGridCsvRowScope::Displayed);
     let mut csv_snapshot = use_signal(|| None::<(DataGridCsvRowScope, DataGridCsv)>);
     let mut csv_generation = use_signal(|| 0_u64);
@@ -179,6 +181,11 @@ pub fn GridWorklistExample() -> Element {
         .any(DataGridTextFilter::is_active);
     let current_sort = sort_token(&current_state);
     let pagination_enabled = current_state.pagination.is_some();
+    let effective_grid_height = if pagination_enabled {
+        grid_height()
+    } else {
+        300
+    };
     let page_info = current_state.pagination_info(visible_count);
     let displayed_page = if page_info.page_count == 0 {
         0
@@ -288,6 +295,8 @@ pub fn GridWorklistExample() -> Element {
                         last_column.set("none".into());
                         hold_edits.set(false);
                         read_only.set(false);
+                        auto_page_size.set(false);
+                        grid_height.set(420);
                         clear_csv.call(());
                         csv_scope.set(DataGridCsvRowScope::Displayed);
                         let next_epoch = epoch.peek().wrapping_add(1);
@@ -325,6 +334,27 @@ pub fn GridWorklistExample() -> Element {
                     }
                     "Paginate worklist"
                 }
+                label { r#for: "worklist-auto-page-size",
+                    input {
+                        id: "worklist-auto-page-size", r#type: "checkbox", checked: auto_page_size(), disabled: !pagination_enabled,
+                        onchange: move |event: FormEvent| auto_page_size.set(event.checked()),
+                    }
+                    "Automatic rows per page"
+                }
+                if pagination_enabled && auto_page_size() {
+                    label { r#for: "worklist-grid-height", "View height"
+                        select { id: "worklist-grid-height", class: "ix-input", value: grid_height().to_string(),
+                            onchange: move |event: FormEvent| grid_height.set(match event.value().as_str() {
+                                "300" => 300,
+                                "560" => 560,
+                                _ => 420,
+                            }),
+                            option { value: "300", "Compact view" }
+                            option { value: "420", "Standard view" }
+                            option { value: "560", "Tall view" }
+                        }
+                    }
+                }
             }
             // Dioxus reconciles keys on fragment children; keep this lifecycle explicit.
             for generation in [epoch()] {
@@ -335,7 +365,8 @@ pub fn GridWorklistExample() -> Element {
                     rows: current_rows.clone(),
                     state: current_state.clone(),
                     onstatechange: move |next| state.set(next),
-                    height: if pagination_enabled { 420 } else { 300 },
+                    height: effective_grid_height,
+                    auto_page_size: auto_page_size(),
                     page_size_options: vec![12, 24, 48],
                     striped: true,
                     read_only: read_only(),
@@ -385,6 +416,7 @@ pub fn GridWorklistExample() -> Element {
             }
             p { id: "worklist-pagination-status", class: "grid-worklist-status", role: "status", hidden: !pagination_enabled,
                 "data-enabled": pagination_enabled, "data-page": page_info.page, "data-page-size": page_info.page_size,
+                "data-auto-page-size": pagination_enabled && auto_page_size(), "data-grid-height": effective_grid_height,
                 "data-page-count": page_info.page_count, "data-total": page_info.total_rows,
                 "data-start": page_info.range.start, "data-end": page_info.range.end,
                 "Page {displayed_page} of {page_info.page_count} · {displayed_start}–{page_info.range.end} of {page_info.total_rows} matching records. Selection and CSV include matching records across all pages. Save or cancel a cell edit before paging."

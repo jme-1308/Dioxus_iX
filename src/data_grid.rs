@@ -1303,6 +1303,11 @@ pub fn DataGrid(
     #[props(default)] pagination_labels: crate::PaginationLabels,
     #[props(default = vec![10,25,50,100])] page_size_options: Vec<usize>,
     #[props(default)] hide_pagination_controls: bool,
+    /// Request a controlled page size that fits the measured scroll surface.
+    /// Active edits defer requests until saved/canceled. Disabling auto keeps
+    /// the current controlled size; no manual preference is stored internally.
+    #[props(default)]
+    auto_page_size: bool,
 ) -> Element {
     let mut editing = use_signal(|| None::<GridEditSession>);
     let dragging = use_signal(|| None::<String>);
@@ -1367,6 +1372,41 @@ pub fn DataGrid(
             .collect::<Vec<_>>(),
     );
     let full_count = full_visible.len();
+    let measured_height = use_hook(|| Rc::new(Cell::new(None::<f64>)));
+    let auto_state = state.clone();
+    let report_capacity = use_callback(move |measurement: Option<f64>| {
+        if let Some(height) = measurement {
+            if !height.is_finite() || height <= 0.0 {
+                return;
+            }
+            measured_height.set(Some(height));
+        }
+        if !auto_page_size || editing.peek().is_some() {
+            return;
+        }
+        let Some((pagination, height)) = auto_state.pagination.zip(measured_height.get()) else {
+            return;
+        };
+        let Some(request) = crate::data_grid_pagination::auto_page_request(
+            pagination, full_count, height, row_height,
+        ) else {
+            return;
+        };
+        let mut next = auto_state.clone();
+        next.pagination = Some(request);
+        onstatechange.call(next);
+    });
+    let edit_active = editing().is_some();
+    use_effect(use_reactive(
+        (
+            &auto_page_size,
+            &row_height,
+            &state.pagination,
+            &full_count,
+            &edit_active,
+        ),
+        move |_| report_capacity.call(None),
+    ));
     let page = state.pagination_info(full_count);
     let visible = if state.pagination.is_some() {
         Rc::new(full_visible[page.range.clone()].to_vec())
@@ -1850,6 +1890,7 @@ pub fn DataGrid(
     let page_state = state.clone();
     let size_state = state.clone();
     let pagination_label = format!("{label} pages");
+    let capacity_label = pagination_labels.items.clone();
     rsx! {
         div { id: grid_id, class: "ix-data-grid {class}", "data-striped": striped.to_string(), "data-paginated":state.pagination.is_some().then_some("true"), "data-virtualized": (!suppress_row_virtualisation).to_string(), "data-column-virtualized": (!suppress_column_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
             onpointerdown: move |_| focus_context.cancel(),
@@ -1868,6 +1909,7 @@ pub fn DataGrid(
                         if let Ok(rect) = node.get_client_rect().await {
                             if let Ok(mut current) = viewport.try_write() { current.height = rect.size.height.max(1.0); }
                             if rect.size.width > 0.0 { focus_context.width.set(rect.size.width); }
+                            report_capacity.call(Some(rect.size.height));
                         }
                     });
                 },
@@ -1881,6 +1923,7 @@ pub fn DataGrid(
                     if let Ok(size) = event.get_content_box_size() {
                         if size.height > 0.0 { let mut current = *viewport.peek(); current.height = size.height; viewport.set(current); }
                         if size.width.is_finite() && size.width > 0.0 { focus_context.width.set(size.width); }
+                        report_capacity.call(Some(size.height));
                     }
                 },
                 div { class: "ix-data-grid-header", role: "row", "aria-rowindex": "1",
@@ -1905,7 +1948,7 @@ pub fn DataGrid(
             }
             if state.pagination.is_some() && !hide_pagination_controls {
                 fieldset {class:"ix-data-grid-pagination",disabled:editing().is_some(),
-                    crate::Pagination {count:page.page_count,selected_page:page.page,advanced:true,item_count:page.page_size,item_count_options:page_size_options,label:pagination_label,labels:pagination_labels,
+                    crate::Pagination {count:page.page_count,selected_page:page.page,advanced:true,item_count:page.page_size,item_count_options:page_size_options,hide_item_count:auto_page_size,label:pagination_label,labels:pagination_labels,
                         onpage:move|requested:usize| {
                             if editing.peek().is_some() {return;}
                             let mut next=page_state.clone();
@@ -1919,6 +1962,7 @@ pub fn DataGrid(
                             onstatechange.call(next);
                         }
                     }
+                    if auto_page_size {span {class:"ix-data-grid-page-capacity","{page.page_size} {capacity_label}"}}
                 }
                 if editing().is_some() {p {class:"ix-data-grid-pagination-hint",role:"status","Save or cancel the cell edit before changing pages."}}
             }

@@ -73,3 +73,26 @@ impl DataGridState {
         }
     }
 }
+
+// A real scroll-surface measurement includes the fixed 48px header. Keep the
+// first effective logical row within the resized page; owners still accept the
+// resulting controlled request before the public projection changes.
+pub(crate) fn auto_page_request(
+    pagination: DataGridPagination,
+    total_rows: usize,
+    measured_height: f64,
+    row_height: u32,
+) -> Option<DataGridPagination> {
+    if !measured_height.is_finite() || measured_height <= 0.0 {
+        return None;
+    }
+    let page_size = ((measured_height - 48.0) / f64::from(row_height.max(24)))
+        .floor()
+        .max(1.0) as usize;
+    if pagination.page_size == page_size {
+        return None;
+    }
+    let first = pagination.info(total_rows).range.start;
+    let effective = DataGridPagination::new(first / page_size, page_size).info(total_rows);
+    Some(DataGridPagination::new(effective.page, page_size))
+}

@@ -84,6 +84,9 @@ struct Observation {
     initial: DataGridState,
     state: Cell<Option<Signal<DataGridState>>>,
     hidden: Cell<Option<Signal<bool>>>,
+    auto: Cell<Option<Signal<bool>>>,
+    row_height: Cell<Option<Signal<u32>>>,
+    editor: RefCell<Option<DataGridEditorContext>>,
     requests: RefCell<Vec<DataGridState>>,
     autosize_rows: Cell<usize>,
 }
@@ -101,8 +104,12 @@ fn AutosizeProbe(data: Rc<Observation>, value: String) -> Element {
 fn fixture(data: Rc<Observation>) -> Element {
     let state = use_signal(|| data.initial.clone());
     let hidden = use_signal(|| false);
+    let auto = use_signal(|| false);
+    let row_height = use_signal(|| 42u32);
     data.state.set(Some(state));
     data.hidden.set(Some(hidden));
+    data.auto.set(Some(auto));
+    data.row_height.set(Some(row_height));
     let mut column = DataGridColumn::new("asset", "Asset");
     column.editable = true;
     let rows = (0..5)
@@ -110,7 +117,9 @@ fn fixture(data: Rc<Observation>) -> Element {
         .collect::<Vec<_>>();
     let requests = data.clone();
     let render_data = data.clone();
-    rsx! {DataGrid {columns:vec![column],rows,state:state(),onstatechange:move|next|requests.requests.borrow_mut().push(next),hide_pagination_controls:hidden(),label:"Paged equipment",page_size_options:vec![2,3],
+    let editor_data = data.clone();
+    rsx! {DataGrid {columns:vec![column],rows,state:state(),onstatechange:move|next|requests.requests.borrow_mut().push(next),hide_pagination_controls:hidden(),auto_page_size:auto(),row_height:row_height(),label:"Paged equipment",page_size_options:vec![2,3],
+        render_editor:Callback::new(move|context:DataGridEditorContext|{*editor_data.editor.borrow_mut()=Some(context);None}),
         render_cell:Callback::new(move|context:DataGridCellContext|Some(DataGridCellRender::display(rsx!{AutosizeProbe {data:render_data.clone(),value:context.value}})))
     }}
 }
@@ -250,6 +259,7 @@ macro_rules! converter {
     };
     (@data Mouse,$event:ident)=>{dioxus::html::MouseData::new(Mouse)};
     (@data Form,$event:ident)=>{dioxus::html::FormData::new(Form($event.downcast::<String>().unwrap().clone()))};
+    (@data Resize,$event:ident)=>{dioxus::html::ResizeData::new(Resize(*$event.downcast::<f64>().unwrap()))};
     (@data $other:ident,$event:ident)=>{panic!("unexpected pagination fixture event")};
 }
 dioxus::html::with_html_event_groups!(converter);
@@ -330,4 +340,179 @@ fn actual_footer_emits_controlled_requests_and_native_fieldset_protects_active_e
         2,
         "even synthetic events cannot discard an active edit through pager callbacks"
     );
+}
+
+struct Resize(f64);
+impl dioxus::html::HasResizeData for Resize {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn get_content_box_size(
+        &self,
+    ) -> dioxus::html::ResizeResult<dioxus::html::geometry::PixelsSize> {
+        Ok(dioxus::html::geometry::PixelsSize::new(640.0, self.0))
+    }
+}
+fn grid_target(attrs: &BTreeMap<usize, BTreeMap<String, String>>) -> usize {
+    *attrs
+        .iter()
+        .find(|(_, map)| {
+            map.get("aria-label")
+                .is_some_and(|label| label == "Paged equipment")
+        })
+        .unwrap()
+        .0
+}
+#[test]
+fn automatic_capacity_requires_real_finite_measurement_and_preserves_effective_logical_position() {
+    use crate::data_grid_pagination::auto_page_request;
+    let request = DataGridPagination::new(3, 10);
+    for height in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+        assert_eq!(auto_page_request(request, 200, height, 42), None);
+    }
+    assert_eq!(
+        auto_page_request(request, 200, 48.0 + 42.0 * 7.0, 42),
+        Some(DataGridPagination::new(4, 7))
+    );
+    assert_eq!(
+        auto_page_request(
+            DataGridPagination::new(usize::MAX, 10),
+            23,
+            48.0 + 42.0 * 7.0,
+            42
+        ),
+        Some(DataGridPagination::new(2, 7))
+    );
+    assert_eq!(
+        auto_page_request(request, 0, 1.0, 42),
+        Some(DataGridPagination::new(0, 1))
+    );
+    assert_eq!(
+        auto_page_request(request, 200, 48.0 + 24.0 * 4.0, 0),
+        Some(DataGridPagination::new(7, 4))
+    );
+    assert_eq!(
+        auto_page_request(DataGridPagination::new(2, 3), 200, 48.0 + 42.0 * 3.0, 42),
+        None
+    );
+    assert_eq!(
+        auto_page_request(request, usize::MAX, f64::MAX, 42)
+            .unwrap()
+            .page_size,
+        usize::MAX
+    );
+}
+#[test]
+fn actual_auto_resize_uses_current_controlled_state_and_waits_for_measurement() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = Rc::new(Observation {
+        initial: DataGridState {
+            pagination: Some(DataGridPagination::new(1, 2)),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let (mut dom, mut attrs) = setup(data.clone());
+    dom.in_runtime(|| data.auto.get().unwrap().set(true));
+    settle(&mut dom, &mut attrs);
+    assert!(
+        data.requests.borrow().is_empty(),
+        "configured root height is not a native measurement"
+    );
+    assert!(!dioxus_ssr::render(&dom).contains("aria-label=\"Items per page\""));
+    let grid = grid_target(&attrs);
+    dispatch(&dom, "resize", grid, f64::NAN);
+    assert!(data.requests.borrow().is_empty());
+    dom.in_runtime(|| {
+        data.state.get().unwrap().with_mut(|state| {
+            state.selected.insert("row4".into());
+            state.column_widths.insert("asset".into(), 320);
+        })
+    });
+    settle(&mut dom, &mut attrs);
+    dispatch(&dom, "resize", grid, 174.0);
+    let request = data.requests.borrow().last().unwrap().clone();
+    assert_eq!(request.pagination, Some(DataGridPagination::new(0, 3)));
+    assert!(request.selected.contains("row4"));
+    assert_eq!(request.column_widths["asset"], 320);
+    dom.in_runtime(|| data.state.get().unwrap().set(request));
+    settle(&mut dom, &mut attrs);
+    assert_eq!(
+        data.state
+            .get()
+            .unwrap()
+            .peek()
+            .pagination_info(5)
+            .page_size,
+        3
+    );
+    assert!(dioxus_ssr::render(&dom).contains("3 Items"));
+    data.requests.borrow_mut().clear();
+    dom.in_runtime(|| data.hidden.get().unwrap().set(true));
+    settle(&mut dom, &mut attrs);
+    dispatch(&dom, "resize", grid, 90.0);
+    assert_eq!(
+        data.requests.borrow().last().unwrap().pagination,
+        Some(DataGridPagination::new(0, 1)),
+        "host-owned controls do not disable automatic measurement"
+    );
+}
+#[test]
+fn actual_auto_resize_defers_during_an_edit_and_resumes_from_latest_native_height() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = Rc::new(Observation {
+        initial: DataGridState {
+            pagination: Some(DataGridPagination::new(0, 2)),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let (mut dom, mut attrs) = setup(data.clone());
+    dom.in_runtime(|| data.auto.get().unwrap().set(true));
+    settle(&mut dom, &mut attrs);
+    let grid = grid_target(&attrs);
+    dispatch(&dom, "resize", grid, 132.0);
+    assert!(data.requests.borrow().is_empty(), "two rows already fit");
+    let cell = *attrs
+        .iter()
+        .find(|(_, map)| {
+            map.get("data-column-id").is_some_and(|id| id == "asset")
+                && map.contains_key("aria-readonly")
+        })
+        .unwrap()
+        .0;
+    dispatch(&dom, "dblclick", cell, ());
+    settle(&mut dom, &mut attrs);
+    assert!(
+        data.editor
+            .borrow()
+            .as_ref()
+            .is_some_and(|editor| editor.active)
+    );
+    dispatch(&dom, "resize", grid, 258.0);
+    dispatch(&dom, "resize", grid, 90.0);
+    settle(&mut dom, &mut attrs);
+    assert!(
+        data.requests.borrow().is_empty(),
+        "native resizes never replace an active edit's page"
+    );
+    dom.in_runtime(|| data.editor.borrow().as_ref().unwrap().cancel());
+    settle(&mut dom, &mut attrs);
+    let request = data.requests.borrow().last().unwrap().clone();
+    assert_eq!(request.pagination, Some(DataGridPagination::new(0, 1)));
+    dom.in_runtime(|| data.state.get().unwrap().set(request));
+    settle(&mut dom, &mut attrs);
+    data.requests.borrow_mut().clear();
+    dom.in_runtime(|| data.auto.get().unwrap().set(false));
+    settle(&mut dom, &mut attrs);
+    dispatch(&dom, "resize", grid, 258.0);
+    assert!(data.requests.borrow().is_empty());
+    assert_eq!(
+        data.state.get().unwrap().peek().pagination,
+        Some(DataGridPagination::new(0, 1)),
+        "manual mode retains the owner's accepted size"
+    );
+    assert!(dioxus_ssr::render(&dom).contains("aria-label=\"Items per page\""));
 }

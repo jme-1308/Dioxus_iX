@@ -74,6 +74,8 @@ mod filter_layout_review;
 mod flip_tile_workflow_review;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
+#[path = "dioxus_first_probe/grid_auto_page_review.rs"]
+mod grid_auto_page_review;
 #[path = "dioxus_first_probe/grid_cell_renderers_review.rs"]
 mod grid_cell_renderers_review;
 #[path = "dioxus_first_probe/grid_csv_review.rs"]
@@ -277,6 +279,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridpagination" {
         return rsx! { grid_pagination_review::GridPaginationPreview {} };
+    }
+    if scope == "?gridautopage" {
+        return rsx! { grid_auto_page_review::GridAutoPagePreview {} };
     }
     if scope == "?gridworklist" {
         return rsx! { grid_worklist_review::GridWorklistPreview {} };
