@@ -277,15 +277,15 @@ fn NestedSlotGroup(
                                 },
                                 for item_key in item_order {
                                     Fragment { key: "{item_key}", {match item_key {
-                                        "plain" => rsx! { DropdownItem { label: "{group} plain item", onclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "plain"})) } },
+                                        "plain" => rsx! { DropdownItem { label: "{group} plain item", onitemclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "plain"})) } },
                                         "disabled" => rsx! { DropdownItem { label: "Disabled item", disabled: true } },
                                         "submenu" => rsx! {
                                             DropdownSubmenu {
                                                 label: "{group} inline submenu",
                                                 navigation_mode, enable_top_layer, close_behavior,
-                                                DropdownItem { label: "{group} inline leaf 1", onclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "inline-leaf-1"})) }
+                                                DropdownItem { label: "{group} inline leaf 1", onitemclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "inline-leaf-1"})) }
                                                 DropdownItem { label: "{group} inline disabled", disabled: true }
-                                                DropdownItem { label: "{group} inline leaf 2", onclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "inline-leaf-2"})) }
+                                                DropdownItem { label: "{group} inline leaf 2", onitemclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "inline-leaf-2"})) }
                                             }
                                         },
                                         _ => rsx! {
@@ -393,8 +393,8 @@ fn HeaderNestedStage(
                                     diag_revision += 1;
                                     record_event(events, json!({"kind": "submenu-change", "group": group, "open": open}));
                                 },
-                                DropdownItem { label: "{group} child one", onclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "external-one"})) }
-                                DropdownItem { label: "{group} child two", onclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "external-two"})) }
+                                DropdownItem { label: "{group} child one", onitemclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "external-one"})) }
+                                DropdownItem { label: "{group} child two", onitemclick: move |_| record_event(events, json!({"kind": "item-click", "group": group, "item": "external-two"})) }
                                 input {
                                     id: "header-nested-{group}-submenu-input", class: "header-nested-input",
                                     r#type: "text", placeholder: "{group} submenu value", "aria-label": "{group} submenu value", autocomplete: "off",

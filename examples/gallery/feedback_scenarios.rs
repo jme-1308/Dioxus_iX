@@ -100,8 +100,8 @@ pub fn FeedbackScenario(name: String) -> Element {
                     DropdownButton { label: if name.ends_with("-icon") { String::new() } else { label.into() }, aria_label: label,
                         icon: "checkboxes", variant, disabled,
                         if !disabled {
-                            DropdownItem { label: "Item 1", onclick: move |_| selected.set("Item 1".into()) }
-                            DropdownItem { label: "Item 2", onclick: move |_| selected.set("Item 2".into()) }
+                            DropdownItem { label: "Item 1", onitemclick: move |_| selected.set("Item 1".into()) }
+                            DropdownItem { label: "Item 2", onitemclick: move |_| selected.set("Item 2".into()) }
                         }
                     }
                 }
@@ -122,20 +122,20 @@ pub fn FeedbackScenario(name: String) -> Element {
         }
         "dropdown-icon" => {
             rsx! { DropdownTrigger { dropdown, "Open" } Dropdown { controller: dropdown, label: "Open", variant: ButtonVariant::Primary,
-                DropdownItem { icon: "star", label: "Item 1", onclick: move |_| selected.set("Item 1".into()) }
-                DropdownItem { icon: "document", label: "Item 2", onclick: move |_| selected.set("Item 2".into()) }
-                DropdownItem { icon: "bulb", label: "Item 3", onclick: move |_| selected.set("Item 3".into()) }
+                DropdownItem { icon: "star", label: "Item 1", onitemclick: move |_| selected.set("Item 1".into()) }
+                DropdownItem { icon: "document", label: "Item 2", onitemclick: move |_| selected.set("Item 2".into()) }
+                DropdownItem { icon: "bulb", label: "Item 3", onitemclick: move |_| selected.set("Item 3".into()) }
             } }
         }
         "dropdown-submenu" => {
             rsx! { DropdownTrigger { dropdown, "Open" } Dropdown { controller: dropdown, label: "Open", variant: ButtonVariant::Primary,
                 DropdownSubmenu { label: "Submenu",
-                    DropdownItem { icon: "star", label: "Item 1", onclick: move |_| selected.set("Submenu: Item 1".into()) }
-                    DropdownItem { icon: "document", label: "Item 2", onclick: move |_| selected.set("Submenu: Item 2".into()) }
+                    DropdownItem { icon: "star", label: "Item 1", onitemclick: move |_| selected.set("Submenu: Item 1".into()) }
+                    DropdownItem { icon: "document", label: "Item 2", onitemclick: move |_| selected.set("Submenu: Item 2".into()) }
                 }
-                DropdownItem { icon: "star", label: "Item 1", onclick: move |_| selected.set("Item 1".into()) }
-                DropdownItem { icon: "document", label: "Item 2", onclick: move |_| selected.set("Item 2".into()) }
-                DropdownItem { icon: "bulb", label: "Item 3", onclick: move |_| selected.set("Item 3".into()) }
+                DropdownItem { icon: "star", label: "Item 1", onitemclick: move |_| selected.set("Item 1".into()) }
+                DropdownItem { icon: "document", label: "Item 2", onitemclick: move |_| selected.set("Item 2".into()) }
+                DropdownItem { icon: "bulb", label: "Item 3", onitemclick: move |_| selected.set("Item 3".into()) }
             } }
         }
         "dropdown" | "dropdown-roving-tabindex" => {

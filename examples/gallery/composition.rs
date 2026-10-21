@@ -32,12 +32,12 @@ pub fn CompositionExamples() -> Element {
             h2 { "Dropdown button" }
             div { class: "demo-row",
                 DropdownButton { label: "Dropdown button",
-                    DropdownItem { label: "Item 1", onclick: move |_| last_action.set("Item 1".into()) }
-                    DropdownItem { label: "Item 2", onclick: move |_| last_action.set("Item 2".into()) }
+                    DropdownItem { label: "Item 1", onitemclick: move |_| last_action.set("Item 1".into()) }
+                    DropdownItem { label: "Item 2", onitemclick: move |_| last_action.set("Item 2".into()) }
                 }
                 DropdownButton { label: "With icon", icon: "cut", variant: ButtonVariant::Secondary,
-                    DropdownItem { label: "Cut", icon: "cut", onclick: move |_| last_action.set("Cut".into()) }
-                    DropdownItem { label: "Delete", icon: "trashcan", onclick: move |_| last_action.set("Delete".into()) }
+                    DropdownItem { label: "Cut", icon: "cut", onitemclick: move |_| last_action.set("Cut".into()) }
+                    DropdownItem { label: "Delete", icon: "trashcan", onitemclick: move |_| last_action.set("Delete".into()) }
                 }
                 DropdownButton { label: "Disabled", disabled: true, DropdownItem { label: "Item 1" } }
                 DropdownButton { label: "Loading", loading: true, DropdownItem { label: "Item 1" } }

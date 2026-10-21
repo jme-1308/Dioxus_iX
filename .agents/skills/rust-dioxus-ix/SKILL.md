@@ -17,6 +17,8 @@ Use rust-analyzer MCP for semantic lookups when available. Positions are zero-ba
 
 ## Implementation
 
+Use semantic activation events for shared pointer/keyboard actions. For DropdownItem, bind onitemclick; its compatibility onclick receives real pointer MouseEvents only. Keep onclick for native buttons and genuinely pointer-specific behavior; do not fabricate MouseEvents for keyboard activation.
+
 Keep behavior and application state in Rust. Preserve form, keyboard, focus, and controlled-value semantics. Cancel stale async work, release owned resources, and do not hold borrows or locks across `.await`.
 
 Give delegated tasks their established contract and exclusive files. Handoffs state behavior, tests, limitations, and frozen files; reopen only confirmed defects.

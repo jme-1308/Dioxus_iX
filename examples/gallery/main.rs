@@ -477,11 +477,11 @@ fn FeedbackExamples() -> Element {
             p { "Category labels, checked and disabled items from dropdown.html and dropdown-item examples." }
             Dropdown { label: "Open",
                 DropdownHeader { label: "Category" }
-                DropdownItem { label: "Item 2", onclick: move |_| selected.set("Item 2".into()) }
-                DropdownItem { label: "Item 3", checkable: true, checked: selected() == "Item 3", onclick: move |_| selected.set("Item 3".into()) }
+                DropdownItem { label: "Item 2", onitemclick: move |_| selected.set("Item 2".into()) }
+                DropdownItem { label: "Item 3", checkable: true, checked: selected() == "Item 3", onitemclick: move |_| selected.set("Item 3".into()) }
                 DropdownItem { label: "Item 4", disabled: true }
                 Divider {}
-                DropdownItem { label: "Item 5", icon: "cogwheel", onclick: move |_| selected.set("Item 5".into()) }
+                DropdownItem { label: "Item 5", icon: "cogwheel", onitemclick: move |_| selected.set("Item 5".into()) }
             }
             p { role: "status", "{selected}" }
         }

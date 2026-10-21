@@ -722,14 +722,25 @@ impl Domain {
     /// True means the originating registration was admitted, not that every
     /// eligible target accepted its close request.
     pub(crate) fn dismiss_dropdown_others(&self, id: &str, generation: u64) -> bool {
-        self.dismiss_dropdown_set(id, generation, false)
+        self.dismiss_dropdown_set(id, generation, false, None)
     }
 
-    pub(crate) fn dismiss_dropdown_all(&self, id: &str, generation: u64) -> bool {
-        self.dismiss_dropdown_set(id, generation, true)
+    pub(crate) fn dismiss_dropdown_all(
+        &self,
+        id: &str,
+        generation: u64,
+        restore_focus: Option<bool>,
+    ) -> bool {
+        self.dismiss_dropdown_set(id, generation, true, restore_focus)
     }
 
-    fn dismiss_dropdown_set(&self, id: &str, generation: u64, inside: bool) -> bool {
+    fn dismiss_dropdown_set(
+        &self,
+        id: &str,
+        generation: u64,
+        inside: bool,
+        restore_focus: Option<bool>,
+    ) -> bool {
         let Some(origin) = self
             .entry(id)
             .filter(|entry| entry.generation == generation && entry.kind.is_dropdown())
@@ -781,7 +792,8 @@ impl Domain {
                         } else {
                             Reason::TriggerOther
                         },
-                        restore_focus: !inside || self.keyboard_mode().unwrap_or(false),
+                        restore_focus: restore_focus
+                            .unwrap_or_else(|| !inside || self.keyboard_mode().unwrap_or(false)),
                     },
                 );
             }

@@ -2034,10 +2034,16 @@ impl RuntimeHandle {
     /// Source dismissOthers after an actual trigger or host fallthrough.
     /// Closed origins are valid; a dropped/replaced registration is not.
     pub(crate) fn dismiss_dropdown_others(&self, id: &str, generation: u64) -> bool {
-        self.dismiss_dropdown_set(id, generation, false)
+        self.dismiss_dropdown_set(id, generation, false, None)
     }
 
-    fn dismiss_dropdown_set(&self, id: &str, generation: u64, inside: bool) -> bool {
+    fn dismiss_dropdown_set(
+        &self,
+        id: &str,
+        generation: u64,
+        inside: bool,
+        restore_focus: Option<bool>,
+    ) -> bool {
         let admitted = self.with_owner(id, generation, || {
             let entry = self.entry(id)?;
             (entry.kind.is_dropdown() && entry.generation == generation)
@@ -2049,7 +2055,7 @@ impl RuntimeHandle {
         }
         if let Some(domain) = self.domain() {
             return if inside {
-                domain.dismiss_dropdown_all(id, generation)
+                domain.dismiss_dropdown_all(id, generation, restore_focus)
             } else {
                 domain.dismiss_dropdown_others(id, generation)
             };
@@ -2109,7 +2115,8 @@ impl RuntimeHandle {
                             } else {
                                 Reason::TriggerOther
                             },
-                            restore_focus: !inside || self.keyboard_mode(),
+                            restore_focus: restore_focus
+                                .unwrap_or_else(|| !inside || self.keyboard_mode()),
                         },
                     );
                 }
@@ -3282,7 +3289,27 @@ impl NodeHandle {
             }
             event.stop_propagation();
             if event.default_action_enabled() && entry.behavior.allows_inside() {
-                runtime.dismiss_dropdown_set(&self.id, self.generation, true);
+                runtime.dismiss_dropdown_set(&self.id, self.generation, true, None);
+            }
+        });
+    }
+    /// Semantic keyboard activation uses the same inside-dismissal policy as a
+    /// pointer item, with an explicit keyboard focus return intent.
+    pub(crate) fn dioxus_item_activation(&self) {
+        let Some(runtime) = self.runtime() else {
+            return;
+        };
+        let _ = runtime.with_owner(&self.id, self.generation, || {
+            let Some(entry) = runtime
+                .entry(&self.id)
+                .filter(|entry| entry.generation == self.generation && entry.kind.is_dropdown())
+            else {
+                return;
+            };
+            if runtime.read_current(&self.id, &entry) == Some(true)
+                && entry.behavior.allows_inside()
+            {
+                runtime.dismiss_dropdown_set(&self.id, self.generation, true, Some(true));
             }
         });
     }

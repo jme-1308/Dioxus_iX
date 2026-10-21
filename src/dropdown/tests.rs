@@ -307,6 +307,8 @@ fn fixture(config: Rc<RefCell<Fixture>>) -> Element {
     let standalone_mouse = config.clone();
     let linked_before = config.clone();
     let deep_before = config.clone();
+    let nested_item = config.clone();
+    let nested_click = config.clone();
     rsx! {div {
         if settings.visible {
         Dropdown {label:"Menu",close_behavior:settings.close_behavior,navigation_mode:settings.mode,enable_top_layer:settings.layer,disabled:settings.blocked,loading:settings.loading,focus_checked_item:settings.focus_checked,disable_focus_handling:settings.no_focus,disable_focus_trap:settings.no_trap,placement:settings.placement,suppress_trigger_visibility_check:settings.suppress_visibility,suppress_automatic_placement:settings.suppress_automatic,
@@ -317,7 +319,7 @@ fn fixture(config: Rc<RefCell<Fixture>>) -> Element {
             DropdownItem {label:"Alpha",id:settings.alpha_id.clone(),keep_open:settings.item_keep_open,onfocus:move |_|focused.borrow_mut().item_focus_events+=1,onblur:move |_|blurred.borrow_mut().item_blur_events+=1,onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |event:MouseEvent|{let mut state=click.borrow_mut();state.native_clicks+=1;if state.item_prevent_click{event.prevent_default();}}}
             DropdownItem {label:"Disabled",disabled:true}
             DropdownItem {label:"Linked",dropdown:linked,checked:true}
-            DropdownSubmenu {label:"Explicit",DropdownItem {label:"Persistent nested"}}
+            DropdownSubmenu {label:"Explicit",navigation_mode:settings.mode,DropdownItem {label:"Persistent nested",keep_open:settings.item_keep_open,onitemclick:move |event:DropdownItemClickEvent|{let veto={let mut state=nested_item.borrow_mut();state.item_requests+=1;state.item_veto};if veto{event.prevent_default();}},onclick:move |_|nested_click.borrow_mut().native_clicks+=1}}
             }
         }
         DropdownTrigger {dropdown:linked,aria_label:"External trigger","External trigger"}
@@ -2019,6 +2021,95 @@ fn virtual_item_enter_and_space_deliver_one_registered_rust_action_in_both_modes
                 "keyboard action returns focus to the surviving trigger"
             );
         }
+    }
+}
+
+#[test]
+fn nested_keyboard_item_activation_closes_the_same_chain_without_a_mouse_event() {
+    let _guard = crate::test_event_converter_guard();
+    for mode in [
+        DropdownNavigationMode::ActiveDescendant,
+        DropdownNavigationMode::RovingTabindex,
+    ] {
+        let mut h = Harness::with_settings(Fixture {
+            mode,
+            ..Fixture::default()
+        });
+        mount_trigger_mock(&mut h, "Menu");
+        mount_trigger_mock(&mut h, "Explicit");
+        let parent = h.context();
+        let child = parent
+            .entries
+            .borrow()
+            .values()
+            .find(|entry| entry.label == "Explicit")
+            .unwrap()
+            .submenu
+            .unwrap()
+            .context();
+        for (index, key) in [Key::Enter, Key::Character(" ".into())]
+            .into_iter()
+            .enumerate()
+        {
+            h.key("Menu", Key::ArrowDown);
+            h.key("Menu", Key::End);
+            h.key("Menu", Key::ArrowRight);
+            assert!(*parent.open.peek() && *child.open.peek());
+            h.key("Menu", Key::Home);
+            assert_eq!(selected_label(&child).as_deref(), Some("Persistent nested"));
+            h.key("Menu", key);
+            assert_eq!(h.config.borrow().item_requests, index + 1);
+            assert_eq!(h.config.borrow().native_clicks, 0);
+            assert!(!*child.open.peek(), "the activated submenu closes");
+            assert!(
+                !*parent.open.peek(),
+                "inside dismissal also closes its parent"
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_keyboard_dismissal_preserves_item_and_parent_close_guards() {
+    let _guard = crate::test_event_converter_guard();
+    // Accepted semantic activation must not bypass either item prevention or
+    // the ancestor's existing visibility/inside-outside close policy.
+    for (keep_open, item_veto, parent_veto, behavior) in [
+        (true, false, false, DropdownCloseBehavior::Both),
+        (false, true, false, DropdownCloseBehavior::Both),
+        (false, false, true, DropdownCloseBehavior::Both),
+        (false, false, false, DropdownCloseBehavior::Inside),
+    ] {
+        let mut h = Harness::with_settings(Fixture {
+            item_keep_open: keep_open,
+            item_veto,
+            veto_close: parent_veto,
+            close_behavior: behavior,
+            ..Fixture::default()
+        });
+        mount_trigger_mock(&mut h, "Explicit");
+        let parent = h.context();
+        let child = parent
+            .entries
+            .borrow()
+            .values()
+            .find(|entry| entry.label == "Explicit")
+            .unwrap()
+            .submenu
+            .unwrap()
+            .context();
+        h.key("Menu", Key::ArrowDown);
+        h.key("Menu", Key::End);
+        h.key("Menu", Key::ArrowRight);
+        h.key("Menu", Key::Home);
+        h.key("Menu", Key::Enter);
+        assert_eq!(h.config.borrow().item_requests, 1);
+        assert_eq!(h.config.borrow().native_clicks, 0);
+        assert!(
+            *parent.open.peek(),
+            "the ancestor's close policy is authoritative"
+        );
+        assert_eq!(*child.open.peek(), keep_open || item_veto);
     }
 }
 

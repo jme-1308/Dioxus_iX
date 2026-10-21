@@ -2644,7 +2644,10 @@ fn direct_key(
                 DropdownCloseBehavior::Both | DropdownCloseBehavior::Inside
             );
             if close && event.default_action_enabled() {
-                owner.request(false, Reason::Keyboard, true);
+                let node = owner.node.borrow().clone();
+                if let Some(node) = node {
+                    node.dioxus_item_activation();
+                }
             }
         }
     }
