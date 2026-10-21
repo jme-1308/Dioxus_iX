@@ -81,6 +81,7 @@ mod input_selection;
 mod input_styles;
 mod key_value;
 pub mod layout;
+pub mod loading_dialog;
 mod localized_date;
 mod menu_avatar;
 pub mod message_dialog;
@@ -136,6 +137,7 @@ pub use icons::{
     icon_names, use_icon_registry,
 };
 pub use layout::*;
+pub use loading_dialog::*;
 pub use message_dialog::*;
 pub use notifications::*;
 pub use overlays::*;

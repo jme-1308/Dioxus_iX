@@ -177,33 +177,121 @@ fn GuardedModalExample() -> Element {
 }
 
 #[component]
-fn LoadingModalExample() -> Element {
+pub fn LoadingModalExample() -> Element {
     let modal = use_modal();
     let mut reading = use_signal(|| false);
+    let mut read_task = use_signal(|| None::<dioxus::core::Task>);
+    let mut operation = use_signal(|| 0_u64);
+    let mut file_name = use_signal(String::new);
+    let mut characters = use_signal(|| 0_usize);
+    let mut state = use_signal(|| "idle");
+    let mut open = use_signal(|| false);
+    let mut outcome = use_signal(String::new);
+    let mut preparation = use_signal(|| String::from("Check the text file before reading"));
     let mut result =
         use_signal(|| "Select a local text file to read it asynchronously.".to_string());
+    let cancel_read = use_callback(move |(): ()| {
+        if !*reading.peek() {
+            return;
+        }
+        let next = operation.peek().wrapping_add(1);
+        operation.set(next);
+        let pending = read_task.write().take();
+        if let Some(task) = pending {
+            task.cancel();
+        }
+        reading.set(false);
+        state.set("cancelled");
+        result.set(format!(
+            "Cancelled reading {}. Choose a file to try again.",
+            file_name.peek()
+        ));
+        modal.close("cancelled");
+    });
     rsx! {
-        ModalTrigger { modal, "Show loading modal" }
-        Modal { modal, label: "Read text file", size: ModalSize::Sm,
-            ModalHeader { "Read text file" }
-            ModalContent {
-                if reading() { ModalLoading { "Reading file…" } }
-                else {
-                    Upload { accept: "text/*,.txt,.md,.rs", select_file_text: "Select a local text file", button_text: "Choose text file",
-                        onfileschanged: move |files: Vec<dioxus::html::FileData>| async move {
-                            let Some(file) = files.into_iter().next() else { return; };
-                            reading.set(true);
-                            let message = match file.read_string().await {
-                                Ok(text) => format!("Read {}: {} characters", file.name(), text.chars().count()),
-                                Err(error) => format!("Could not read {}: {error}", file.name()),
-                            };
-                            result.set(message); reading.set(false);
-                        }
+        div { id: "loading-import",
+            p { "Read a local text file and keep its result here. Nothing is uploaded or sent to a server. You can cancel a pending read from its status dialog." }
+            Input { id: "loading-import-preparation", label: "Read preparation", value: preparation(), max_length: 160,
+                onvaluechange: move |value| preparation.set(value),
+            }
+            div { id: "loading-import-upload",
+                Upload { accept: "text/*,.txt,.md,.rs", select_file_text: "Select a local text file", button_text: "Choose text file",
+                    disabled: reading(),
+                    onfileschanged: move |files: Vec<dioxus::html::FileData>| {
+                        if *reading.peek() { return; }
+                        let Some(file) = files.into_iter().next() else { return; };
+                        let sequence = operation.peek().wrapping_add(1);
+                        operation.set(sequence);
+                        file_name.set(file.name());
+                        characters.set(0);
+                        reading.set(true);
+                        state.set("opening");
+                        let task = spawn(async move {
+                            if let Err(error) = modal.open().await {
+                                if *operation.peek() != sequence { return; }
+                                state.set("unavailable");
+                                result.set(format!("Cannot open the read status dialog: {error}. The file was not read."));
+                                reading.set(false);
+                                read_task.set(None);
+                                return;
+                            }
+                            if *operation.peek() != sequence { return; }
+                            state.set("reading");
+                            let content = file.read_string().await;
+                            if *operation.peek() != sequence { return; }
+                            match content {
+                                Ok(text) => {
+                                    let count = text.chars().count();
+                                    characters.set(count);
+                                    state.set("success");
+                                    result.set(format!("Read {}: {count} characters", file.name()));
+                                }
+                                Err(error) => {
+                                    state.set("failed");
+                                    result.set(format!("Could not read {}: {error}. Choose a file to try again.", file.name()));
+                                }
+                            }
+                            reading.set(false);
+                            read_task.set(None);
+                            modal.close(state());
+                        });
+                        read_task.set(Some(task));
                     }
                 }
-                p { role: "status", "{result}" }
             }
-            ModalFooter { ModalClose { variant: ButtonVariant::Primary, "Close" } }
+            p { id: "loading-import-status", role: "status", "aria-live": "polite",
+                "data-state": state(), "data-file": file_name(), "data-characters": characters(),
+                "data-reading": reading(), "data-open": open(), "data-result": outcome(),
+                "{result}"
+            }
+            Button { id: "loading-import-reset", button_type: ButtonType::Button, variant: ButtonVariant::Tertiary, disabled: reading(),
+                onclick: move |_| {
+                    if *reading.peek() { return; }
+                    let next = operation.peek().wrapping_add(1);
+                    operation.set(next);
+                    file_name.set(String::new()); characters.set(0); state.set("idle"); outcome.set(String::new());
+                    result.set("Select a local text file to read it asynchronously.".into());
+                },
+                "Clear read result"
+            }
+            LoadingDialog { modal, label: "Read local text file", size: ModalSize::Sm,
+                message: format!("Reading {}…", file_name()),
+                onopenchange: move |visible: bool| open.set(visible),
+                onresult: move |completed: ModalResult| {
+                    outcome.set(format!("{completed:?}"));
+                    if *reading.peek() {
+                        let next = operation.peek().wrapping_add(1);
+                        operation.set(next);
+                        let pending = read_task.write().take();
+                        if let Some(task) = pending { task.cancel(); }
+                        reading.set(false); state.set("cancelled");
+                        result.set("The read ended before completion. Choose a file to try again.".into());
+                    }
+                },
+                Button { id: "loading-import-cancel", button_type: ButtonType::Button, variant: ButtonVariant::Secondary,
+                    disabled: !reading() || !modal.is_open(), onclick: move |_| cancel_read.call(()), "Cancel read"
+                }
+            }
         }
     }
 }

@@ -106,6 +106,8 @@ mod inspection_report_review;
 mod item_order_review;
 #[path = "dioxus_first_probe/link_navigation_review.rs"]
 mod link_navigation_review;
+#[path = "dioxus_first_probe/loading_dialog_review.rs"]
+mod loading_dialog_review;
 #[path = "dioxus_first_probe/localized_date_review.rs"]
 mod localized_date_review;
 #[path = "dioxus_first_probe/maintenance_notices_review.rs"]
@@ -404,6 +406,9 @@ fn Preview() -> Element {
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };
+    }
+    if scope == "?loadingdialog" {
+        return rsx! { loading_dialog_review::LoadingDialogPreview {} };
     }
     if scope == "?contentscroll" {
         return rsx! { content_scroll_review::ContentScrollPreview {} };
