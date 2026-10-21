@@ -20,6 +20,8 @@ pub fn FormExamples() -> Element {
     let some_checked = children.read().iter().any(|value| *value);
     let mut storage = use_signal(|| "256".to_string());
     let mut toggle = use_signal(|| false);
+    let mut value_label_options = items();
+    value_label_options[3].label = String::new();
     let mut single = use_signal(|| "1".to_string());
     let mut multiple = use_signal(|| vec!["1".to_string(), "3".to_string()]);
     let mut editable = use_signal(|| "1".to_string());
@@ -135,20 +137,21 @@ pub fn FormExamples() -> Element {
         }
         section { class: "demo-section", id: "selects",
             h2 { "Select" }
+            p { "An option without a label displays its value, such as 4." }
             div { class: "form-demo-grid",
-                Select { label: "Select", options: items(), value: single(), allow_clear: true,
+                Select { id: "select-value-label", name: "single-choice", label: "Select", options: value_label_options.clone(), value: single(), allow_clear: true,
                     onvaluechange: move |value| single.set(value) }
-                Select { label: "Multiple", options: items(), values: multiple(), multiple: true, allow_clear: true,
+                Select { id: "select-values-label", name: "multiple-choice", label: "Multiple", options: value_label_options.clone(), values: multiple(), multiple: true, allow_clear: true,
                     onvalueschange: move |values| multiple.set(values) }
-                Select { label: "Editable", options: items(), value: editable(), editable: true,
+                Select { id: "select-editable-label", name: "editable-choice", label: "Editable", options: value_label_options, value: editable(), editable: true,
                     helper_text: "Type in this field to filter or add an item", onvaluechange: move |value| editable.set(value),
                     oninputchange: move |text| select_query.set(text), onadd: move |text| select_added.set(text) }
                 Select { label: "Disabled", options: items(), value: "1", disabled: true }
                 Select { label: "Read-only", options: items(), value: "2", readonly: true }
                 Select { label: "Validation", options: items(), state: FieldState::Invalid, invalid_text: "Please select an option" }
             }
-            p { role: "status", "Selection: {single}. Multiple: {multiple.read().join(\", \")}. Editable: {editable}." }
-            p { role: "status", "Input: {select_query}. Added: {select_added}." }
+            p { id: "select-value-label-status", role: "status", "Selection: {single}. Multiple: {multiple.read().join(\", \")}. Editable: {editable}." }
+            p { id: "select-value-label-input", role: "status", "Input: {select_query}. Added: {select_added}." }
             h3 { "Top layer Select" }
             p { "The option list escapes this clipped container. Reject additions to keep the typed text without creating or selecting an item." }
             Checkbox { label: "Reject new options", checked: reject_new_options(), oncheckedchange: move |value| reject_new_options.set(value) }

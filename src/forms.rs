@@ -2647,6 +2647,12 @@ pub fn Select(
                 .filter(|addition| !options.iter().any(|option| option.value == addition.value))
                 .cloned(),
         )
+        .map(|mut option| {
+            if option.label.is_empty() {
+                option.label = option.value.clone();
+            }
+            option
+        })
         .collect();
     let selected = if multiple {
         values
@@ -3727,3 +3733,6 @@ mod range_field_tests;
 
 #[cfg(test)]
 mod choice_label_tests;
+
+#[cfg(test)]
+mod select_label_tests;

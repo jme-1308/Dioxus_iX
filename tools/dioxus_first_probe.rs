@@ -212,6 +212,8 @@ mod select_direction_review;
 mod select_item_review;
 #[path = "dioxus_first_probe/select_method_review.rs"]
 mod select_method_review;
+#[path = "dioxus_first_probe/select_value_labels_review.rs"]
+mod select_value_labels_review;
 #[path = "dioxus_first_probe/selected_hover_review.rs"]
 mod selected_hover_review;
 #[path = "dioxus_first_probe/service_dialogs_review.rs"]
@@ -640,6 +642,9 @@ fn Preview() -> Element {
     }
     if scope == "?selectmethods" {
         return rsx! { select_method_review::SelectMethodPreview {} };
+    }
+    if scope == "?selectvaluelabels" {
+        return rsx! { select_value_labels_review::SelectValueLabelsPreview {} };
     }
     if scope == "?selectitems" {
         return rsx! { select_item_review::SelectItemPreview {} };
