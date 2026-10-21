@@ -196,6 +196,8 @@ mod select_direction_review;
 mod select_item_review;
 #[path = "dioxus_first_probe/select_method_review.rs"]
 mod select_method_review;
+#[path = "dioxus_first_probe/selected_hover_review.rs"]
+mod selected_hover_review;
 #[path = "dioxus_first_probe/service_dialogs_review.rs"]
 mod service_dialogs_review;
 #[path = "dioxus_first_probe/service_request_review.rs"]
@@ -570,6 +572,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatmessages" {
         return rsx! { chat_messages_review::ChatMessagesPreview {} };
+    }
+    if scope == "?selectedhover" {
+        return rsx! { selected_hover_review::SelectedHoverPreview {} };
     }
     if scope == "?datedropdownentry" {
         return rsx! { date_dropdown_entry_review::DateDropdownEntryPreview {} };
