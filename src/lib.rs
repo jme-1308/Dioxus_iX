@@ -56,6 +56,7 @@ mod data_grid_custom_editor;
 mod data_grid_editor;
 pub mod data_grid_pagination;
 mod data_grid_render;
+pub mod data_grid_sort;
 mod data_grid_value;
 mod date_dropdown_controller;
 pub mod datetime;

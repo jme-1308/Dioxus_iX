@@ -83,6 +83,97 @@ fn sort_token(state: &DataGridState) -> String {
     }
 }
 
+fn ordering_token(column: &str, direction: DataGridSortDirection) -> String {
+    format!(
+        "{column}-{}",
+        match direction {
+            DataGridSortDirection::Ascending => "ascending",
+            DataGridSortDirection::Descending => "descending",
+        }
+    )
+}
+
+fn change_worklist_order(state: &DataGridState, secondary: bool, value: &str) -> DataGridState {
+    let requested = value.rsplit_once('-').and_then(|(column, direction)| {
+        if !["asset", "status", "owner"].contains(&column) {
+            return None;
+        }
+        let direction = match direction {
+            "ascending" => DataGridSortDirection::Ascending,
+            "descending" => DataGridSortDirection::Descending,
+            _ => return None,
+        };
+        Some((column.to_string(), direction))
+    });
+    let mut next = state.clone();
+    let chain = state
+        .sort_chain()
+        .into_iter()
+        .map(|(column, direction)| (column.to_owned(), direction))
+        .collect::<Vec<_>>();
+    if secondary {
+        let Some(primary) = chain.first().cloned() else {
+            return next;
+        };
+        next.secondary_sorts = if let Some(requested) = requested {
+            if requested.0 == primary.0 {
+                return next;
+            }
+            let mut tail = vec![requested.clone()];
+            tail.extend(
+                chain
+                    .into_iter()
+                    .skip(2)
+                    .filter(|(column, _)| column != &requested.0),
+            );
+            tail
+        } else {
+            vec![]
+        };
+        next.sort = Some(primary);
+    } else if let Some(requested) = requested {
+        next.secondary_sorts = chain
+            .into_iter()
+            .skip(1)
+            .filter(|(column, _)| column != &requested.0)
+            .collect();
+        next.sort = Some(requested);
+    } else {
+        next.clear_sorts();
+    }
+    if let Some(pagination) = next.pagination.as_mut() {
+        pagination.page = 0;
+    }
+    next
+}
+
+fn ordering_summary(state: &DataGridState) -> String {
+    let chain = state
+        .sort_chain()
+        .into_iter()
+        .map(|(column, direction)| {
+            let label = match column {
+                "asset" => "Asset",
+                "status" => "Status",
+                "owner" => "Owner",
+                other => other,
+            };
+            format!(
+                "{label} {}",
+                match direction {
+                    DataGridSortDirection::Ascending => "ascending",
+                    DataGridSortDirection::Descending => "descending",
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    if chain.is_empty() {
+        "Original record order.".into()
+    } else {
+        format!("{}.", chain.join(", then "))
+    }
+}
+
 fn csv_scope_token(scope: DataGridCsvRowScope) -> &'static str {
     match scope {
         DataGridCsvRowScope::Displayed => "displayed",
@@ -196,6 +287,25 @@ pub fn GridWorklistExample() -> Element {
         .values()
         .any(DataGridTextFilter::is_active);
     let current_sort = sort_token(&current_state);
+    let current_chain = current_state.sort_chain();
+    let primary_column = current_chain.first().map(|(column, _)| *column);
+    let secondary_order = current_chain
+        .get(1)
+        .map(|(column, direction)| ordering_token(column, *direction))
+        .unwrap_or_else(|| "none".into());
+    let chain_tokens = current_chain
+        .iter()
+        .map(|(column, direction)| ordering_token(column, *direction))
+        .collect::<Vec<_>>();
+    let serialized_chain = serde_json::to_string(&chain_tokens).unwrap_or_default();
+    let serialized_row_order = serde_json::to_string(
+        &visible
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_default();
+    let order_summary = ordering_summary(&current_state);
     let pagination_enabled = current_state.pagination.is_some();
     let effective_grid_height = if pagination_enabled {
         grid_height()
@@ -248,7 +358,7 @@ pub fn GridWorklistExample() -> Element {
     rsx! {
         section { class: "grid-worklist-example", id: "grid-worklist",
             h2 { "Maintenance worklist" }
-            p { "96 illustrative maintenance records; actions update local component state only. Sort or filter columns, select records across filters, and mark all selected records (including selections hidden by active filters) for Maintenance. Double-click an editable cell or press Enter/F2 to edit; Enter saves, Escape cancels, and Tab/Shift+Tab moves to the next editable cell. Asset is required; Status, Ticket, and Asset 001's owner are read-only. Hover or focus a cell for help; Escape hides it." }
+            p { "96 illustrative maintenance records; actions update local component state only. Sort or filter columns, select records across filters, and mark all selected records (including selections hidden by active filters) for Maintenance. Hold Shift when activating a column header to add an ordering priority. Double-click an editable cell or press Enter/F2 to edit; Enter saves, Escape cancels, and Tab/Shift+Tab moves to the next editable cell. Asset is required; Status, Ticket, and Asset 001's owner are read-only. Hover or focus a cell for help; Escape hides it." }
             div { class: "grid-worklist-toolbar",
                 Button {
                     id: "worklist-mark-service",
@@ -372,6 +482,36 @@ pub fn GridWorklistExample() -> Element {
                     }
                 }
             }
+            div { class: "grid-worklist-toolbar worklist-order-controls",
+                label { r#for: "worklist-sort-primary", "Primary ordering"
+                    select { id: "worklist-sort-primary", class: "ix-input", value: current_sort.clone(),
+                        onchange: move |event: FormEvent| { let next = change_worklist_order(&state.peek(), false, &event.value()); state.set(next); },
+                        option { value: "none", "Original order" }
+                        option { value: "asset-ascending", "Asset ascending" }
+                        option { value: "asset-descending", "Asset descending" }
+                        option { value: "status-ascending", "Status ascending" }
+                        option { value: "status-descending", "Status descending" }
+                        option { value: "owner-ascending", "Owner ascending" }
+                        option { value: "owner-descending", "Owner descending" }
+                    }
+                }
+                label { r#for: "worklist-sort-secondary", "Then order by"
+                    select { id: "worklist-sort-secondary", class: "ix-input", value: secondary_order, disabled: primary_column.is_none(),
+                        onchange: move |event: FormEvent| { let next = change_worklist_order(&state.peek(), true, &event.value()); state.set(next); },
+                        option { value: "none", "No additional ordering" }
+                        option { value: "asset-ascending", disabled: primary_column == Some("asset"), "Asset ascending" }
+                        option { value: "asset-descending", disabled: primary_column == Some("asset"), "Asset descending" }
+                        option { value: "status-ascending", disabled: primary_column == Some("status"), "Status ascending" }
+                        option { value: "status-descending", disabled: primary_column == Some("status"), "Status descending" }
+                        option { value: "owner-ascending", disabled: primary_column == Some("owner"), "Owner ascending" }
+                        option { value: "owner-descending", disabled: primary_column == Some("owner"), "Owner descending" }
+                    }
+                }
+                Button { id: "worklist-clear-order", variant: ButtonVariant::Secondary, disabled: current_chain.is_empty(),
+                    onclick: move |_| { let mut next = state.peek().clone(); next.clear_sorts(); state.set(next); }, "Clear ordering"
+                }
+            }
+            p { id: "worklist-order-status", class: "grid-worklist-status", role: "status", "aria-live": "polite", "{order_summary}" }
             // Dioxus reconciles keys on fragment children; keep this lifecycle explicit.
             for generation in [epoch()] {
                 DataGrid {
@@ -423,6 +563,8 @@ pub fn GridWorklistExample() -> Element {
                 "data-last-column": last_column(),
                 "data-first-row": first_row.clone(),
                 "data-sort": current_sort.clone(),
+                "data-sort-chain": serialized_chain,
+                "data-row-order": serialized_row_order,
                 "{visible_count} of {total_count} visible · {selected_count} selected · {saved} saved · {held} held"
             }
             p {
@@ -516,6 +658,95 @@ pub const STYLES: &str = include_str!("styles/grid_worklist.css");
 mod tests {
     use super::*;
     use dioxus_ix::{DataGridFilterCondition, DataGridFilterOperator};
+
+    #[test]
+    fn native_order_controls_project_filtered_rows_and_csv_without_losing_grid_state() {
+        let records = worklist_rows();
+        let mut state = DataGridState {
+            pagination: Some(DataGridPagination::new(2, 12)),
+            ..Default::default()
+        };
+        state
+            .selected
+            .extend(["worklist-001".into(), "worklist-004".into()]);
+        state.column_widths.insert("owner".into(), 210);
+        state.filters.insert(
+            "status".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    operator: DataGridFilterOperator::Equals,
+                    value: "Warning".into(),
+                },
+                ..Default::default()
+            },
+        );
+        let primary = change_worklist_order(&state, false, "status-ascending");
+        let next = change_worklist_order(&primary, true, "owner-descending");
+        let visible = next.visible_rows_with_columns(&records, &worklist_columns());
+        assert_eq!(visible.len(), 32);
+        assert_eq!(visible.first().unwrap().id, "worklist-007");
+        assert_eq!(visible.last().unwrap().id, "worklist-088");
+        assert_eq!(next.pagination.unwrap().page, 0);
+        assert_eq!(next.pagination.unwrap().page_size, 12);
+        assert_eq!(next.selected, state.selected);
+        assert_eq!(next.filters, state.filters);
+        assert_eq!(next.column_widths, state.column_widths);
+        let csv = next.export_csv(
+            &records,
+            &worklist_columns(),
+            &DataGridCsvOptions::default(),
+        );
+        assert_eq!(
+            csv.row_ids,
+            visible.iter().map(|row| row.id.clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            csv.content
+                .starts_with("Asset,Status,Owner,Ticket\r\nAsset 007,Warning,Team 4,IX-00007\r\n")
+        );
+    }
+
+    #[test]
+    fn committed_owner_edit_reorders_ties_while_previous_csv_stays_immutable() {
+        let mut records = worklist_rows();
+        let primary = change_worklist_order(&DataGridState::default(), false, "status-ascending");
+        let state = change_worklist_order(&primary, true, "owner-ascending");
+        let previous = state.export_csv(
+            &records,
+            &worklist_columns(),
+            &DataGridCsvOptions::default(),
+        );
+        assert_eq!(previous.row_ids[0], "worklist-008");
+        let change = DataGridCellValueChanged {
+            row_id: "worklist-002".into(),
+            column_id: "owner".into(),
+            old_value: "Team 3".into(),
+            new_value: "Team 0".into(),
+        };
+        assert!(matches!(
+            apply_worklist_edit(&mut records, &change, false),
+            WorklistEditOutcome::Saved(_)
+        ));
+        let current = state.export_csv(
+            &records,
+            &worklist_columns(),
+            &DataGridCsvOptions::default(),
+        );
+        assert_eq!(current.row_ids[0], "worklist-002");
+        assert!(
+            previous
+                .content
+                .contains("Asset 002,Maintenance,Team 3,IX-00002\r\n")
+        );
+        assert!(
+            current
+                .content
+                .contains("Asset 002,Maintenance,Team 0,IX-00002\r\n")
+        );
+        let original_order = change_worklist_order(&state, false, "none");
+        assert!(original_order.sort_chain().is_empty());
+        assert_eq!(original_order.visible_rows(&records)[0].id, "worklist-000");
+    }
 
     #[test]
     fn worklist_renders_contract_controls_and_applies_bulk_and_cell_edits() {

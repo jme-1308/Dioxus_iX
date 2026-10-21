@@ -1264,7 +1264,7 @@ fn autosize_probe_is_inert_lightweight_markup_with_header_and_all_text_samples()
         column.sortable = true;
         column.filterable = true;
         column.row_drag = true;
-        rsx! {GridAutosizeProbe {request:GridAutosizeRequest {serial:1,column,values:vec!["Normal".into(),"A much wider offscreen status".into()],sort:Some(DataGridSortDirection::Ascending),filtered:true},onmeasure:move |_|{}}}
+        rsx! {GridAutosizeProbe {request:GridAutosizeRequest {serial:1,column,values:vec!["Normal".into(),"A much wider offscreen status".into()],sort:Some(DataGridSortDirection::Ascending),sort_priority:None,filtered:true},onmeasure:move |_|{}}}
     }
     let mut dom = VirtualDom::new(probe);
     dom.rebuild_in_place();
@@ -2283,4 +2283,9 @@ fn custom_editor_none_fallback_tab_advance_held_changes_and_conflict_keep_existi
 mod column_tests {
     use super::*;
     include!("../data_grid_column_tests.rs");
+}
+
+mod sort_tests {
+    use super::*;
+    include!("sort_tests.rs");
 }

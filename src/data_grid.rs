@@ -413,7 +413,11 @@ pub struct DataGridState {
     pub selected: BTreeSet<String>,
     /// Most recently selected row, used by Shift+checkbox range selection.
     pub selection_anchor: Option<String>,
+    /// Primary sort. Without it, `secondary_sorts` has no effect.
     pub sort: Option<(String, DataGridSortDirection)>,
+    /// Additional priorities after the primary. Use `sort_chain` for the
+    /// normalized effective order and `cycle_sort_with_append` for Shift sorting.
+    pub secondary_sorts: Vec<(String, DataGridSortDirection)>,
     pub filters: BTreeMap<String, DataGridTextFilter>,
     /// IDs absent here follow the rows' input order. Stale IDs are ignored.
     pub row_order: Vec<String>,
@@ -505,22 +509,23 @@ impl DataGridState {
             .map(|(rank, id)| (id.as_str(), rank))
             .collect();
         visible.sort_by_key(|row| ranks.get(row.id.as_str()).copied().unwrap_or(usize::MAX));
-        if let Some((column, direction)) = &self.sort {
-            let value_type = value_type(column);
-            visible
-                .sort_by(|a, b| value_type.compare(a.value(column), b.value(column), *direction));
+        let chain: Vec<_> = self
+            .sort_chain()
+            .into_iter()
+            .map(|(column, direction)| (column, value_type(column), direction))
+            .collect();
+        if !chain.is_empty() {
+            visible.sort_by(|a, b| {
+                chain
+                    .iter()
+                    .map(|(column, value_type, direction)| {
+                        value_type.compare(a.value(column), b.value(column), *direction)
+                    })
+                    .find(|order| *order != std::cmp::Ordering::Equal)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
         visible
-    }
-    pub fn cycle_sort(&mut self, column: &str) {
-        self.reset_pagination_page();
-        self.sort = match &self.sort {
-            Some((current, DataGridSortDirection::Ascending)) if current == column => {
-                Some((column.into(), DataGridSortDirection::Descending))
-            }
-            Some((current, DataGridSortDirection::Descending)) if current == column => None,
-            _ => Some((column.into(), DataGridSortDirection::Ascending)),
-        };
     }
     /// Select or deselect visible rows. Hidden selections remain unchanged.
     pub fn select_filtered(&mut self, rows: &[DataGridRow], checked: bool) {
@@ -1060,6 +1065,7 @@ struct GridAutosizeRequest {
     column: DataGridColumn,
     values: Vec<String>,
     sort: Option<DataGridSortDirection>,
+    sort_priority: Option<usize>,
     filtered: bool,
 }
 #[derive(Default)]
@@ -1075,15 +1081,16 @@ impl GridAutosizeInputs {
             .iter()
             .find(|column| column.id == id && column.resizable)?
             .clone();
+        let sort_position = self.state.sort_for_column(id);
         Some(GridAutosizeRequest {
             serial,
             values: autosize_values(&self.rows, id),
-            sort: self
-                .state
-                .sort
-                .as_ref()
-                .filter(|(column, _)| column == id)
-                .map(|(_, direction)| *direction),
+            sort: sort_position.map(|(_, direction)| direction),
+            sort_priority: if self.state.sort_chain().len() > 1 {
+                sort_position.map(|(priority, _)| priority)
+            } else {
+                None
+            },
             filtered: self
                 .state
                 .filters
@@ -1199,8 +1206,12 @@ impl GridAutosizeContext {
     }
 }
 
-fn grid_header_title(title: &str, sort: Option<DataGridSortDirection>) -> Element {
-    rsx! { "{title}" if let Some(direction) = sort { Icon { name: if direction == DataGridSortDirection::Ascending { "sort-ascending" } else { "sort-descending" }, size:16 } } }
+fn grid_header_title(
+    title: &str,
+    sort: Option<DataGridSortDirection>,
+    priority: Option<usize>,
+) -> Element {
+    rsx! { "{title}" if let Some(direction) = sort { Icon { name: if direction == DataGridSortDirection::Ascending { "sort-ascending" } else { "sort-descending" }, size:16 } } if let Some(priority) = priority { span {class:"ix-data-grid-sort-priority",aria_hidden:true,"{priority}"} } }
 }
 fn grid_cell_text(text: &str, intrinsic: bool) -> Element {
     rsx! { span { class:"ix-data-grid-cell-text", style:intrinsic.then_some("width:max-content;min-width:max-content;overflow:visible;flex:none"), "{text}" } }
@@ -1231,8 +1242,8 @@ fn GridAutosizeProbe(
             div { class:"ix-data-grid-header", style:"position:static;display:block;height:auto;min-width:0;width:max-content",
                 div { class:"ix-data-grid-heading", style:"position:static;min-width:0;width:max-content",
                     div { class:"ix-data-grid-title", style:"width:max-content;min-width:max-content;overflow:visible;flex:none",
-                        if column.sortable || column.reorderable { button { class:title_class,r#type:"button",tabindex:"-1",style:"width:max-content;min-width:max-content;overflow:visible;flex:none",{grid_header_title(&column.title,request.sort)} } }
-                        else { span { class:title_class,style:"width:max-content;min-width:max-content;overflow:visible;flex:none",{grid_header_title(&column.title,None)} } }
+                        if column.sortable || column.reorderable { button { class:title_class,r#type:"button",tabindex:"-1",style:"width:max-content;min-width:max-content;overflow:visible;flex:none",{grid_header_title(&column.title,request.sort,request.sort_priority)} } }
+                        else { span { class:title_class,style:"width:max-content;min-width:max-content;overflow:visible;flex:none",{grid_header_title(&column.title,None,None)} } }
                     }
                     if column.filterable { button {class:"ix-data-grid-filter-trigger",r#type:"button",tabindex:"-1","data-active":request.filtered.to_string(),Icon {name:if request.filtered{"filter-filled"}else{"filter"},size:16}} }
                 }
@@ -2156,11 +2167,30 @@ fn GridHeader(
     let order_id = column.id.clone();
     let order_state = state.clone();
     let reorderable = column.reorderable;
-    let sort = state
-        .sort
-        .as_ref()
-        .filter(|(id, _)| *id == column.id)
-        .map(|(_, direction)| *direction);
+    let sort_position = state.sort_for_column(&column.id);
+    let sort = sort_position.map(|(_, direction)| direction);
+    let sort_priority = if state.sort_chain().len() > 1 {
+        sort_position.map(|(priority, _)| priority)
+    } else {
+        None
+    };
+    let mut sort_description = sort_position.map_or_else(
+        || "Not sorted.".to_string(),
+        |(priority, direction)| {
+            let direction = if direction == DataGridSortDirection::Ascending {
+                "ascending"
+            } else {
+                "descending"
+            };
+            format!("Sort priority {priority}, {direction}.")
+        },
+    );
+    sort_description.push_str(
+        " Activate to sort this column alone. Shift+click to add or change a sort priority.",
+    );
+    if reorderable {
+        sort_description.push_str(" Move column with Alt+Left or Alt+Right.");
+    }
     let sort_state = state.clone();
     let sort_column = column.id.clone();
     let pointer_column = column.clone();
@@ -2226,15 +2256,16 @@ fn GridHeader(
                 }
             }
         },
-        "aria-sort": if sort == Some(DataGridSortDirection::Ascending) { "ascending" } else if sort == Some(DataGridSortDirection::Descending) { "descending" } else { "none" },
+        "data-sort-priority": sort_position.map(|(priority, _)|priority),
+        "aria-sort": if sort_position == Some((1,DataGridSortDirection::Ascending)) { "ascending" } else if sort_position == Some((1,DataGridSortDirection::Descending)) { "descending" } else { "none" },
         onmounted: move |event:MountedEvent| { header_mount.call(event.clone()); let node = event.data(); mounted.set(Some(node.clone())); spawn(async move { if let Ok(rect) = node.get_client_rect().await { measured_width.set(Some(rect.size.width.round() as u32)); } }); },
         div { class: "ix-data-grid-title", draggable: reorderable.to_string(), title: if reorderable { "Drag to move column. Keyboard: Alt+Left or Alt+Right." } else { "" },
             ondragstart: move |event: DragEvent| { if reorderable { let transfer = event.data_transfer(); let _ = transfer.set_data("text/plain", &title_drag_id); transfer.set_effect_allowed("move"); column_dragging.set(Some(title_drag_id.clone())); } },
             ondragend: move |_| { column_dragging.set(None); column_drop_target.set(None); },
-        if column.sortable { button { class: "ix-data-grid-sort", r#type: "button", "aria-label": "Sort {column.title}", "aria-description": if reorderable { "Move column with Alt+Left or Alt+Right." } else { "" },
+        if column.sortable { button { class: "ix-data-grid-sort", r#type: "button", "aria-label": "Sort {column.title}", "aria-description": sort_description,
             onmounted: move |event| title_mounted.set(Some(event.data())),
-            onclick: move |_| { let mut next = sort_state.clone(); next.cycle_sort(&sort_column); onstatechange.call(next); },
-            {grid_header_title(&column.title,sort)}
+            onclick: move |event:MouseEvent| { let mut next = sort_state.clone(); next.cycle_sort_with_append(&sort_column,event.modifiers().shift()); onstatechange.call(next); },
+            {grid_header_title(&column.title,sort,sort_priority)}
         } } else if reorderable { button { class: "ix-data-grid-header-label ix-data-grid-title-button", r#type: "button", "aria-label": "Move column {column.title}", "aria-description": "Move column with Alt+Left or Alt+Right.", onmounted: move |event| title_mounted.set(Some(event.data())), "{column.title}" } }
         else { span { class: "ix-data-grid-header-label", "{column.title}" } }
         }

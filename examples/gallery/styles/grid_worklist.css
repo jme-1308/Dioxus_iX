@@ -10,3 +10,6 @@
 /* Keep this copyable preview wide despite the later intrinsic native-field rules. */
 #worklist-csv .grid-worklist-csv-preview{display:flex;width:100%;min-width:0}
 #worklist-csv .grid-worklist-csv-preview :is(.ix-text-field-wrapper,.ix-text-field-slot,.ix-input-wrap){width:100%;min-width:0}
+
+#grid-worklist .worklist-order-controls select{width:auto;max-width:100%}
+@media(max-width:420px){#grid-worklist .worklist-order-controls>label{flex-wrap:wrap}}
