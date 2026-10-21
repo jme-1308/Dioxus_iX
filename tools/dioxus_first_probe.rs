@@ -240,6 +240,8 @@ mod trigger_placement_review;
 mod trigger_review;
 #[path = "dioxus_first_probe/upload_interaction_review.rs"]
 mod upload_interaction_review;
+#[path = "dioxus_first_probe/upload_workflow_review.rs"]
+mod upload_workflow_review;
 #[path = "dioxus_first_probe/virtual_navigation_review.rs"]
 mod virtual_navigation_review;
 #[path = "dioxus_first_probe/visibility_review.rs"]
@@ -608,6 +610,9 @@ fn Preview() -> Element {
     }
     if scope == "?upload" {
         return rsx! { upload_interaction_review::UploadInteractionPreview {} };
+    }
+    if scope == "?uploadworkflow" {
+        return rsx! { upload_workflow_review::UploadWorkflowPreview {} };
     }
     if scope == "?selectdirection" {
         return rsx! { select_direction_review::SelectDirectionReview {} };
