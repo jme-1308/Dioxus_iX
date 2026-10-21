@@ -1,3 +1,6 @@
+#[path = "layout_auto_tests.rs"]
+mod layout_auto_tests;
+
 #[path = "page_root_tests.rs"]
 mod page_root_tests;
 

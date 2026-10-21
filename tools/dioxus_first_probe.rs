@@ -142,6 +142,8 @@ mod inspection_report;
 mod inspection_report_review;
 #[path = "dioxus_first_probe/item_order_review.rs"]
 mod item_order_review;
+#[path = "dioxus_first_probe/layout_auto_form_review.rs"]
+mod layout_auto_form_review;
 #[path = "dioxus_first_probe/link_navigation_review.rs"]
 mod link_navigation_review;
 #[path = "dioxus_first_probe/loading_dialog_review.rs"]
@@ -527,6 +529,9 @@ fn Preview() -> Element {
     }
     if scope == "?cssgridworkspace" {
         return rsx! { css_grid_workspace_review::CssGridWorkspacePreview {} };
+    }
+    if scope == "?layoutautoform" {
+        return rsx! { layout_auto_form_review::LayoutAutoFormPreview {} };
     }
     if scope == "?filterlayout" {
         return rsx! { filter_layout_review::FilterLayoutReview {} };

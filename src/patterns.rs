@@ -1632,15 +1632,16 @@ fn valid_media_width(value: &str) -> bool {
             .is_some_and(|number| number.is_finite() && number >= 0.0)
     })
 }
-fn auto_layout_css(id: &str, layout: &[AutoLayoutBreakpoint]) -> String {
-    let mut css = format!("#{id}{{--ix-layout-columns:1;}}");
+fn auto_layout_css(scope: &str, layout: &[AutoLayoutBreakpoint]) -> String {
+    let selector = format!("[data-ix-layout-scope=\"{scope}\"]");
+    let mut css = format!("{selector}{{--ix-layout-columns:1;}}");
     for breakpoint in layout
         .iter()
         .filter(|breakpoint| valid_media_width(&breakpoint.min_width))
     {
         let columns = breakpoint.columns.clamp(1, 64);
         css.push_str(&format!(
-            "@media(min-width:{}){{#{id}{{--ix-layout-columns:{columns};}}}}",
+            "@media(min-width:{}){{{selector}{{--ix-layout-columns:{columns};}}}}",
             breakpoint.min_width
         ));
     }
@@ -1648,21 +1649,34 @@ fn auto_layout_css(id: &str, layout: &[AutoLayoutBreakpoint]) -> String {
 }
 /// Form layout using viewport breakpoints and clamped child column spans.
 /// Wrap children in [`LayoutAutoItem`] to declare a span; unwrapped children span one.
+/// `id`, `style` and `onmounted` refer to the layout div. Responsive rules keep
+/// their private scope independently of changes to the public ID.
 #[component]
 pub fn LayoutAuto(
     children: Element,
     #[props(default=vec![AutoLayoutBreakpoint::new("0",1),AutoLayoutBreakpoint::new("48em",2)])]
     layout: Vec<AutoLayoutBreakpoint>,
+    #[props(default)] id: Option<String>,
     #[props(default)] class: String,
+    #[props(default)] style: String,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
 ) -> Element {
-    let id = use_signal(|| pattern_id("layout-auto"))();
-    let css = auto_layout_css(&id, &layout);
-    rsx! {style{{css}}div{id,class:"ix-layout-auto {class}",{children}}}
+    let scope = use_hook(|| pattern_id("layout-auto"));
+    let id = id.unwrap_or_else(|| scope.clone());
+    let css = auto_layout_css(&scope, &layout);
+    rsx! {style{{css}}div{id,class:"ix-layout-auto {class}",style,"data-ix-layout-scope":scope,onmounted,{children}}}
 }
 /// A form-layout child whose requested span is clamped to the current column count.
+/// `id`, `class` and `onmounted` apply to the actual item div.
 #[component]
-pub fn LayoutAutoItem(children: Element, #[props(default = 1)] colspan: usize) -> Element {
-    rsx! {div{class:"ix-layout-auto-item","data-colspan":colspan.max(1),style:format!("--ix-colspan:{}",colspan.max(1)),{children}}}
+pub fn LayoutAutoItem(
+    children: Element,
+    #[props(default = 1)] colspan: usize,
+    #[props(default)] id: Option<String>,
+    #[props(default)] class: String,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
+) -> Element {
+    rsx! {div{id,class:"ix-layout-auto-item {class}","data-colspan":colspan.max(1),style:format!("--ix-colspan:{}",colspan.max(1)),onmounted,{children}}}
 }
 
 pub(crate) const STYLES: &str = include_str!("styles/patterns.css");

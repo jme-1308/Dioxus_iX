@@ -2,6 +2,9 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
+#[path = "layout_auto_form.rs"]
+mod layout_auto_form;
+
 fn filter_categories() -> Vec<FilterCategory> {
     vec![
         FilterCategory::new(
@@ -150,6 +153,7 @@ pub fn PatternExamples() -> Element {
                 LayoutAutoItem{colspan:2,label{class:"pattern-form-field","Address" input{r#type:"text",name:"address",autocomplete:"street-address"}}}
                 if expanded_form(){LayoutAutoItem{colspan:2,label{class:"pattern-form-field","Additional information" textarea{name:"additional-information",rows:"3"}}}}
             }
+            layout_auto_form::LayoutAutoFormExample {}
         }
     }
 }
