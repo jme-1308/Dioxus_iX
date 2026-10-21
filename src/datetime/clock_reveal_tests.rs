@@ -272,7 +272,7 @@ fn accepted_time_and_constraints_reveal_current_values_and_hidden_lists_wait_for
     dioxus::html::set_event_converter(Box::new(Converter));
     let data = Rc::new(Capture::default());
     let (mut dom, mut attrs, hours) = setup(data.clone());
-    let list = target(&attrs, "aria-label", "Hours");
+    let list = target(&attrs, "aria-label", "hr");
     let geometry = Geometry::default();
     mount_hours(&dom, list, &hours, &geometry);
     dispatch(&dom, "visible", list, true);
@@ -324,7 +324,7 @@ fn provisional_navigation_keeps_its_viewport_and_autofocus_is_initial_only() {
     let data = Rc::new(Capture::default());
     data.settings.borrow_mut().autofocus = true;
     let (mut dom, mut attrs, hours) = setup(data.clone());
-    let list = target(&attrs, "aria-label", "Hours");
+    let list = target(&attrs, "aria-label", "hr");
     let geometry = Geometry::default();
     mount_hours(&dom, list, &hours, &geometry);
     dispatch(&dom, "visible", list, true);
@@ -361,7 +361,7 @@ fn replacement_mounted_options_retry_and_framework_cancels_retired_geometry_work
     let data = Rc::new(Capture::default());
     data.settings.borrow_mut().format = TimeFormat::Hms12;
     let (mut dom, mut attrs, hours) = setup(data.clone());
-    let list = target(&attrs, "aria-label", "Hours");
+    let list = target(&attrs, "aria-label", "hr");
     let geometry = Geometry::default();
     mount_hours(&dom, list, &hours, &geometry);
     dispatch(&dom, "visible", list, true);
@@ -441,7 +441,7 @@ fn native_focus_before_visibility_supersedes_optional_initial_autofocus() {
     let data = Rc::new(Capture::default());
     data.settings.borrow_mut().autofocus = true;
     let (mut dom, mut attrs, hours) = setup(data.clone());
-    let list = target(&attrs, "aria-label", "Hours");
+    let list = target(&attrs, "aria-label", "hr");
     let geometry = Geometry::default();
     mount_hours(&dom, list, &hours, &geometry);
     dispatch(&dom, "focus", hours[&1], ());
@@ -474,8 +474,8 @@ fn focus_transitions_preserve_manual_neighbor_scroll_and_pending_external_values
     let mut attrs = BTreeMap::new();
     collect(edits, &mut attrs);
     settle(&mut dom, &mut attrs);
-    let minute_list = target(&attrs, "aria-label", "Minutes");
-    let second_list = target(&attrs, "aria-label", "Seconds");
+    let minute_list = target(&attrs, "aria-label", "min");
+    let second_list = target(&attrs, "aria-label", "sec");
     let minute_geometry = Geometry::default();
     let second_geometry = Geometry::default();
     mount_hours(&dom, minute_list, &minutes, &minute_geometry);

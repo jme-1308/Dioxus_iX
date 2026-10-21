@@ -1125,12 +1125,20 @@ enum ClockUnit {
     Millisecond,
 }
 impl ClockUnit {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Hour => "Hours",
-            Self::Minute => "Minutes",
-            Self::Second => "Seconds",
-            Self::Millisecond => "Milliseconds",
+    fn format_value(self, value: u16, format: TimeFormat) -> String {
+        if self == Self::Hour && format.is_twelve_hour() {
+            format!(
+                "{:02}",
+                if value.is_multiple_of(12) {
+                    12
+                } else {
+                    value % 12
+                }
+            )
+        } else if self == Self::Millisecond {
+            format!("{value:03}")
+        } else {
+            format!("{value:02}")
         }
     }
     fn end(self) -> u16 {
@@ -1574,7 +1582,7 @@ pub fn TimePicker(
             for (unit, interval, label, roving, _) in columns {
                 div { class: "ix-clock-column",
                     div { class: "ix-clock-column-heading", "{label}" }
-                    div { class: "ix-clock-options", role: "listbox", aria_label: unit.name(), aria_disabled: disabled,
+                    div { class: "ix-clock-options", role: "listbox", aria_label: label.clone(), aria_disabled: disabled,
                         onmounted: move |event| register_container.call((unit, event.data())),
                         onvisible: move |event: VisibleEvent| {
                             if let Ok(visible) = event.is_intersecting() {
@@ -1584,6 +1592,7 @@ pub fn TimePicker(
                         for value in clock_unit_values(unit, interval, format, time) {
                             button { key: "{value}", class: "ix-clock-option", class: if time.unit(unit) == value { "ix-clock-selected" },
                                 r#type: "button", role: "option", aria_selected: time.unit(unit) == value,
+                                aria_label: format!("{label}: {}", unit.format_value(value, format)),
                                 disabled: disabled || select_clock_unit(time, unit, value, min_time, max_time).is_none(),
                                 tabindex: if roving == Some(value) { 0 } else { -1 },
                                 onmounted: move |event| register.call(((unit, value), event.data())),
@@ -1604,9 +1613,7 @@ pub fn TimePicker(
                                         ClockKeyAction::Unhandled => {}
                                     }
                                 },
-                                if unit == ClockUnit::Hour && format.is_twelve_hour() { {format!("{:02}", if value % 12 == 0 { 12 } else { value % 12 })} }
-                                else if unit == ClockUnit::Millisecond { "{value:03}" }
-                                else { "{value:02}" }
+                                {unit.format_value(value, format)}
                             }
                         }
                     }

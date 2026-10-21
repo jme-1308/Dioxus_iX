@@ -330,7 +330,15 @@ impl Harness {
             else {
                 continue;
             };
-            let Some((unit, _)) = units.iter().find(|(unit, _)| unit.name() == label) else {
+            let Some((unit, _)) = units.iter().find(|(unit, _)| {
+                let expected = match unit {
+                    ClockUnit::Hour => "hr",
+                    ClockUnit::Minute => "min",
+                    ClockUnit::Second => "sec",
+                    ClockUnit::Millisecond => "ms",
+                };
+                expected == label
+            }) else {
                 continue;
             };
             let geometry = self.geometry.entry(*unit).or_default().clone();

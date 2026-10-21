@@ -57,6 +57,7 @@ fn heading_period_and_confirmation_are_independent_with_legacy_defaults_and_one_
 #[derive(Clone, PartialEq)]
 struct ClockSettings {
     time: IxTime,
+    format: TimeFormat,
     hidden: bool,
     embedded: bool,
     footer: Option<bool>,
@@ -69,6 +70,7 @@ impl Default for ClockSettings {
     fn default() -> Self {
         Self {
             time: time(9, 37, 42, 125),
+            format: TimeFormat::Hms12,
             hidden: true,
             embedded: true,
             footer: Some(true),
@@ -91,7 +93,7 @@ fn fixture(data: Rc<Observation>) -> Element {
     let current = settings();
     let changes = data.clone();
     let confirmations = data.clone();
-    rsx! {TimePicker {time:current.time,format:TimeFormat::Hms12,hide_header:current.hidden,embedded:current.embedded,has_footer:current.footer,disabled:current.disabled,min_time:current.min,max_time:current.max,labels:current.labels,
+    rsx! {TimePicker {time:current.time,format:current.format,hide_header:current.hidden,embedded:current.embedded,has_footer:current.footer,disabled:current.disabled,min_time:current.min,max_time:current.max,labels:current.labels,
         ontimechange:move|next|changes.requests.borrow_mut().push(next),onselect:move|next|confirmations.confirmations.borrow_mut().push(next)
     }}
 }
@@ -335,4 +337,96 @@ fn hidden_period_and_confirmation_preserve_disabled_bounds_and_explicit_footer_g
     dom.in_runtime(|| settings.with_mut(|value| value.footer = Some(false)));
     settle(&mut dom, &mut attrs);
     assert!(!dioxus_ssr::render(&dom).contains("ix-date-card-footer"));
+}
+
+fn clock_column_names(html: &str) -> Vec<&str> {
+    html.split('<')
+        .filter(|tag| tag.starts_with("div ") && attribute_value(tag, "role") == Some("listbox"))
+        .map(|tag| attribute_value(tag, "aria-label").expect("clock column is named"))
+        .collect()
+}
+fn clock_selected_names(html: &str) -> Vec<&str> {
+    html.split('<')
+        .filter(|tag| {
+            tag.starts_with("button ")
+                && attribute_value(tag, "role") == Some("option")
+                && attribute_value(tag, "aria-selected") == Some("true")
+        })
+        .map(|tag| attribute_value(tag, "aria-label").expect("clock option is named"))
+        .collect()
+}
+#[test]
+fn clock_column_and_option_names_follow_live_labels_and_visible_values_without_changing_time() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let (mut dom, data, mut attrs) = setup();
+    let mut settings = data.settings.get().unwrap();
+    let controlled = time(13, 7, 4, 200);
+    dom.in_runtime(|| {
+        settings.with_mut(|value| {
+            value.time = controlled;
+            value.format = TimeFormat::HmsMillis;
+            value.labels = TimeLabels::default();
+        })
+    });
+    settle(&mut dom, &mut attrs);
+    let html = dioxus_ssr::render(&dom);
+    assert_eq!(clock_column_names(&html), ["hr", "min", "sec", "ms"]);
+    assert_eq!(
+        clock_selected_names(&html),
+        ["hr: 13", "min: 07", "sec: 04", "ms: 200"]
+    );
+    for (labels, names) in [
+        (
+            ["Stunden", "Minuten", "Sekunden", "Millisekunden"],
+            [
+                "Stunden: 01",
+                "Minuten: 07",
+                "Sekunden: 04",
+                "Millisekunden: 200",
+            ],
+        ),
+        (
+            ["Heures", "Minutes", "Secondes", "Millisecondes"],
+            [
+                "Heures: 01",
+                "Minutes: 07",
+                "Secondes: 04",
+                "Millisecondes: 200",
+            ],
+        ),
+    ] {
+        dom.in_runtime(|| {
+            settings.with_mut(|value| {
+                value.format = TimeFormat::HmsMillis12;
+                value.labels.hour = labels[0].into();
+                value.labels.minute = labels[1].into();
+                value.labels.second = labels[2].into();
+                value.labels.millisecond = labels[3].into();
+            })
+        });
+        settle(&mut dom, &mut attrs);
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(clock_column_names(&html), labels);
+        assert_eq!(clock_selected_names(&html), names);
+        for (name, visible) in names.into_iter().zip(["01", "07", "04", "200"]) {
+            let option = html
+                .split("<button ")
+                .find(|part| {
+                    attribute_value(part.split('>').next().unwrap(), "aria-label") == Some(name)
+                })
+                .expect("selected option's accessible name is present");
+            assert!(
+                option
+                    .split_once('>')
+                    .unwrap()
+                    .1
+                    .starts_with(&format!("{visible}</button>"))
+            );
+        }
+        assert!(html.contains(&format!("aria-label=\"{}: 12\"", labels[0])));
+        assert!(html.contains(&format!("aria-label=\"{}: 000\"", labels[3])));
+        assert_eq!(settings.peek().time, controlled);
+        assert!(data.requests.borrow().is_empty() && data.confirmations.borrow().is_empty());
+    }
 }

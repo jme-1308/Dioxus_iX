@@ -149,14 +149,14 @@ try {
  pickDate('localized-datetime','7 November 2026').click();
  const clockList=unit=>popup('localized-datetime')?.querySelector('.ix-clock-options[aria-label="'+unit+'"]');
  const selectedClock=unit=>clockList(unit)?.querySelector('button[aria-selected="true"]');
- const hour=selectedClock('Hours');assert(hour?.textContent.trim()==='02','typed PM hour initializes actual clock selection');
+ const hour=selectedClock('hr');assert(hour?.textContent.trim()==='02','typed PM hour initializes actual clock selection');
  await focus(hour,'appointment hour');key(hour,'ArrowDown');
- await wait('hour keyboard moves to03 option',()=>clockList('Hours')?.contains(active())&&active().textContent.trim()==='03');
- key(active(),'Enter');await wait('hour Enter updates draft selection',()=>selectedClock('Hours')?.textContent.trim()==='03');
- const minute=selectedClock('Minutes');assert(minute?.textContent.trim()==='45','typed minute initializes actual clock selection');
+ await wait('hour keyboard moves to03 option',()=>clockList('hr')?.contains(active())&&active().textContent.trim()==='03');
+ key(active(),'Enter');await wait('hour Enter updates draft selection',()=>selectedClock('hr')?.textContent.trim()==='03');
+ const minute=selectedClock('min');assert(minute?.textContent.trim()==='45','typed minute initializes actual clock selection');
  await focus(minute,'appointment minute');key(minute,'ArrowDown');
- await wait('minute keyboard moves to46 option',()=>clockList('Minutes')?.contains(active())&&active().textContent.trim()==='46');
- key(active(),'Enter');await wait('minute Enter updates draft selection',()=>selectedClock('Minutes')?.textContent.trim()==='46');
+ await wait('minute keyboard moves to46 option',()=>clockList('min')?.contains(active())&&active().textContent.trim()==='46');
+ key(active(),'Enter');await wait('minute Enter updates draft selection',()=>selectedClock('min')?.textContent.trim()==='46');
  assert(data('datetime')==='2026-10-31T14:45:00','calendar/clock drafts do not publish before Done');
  const done=popup('localized-datetime').querySelector('.ix-datetime-picker>.ix-date-card-footer button');assert(done&&!done.disabled,'combined picker exposes enabled Done');done.click();
  await wait('Done publishes named-date appointment with selected clock and focus return',()=>data('datetime')==='2026-11-07T15:46:00'&&input('localized-datetime').value==='07 November 2026 03:46 PM'&&closed('localized-datetime')&&active()===toggle('localized-datetime'));
@@ -178,9 +178,11 @@ try {
   const headings=[...popup('localized-datetime').querySelectorAll('.ix-clock-column-heading')].map(node=>node.textContent.trim());
   const meridiems=[...popup('localized-datetime').querySelectorAll('.ix-clock-meridiem button')].map(node=>node.textContent.trim());
   assert(headings[0]===text.hour&&headings[1]===text.minute&&meridiems.includes(text.meridiem),locale+' actual clock columns and PM label are translated');
+  const clockNames=[...popup('localized-datetime').querySelectorAll('.ix-clock-column')].map(column=>{const heading=column.querySelector('.ix-clock-column-heading').textContent.trim(),list=column.querySelector('.ix-clock-options'),selected=list.querySelector('button[aria-selected=true]'),first=list.querySelector('button[role=option]');return{heading,list:list.getAttribute('aria-label'),selected:{text:selected.textContent.trim(),name:selected.getAttribute('aria-label')},first:{text:first.textContent.trim(),name:first.getAttribute('aria-label')}}});
+  assert(clockNames.length===2&&clockNames.every((unit,index)=>unit.heading===[text.hour,text.minute][index]&&unit.list===unit.heading&&[unit.selected,unit.first].every(option=>option.name===unit.heading+': '+option.text)),locale+' live localized headings also name actual clock lists and formatted options');
   await escapePicker('localized-datetime');await setValue('localized-long',text.typed);
   await wait(locale+' typed named date parses after language change',()=>data('long')==='2026-10-21'&&input('localized-long').validity.valid);
-  locales[locale]={snapshot:snapshot(),calendarMonth:text.month,weekdays,clockHeadings:headings,meridiems};
+  locales[locale]={snapshot:snapshot(),calendarMonth:text.month,weekdays,clockHeadings:headings,clockNames,meridiems};
  }
  await openPicker('localized-long');assert(popup('localized-long'),'calendar is open before Reset');
  get('localized-reset').focus();get('localized-reset').click();
