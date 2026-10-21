@@ -1270,15 +1270,15 @@ fn clock_list_scroll_offset(
     (current + adjustment).max(0.0)
 }
 
-async fn reveal_clock_option(container: Rc<MountedData>, option: Rc<MountedData>) {
+async fn reveal_clock_option(container: Rc<MountedData>, option: Rc<MountedData>) -> bool {
     let Ok(container_rect) = container.get_client_rect().await else {
-        return;
+        return false;
     };
     let Ok(option_rect) = option.get_client_rect().await else {
-        return;
+        return false;
     };
     let Ok(offset) = container.get_scroll_offset().await else {
-        return;
+        return false;
     };
     let top = clock_list_scroll_offset(
         container_rect.origin.y,
@@ -1290,12 +1290,15 @@ async fn reveal_clock_option(container: Rc<MountedData>, option: Rc<MountedData>
     if (top - offset.y).abs() > 0.5 {
         // Unlike scrollIntoView, scrolling the list itself never moves the page
         // or any other ancestor when a standalone picker mounts off screen.
-        let _ = container
+        container
             .scroll(
                 dioxus::html::geometry::PixelsVector2D::new(offset.x, top),
                 ScrollBehavior::Instant,
             )
-            .await;
+            .await
+            .is_ok()
+    } else {
+        true
     }
 }
 
@@ -1326,59 +1329,52 @@ pub fn TimePicker(
 ) -> Element {
     let (min_time, max_time) = normalized_time_bounds(min_time, max_time);
     let mut focused_option = use_signal(|| None::<(ClockUnit, u16)>);
-    let references = use_hook(|| {
-        Rc::new(RefCell::new(
-            BTreeMap::<(ClockUnit, u16), Rc<MountedData>>::new(),
-        ))
+    let mut references = use_signal(BTreeMap::<(ClockUnit, u16), Rc<MountedData>>::new);
+    let mut containers = use_signal(BTreeMap::<ClockUnit, Rc<MountedData>>::new);
+    let register_container = use_callback(move |(unit, element): (ClockUnit, Rc<MountedData>)| {
+        containers.write().insert(unit, element);
     });
-    let containers =
-        use_hook(|| Rc::new(RefCell::new(BTreeMap::<ClockUnit, Rc<MountedData>>::new())));
-    let register_container = {
-        let containers = containers.clone();
-        use_callback(move |(unit, element): (ClockUnit, Rc<MountedData>)| {
-            containers.borrow_mut().insert(unit, element);
+    let register = use_callback(move |(key, element): ((ClockUnit, u16), Rc<MountedData>)| {
+        references.write().insert(key, element);
+    });
+    let focus_option = use_callback(move |key: (ClockUnit, u16)| {
+        focused_option.set(Some(key));
+        let element = references.peek().get(&key).cloned();
+        if let Some(element) = element {
+            spawn(async move {
+                let _ = element.set_focus(true).await;
+            });
+        }
+    });
+    let mut visible_columns = use_signal(BTreeSet::<ClockUnit>::new);
+    type CompletedReveal = (u16, Rc<MountedData>, Rc<MountedData>);
+    let completed_reveals =
+        use_hook(|| Rc::new(RefCell::new(BTreeMap::<ClockUnit, CompletedReveal>::new())));
+    let on_column_visible = {
+        let completed_reveals = completed_reveals.clone();
+        use_callback(move |(unit, visible): (ClockUnit, bool)| {
+            if !visible {
+                completed_reveals.borrow_mut().remove(&unit);
+            }
+            if visible_columns.peek().contains(&unit) != visible {
+                if visible {
+                    visible_columns.write().insert(unit);
+                } else {
+                    visible_columns.write().remove(&unit);
+                }
+            }
         })
     };
-    let register = {
-        let references = references.clone();
-        use_callback(move |(key, element): ((ClockUnit, u16), Rc<MountedData>)| {
-            references.borrow_mut().insert(key, element);
-        })
-    };
-    let focus_option = {
-        let references = references.clone();
+    let autofocus_pending = use_hook(|| Rc::new(Cell::new(auto_focus)));
+    let on_option_focus = {
+        let autofocus_pending = autofocus_pending.clone();
         use_callback(move |key: (ClockUnit, u16)| {
+            // Native user focus supersedes optional initial focus, including
+            // when the list has not become visible yet.
+            autofocus_pending.set(false);
             focused_option.set(Some(key));
-            let element = references.borrow().get(&key).cloned();
-            if let Some(element) = element {
-                spawn(async move {
-                    let _ = element.set_focus(true).await;
-                });
-            }
         })
     };
-    let visible_columns = use_hook(|| Rc::new(RefCell::new(BTreeSet::<ClockUnit>::new())));
-    let reveal_initial_visible_option =
-        use_callback(move |(unit, selected): (ClockUnit, Option<u16>)| {
-            // Observe the container: its selected option may start offscreen.
-            // Reveal before focusing so both operations use stable geometry.
-            let Some(value) = selected else {
-                return;
-            };
-            let option = references.borrow().get(&(unit, value)).cloned();
-            let container = containers.borrow().get(&unit).cloned();
-            if let (Some(container), Some(option)) = (container, option)
-                && visible_columns.borrow_mut().insert(unit)
-            {
-                let focus = auto_focus && !disabled && unit == ClockUnit::Hour;
-                spawn(async move {
-                    reveal_clock_option(container, option.clone()).await;
-                    if focus {
-                        let _ = option.set_focus(true).await;
-                    }
-                });
-            }
-        });
     let mut columns = vec![
         (
             ClockUnit::Hour,
@@ -1415,14 +1411,77 @@ pub fn TimePicker(
             let provisional = focused_option()
                 .filter(|(focused_unit, value)| *focused_unit == unit && selectable.contains(value))
                 .map(|(_, value)| value);
-            let roving = provisional.or_else(|| {
-                selectable
-                    .into_iter()
-                    .min_by_key(|value| value.abs_diff(time.unit(unit)))
-            });
-            (unit, interval, label, roving)
+            let accepted = selectable
+                .into_iter()
+                .min_by_key(|value| value.abs_diff(time.unit(unit)));
+            let roving = provisional.or(accepted);
+            (unit, interval, label, roving, accepted)
         })
         .collect();
+    let reveal_values: Vec<_> = columns
+        .iter()
+        .map(|(unit, _, _, _, accepted)| (*unit, *accepted))
+        .collect();
+    // One Dioxus-owned resource cancels replaced/retired work. Read mounted
+    // handles reactively so newly rendered half-day/interval options retry with
+    // their actual node; hidden units wait for their latest visibility event.
+    let _reveal = use_resource(use_reactive!(|reveal_values, disabled| {
+        let visible = visible_columns.read();
+        let focused = *focused_option.read();
+        let options = references.read();
+        let lists = containers.read();
+        let jobs: Vec<_> =
+            reveal_values
+                .into_iter()
+                .filter_map(|(unit, value)| {
+                    if focused.is_some_and(|(active, _)| active == unit) {
+                        // The user can scroll this unit independently. On blur,
+                        // reveal the accepted value even if it matches an earlier
+                        // completed selection from before that interaction.
+                        completed_reveals.borrow_mut().remove(&unit);
+                        return None;
+                    }
+                    if !visible.contains(&unit) {
+                        return None;
+                    }
+                    let value = value?;
+                    let container = lists.get(&unit)?;
+                    let option = options.get(&(unit, value))?;
+                    if completed_reveals.borrow().get(&unit).is_some_and(
+                        |(previous, list, node)| {
+                            *previous == value
+                                && Rc::ptr_eq(list, container)
+                                && Rc::ptr_eq(node, option)
+                        },
+                    ) {
+                        return None;
+                    }
+                    Some((unit, value, container.clone(), option.clone()))
+                })
+                .collect();
+        let autofocus_pending = autofocus_pending.clone();
+        let completed_reveals = completed_reveals.clone();
+        async move {
+            for (unit, value, container, option) in jobs {
+                if !reveal_clock_option(container.clone(), option.clone()).await {
+                    continue;
+                }
+                // Focus changes must not undo manual scrolling in another unit.
+                // Only completed work is memoized; cancellation or failed native
+                // geometry leaves this value available for a later retry.
+                completed_reveals
+                    .borrow_mut()
+                    .insert(unit, (value, container, option.clone()));
+                if unit == ClockUnit::Hour
+                    && autofocus_pending.replace(false)
+                    && !disabled
+                    && focused.is_none()
+                {
+                    let _ = option.set_focus(true).await;
+                }
+            }
+        }
+    }));
     let period = format.is_twelve_hour().then(|| rsx! { div { class: "ix-clock-meridiem",
             crate::ToggleButton { aria_label: labels.am.clone(), pressed: time.hour < 12, disabled: disabled || !IxTime { hour: time.hour % 12, ..time }.within(min_time, max_time),
                 onpressedchange: move |_| ontimechange.call(IxTime { hour: time.hour % 12, ..time }), "{labels.am}" }
@@ -1441,14 +1500,14 @@ pub fn TimePicker(
     rsx! { DateTimeCard { header, footer, corners, embedded, hide_header,
         if hide_header { if let Some(period) = period { div { class: "ix-clock-period-body", {period} } } }
         div { class: "ix-clock-columns",
-            for (unit, interval, label, roving) in columns {
+            for (unit, interval, label, roving, _) in columns {
                 div { class: "ix-clock-column",
                     div { class: "ix-clock-column-heading", "{label}" }
                     div { class: "ix-clock-options", role: "listbox", aria_label: unit.name(), aria_disabled: disabled,
                         onmounted: move |event| register_container.call((unit, event.data())),
                         onvisible: move |event: VisibleEvent| {
-                            if event.is_intersecting().is_ok_and(|visible| visible) {
-                                reveal_initial_visible_option.call((unit, roving));
+                            if let Ok(visible) = event.is_intersecting() {
+                                on_column_visible.call((unit, visible));
                             }
                         },
                         for value in clock_unit_values(unit, interval, format, time) {
@@ -1457,7 +1516,7 @@ pub fn TimePicker(
                                 disabled: disabled || select_clock_unit(time, unit, value, min_time, max_time).is_none(),
                                 tabindex: if roving == Some(value) { 0 } else { -1 },
                                 onmounted: move |event| register.call(((unit, value), event.data())),
-                                onfocus: move |_| focused_option.set(Some((unit, value))),
+                                onfocus: move |_| on_option_focus.call((unit, value)),
                                 onblur: move |_| {
                                     let current = *focused_option.peek();
                                     if current == Some((unit, value)) { focused_option.set(None); }
@@ -2270,3 +2329,7 @@ mod text_format_tests;
 #[cfg(test)]
 #[path = "datetime/clock_composition_tests.rs"]
 mod clock_composition_tests;
+
+#[cfg(test)]
+#[path = "datetime/clock_reveal_tests.rs"]
+mod clock_reveal_tests;

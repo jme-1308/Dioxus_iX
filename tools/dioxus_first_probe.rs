@@ -35,6 +35,8 @@ mod chat_workspace_review;
 mod chip_workflows_review;
 #[path = "dioxus_first_probe/clock_composition_review.rs"]
 mod clock_composition_review;
+#[path = "dioxus_first_probe/clock_reveal_review.rs"]
+mod clock_reveal_review;
 #[path = "dioxus_first_probe/content_columns_review.rs"]
 mod content_columns_review;
 #[path = "dioxus_first_probe/content_scroll_review.rs"]
@@ -315,6 +317,9 @@ fn Preview() -> Element {
     }
     if scope == "?clockcomposition" {
         return rsx! { clock_composition_review::ClockCompositionPreview {} };
+    }
+    if scope == "?clockreveal" {
+        return rsx! { clock_reveal_review::ClockRevealPreview {} };
     }
     if scope == "?cardcomposition" {
         return rsx! { date_time_card_review::DateTimeCardPreview {} };

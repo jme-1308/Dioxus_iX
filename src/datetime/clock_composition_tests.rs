@@ -140,7 +140,10 @@ macro_rules! converter{
     (@data $other:ident)=>{panic!("Unexpected clock composition event")};
 }
 dioxus::html::with_html_event_groups!(converter);
-fn collect(edits: dioxus::core::Mutations, attrs: &mut BTreeMap<usize, BTreeMap<String, String>>) {
+pub(super) fn collect(
+    edits: dioxus::core::Mutations,
+    attrs: &mut BTreeMap<usize, BTreeMap<String, String>>,
+) {
     // This is a known registration index, not a second DOM renderer. Template
     // stack movement invalidates the current registration before static attrs.
     let mut current = None;
@@ -174,7 +177,7 @@ fn collect(edits: dioxus::core::Mutations, attrs: &mut BTreeMap<usize, BTreeMap<
         }
     }
 }
-fn settle(dom: &mut VirtualDom, attrs: &mut BTreeMap<usize, BTreeMap<String, String>>) {
+pub(super) fn settle(dom: &mut VirtualDom, attrs: &mut BTreeMap<usize, BTreeMap<String, String>>) {
     for _ in 0..4 {
         collect(dom.render_immediate_to_vec(), attrs);
         dom.process_events();
@@ -192,7 +195,7 @@ fn setup() -> (
     settle(&mut dom, &mut attrs);
     (dom, data, attrs)
 }
-fn target(
+pub(super) fn target(
     attrs: &BTreeMap<usize, BTreeMap<String, String>>,
     name: &str,
     value: &str,

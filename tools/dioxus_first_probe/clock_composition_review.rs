@@ -2,7 +2,7 @@
 // This probe imports only the clock case; neighboring calendar demos stay unused.
 #[allow(dead_code)]
 #[path = "../../examples/gallery/datetime.rs"]
-mod gallery_datetime;
+pub(super) mod gallery_datetime;
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
