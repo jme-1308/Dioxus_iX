@@ -5,6 +5,7 @@
 //! componentViewControlMixin, SurfaceView, Grid3DView, and SurfaceSeries sources; palette stops come
 //! from iX's public MIT Brand themes. This does not embed or translate a GL
 //! engine or its shader implementation.
+use crate::chart_export::release_chart_pointer as release_drag_pointer;
 use crate::{ChartScale, chart_color, chart_line_path};
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
@@ -98,7 +99,7 @@ impl<K: Copy> ChartDrag<K> {
 // pointer owner prevent an old reply from resurrecting a canceled/replaced drag.
 // Pinned Dioxus 0.8.0-alpha.2 MountedData/RenderedElementBacking and PointerData
 // lack setPointerCapture/hasPointerCapture/releasePointerCapture, so the tiny
-// capture/release bridges target the physical SVG by ID after Dioxus measurement.
+// shared capture/release binding targets the SVG by ID after Dioxus measurement.
 fn begin_drag<K: Copy + 'static>(
     mut drag: Signal<Option<ChartDrag<K>>>,
     epoch: Rc<Cell<u64>>,
@@ -160,24 +161,6 @@ fn begin_drag<K: Copy + 'static>(
             release_drag_pointer(&id, pointer).await;
         }
     });
-}
-
-// Pinned Dioxus 0.8.0-alpha.2 MountedData/PointerData has no pointer-capture API.
-// Escape and keyboard operations can end a drag before pointerup; release its
-// native capture as well as its Rust state so sibling controls remain able to
-// receive this pointer before the physical button is released.
-async fn release_drag_pointer(id: &str, pointer: i32) {
-    let task = crate::dom_query::eval(
-        r#"
-        const [id, pointer] = await dioxus.recv();
-        const node = document.getElementById(id);
-        if (node?.hasPointerCapture(pointer)) node.releasePointerCapture(pointer);
-        return null;
-    "#,
-    );
-    if task.send((id, pointer)).is_ok() {
-        let _ = task.join::<serde_json::Value>().await;
-    }
 }
 
 /// A normalized inclusive viewing window over a sequence of samples.

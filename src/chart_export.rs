@@ -171,15 +171,33 @@ pub async fn capture_chart_pointer(
     element_id: &str,
     pointer_id: i32,
 ) -> Result<(), ChartExportError> {
+    chart_pointer(element_id, pointer_id, true).await
+}
+
+// Escape/keyboard cancellation can finish before pointerup. Release is best
+// effort: a missing node or capture already released by the host needs no work.
+pub(crate) async fn release_chart_pointer(element_id: &str, pointer_id: i32) {
+    let _ = chart_pointer(element_id, pointer_id, false).await;
+}
+
+// Pinned Dioxus alpha.2 MountedData/PointerData exposes no native pointer-capture
+// operation. This binding only executes capture/release; Rust owns the drag.
+async fn chart_pointer(
+    element_id: &str,
+    pointer_id: i32,
+    capture: bool,
+) -> Result<(), ChartExportError> {
     #[derive(Serialize)]
-    struct CapturePointer<'a> {
+    struct Pointer<'a> {
         element_id: &'a str,
         pointer_id: i32,
+        capture: bool,
     }
-    let task = crate::dom_query::eval(CAPTURE_POINTER);
-    task.send(CapturePointer {
+    let task = crate::dom_query::eval(POINTER_CAPTURE);
+    task.send(Pointer {
         element_id,
         pointer_id,
+        capture,
     })
     .map_err(renderer_error)?;
     let result: BridgeResult = task.join().await.map_err(renderer_error)?;
@@ -232,12 +250,15 @@ try {
 } catch (error) { return {error:String(error?.message || error)}; }
 "#;
 
-const CAPTURE_POINTER: &str = r#"
-const {element_id, pointer_id} = await dioxus.recv();
+const POINTER_CAPTURE: &str = r#"
+const {element_id, pointer_id, capture} = await dioxus.recv();
 try {
   const node = document.getElementById(element_id);
-  if (!node) throw new Error('The chart is no longer mounted.');
-  node.setPointerCapture(pointer_id); return {};
+  if (capture) {
+    if (!node) throw new Error('The chart is no longer mounted.');
+    node.setPointerCapture(pointer_id);
+  } else if (node?.hasPointerCapture(pointer_id)) node.releasePointerCapture(pointer_id);
+  return {};
 } catch (error) { return {error:String(error?.message || error)}; }
 "#;
 
@@ -261,3 +282,7 @@ mod tests {
         assert_eq!(png_file_name("Chart.PNG"), "Chart.PNG");
     }
 }
+
+#[cfg(test)]
+#[path = "chart_export/pointer_tests.rs"]
+mod pointer_tests;

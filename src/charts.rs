@@ -498,13 +498,27 @@ pub fn CartesianChart(
     let mut brush_bounds = use_signal(|| None::<(f64, f64)>);
     let mut brush_keyboard_anchor = use_signal(|| None::<usize>);
     let brush_epoch = use_hook(|| Rc::new(Cell::new(0_u64)));
-    let brush_disable_epoch = brush_epoch.clone();
+    let brush_pointer = use_hook(|| Rc::new(Cell::new(None::<i32>)));
+    let cancel_epoch = brush_epoch.clone();
+    let cancel_pointer = brush_pointer.clone();
+    let cancel_brush = use_callback(move |pointer: Option<i32>| {
+        if pointer.is_some() && pointer != cancel_pointer.get() {
+            return;
+        }
+        cancel_epoch.set(cancel_epoch.get().wrapping_add(1));
+        brush_drag.set(None);
+        brush_bounds.set(None);
+        brush_keyboard_anchor.set(None);
+        if let Some(pointer) = cancel_pointer.take() {
+            spawn(async move {
+                crate::chart_export::release_chart_pointer(&format!("ix-chart-svg-{id}"), pointer)
+                    .await;
+            });
+        }
+    });
     use_effect(use_reactive!(|brush_enabled| {
         if !brush_enabled {
-            brush_disable_epoch.set(brush_disable_epoch.get().wrapping_add(1));
-            brush_drag.set(None);
-            brush_bounds.set(None);
-            brush_keyboard_anchor.set(None);
+            cancel_brush.call(None);
         }
     }));
     let visible: Vec<bool> = (0..series.len())
@@ -923,7 +937,9 @@ pub fn CartesianChart(
     let tooltip_space = 48 + 24 * if axis_tooltip { series.len().max(1) } else { 1 };
     let brush_start_epoch = brush_epoch.clone();
     let brush_finish_epoch = brush_epoch.clone();
-    let brush_cancel_epoch = brush_epoch.clone();
+    let brush_start_pointer = brush_pointer.clone();
+    let brush_move_pointer = brush_pointer.clone();
+    let brush_finish_pointer = brush_pointer;
     let selection = if brush_enabled {
         if let (Some((start, end)), Some((left, scroll))) = (brush_drag(), brush_bounds()) {
             Some((
@@ -951,7 +967,7 @@ pub fn CartesianChart(
                 onfocus: move |_| { canvas_focused.set(true); let target = (*keyboard_point.peek()).filter(|point| focus_points.contains(point)).or(keyboard_entry); if let Some(point) = target { keyboard_point.set(Some(point)); active.set(Some(point)); } },
                 onblur: move |_| { canvas_focused.set(false); active.set(None); },
                 onkeydown: move |event: KeyboardEvent| {
-                    if event.key() == Key::Escape { event.prevent_default(); keyboard_epoch.set(keyboard_epoch.get().wrapping_add(1)); brush_epoch.set(brush_epoch.get().wrapping_add(1)); active.set(None); brush_keyboard_anchor.set(None); brush_drag.set(None); if brush_enabled { onbrushcancel.call(()); } return; }
+                    if event.key() == Key::Escape { event.prevent_default(); keyboard_epoch.set(keyboard_epoch.get().wrapping_add(1)); cancel_brush.call(None); active.set(None); if brush_enabled { onbrushcancel.call(()); } return; }
                     if brush_enabled && event.key() == Key::Enter {
                         event.prevent_default();
                         if let Some((_, end)) = keyboard_entry { if let Some(start) = brush_keyboard_anchor() { brush_keyboard_anchor.set(None); onbrush.call(ChartBrushSelection { start: start.min(end), end: start.max(end) + 1 }); } else { brush_keyboard_anchor.set(Some(end)); } }
@@ -977,27 +993,43 @@ pub fn CartesianChart(
                 svg { id: "ix-chart-svg-{id}", width: chart_width, height: "600", view_box: "0 0 {chart_width} 600", role: "group", "aria-label": label.clone(), onmousemove: pointer_move,
                     style: if brush_enabled { "touch-action:none;cursor:crosshair" } else { "" },
                     onpointerdown: move |event: PointerEvent| {
-                        if !brush_enabled || !event.is_primary() || event.trigger_button().is_some_and(|button| button != dioxus::html::input_data::MouseButton::Primary) { return; }
+                        if !brush_enabled || brush_start_pointer.get().is_some() || !event.is_primary() || event.trigger_button().is_some_and(|button| button != dioxus::html::input_data::MouseButton::Primary) { return; }
                         event.prevent_default();
-                        let point = event.client_coordinates(); let pointer = event.pointer_id();
-                        brush_keyboard_anchor.set(None); brush_drag.set(Some((point.x, point.x))); brush_bounds.set(None); active.set(None);
                         let Some(node) = plot_mounted.try_peek().ok().and_then(|node| node.clone()) else { return; };
+                        let point = event.client_coordinates(); let pointer = event.pointer_id();
+                        brush_start_pointer.set(Some(pointer));
+                        brush_keyboard_anchor.set(None); brush_drag.set(Some((point.x, point.x))); brush_bounds.set(None); active.set(None);
+                        let owner = brush_start_pointer.clone();
+                        let focus = mounted.try_peek().ok().and_then(|node| node.clone());
                         let epoch = brush_start_epoch.clone(); let sequence = epoch.get().wrapping_add(1); epoch.set(sequence);
                         spawn(async move {
-                            let Ok(bounds) = node.get_client_rect().await else { return; };
+                            if epoch.get() != sequence || owner.get() != Some(pointer) { return; }
+                            if let Some(focus) = focus { let _ = focus.set_focus(true).await; }
+                            if epoch.get() != sequence || owner.get() != Some(pointer) { return; }
+                            let Ok(bounds) = node.get_client_rect().await else { if epoch.get() == sequence { cancel_brush.call(Some(pointer)); } return; };
                             let scroll = node.get_scroll_offset().await.unwrap_or_default();
-                            if epoch.get() != sequence { return; }
+                            if epoch.get() != sequence || owner.get() != Some(pointer) { return; }
                             if brush_drag.try_peek().map(|value| value.is_none()).unwrap_or(true) { return; }
                             let x = point.x - bounds.origin.x + scroll.x;
                             let y = point.y - bounds.origin.y + scroll.y;
-                            if x < plot.left || x > plot.right || y < plot.top || y > plot.bottom { if let Ok(mut value) = brush_drag.try_write() { *value = None; } return; }
+                            if x < plot.left || x > plot.right || y < plot.top || y > plot.bottom { cancel_brush.call(Some(pointer)); return; }
                             if let Ok(mut value) = brush_bounds.try_write() { *value = Some((bounds.origin.x, scroll.x)); }
-                            let _ = crate::capture_chart_pointer(&format!("ix-chart-svg-{id}"), pointer).await;
+                            if crate::capture_chart_pointer(&format!("ix-chart-svg-{id}"), pointer).await.is_err() && epoch.get() == sequence {
+                                cancel_brush.call(Some(pointer));
+                            }
+                            // A later gesture may reuse this pointer ID while the
+                            // capture reply is pending; preserve its current ownership.
+                            if owner.get() != Some(pointer) {
+                                crate::chart_export::release_chart_pointer(&format!("ix-chart-svg-{id}"), pointer).await;
+                            }
                         });
                     },
-                    onpointermove: move |event: PointerEvent| { if brush_enabled { if let Some((start, _)) = brush_drag() { event.prevent_default(); brush_drag.set(Some((start, event.client_coordinates().x))); } } },
+                    onpointermove: move |event: PointerEvent| { if brush_enabled && brush_move_pointer.get() == Some(event.pointer_id()) { if let Some((start, _)) = brush_drag() { event.prevent_default(); brush_drag.set(Some((start, event.client_coordinates().x))); } } },
                     onpointerup: move |event: PointerEvent| {
-                        if !brush_enabled { return; }
+                        if !brush_enabled || brush_finish_pointer.get() != Some(event.pointer_id()) { return; }
+                        // Native pointerup releases capture; its ensuing lostcapture
+                        // must not cancel the selection still awaiting geometry.
+                        brush_finish_pointer.set(None);
                         let selection = brush_drag.write().take(); brush_bounds.set(None);
                         let epoch = brush_finish_epoch.clone(); let sequence = epoch.get().wrapping_add(1); epoch.set(sequence);
                         let Some((start, _)) = selection else { return; }; let end = event.client_coordinates().x;
@@ -1010,7 +1042,8 @@ pub fn CartesianChart(
                             if let Some(selection) = ChartBrushSelection::from_fractions((start - bounds.origin.x + scroll.x - plot.left) / plot.width(), (end - bounds.origin.x + scroll.x - plot.left) / plot.width(), count) { onbrush.call(selection); }
                         });
                     },
-                    onpointercancel: move |_| { brush_cancel_epoch.set(brush_cancel_epoch.get().wrapping_add(1)); brush_drag.set(None); brush_bounds.set(None); },
+                    onpointercancel: move |event: PointerEvent| cancel_brush.call(Some(event.pointer_id())),
+                    onlostpointercapture: move |event: PointerEvent| cancel_brush.call(Some(event.pointer_id())),
                     defs { for (index, item) in series.iter().enumerate() { linearGradient { id: "ix-chart-area-{id}-{index}", x1: "0", y1: "0", x2: "0", y2: "1",
                         stop { offset: "0", stop_color: if item.color.is_empty() { chart_color(index) } else { item.color.clone() }, stop_opacity: "0.65" }
                         stop { offset: "1", stop_color: if item.color.is_empty() { chart_color(index) } else { item.color.clone() }, stop_opacity: "0" }
