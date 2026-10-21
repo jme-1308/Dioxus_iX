@@ -98,6 +98,8 @@ mod grid_group_auto_review;
 mod grid_group_review;
 #[path = "dioxus_first_probe/grid_help_review.rs"]
 mod grid_help_review;
+#[path = "dioxus_first_probe/grid_host_page_edit_review.rs"]
+mod grid_host_page_edit_review;
 #[path = "dioxus_first_probe/grid_multi_sort_review.rs"]
 mod grid_multi_sort_review;
 #[path = "dioxus_first_probe/grid_numeric_values_review.rs"]
@@ -308,6 +310,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridpageedit" {
         return rsx! { grid_page_edit_review::GridPageEditPreview {} };
+    }
+    if scope == "?gridhostpageedit" {
+        return rsx! { grid_host_page_edit_review::GridHostPageEditPreview {} };
     }
     if scope == "?gridautopage" {
         return rsx! { grid_auto_page_review::GridAutoPagePreview {} };

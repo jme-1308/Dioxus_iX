@@ -167,9 +167,71 @@ struct GridEditSession {
 }
 #[derive(Clone)]
 struct GridPageEdit {
-    row: String,
-    column: String,
+    target: GridPageEditTarget,
     pagination: crate::DataGridPagination,
+}
+#[derive(Clone)]
+enum GridPageEditTarget {
+    Client {
+        row: String,
+        column: String,
+    },
+    Host {
+        backwards: bool,
+        page_count: usize,
+        total_rows: usize,
+        previous: crate::DataGridPagination,
+        query: GridHostEditQuery,
+    },
+}
+/// Query/configuration identity; independent selection and width changes do
+/// not turn an accepted source response into another dataset.
+#[derive(Clone, PartialEq)]
+struct GridHostEditQuery {
+    filters: BTreeMap<String, DataGridTextFilter>,
+    sorts: Vec<(String, DataGridSortDirection)>,
+    grouping: DataGridGrouping,
+    row_order: Vec<String>,
+    columns: Vec<DataGridColumn>,
+}
+impl GridHostEditQuery {
+    fn new(state: &DataGridState, columns: &[DataGridColumn]) -> Self {
+        Self {
+            filters: state.filters.clone(),
+            sorts: state
+                .sort_chain()
+                .into_iter()
+                .map(|(id, direction)| (id.to_string(), direction))
+                .collect(),
+            grouping: state.grouping.clone(),
+            row_order: state.row_order.clone(),
+            columns: columns.to_vec(),
+        }
+    }
+}
+fn adjacent_edit_page(page: usize, backwards: bool, count: usize) -> Option<usize> {
+    if backwards {
+        page.checked_sub(1)
+    } else {
+        page.checked_add(1).filter(|next| *next < count)
+    }
+}
+fn editable_page_edge(
+    rows: &[DataGridRow],
+    columns: &[DataGridColumn],
+    backwards: bool,
+) -> Option<(String, String)> {
+    let mut cells = rows
+        .iter()
+        .flat_map(|row| columns.iter().map(move |column| (row, column)));
+    let eligible =
+        |(row, column): &(&DataGridRow, &DataGridColumn)| editable_cell(row, column, false);
+    let (row, column) = if backwards {
+        cells.rev().find(eligible)
+    } else {
+        cells.find(eligible)
+    }?;
+    Some((row.id.clone(), column.id.clone()))
 }
 #[derive(Clone)]
 enum GridEditAction {
@@ -764,6 +826,9 @@ struct GridValidationContext {
     id: String,
 }
 
+#[derive(Clone, Copy)]
+struct GridLoadingContext(Memo<bool>);
+
 /// One pending Dioxus focus intent, consumed by its live row/editor mount.
 /// `None` targets the mounted Header checkbox, never an arbitrary DOM query.
 #[derive(Clone)]
@@ -1354,12 +1419,16 @@ pub fn DataGrid(
     /// checkboxes are disabled; header selection still covers loaded records.
     #[props(default)]
     onpagegroupselect: Option<EventHandler<crate::DataGridPageGroupSelection>>,
-    /// Commit Tab/Shift+Tab edits across client pages. The next editor is
-    /// admitted only when the owner echoes the requested pagination on the next
-    /// render; rejected/altered requests retire the continuation. Host pages
-    /// retain page-local editing and report this unsupported option explicitly.
+    /// Commit Tab/Shift+Tab edits across accepted client or host pages. Host
+    /// pages choose an editor only from supplied accepted rows; the application
+    /// owns fetching, stale responses and cancellation.
     #[props(default)]
     tab_across_pages: bool,
+    /// Host-owned page loading. Paging/editing and automatic sizing pause while
+    /// true. Compatible cross-page edits wait for an accepted response; changed
+    /// query or independent interaction retires the intent. No fetch is started.
+    #[props(default)]
+    page_loading: bool,
     /// Accepted edits are requests; apply them to the controlled `rows`.
     /// Client rows are sorted/filtered again; host pages keep accepted order.
     /// Enter/F2, double-click and
@@ -1367,8 +1436,8 @@ pub fn DataGrid(
     /// editors use Enter/F2 or double-click. Escape discards, Enter saves,
     /// Tab/Shift+Tab saves and edits the next/previous editable cell.
     /// By default Tab finishes at the current page boundary. With
-    /// `tab_across_pages`, client pages continue until the first/last editable
-    /// cell of the full expanded query result.
+    /// `tab_across_pages`, client pages use the full expanded query result;
+    /// host pages request neighboring accepted pages until the finite boundary.
     #[props(default)]
     oncellvaluechanged: EventHandler<DataGridCellValueChanged>,
     /// Compose visible cells with Dioxus content. Returning `None` retains text;
@@ -1418,6 +1487,8 @@ pub fn DataGrid(
     #[props(default)]
     auto_page_size: bool,
 ) -> Element {
+    let loading = use_memo(use_reactive!(|page_loading| page_loading));
+    use_context_provider(|| GridLoadingContext(loading));
     let mut editing = use_signal(|| None::<GridEditSession>);
     let mut pending_page_edit = use_signal(|| None::<GridPageEdit>);
     let dragging = use_signal(|| None::<String>);
@@ -1523,6 +1594,7 @@ pub fn DataGrid(
             measured_height.set(Some(height));
         }
         if !auto_page_size
+            || page_loading
             || grouping_error.is_some()
             || editing.peek().is_some()
             || pending_page_edit.peek().is_some()
@@ -1560,7 +1632,7 @@ pub fn DataGrid(
         next.pagination = Some(request);
         onstatechange.call(next);
     });
-    let edit_active = editing().is_some() || pending_page_edit().is_some();
+    let edit_active = editing().is_some() || pending_page_edit().is_some() || page_loading;
     use_effect(use_reactive(
         (
             &auto_page_size,
@@ -1720,6 +1792,9 @@ pub fn DataGrid(
     let group_keyboard_rows = visible.clone();
     let group_record_slots = record_slots.clone();
     let navigate_group = EventHandler::new(move |(index, key): (usize, Key)| {
+        if pending_page_edit.peek().is_some() {
+            pending_page_edit.set(None);
+        }
         let height = ((viewport.peek().height - 48.0) / f64::from(row_height))
             .floor()
             .max(1.0) as usize;
@@ -1776,6 +1851,9 @@ pub fn DataGrid(
     });
     let navigation_record_slots = record_slots.clone();
     let navigate = move |(index, key, command, backwards): (usize, Key, bool, bool)| {
+        if pending_page_edit.peek().is_some() {
+            pending_page_edit.set(None);
+        }
         let Some(mut focus) = focused.peek().clone() else {
             return;
         };
@@ -2014,6 +2092,9 @@ pub fn DataGrid(
                 if pending_page_edit.peek().is_some() {
                     pending_page_edit.set(None);
                 }
+                if *loading.peek() {
+                    return;
+                }
                 let Some(record) = edit_rows.iter().find(|record| record.id == row) else {
                     return;
                 };
@@ -2063,6 +2144,9 @@ pub fn DataGrid(
                 }
             }
             GridEditAction::Commit { tab, restore_focus } => {
+                if *loading.peek() {
+                    return;
+                }
                 let Some(mut session) = editing.peek().clone() else {
                     return;
                 };
@@ -2131,8 +2215,7 @@ pub fn DataGrid(
                                         // retires it before admitting the target editor.
                                         reveal(&session, &projected, false);
                                         pending_page_edit.set(Some(GridPageEdit {
-                                            row,
-                                            column,
+                                            target: GridPageEditTarget::Client { row, column },
                                             pagination: requested,
                                         }));
                                         let mut next = edit_state.clone();
@@ -2162,8 +2245,41 @@ pub fn DataGrid(
                                     editing.set(Some(next));
                                 }
                             }
-                        } else if restore_focus {
-                            reveal(&session, &projected, false);
+                        } else {
+                            if tab_across_pages
+                                && let Some(backwards) = tab
+                                && let DataGridRowModel::Page { total_rows } = row_model
+                                && let Some(previous) = edit_state.pagination
+                            {
+                                let current = previous.info(total_rows);
+                                if let Some(page) =
+                                    adjacent_edit_page(current.page, backwards, current.page_count)
+                                {
+                                    let requested =
+                                        crate::DataGridPagination::new(page, current.page_size);
+                                    reveal(&session, &projected, false);
+                                    pending_page_edit.set(Some(GridPageEdit {
+                                        target: GridPageEditTarget::Host {
+                                            backwards,
+                                            page_count: current.page_count,
+                                            total_rows,
+                                            previous,
+                                            query: GridHostEditQuery::new(
+                                                &edit_state,
+                                                &edit_columns,
+                                            ),
+                                        },
+                                        pagination: requested,
+                                    }));
+                                    let mut next = edit_state.clone();
+                                    next.pagination = Some(requested);
+                                    onstatechange.call(next);
+                                    return;
+                                }
+                            }
+                            if restore_focus {
+                                reveal(&session, &projected, false);
+                            }
                         }
                     }
                 }
@@ -2173,84 +2289,147 @@ pub fn DataGrid(
     let accepted_pagination = state.pagination;
     let continuation_rows = visible.clone();
     let continuation_columns = columns.clone();
-    use_effect(use_reactive!(
-        |page_identity,
-         accepted_pagination,
-         tab_across_pages,
-         row_model,
-         read_only,
-         suppress_cell_focus| {
-            let continuation = pending_page_edit();
-            let page_changed = previous_page.replace(page_identity) != page_identity;
-            if !page_changed && continuation.is_none() {
+    let continuation_state = state.clone();
+    let host_query = (row_model != DataGridRowModel::Client && grouping_error.is_none())
+        .then(|| GridHostEditQuery::new(&state, &columns));
+    use_effect(use_reactive!(|page_identity,
+                              accepted_pagination,
+                              tab_across_pages,
+                              row_model,
+                              read_only,
+                              suppress_cell_focus,
+                              page_loading,
+                              host_query| {
+        let continuation = pending_page_edit();
+        let page_changed = previous_page.replace(page_identity) != page_identity;
+        if !page_changed && continuation.is_none() {
+            return;
+        }
+        if page_changed {
+            focus_context.cancel();
+            let mut current = *viewport.peek();
+            current.top = 0.0;
+            viewport.set(current);
+        }
+        if let Some(continuation) = continuation {
+            let enabled =
+                tab_across_pages && !read_only && !suppress_cell_focus && editing.peek().is_none();
+            let compatible = match &continuation.target {
+                GridPageEditTarget::Client { .. } => {
+                    row_model == DataGridRowModel::Client && !page_loading
+                }
+                GridPageEditTarget::Host {
+                    total_rows,
+                    page_count,
+                    previous,
+                    query,
+                    ..
+                } => {
+                    row_model
+                        == (DataGridRowModel::Page {
+                            total_rows: *total_rows,
+                        })
+                        && host_query.as_ref() == Some(query)
+                        && continuation.pagination.info(*total_rows).page_count == *page_count
+                        && (accepted_pagination == Some(continuation.pagination)
+                            || (page_loading && accepted_pagination == Some(*previous)))
+                }
+            };
+            if enabled && compatible && page_loading {
+                // The application owns the in-flight page; one Rust intent
+                // survives until its accepted response or independent input.
                 return;
             }
-            if continuation.is_some() {
-                pending_page_edit.set(None);
-            }
-            if page_changed {
-                focus_context.cancel();
-                let mut current = *viewport.peek();
-                current.top = 0.0;
-                viewport.set(current);
-            }
-            if let Some(continuation) = continuation {
-                let accepted = tab_across_pages
-                    && row_model == DataGridRowModel::Client
-                    && accepted_pagination == Some(continuation.pagination)
-                    && !read_only
-                    && !suppress_cell_focus
-                    && editing.peek().is_none()
-                    && continuation_rows
+            pending_page_edit.set(None);
+            if enabled && compatible && accepted_pagination == Some(continuation.pagination) {
+                let target = match &continuation.target {
+                    GridPageEditTarget::Client { row, column } => continuation_rows
                         .iter()
-                        .find(|row| row.id == continuation.row)
+                        .find(|candidate| candidate.id == *row)
                         .zip(
                             continuation_columns
                                 .iter()
-                                .find(|column| column.id == continuation.column),
+                                .find(|candidate| candidate.id == *column),
                         )
-                        .is_some_and(|(row, column)| editable_cell(row, column, false));
-                if accepted {
+                        .filter(|(row, column)| editable_cell(row, column, false))
+                        .map(|(row, column)| (row.id.clone(), column.id.clone())),
+                    GridPageEditTarget::Host { backwards, .. } => {
+                        editable_page_edge(&continuation_rows, &continuation_columns, *backwards)
+                    }
+                };
+                if let Some((row, column)) = target {
                     edit_action.call(GridEditAction::Start {
-                        row: continuation.row,
-                        column: continuation.column,
+                        row,
+                        column,
                         initial: None,
                     });
-                    // Existing editor focus owns the one target scroll. A separate
-                    // page-reset scroll must not overwrite its grouped row reveal.
+                    // Editor focus owns the target scroll, including groups.
                     return;
                 }
+                if let GridPageEditTarget::Host {
+                    backwards,
+                    page_count,
+                    total_rows,
+                    query,
+                    ..
+                } = continuation.target
+                {
+                    if let Some(page) =
+                        adjacent_edit_page(continuation.pagination.page, backwards, page_count)
+                    {
+                        let pagination =
+                            crate::DataGridPagination::new(page, continuation.pagination.page_size);
+                        pending_page_edit.set(Some(GridPageEdit {
+                            target: GridPageEditTarget::Host {
+                                backwards,
+                                page_count,
+                                total_rows,
+                                previous: continuation.pagination,
+                                query,
+                            },
+                            pagination,
+                        }));
+                        // No current cell may remain on an empty/closed page.
+                        // Keep its normal keyboard owner on the mounted header
+                        // while the application accepts the following request.
+                        focus_context.request(None, None);
+                        let mut next = continuation_state.clone();
+                        next.pagination = Some(pagination);
+                        onstatechange.call(next);
+                        return;
+                    }
+                }
             }
-            if !page_changed {
+        }
+        if !page_changed {
+            return;
+        }
+        let node = mounted_root.peek().clone();
+        let previous_page = previous_page.clone();
+        spawn(async move {
+            let Some(node) = node else {
+                return;
+            };
+            let Ok(offset) = node.get_scroll_offset().await else {
+                return;
+            };
+            if previous_page.get() != page_identity
+                || !mounted_root.try_peek().is_ok_and(|current| {
+                    current
+                        .as_ref()
+                        .is_some_and(|current| Rc::ptr_eq(current, &node))
+                })
+            {
                 return;
             }
-            let node = mounted_root.peek().clone();
-            let previous_page = previous_page.clone();
-            spawn(async move {
-                let Some(node) = node else {
-                    return;
-                };
-                let Ok(offset) = node.get_scroll_offset().await else {
-                    return;
-                };
-                if previous_page.get() != page_identity
-                    || !mounted_root.try_peek().is_ok_and(|current| {
-                        current
-                            .as_ref()
-                            .is_some_and(|current| Rc::ptr_eq(current, &node))
-                    })
-                {
-                    return;
-                }
-                let _ = node
-                    .scroll(
-                        dioxus::html::geometry::PixelsVector2D::new(offset.x, 0.0),
-                        dioxus::html::ScrollBehavior::Instant,
-                    )
-                    .await;
-            });
-        }
-    ));
+            let _ = node
+                .scroll(
+                    dioxus::html::geometry::PixelsVector2D::new(offset.x, 0.0),
+                    dioxus::html::ScrollBehavior::Instant,
+                )
+                .await;
+        });
+    }));
     let selected_loaded = full_visible
         .iter()
         .filter(|row| state.selected.contains(&row.id))
@@ -2356,18 +2535,28 @@ pub fn DataGrid(
     let capacity_label = pagination_labels.items.clone();
     rsx! {
         div { id: grid_id, class: "ix-data-grid {class}", "data-row-model": matches!(row_model, DataGridRowModel::Page { .. }).then_some("page"), "data-striped": striped.to_string(), "data-paginated":state.pagination.is_some().then_some("true"), "data-virtualized": (!suppress_row_virtualisation).to_string(), "data-column-virtualized": (!suppress_column_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
-            onpointerdown: move |_| focus_context.cancel(),
-            onfocusout: move |_| focus_context.blurred(),
-            onkeydown: move |event: KeyboardEvent| { focus_context.cancel(); if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); } },
+            onpointerdown: move |_| {
+                if pending_page_edit.peek().is_some() { pending_page_edit.set(None); }
+                focus_context.cancel();
+            },
+            onfocusout: move |_| {
+                if *loading.peek() && !focus_context.state.peek().applying && pending_page_edit.peek().is_some() {
+                    pending_page_edit.set(None);
+                }
+                focus_context.blurred();
+            },
+            onkeydown: move |event: KeyboardEvent| {
+                if pending_page_edit.peek().is_some() { pending_page_edit.set(None); }
+                focus_context.cancel(); if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); } },
             // The fixed resize overlay can become the native click target. Delegate
             // its double-click by hit-testing separators at the actual click point.
             ondoubleclick: move |event: MouseEvent| {
                 let point = event.client_coordinates(); resizing.set(None); hit_autosize.fit_at(point.x,point.y);
             },
-            if tab_across_pages && row_model != DataGridRowModel::Client {
-                p {class:"ix-data-grid-pagination-hint",role:"status","Cross-page editing requires client rows."}
+            if page_loading {
+                p {class:"ix-data-grid-pagination-hint",role:"status","Loading page..."}
             }
-            div { id: scroll_id, class: "ix-data-grid-scroll", role: if grouped {"treegrid"} else {"grid"}, "aria-label": label, "aria-rowcount": aria_rows.saturating_add(1), "aria-colcount": if grouped {columns.len().max(1)+1} else {columns.len()+1}, "aria-multiselectable": "true",
+            div { id: scroll_id, class: "ix-data-grid-scroll", role: if grouped {"treegrid"} else {"grid"}, "aria-label": label, "aria-rowcount": aria_rows.saturating_add(1), "aria-colcount": if grouped {columns.len().max(1)+1} else {columns.len()+1}, "aria-multiselectable": "true", "aria-busy": page_loading.then_some("true"),
                 onmounted: move |event| {
                     let node = event.data();
                     focus_context.root.set(Some(node.clone()));
@@ -2419,16 +2608,16 @@ pub fn DataGrid(
                 if slot_count == 0 { div { class: "ix-data-grid-empty", role: "status", if let Some(error)=grouping_error {"{error}"} else if missing_host_pagination { "Host-paged rows require pagination." } else { "No Rows To Show" } } }
             }
             if state.pagination.is_some() && !hide_pagination_controls && grouping_error.is_none() {
-                fieldset {class:"ix-data-grid-pagination",disabled:editing().is_some(),
+                fieldset {class:"ix-data-grid-pagination",disabled:editing().is_some() || page_loading,
                     crate::Pagination {count:page.page_count,selected_page:page.page,advanced:true,item_count:page.page_size,item_count_options:page_size_options,hide_item_count:auto_page_size,label:pagination_label,labels:pagination_labels,
                         onpage:move|requested:usize| {
-                            if editing.peek().is_some() {return;}
+                            if editing.peek().is_some() || *loading.peek() {return;}
                             let mut next=page_state.clone();
                             next.pagination=Some(crate::DataGridPagination::new(requested,page.page_size));
                             onstatechange.call(next);
                         },
                         onitemcount:move|requested:usize| {
-                            if editing.peek().is_some() {return;}
+                            if editing.peek().is_some() || *loading.peek() {return;}
                             let mut next=size_state.clone();
                             next.pagination=Some(crate::DataGridPagination::new(0,requested.max(1)));
                             onstatechange.call(next);
@@ -3274,6 +3463,8 @@ fn GridCellEditor(
     #[props(default)] cell_context: Option<DataGridCellContext>,
 ) -> Element {
     let focus_context = use_context::<GridMountContext>();
+    let loading = try_use_context::<GridLoadingContext>().map(|context| context.0);
+    let busy = loading.is_some_and(|loading| loading());
     let editor_id =
         use_hook(|| format!("ix-grid-editor-{}", GRID_ID.fetch_add(1, Ordering::Relaxed)));
     let error_id = use_context::<GridValidationContext>().id;
@@ -3284,7 +3475,9 @@ fn GridCellEditor(
     use_drop(move || drop_alive.set(false));
     let update_alive = alive.clone();
     let update = EventHandler::new(move |value: String| {
-        if !grid_editor_session_active(editing, session_id, retiring, &update_alive) {
+        if loading.is_some_and(|loading| *loading.peek())
+            || !grid_editor_session_active(editing, session_id, retiring, &update_alive)
+        {
             return;
         }
         focus_context.cancel();
@@ -3298,7 +3491,9 @@ fn GridCellEditor(
     });
     let action_alive = alive.clone();
     let action = EventHandler::new(move |action: GridEditAction| {
-        if grid_editor_session_active(editing, session_id, retiring, &action_alive) {
+        if !loading.is_some_and(|loading| *loading.peek())
+            && grid_editor_session_active(editing, session_id, retiring, &action_alive)
+        {
             edit_action.call(action);
         }
     });
@@ -3318,7 +3513,9 @@ fn GridCellEditor(
     let key_alive = alive.clone();
     let keydown = EventHandler::new(move |event: KeyboardEvent| {
         event.stop_propagation();
-        if !grid_editor_session_active(editing, session_id, retiring, &key_alive) {
+        if loading.is_some_and(|loading| *loading.peek())
+            || !grid_editor_session_active(editing, session_id, retiring, &key_alive)
+        {
             event.prevent_default();
             return;
         }
@@ -3379,7 +3576,8 @@ fn GridCellEditor(
                     error: session.error.clone(),
                     label: label.clone(),
                     error_id: error_message.clone(),
-                    active: grid_editor_session_active(editing, session_id, retiring, &alive),
+                    active: !busy
+                        && grid_editor_session_active(editing, session_id, retiring, &alive),
                     onmounted: custom_mount,
                     callback_owner,
                     alive: alive.clone(),
@@ -3412,7 +3610,7 @@ fn GridCellEditor(
     *mount_forward.borrow_mut() = custom.is_some().then_some(editor_mount);
     if let Some(content) = custom {
         return rsx! { div {
-            class: "ix-data-grid-editor-wrap ix-data-grid-custom-editor", "data-editor-kind": "custom", "data-retiring": retiring.to_string(),
+            class: "ix-data-grid-editor-wrap ix-data-grid-custom-editor", "data-editor-kind": "custom", "data-retiring": retiring.to_string(), "inert":busy.then_some(""),
             onfocusin: move |event: FocusEvent| { event.stop_propagation(); focus.call(event); },
             onkeydown: keydown,
             onclick: move |event: MouseEvent| { event.stop_propagation(); pointer_guard.call(event); },
@@ -3423,7 +3621,7 @@ fn GridCellEditor(
     let control = match kind {
         DataGridCellEditor::Text => rsx! {
             input { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor", r#type: "text",
-                readonly: retiring, tabindex: retiring.then_some("-1"), value: session.draft,
+                readonly: retiring || busy, tabindex: retiring.then_some("-1"), value: session.draft,
                 "data-select-all": session.select_all.to_string(), "data-editor-kind": "text", "data-retiring": retiring.to_string(),
                 "aria-label": label, "aria-invalid": invalid, "aria-errormessage": error_message,
                 onfocus: focus, onkeydown: keydown, onclick: pointer_guard, onmousedown: pointer_guard,
@@ -3432,7 +3630,7 @@ fn GridCellEditor(
         },
         DataGridCellEditor::Number(config) => rsx! {
             input { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor", r#type: "number",
-                readonly: retiring, tabindex: retiring.then_some("-1"), value: session.draft,
+                readonly: retiring || busy, tabindex: retiring.then_some("-1"), value: session.draft,
                 min: config.min.map(|value| value.to_string()), max: config.max.map(|value| value.to_string()),
                 step: config.step.map_or_else(|| "any".to_string(), |value| value.to_string()),
                 "data-editor-kind": "number", "data-retiring": retiring.to_string(),
@@ -3445,7 +3643,7 @@ fn GridCellEditor(
             let known = options.iter().any(|option| option.value == session.draft);
             rsx! {
                 select { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor",
-                    tabindex: retiring.then_some("-1"), value: session.draft.clone(), "aria-disabled": retiring.to_string(),
+                    disabled: busy, tabindex: retiring.then_some("-1"), value: session.draft.clone(), "aria-disabled": (retiring || busy).to_string(),
                     "data-editor-kind": "select", "data-retiring": retiring.to_string(),
                     "aria-label": label, "aria-invalid": invalid, "aria-errormessage": error_message,
                     onfocus: focus, onkeydown: keydown, onclick: pointer_guard, onmousedown: pointer_guard,
@@ -3465,7 +3663,7 @@ fn GridCellEditor(
         }
         DataGridCellEditor::Checkbox => rsx! {
             input { id: editor_id, onmounted: editor_mount, class: "ix-data-grid-editor", r#type: "checkbox",
-                tabindex: retiring.then_some("-1"), checked: session.draft == "true", "aria-disabled": retiring.to_string(),
+                disabled: busy, tabindex: retiring.then_some("-1"), checked: session.draft == "true", "aria-disabled": (retiring || busy).to_string(),
                 "data-editor-kind": "checkbox", "data-retiring": retiring.to_string(),
                 "aria-label": label, "aria-invalid": invalid, "aria-errormessage": error_message,
                 onfocus: focus, onkeydown: keydown, onclick: pointer_guard, onmousedown: pointer_guard,

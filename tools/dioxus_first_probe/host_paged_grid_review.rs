@@ -1,6 +1,6 @@
 //! Excluded actual-gallery host-owned page projection and normal Grid interactions.
 #[path = "../../examples/gallery/host_paged_grid.rs"]
-mod gallery_host;
+pub(super) mod gallery_host;
 use dioxus::prelude::*;
 use dioxus_ix::*;
 

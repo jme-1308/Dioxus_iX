@@ -6,6 +6,9 @@ struct Settings {
     across: bool,
     host: bool,
     auto: bool,
+    loading: bool,
+    read_only: bool,
+    mounted: bool,
 }
 struct Observation {
     initial: DataGridState,
@@ -16,6 +19,8 @@ struct Observation {
     requests: RefCell<Vec<DataGridState>>,
     changes: RefCell<Vec<DataGridCellValueChanged>>,
     focuses: Rc<RefCell<Vec<String>>>,
+    echo: Cell<bool>,
+    loading_page: Cell<Option<usize>>,
 }
 impl Observation {
     fn new(across: bool, page: usize) -> Rc<Self> {
@@ -28,6 +33,9 @@ impl Observation {
                 across,
                 host: false,
                 auto: false,
+                loading: false,
+                read_only: false,
+                mounted: true,
             },
             rows: Cell::new(None),
             state: Cell::new(None),
@@ -35,6 +43,8 @@ impl Observation {
             requests: RefCell::new(Vec::new()),
             changes: RefCell::new(Vec::new()),
             focuses: Rc::new(RefCell::new(Vec::new())),
+            echo: Cell::new(false),
+            loading_page: Cell::new(None),
         })
     }
 }
@@ -62,25 +72,44 @@ fn columns() -> Vec<DataGridColumn> {
 }
 fn fixture(data: Rc<Observation>) -> Element {
     let mut rows = use_signal(records);
-    let state = use_signal(|| data.initial.clone());
+    let mut state = use_signal(|| data.initial.clone());
     let options = use_signal(|| data.settings.clone());
     data.rows.set(Some(rows));
     data.state.set(Some(state));
     data.options.set(Some(options));
     let current = options();
     let source = rows();
+    let accepted = state();
+    // The host accepts query, logical total, grouped page and global summaries
+    // together. The Grid never receives an invented or constant first page.
+    let projected = accepted.visible_rows_with_columns(&source, &columns());
+    let total = projected.len();
+    let groups = accepted.page_group_metadata(&source, &columns());
     let supplied = if current.host {
-        source[..2].to_vec()
+        let page = accepted.pagination_info(total);
+        projected[page.range]
+            .iter()
+            .map(|row| (*row).clone())
+            .collect()
     } else {
         source
     };
     let requests = data.clone();
     let changes = data.clone();
-    rsx! {DataGrid {
-        columns: columns(), rows: supplied, state: state(), label: "Cross-page worklist",
-        row_model: if current.host { DataGridRowModel::Page { total_rows: 6 } } else { DataGridRowModel::Client },
-        tab_across_pages: current.across, auto_page_size: current.auto,
-        onstatechange: move |next| requests.requests.borrow_mut().push(next),
+    rsx! {
+      input { id: String::from("outside-page-grid"), onfocus: move |_| {} }
+      if current.mounted { DataGrid {
+        columns: columns(), rows: supplied, state: accepted, label: "Cross-page worklist",
+        row_model: if current.host { DataGridRowModel::Page { total_rows: total } } else { DataGridRowModel::Client },
+        page_groups: current.host.then_some(groups),
+        tab_across_pages: current.across, auto_page_size: current.auto, page_loading: current.loading,
+        read_only: current.read_only,
+        onstatechange: move |next: DataGridState| {
+            requests.requests.borrow_mut().push(next.clone());
+            if requests.loading_page.get().is_some_and(|page| next.pagination.is_some_and(|pagination| pagination.page == page)) {
+                requests.options.get().unwrap().with_mut(|settings| settings.loading = true);
+            } else if requests.echo.get() { state.set(next); }
+        },
         oncellvaluechanged: move |change: DataGridCellValueChanged| {
             changes.changes.borrow_mut().push(change.clone());
             assert!(change.apply_to(&mut rows.write()));
@@ -88,7 +117,8 @@ fn fixture(data: Rc<Observation>) -> Element {
         render_cell: move |context: DataGridCellContext| Some(DataGridCellRender::display(rsx! {
             span { "data-page-cell": format!("{}:{}", context.row.id, context.column.id), "{context.value}" }
         })),
-    }}
+      } }
+    }
 }
 
 #[derive(Clone)]
@@ -234,6 +264,41 @@ impl dioxus::html::HasMouseData for Mouse {
         self
     }
 }
+impl dioxus::html::HasPointerData for Mouse {
+    fn pointer_id(&self) -> i32 {
+        1
+    }
+    fn width(&self) -> f64 {
+        1.0
+    }
+    fn height(&self) -> f64 {
+        1.0
+    }
+    fn pressure(&self) -> f32 {
+        0.5
+    }
+    fn tangential_pressure(&self) -> f32 {
+        0.0
+    }
+    fn tilt_x(&self) -> i32 {
+        0
+    }
+    fn tilt_y(&self) -> i32 {
+        0
+    }
+    fn twist(&self) -> i32 {
+        0
+    }
+    fn pointer_type(&self) -> String {
+        "mouse".into()
+    }
+    fn is_primary(&self) -> bool {
+        true
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 struct Resize(f64);
 impl dioxus::html::HasResizeData for Resize {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -255,6 +320,7 @@ macro_rules! converter {
     (@data Keyboard,$event:ident) => { dioxus::html::KeyboardData::new($event.downcast::<Keyboard>().unwrap().clone()) };
     (@data Focus,$event:ident) => { dioxus::html::FocusData::new(Focus) };
     (@data Mouse,$event:ident) => { dioxus::html::MouseData::new(Mouse) };
+    (@data Pointer,$event:ident) => { dioxus::html::PointerData::new(Mouse) };
     (@data Resize,$event:ident) => { dioxus::html::ResizeData::new(Resize(*$event.downcast::<f64>().unwrap())) };
     (@data $other:ident,$event:ident) => { panic!("unexpected cross-page grid event") };
 }
@@ -695,10 +761,10 @@ fn default_page_local_finite_ends_and_host_boundary_remain_explicit() {
         assert_idle(&dom);
         assert!(data.requests.borrow().is_empty() && data.changes.borrow().is_empty());
     }
-    let mut data = Observation::new(true, 0);
+    let mut data = Observation::new(false, 0);
     Rc::get_mut(&mut data).unwrap().settings.host = true;
     let (mut dom, mut targets) = setup(data.clone());
-    assert!(dioxus_ssr::render(&dom).contains("Cross-page editing requires client rows."));
+    assert!(!dioxus_ssr::render(&dom).contains("Cross-page editing requires client rows."));
     begin(&mut dom, &mut targets, &data, "row1", "note");
     tab(&dom, &targets, "row1", "note", false);
     settle(&mut dom, &mut targets, &data);
@@ -716,4 +782,557 @@ fn default_page_local_finite_ends_and_host_boundary_remain_explicit() {
         1,
         "ordinary host page requests remain available"
     );
+}
+
+fn host(page: usize) -> Rc<Observation> {
+    let mut data = Observation::new(true, page);
+    Rc::get_mut(&mut data).unwrap().settings.host = true;
+    data
+}
+fn finish_loading(
+    dom: &mut VirtualDom,
+    targets: &mut Targets,
+    data: &Observation,
+    accepted: DataGridState,
+) {
+    dom.in_runtime(|| {
+        data.state.get().unwrap().set(accepted);
+        data.options
+            .get()
+            .unwrap()
+            .with_mut(|settings| settings.loading = false);
+    });
+    settle(dom, targets, data);
+}
+fn start_loading(dom: &mut VirtualDom, targets: &mut Targets, data: &Observation) -> DataGridState {
+    begin(dom, targets, data, "row1", "note");
+    type_value(dom, targets, data, "row1", "note", "Prepared for host");
+    tab(dom, targets, "row1", "note", false);
+    let requested = data.requests.borrow().last().unwrap().clone();
+    dom.in_runtime(|| {
+        data.options
+            .get()
+            .unwrap()
+            .with_mut(|settings| settings.loading = true)
+    });
+    settle(dom, targets, data);
+    requested
+}
+fn assert_loading(dom: &VirtualDom) {
+    let html = dioxus_ssr::render(dom);
+    let surface = html
+        .split('<')
+        .find(|tag| tag.contains("aria-label=\"Cross-page worklist\""))
+        .unwrap()
+        .split('>')
+        .next()
+        .unwrap();
+    assert!(
+        surface.contains("aria-busy=\"true\"") || surface.contains("aria-busy=true"),
+        "{surface}"
+    );
+    let pager = html
+        .split('<')
+        .find(|tag| tag.starts_with("fieldset "))
+        .unwrap()
+        .split('>')
+        .next()
+        .unwrap();
+    assert!(
+        pager
+            .split_whitespace()
+            .any(|attr| attr == "disabled" || attr.starts_with("disabled=")),
+        "{pager}"
+    );
+    assert!(
+        !html.contains("class=\"ix-data-grid-editor\""),
+        "loading owns no editable ghost"
+    );
+}
+
+#[test]
+fn host_boundary_validation_and_forward_reverse_echoes_use_committed_current_pages() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = host(0);
+    let (mut dom, mut targets) = setup(data.clone());
+    begin(&mut dom, &mut targets, &data, "row1", "note");
+    type_value(&mut dom, &mut targets, &data, "row1", "note", "");
+    tab(&dom, &targets, "row1", "note", false);
+    settle(&mut dom, &mut targets, &data);
+    assert!(data.changes.borrow().is_empty() && data.requests.borrow().is_empty());
+    assert!(
+        editor_tag(&dioxus_ssr::render(&dom), "row1", "note").contains("aria-invalid=\"true\"")
+    );
+    type_value(
+        &mut dom,
+        &mut targets,
+        &data,
+        "row1",
+        "note",
+        "Confirmed host note",
+    );
+    tab(&dom, &targets, "row1", "note", false);
+    assert_eq!(data.requests.borrow().len(), 1);
+    accept(&mut dom, &mut targets, &data);
+    assert!(editor_tag(&dioxus_ssr::render(&dom), "row2", "value").contains("value=\"Value2\""));
+    assert!(
+        data.focuses
+            .borrow()
+            .iter()
+            .any(|label| label == "Edit Value for row2")
+    );
+    dispatch(
+        &dom,
+        "focus",
+        targets.target("aria-label", "Edit Value for row2"),
+        (),
+    );
+    type_value(
+        &mut dom,
+        &mut targets,
+        &data,
+        "row2",
+        "value",
+        "Inspected host asset",
+    );
+    tab(&dom, &targets, "row2", "value", true);
+    accept(&mut dom, &mut targets, &data);
+    assert_eq!(
+        data.requests
+            .borrow()
+            .last()
+            .unwrap()
+            .pagination
+            .unwrap()
+            .page,
+        0
+    );
+    assert!(
+        editor_tag(&dioxus_ssr::render(&dom), "row1", "note")
+            .contains("value=\"Confirmed host note\"")
+    );
+    assert_eq!(data.changes.borrow().len(), 2);
+    assert_eq!(
+        data.rows.get().unwrap().peek()[2].value("value"),
+        "Inspected host asset"
+    );
+}
+
+#[test]
+fn host_skips_whole_readonly_and_collapsed_pages_directionally_with_finite_ends() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = host(0);
+    let (mut dom, mut targets) = setup(data.clone());
+    data.echo.set(true);
+    dom.in_runtime(|| {
+        for row in &mut data.rows.get().unwrap().write()[2..4] {
+            row.read_only_cells.extend(["value".into(), "note".into()]);
+        }
+    });
+    settle(&mut dom, &mut targets, &data);
+    begin(&mut dom, &mut targets, &data, "row1", "note");
+    tab(&dom, &targets, "row1", "note", false);
+    settle(&mut dom, &mut targets, &data);
+    assert_eq!(
+        data.requests
+            .borrow()
+            .iter()
+            .map(|request| request.pagination.unwrap().page)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(editor_tag(&dioxus_ssr::render(&dom), "row4", "value").contains("value=\"Value4\""));
+    dispatch(
+        &dom,
+        "focus",
+        targets.target("aria-label", "Edit Value for row4"),
+        (),
+    );
+    tab(&dom, &targets, "row4", "value", true);
+    settle(&mut dom, &mut targets, &data);
+    assert_eq!(
+        data.requests
+            .borrow()
+            .last()
+            .unwrap()
+            .pagination
+            .unwrap()
+            .page,
+        0
+    );
+    assert!(editor_tag(&dioxus_ssr::render(&dom), "row1", "note").contains("value=\"Note1\""));
+    dispatch(
+        &dom,
+        "keydown",
+        targets.target("aria-label", "Edit Note for row1"),
+        Keyboard {
+            key: Key::Escape,
+            backwards: false,
+        },
+    );
+    settle(&mut dom, &mut targets, &data);
+    dom.in_runtime(|| {
+        data.rows.get().unwrap().with_mut(|rows| {
+            for row in rows {
+                row.read_only_cells.clear();
+            }
+        });
+        data.state.get().unwrap().with_mut(|state| {
+            state.grouping = crate::DataGridGrouping::new(["group"]);
+            state.set_group_expanded(&crate::DataGridGroupPath::new([("group", "B")]), false);
+        });
+    });
+    settle(&mut dom, &mut targets, &data);
+    let previous = data.requests.borrow().len();
+    begin(&mut dom, &mut targets, &data, "row1", "note");
+    tab(&dom, &targets, "row1", "note", false);
+    settle(&mut dom, &mut targets, &data);
+    assert_eq!(data.requests.borrow().len(), previous + 2);
+    assert!(editor_tag(&dioxus_ssr::render(&dom), "row4", "value").contains("value=\"Value4\""));
+    // End on the last editable cell; no page request may wrap back to page zero.
+    dispatch(
+        &dom,
+        "keydown",
+        targets.target("aria-label", "Edit Value for row4"),
+        Keyboard {
+            key: Key::Escape,
+            backwards: false,
+        },
+    );
+    settle(&mut dom, &mut targets, &data);
+    begin(&mut dom, &mut targets, &data, "row5", "note");
+    let previous = data.requests.borrow().len();
+    tab(&dom, &targets, "row5", "note", false);
+    settle(&mut dom, &mut targets, &data);
+    assert_idle(&dom);
+    assert_eq!(data.requests.borrow().len(), previous);
+    assert!(data.changes.borrow().is_empty());
+
+    let data = host(0);
+    data.echo.set(true);
+    let (mut dom, mut targets) = setup(data.clone());
+    dom.in_runtime(|| {
+        for row in &mut data.rows.get().unwrap().write()[2..] {
+            row.read_only_cells.extend(["value".into(), "note".into()]);
+        }
+    });
+    settle(&mut dom, &mut targets, &data);
+    begin(&mut dom, &mut targets, &data, "row1", "note");
+    tab(&dom, &targets, "row1", "note", false);
+    settle(&mut dom, &mut targets, &data);
+    assert_idle(&dom);
+    assert_eq!(
+        data.requests
+            .borrow()
+            .iter()
+            .map(|request| request.pagination.unwrap().page)
+            .collect::<Vec<_>>(),
+        [1, 2],
+        "readonly pages stop at the finite original boundary"
+    );
+}
+
+#[test]
+fn host_held_altered_query_and_changed_count_retire_the_original_continuation() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    for response in ["held", "page", "query", "count"] {
+        let data = host(0);
+        let (mut dom, mut targets) = setup(data.clone());
+        let origin = cell_dom_id(&dom, "row1", "note");
+        begin(&mut dom, &mut targets, &data, "row1", "note");
+        type_value(
+            &mut dom,
+            &mut targets,
+            &data,
+            "row1",
+            "note",
+            "Saved before response",
+        );
+        tab(&dom, &targets, "row1", "note", false);
+        let requested = data.requests.borrow().last().unwrap().clone();
+        dom.in_runtime(|| {
+            if response == "held" {
+                return;
+            }
+            let mut accepted = requested.clone();
+            if response == "page" {
+                accepted.pagination.as_mut().unwrap().page = 2;
+            }
+            if response == "query" {
+                accepted.sort = Some(("value".into(), DataGridSortDirection::Descending));
+            }
+            if response == "count" {
+                data.rows.get().unwrap().write().pop();
+            }
+            data.state.get().unwrap().set(accepted);
+        });
+        settle(&mut dom, &mut targets, &data);
+        assert_idle(&dom);
+        assert_eq!(data.requests.borrow().len(), 1);
+        assert_eq!(data.changes.borrow().len(), 1);
+        if response == "held" {
+            assert!(data.focuses.borrow().iter().any(|label| label == &origin));
+        }
+        let focus_count = data.focuses.borrow().len();
+        dom.in_runtime(|| data.state.get().unwrap().set(requested));
+        settle(&mut dom, &mut targets, &data);
+        assert_idle(&dom);
+        assert_eq!(
+            data.focuses.borrow().len(),
+            focus_count,
+            "late {response} echo cannot focus a new editor"
+        );
+    }
+}
+
+#[test]
+fn host_loading_spans_renders_then_accepts_current_source_and_defers_auto_capacity() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    let data = host(0);
+    let (mut dom, mut targets) = setup(data.clone());
+    begin(&mut dom, &mut targets, &data, "row0", "value");
+    type_value(
+        &mut dom,
+        &mut targets,
+        &data,
+        "row0",
+        "value",
+        "Unpublished local draft",
+    );
+    dom.in_runtime(|| {
+        data.options
+            .get()
+            .unwrap()
+            .with_mut(|settings| settings.loading = true)
+    });
+    settle(&mut dom, &mut targets, &data);
+    type_value(
+        &mut dom,
+        &mut targets,
+        &data,
+        "row0",
+        "value",
+        "Rejected while loading",
+    );
+    dispatch(
+        &dom,
+        "keydown",
+        targets.target("aria-label", "Edit Value for row0"),
+        Keyboard {
+            key: Key::Enter,
+            backwards: false,
+        },
+    );
+    dispatch(&dom, "click", targets.target("aria-label", "Next page"), ());
+    settle(&mut dom, &mut targets, &data);
+    assert!(
+        editor_tag(&dioxus_ssr::render(&dom), "row0", "value")
+            .contains("value=\"Unpublished local draft\"")
+    );
+    assert!(data.changes.borrow().is_empty() && data.requests.borrow().is_empty());
+    dom.in_runtime(|| {
+        data.options
+            .get()
+            .unwrap()
+            .with_mut(|settings| settings.loading = false)
+    });
+    settle(&mut dom, &mut targets, &data);
+    assert!(
+        editor_tag(&dioxus_ssr::render(&dom), "row0", "value")
+            .contains("value=\"Unpublished local draft\"")
+    );
+    assert!(data.changes.borrow().is_empty() && data.requests.borrow().is_empty());
+    type_value(
+        &mut dom,
+        &mut targets,
+        &data,
+        "row0",
+        "value",
+        "Resumed local draft",
+    );
+    assert!(
+        editor_tag(&dioxus_ssr::render(&dom), "row0", "value")
+            .contains("value=\"Resumed local draft\"")
+    );
+    dispatch(
+        &dom,
+        "keydown",
+        targets.target("aria-label", "Edit Value for row0"),
+        Keyboard {
+            key: Key::Escape,
+            backwards: false,
+        },
+    );
+    settle(&mut dom, &mut targets, &data);
+    assert_idle(&dom);
+    let requested = start_loading(&mut dom, &mut targets, &data);
+    assert_loading(&dom);
+    dom.in_runtime(|| {
+        data.options
+            .get()
+            .unwrap()
+            .with_mut(|settings| settings.auto = true)
+    });
+    dom.mark_dirty(ScopeId::APP);
+    settle(&mut dom, &mut targets, &data);
+    dispatch(
+        &dom,
+        "resize",
+        targets.target("aria-label", "Cross-page worklist"),
+        90.0,
+    );
+    dispatch(&dom, "click", targets.target("aria-label", "Next page"), ());
+    settle(&mut dom, &mut targets, &data);
+    assert_loading(&dom);
+    assert_eq!(
+        data.requests.borrow().len(),
+        1,
+        "loading suppresses pager and automatic requests"
+    );
+    dom.in_runtime(|| {
+        data.rows.get().unwrap().write()[2]
+            .cells
+            .insert("value".into(), "Current host response".into());
+    });
+    finish_loading(&mut dom, &mut targets, &data, requested);
+    assert!(
+        editor_tag(&dioxus_ssr::render(&dom), "row2", "value")
+            .contains("value=\"Current host response\"")
+    );
+    assert!(
+        data.focuses
+            .borrow()
+            .iter()
+            .any(|label| label == "Edit Value for row2")
+    );
+    assert_eq!(
+        data.requests.borrow().len(),
+        1,
+        "accepted editor keeps the automatic resize deferred"
+    );
+    assert_eq!(data.changes.borrow().len(), 1);
+
+    // A real host can accept an uneditable page before the next reply loads.
+    // Its mounted header remains a focus owner from which outside blur cancels.
+    let data = host(0);
+    data.echo.set(true);
+    data.loading_page.set(Some(2));
+    let (mut dom, mut targets) = setup(data.clone());
+    dom.in_runtime(|| {
+        for row in &mut data.rows.get().unwrap().write()[2..4] {
+            row.read_only_cells.extend(["value".into(), "note".into()]);
+        }
+    });
+    settle(&mut dom, &mut targets, &data);
+    begin(&mut dom, &mut targets, &data, "row1", "note");
+    tab(&dom, &targets, "row1", "note", false);
+    settle(&mut dom, &mut targets, &data);
+    assert_loading(&dom);
+    assert_eq!(
+        data.requests
+            .borrow()
+            .iter()
+            .map(|state| state.pagination.unwrap().page)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(data.state.get().unwrap().peek().pagination.unwrap().page, 1);
+    assert!(
+        data.focuses
+            .borrow()
+            .iter()
+            .any(|label| label == "Select all loaded rows")
+    );
+    dispatch(
+        &dom,
+        "focus",
+        targets.target("aria-label", "Select all loaded rows"),
+        (),
+    );
+    dispatch(
+        &dom,
+        "focusout",
+        targets.target("aria-label", "Cross-page worklist"),
+        (),
+    );
+    dispatch(&dom, "focus", targets.target("id", "outside-page-grid"), ());
+    settle(&mut dom, &mut targets, &data);
+    let focus_count = data.focuses.borrow().len();
+    let accepted = data.requests.borrow().last().unwrap().clone();
+    finish_loading(&mut dom, &mut targets, &data, accepted);
+    assert_idle(&dom);
+    assert_eq!(
+        data.focuses.borrow().len(),
+        focus_count,
+        "late chained response must preserve outside focus"
+    );
+    assert!(data.changes.borrow().is_empty());
+}
+
+#[test]
+fn independent_native_intents_and_owner_teardown_cancel_loading_before_late_echoes() {
+    let _guard = crate::test_event_converter_guard();
+    dioxus::html::set_event_converter(Box::new(Converter));
+    for intent in [
+        "escape", "blur", "key", "pointer", "readonly", "option", "teardown",
+    ] {
+        let data = host(0);
+        let (mut dom, mut targets) = setup(data.clone());
+        let requested = start_loading(&mut dom, &mut targets, &data);
+        let grid = targets.target("aria-label", "Cross-page worklist");
+        match intent {
+            "escape" | "key" => dispatch(
+                &dom,
+                "keydown",
+                grid,
+                Keyboard {
+                    key: if intent == "escape" {
+                        Key::Escape
+                    } else {
+                        Key::ArrowDown
+                    },
+                    backwards: false,
+                },
+            ),
+            "blur" => {
+                dispatch(&dom, "focusout", grid, ());
+                dispatch(&dom, "focus", targets.target("id", "outside-page-grid"), ());
+            }
+            "pointer" => dispatch(&dom, "pointerdown", grid, ()),
+            _ => dom.in_runtime(|| {
+                data.options
+                    .get()
+                    .unwrap()
+                    .with_mut(|settings| match intent {
+                        "readonly" => settings.read_only = true,
+                        "option" => settings.across = false,
+                        "teardown" => settings.mounted = false,
+                        _ => unreachable!(),
+                    })
+            }),
+        }
+        settle(&mut dom, &mut targets, &data);
+        let focus_count = data.focuses.borrow().len();
+        finish_loading(&mut dom, &mut targets, &data, requested);
+        dom.in_runtime(|| {
+            data.options.get().unwrap().with_mut(|settings| {
+                settings.mounted = true;
+                settings.read_only = false;
+                settings.across = true;
+            })
+        });
+        settle(&mut dom, &mut targets, &data);
+        assert_idle(&dom);
+        assert_eq!(
+            data.focuses.borrow().len(),
+            focus_count,
+            "late response after {intent} stole focus"
+        );
+        assert_eq!(data.requests.borrow().len(), 1);
+        assert_eq!(data.changes.borrow().len(), 1);
+    }
 }
