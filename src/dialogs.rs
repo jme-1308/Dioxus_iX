@@ -201,18 +201,11 @@ impl Surface {
     }
 
     async fn contains_focus(self) -> bool {
-        // Pinned FocusData has no target/relatedTarget, and MountedData has no
-        // active-element containment API. Focus actions still use mounted handles.
         #[cfg(any(feature = "web", feature = "desktop"))]
         {
-            let id = serde_json::to_string(&self.id()).expect("string serialization");
-            let script = format!(
-                "const panel=document.getElementById({id});return !!panel&&panel.contains(document.activeElement);"
-            );
-            crate::dom_query::eval(&script)
-                .join::<bool>()
+            crate::focus_containment::read(&self.id(), None)
                 .await
-                .unwrap_or(false)
+                .is_ok_and(|facts| facts.inside)
         }
         #[cfg(not(any(feature = "web", feature = "desktop")))]
         false
@@ -1157,9 +1150,10 @@ impl PopoverHandle {
         let trigger = restore_focus
             .then(|| self.focus_trigger.peek().clone())
             .flatten();
-        // A hover trigger consumes the restoration focus event once, so closing
-        // never immediately opens it again. Blur/pointer entry clears the flag.
-        self.suppress_focus_open.set(*self.hover_mode.peek());
+        // Suppress only the focus event requested by explicit restoration.
+        // An outside close must allow the next genuine trigger focus to open.
+        self.suppress_focus_open
+            .set(*self.hover_mode.peek() && restore_focus);
         self.surface.open.set(false);
         let generation = self.surface.generation.peek().wrapping_add(1);
         self.surface.generation.set(generation);

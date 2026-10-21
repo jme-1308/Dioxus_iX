@@ -376,11 +376,7 @@ struct CategoryModel {
 /// FocusData has no relatedTarget/active element across pinned renderers.
 /// A one-shot read against this explicit Rust Category ID resolves focusout
 /// handoff; it cannot discover scopes or focus an unregistered control.
-#[derive(Clone, Copy, Default, serde::Deserialize)]
-struct CategoryFocusContainment {
-    connected: bool,
-    inside: bool,
-}
+type CategoryFocusContainment = crate::focus_containment::FocusContainment;
 
 #[cfg(test)]
 #[derive(Clone, Default)]
@@ -811,12 +807,9 @@ impl CategoryNavigation {
     async fn native_focus_containment(host_id: &str) -> Option<CategoryFocusContainment> {
         #[cfg(any(feature = "web", feature = "desktop"))]
         {
-            let eval = crate::dom_query::eval(crate::menu_hover_dom::CATEGORY_FOCUS_CONTAINMENT);
-            if eval.send(host_id).is_ok() {
-                eval.join::<CategoryFocusContainment>().await.ok()
-            } else {
-                None
-            }
+            crate::focus_containment::read(host_id, Some("data-menu-category-root"))
+                .await
+                .ok()
         }
         #[cfg(not(any(feature = "web", feature = "desktop")))]
         {

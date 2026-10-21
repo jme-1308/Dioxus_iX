@@ -2863,12 +2863,7 @@ pub fn Select(
                 // movement from leaving the whole control (web and desktop).
                 let id = blur_root_id.clone();
                 spawn(async move {
-                    let task = crate::dom_query::eval(r#"
-                        const id = await dioxus.recv();
-                        const root = document.getElementById(id);
-                        return !!root?.contains(document.activeElement);
-                    "#);
-                    if task.send(id).is_ok() && matches!(task.join::<bool>().await, Ok(false)) {
+                    if matches!(crate::focus_containment::read(&id, None).await, Ok(facts) if !facts.inside) {
                         open.set(false); overflow_open.set(false);
                         query.set(String::new()); query_dirty.set(false); active.set(usize::MAX);
                     }

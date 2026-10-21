@@ -370,6 +370,7 @@ fn popover_overlay_request_observes_one_veto_and_preserves_close_focus_policy() 
     let requests = Rc::new(std::cell::Cell::new(0));
     let canceled = Rc::new(std::cell::Cell::new(true));
     dom.in_scope(ScopeId::ROOT, || {
+        popover.hover_mode.set(true);
         popover.surface.open.set(true);
         let seen = requests.clone();
         let veto = canceled.clone();
@@ -385,6 +386,10 @@ fn popover_overlay_request_observes_one_veto_and_preserves_close_focus_policy() 
         assert!(popover.is_open());
         assert_eq!(requests.get(), 1);
         assert_eq!(*popover.surface.generation.peek(), 0);
+        assert!(
+            !*popover.suppress_focus_open.peek(),
+            "a veto never changes hover focus admission"
+        );
         canceled.set(false);
         assert!(node.request(false, crate::overlay_runtime::Reason::Outside, false));
         assert_eq!(
@@ -397,6 +402,15 @@ fn popover_overlay_request_observes_one_veto_and_preserves_close_focus_policy() 
             None,
             "outside close releases invoker focus"
         );
+        assert!(!popover.is_open());
+        assert!(
+            !*popover.suppress_focus_open.peek(),
+            "outside focus closes without queuing restoration"
+        );
+        assert!(
+            popover.hover_focus_allowed(),
+            "the next genuine trigger focus may reopen"
+        );
         popover.surface.open.set(true);
         assert!(node.request(false, crate::overlay_runtime::Reason::Escape, true));
         assert_eq!(requests.get(), 3);
@@ -404,6 +418,18 @@ fn popover_overlay_request_observes_one_veto_and_preserves_close_focus_policy() 
             *popover.surface.restore_after_mount.peek(),
             None,
             "persistent Popover no longer relies on remount-driven focus"
+        );
+        assert!(
+            *popover.suppress_focus_open.peek(),
+            "explicit close reserves one restoration focus event"
+        );
+        assert!(
+            !popover.hover_focus_allowed(),
+            "restoration must not immediately reopen hover content"
+        );
+        assert!(
+            popover.hover_focus_allowed(),
+            "suppression is consumed once; later genuine focus may open"
         );
     });
 }

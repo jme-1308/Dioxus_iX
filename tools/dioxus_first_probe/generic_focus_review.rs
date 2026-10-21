@@ -273,6 +273,23 @@ hoverTrigger.dispatchEvent(new MouseEvent('mouseenter',{bubbles:false}));
 await wait('hover non-stealing opening',()=>isOpen(hoverPanel())&&active()===outside);
 byId('r0211-hover-close').click();
 await wait('hover explicit return without focus reopening',()=>!hoverPanel().matches(':popover-open')&&active()===hoverTrigger);
+// Focus-triggered Hover mode uses the real panel containment observation.
+// Synthetic focus is explicit; elapsed hide delay is not an acceptance metric.
+await focusControl(outside);
+await focusControl(hoverTrigger);
+await wait('focus trigger opens hover panel without stealing trigger focus',()=>isOpen(hoverPanel())&&active()===hoverTrigger);
+await focusControl(byId('r0211-hover-close'));
+await wait('focus within hover content retains visible panel',()=>isOpen(hoverPanel())&&active()===byId('r0211-hover-close'));
+// Let the ordinary delayed hide settle; no elapsed-time threshold is asserted.
+await new Promise(resolve=>setTimeout(resolve,250));
+if(!isOpen(hoverPanel())||active()!==byId('r0211-hover-close'))throw new Error('settled internal hover focus was dismissed');
+await focusControl(outside);
+await wait('outside focus dismisses hover panel and retains outside destination',()=>!hoverPanel().matches(':popover-open')&&active()===outside);
+await focusControl(hoverTrigger);
+await wait('focus hover panel reopens with current native ownership',()=>isOpen(hoverPanel())&&active()===hoverTrigger);
+byId('r0211-hover-close').click();
+await wait('focus hover explicit close returns without reopening',()=>!hoverPanel().matches(':popover-open')&&active()===hoverTrigger);
+
 const customTrigger=byId('r0228-custom-popover-trigger');
 const customPanel=()=>Array.from(document.querySelectorAll('[data-ix-overlay-native-surface="popover"]')).find(node=>node.getAttribute('aria-label')==='Custom equipment help');
 customTrigger.scrollIntoView({block:'center'});customTrigger.click();
@@ -361,5 +378,5 @@ for(const topLayer of [false,true]){
   await checkGeometry('restored layout');
   key(headerField,'Escape');await wait('geometry Header close return',()=>header().dataset.open==='false'&&active()===more());
 }
-return {ok:true,popover:{contentFirst:true,typing:true,boundaries:2,positiveTabOrder:true,interiorDefault:true,escape:true,explicit:true,veto:true,outsidePreserved:true},hover:{nonStealing:true,returned:true},customAnchor:true,unanchoredCentered:true,header:{home:true,end:true,boundaries:2,interiorDefault:true,escape:true,veto:true,responsiveValue:headerField.value,inline:true,geometry}};
+return {ok:true,hoverFocusContainment:{triggerOpening:true,internalFocusRetained:true,outsideFocusDismissed:true,reopenAndExplicitClose:true,input:"Excluded synthetic native focus/click; real focus ownership and popover state observed."},popover:{contentFirst:true,typing:true,boundaries:2,positiveTabOrder:true,interiorDefault:true,escape:true,explicit:true,veto:true,outsidePreserved:true},hover:{nonStealing:true,returned:true},customAnchor:true,unanchoredCentered:true,header:{home:true,end:true,boundaries:2,interiorDefault:true,escape:true,veto:true,responsiveValue:headerField.value,inline:true,geometry}};
 "#;
