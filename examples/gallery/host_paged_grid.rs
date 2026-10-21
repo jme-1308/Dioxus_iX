@@ -171,6 +171,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
     let mut provider = use_signal(EquipmentProvider::new);
     let mut auto_page_size = use_signal(|| false);
     let mut tab_across_pages = use_signal(|| false);
+    let mut navigate_across_pages = use_signal(|| false);
     let current = provider();
     let group_mode = match current.accepted.state.grouping.columns.as_slice() {
         [status, owner] if status == "status" && owner == "owner" => "status-owner",
@@ -238,6 +239,12 @@ fn HostPageWorkspace(generation: usize) -> Element {
                         option { value: "status-owner", "Status then Owner" }
                     }
                 }
+                label { r#for: "host-paged-navigate-across-pages",
+                    input { id: "host-paged-navigate-across-pages", r#type: "checkbox", checked: navigate_across_pages(),
+                        onchange: move |event: FormEvent| navigate_across_pages.set(event.checked()),
+                    }
+                    "Navigate across pages"
+                }
                 label { r#for: "host-paged-tab-across-pages",
                     input { id: "host-paged-tab-across-pages", r#type: "checkbox", checked: tab_across_pages(),
                         onchange: move |event: FormEvent| tab_across_pages.set(event.checked()),
@@ -281,6 +288,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
                 height: 420, striped: true, page_size_options: vec![12, 24, 48],
                 auto_page_size: auto_page_size(),
                 tab_across_pages: tab_across_pages(),
+                    navigate_across_pages: navigate_across_pages(),
                 onstatechange: move |requested: DataGridState| {
                     let mut next = provider.peek().clone(); next.accept(requested); provider.set(next);
                 },
@@ -296,6 +304,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
                 "data-total": current.accepted.total, "data-loaded": current.accepted.rows.len(), "data-source-total": current.source.len(),
                 "data-start": page.range.start, "data-end": page.range.end, "data-first-row": first, "data-last-row": last,
                 "data-selected": selected.len(), "data-selected-ids": serialized_selection.clone(), "data-saved": current.saved,
+                "data-navigate-across-pages": navigate_across_pages(),
                 "data-tab-across-pages": tab_across_pages(),
                 "data-group-mode": group_mode, "data-groups": current.accepted.groups.len(), "data-auto-page-size": auto_page_size(),
                 "Loaded records {display_start}–{page.range.end} of {current.accepted.total} matching equipment · {selected.len()} selected · {current.saved} saved edits"

@@ -2,28 +2,29 @@ use super::*;
 use std::{future::Future, pin::Pin};
 
 #[derive(Clone, PartialEq)]
-struct Settings {
-    across: bool,
-    host: bool,
-    auto: bool,
-    loading: bool,
-    read_only: bool,
-    mounted: bool,
+pub(super) struct Settings {
+    pub(super) across: bool,
+    pub(super) navigate: bool,
+    pub(super) host: bool,
+    pub(super) auto: bool,
+    pub(super) loading: bool,
+    pub(super) read_only: bool,
+    pub(super) mounted: bool,
 }
-struct Observation {
-    initial: DataGridState,
-    settings: Settings,
-    rows: Cell<Option<Signal<Vec<DataGridRow>>>>,
-    state: Cell<Option<Signal<DataGridState>>>,
-    options: Cell<Option<Signal<Settings>>>,
-    requests: RefCell<Vec<DataGridState>>,
-    changes: RefCell<Vec<DataGridCellValueChanged>>,
-    focuses: Rc<RefCell<Vec<String>>>,
-    echo: Cell<bool>,
-    loading_page: Cell<Option<usize>>,
+pub(super) struct Observation {
+    pub(super) initial: DataGridState,
+    pub(super) settings: Settings,
+    pub(super) rows: Cell<Option<Signal<Vec<DataGridRow>>>>,
+    pub(super) state: Cell<Option<Signal<DataGridState>>>,
+    pub(super) options: Cell<Option<Signal<Settings>>>,
+    pub(super) requests: RefCell<Vec<DataGridState>>,
+    pub(super) changes: RefCell<Vec<DataGridCellValueChanged>>,
+    pub(super) focuses: Rc<RefCell<Vec<String>>>,
+    pub(super) echo: Cell<bool>,
+    pub(super) loading_page: Cell<Option<usize>>,
 }
 impl Observation {
-    fn new(across: bool, page: usize) -> Rc<Self> {
+    pub(super) fn new(across: bool, page: usize) -> Rc<Self> {
         Rc::new(Self {
             initial: DataGridState {
                 pagination: Some(crate::DataGridPagination::new(page, 2)),
@@ -31,6 +32,7 @@ impl Observation {
             },
             settings: Settings {
                 across,
+                navigate: false,
                 host: false,
                 auto: false,
                 loading: false,
@@ -103,6 +105,7 @@ fn fixture(data: Rc<Observation>) -> Element {
         row_model: if current.host { DataGridRowModel::Page { total_rows: total } } else { DataGridRowModel::Client },
         page_groups: current.host.then_some(groups),
         tab_across_pages: current.across, auto_page_size: current.auto, page_loading: current.loading,
+        navigate_across_pages: current.navigate,
         read_only: current.read_only,
         onstatechange: move |next: DataGridState| {
             requests.requests.borrow_mut().push(next.clone());
@@ -190,9 +193,9 @@ impl dioxus::html::HasFormData for Form {
     }
 }
 #[derive(Clone)]
-struct Keyboard {
-    key: Key,
-    backwards: bool,
+pub(super) struct Keyboard {
+    pub(super) key: Key,
+    pub(super) backwards: bool,
 }
 impl dioxus::html::ModifiersInteraction for Keyboard {
     fn modifiers(&self) -> Modifiers {
@@ -310,7 +313,7 @@ impl dioxus::html::HasResizeData for Resize {
         Ok(dioxus::html::geometry::PixelsSize::new(640.0, self.0))
     }
 }
-struct Converter;
+pub(super) struct Converter;
 macro_rules! converter {
     (enum Event {$(#[convert=$convert:ident] #[events=[$($events:tt)*]] $(#[raw=[$($raw:ident),* $(,)?]])? $group:ident($data:ident),)*}) => {
         impl dioxus::html::HtmlEventConverter for Converter {$(fn $convert(&self,event:&dioxus::html::PlatformEventData)->dioxus::html::$data { let _=event; converter!(@data $group,event) })*}
@@ -327,7 +330,7 @@ macro_rules! converter {
 dioxus::html::with_html_event_groups!(converter);
 
 #[derive(Default)]
-struct Targets {
+pub(super) struct Targets {
     attrs: BTreeMap<usize, BTreeMap<String, String>>,
     mounted: Vec<dioxus::core::ElementId>,
 }
@@ -369,7 +372,7 @@ impl Targets {
             }
         }
     }
-    fn target(&self, name: &str, value: &str) -> dioxus::core::ElementId {
+    pub(super) fn target(&self, name: &str, value: &str) -> dioxus::core::ElementId {
         dioxus::core::ElementId::from_raw(
             *self
                 .attrs
@@ -380,13 +383,18 @@ impl Targets {
         )
     }
 }
-fn dispatch(dom: &VirtualDom, name: &str, id: dioxus::core::ElementId, value: impl std::any::Any) {
+pub(super) fn dispatch(
+    dom: &VirtualDom,
+    name: &str,
+    id: dioxus::core::ElementId,
+    value: impl std::any::Any,
+) {
     let data =
         Rc::new(dioxus::html::PlatformEventData::new(Box::new(value))) as Rc<dyn std::any::Any>;
     dom.runtime()
         .handle_event(name, Event::new(data, name != "mounted"), id);
 }
-fn settle(dom: &mut VirtualDom, targets: &mut Targets, data: &Observation) {
+pub(super) fn settle(dom: &mut VirtualDom, targets: &mut Targets, data: &Observation) {
     for _ in 0..6 {
         targets.collect(dom.render_immediate_to_vec());
         for id in std::mem::take(&mut targets.mounted) {
@@ -409,7 +417,7 @@ fn settle(dom: &mut VirtualDom, targets: &mut Targets, data: &Observation) {
         dom.process_events();
     }
 }
-fn setup(data: Rc<Observation>) -> (VirtualDom, Targets) {
+pub(super) fn setup(data: Rc<Observation>) -> (VirtualDom, Targets) {
     let mut dom = VirtualDom::new_with_props(fixture, data.clone());
     let mut targets = Targets::default();
     targets.collect(dom.rebuild_to_vec());
@@ -473,7 +481,7 @@ fn tab(dom: &VirtualDom, targets: &Targets, row: &str, column: &str, backwards: 
         },
     );
 }
-fn accept(dom: &mut VirtualDom, targets: &mut Targets, data: &Observation) {
+pub(super) fn accept(dom: &mut VirtualDom, targets: &mut Targets, data: &Observation) {
     let next = data.requests.borrow().last().unwrap().clone();
     dom.in_runtime(|| data.state.get().unwrap().set(next));
     settle(dom, targets, data);
@@ -489,7 +497,7 @@ fn editor_tag<'a>(html: &'a str, row: &str, column: &str) -> &'a str {
         .next()
         .unwrap()
 }
-fn cell_dom_id(dom: &VirtualDom, row: &str, column: &str) -> String {
+pub(super) fn cell_dom_id(dom: &VirtualDom, row: &str, column: &str) -> String {
     let html = dioxus_ssr::render(dom);
     let before = html
         .split_once(&format!("data-page-cell=\"{row}:{column}\""))
@@ -512,7 +520,7 @@ fn cell_dom_id(dom: &VirtualDom, row: &str, column: &str) -> String {
         .unwrap()
         .to_string()
 }
-fn assert_idle(dom: &VirtualDom) {
+pub(super) fn assert_idle(dom: &VirtualDom) {
     let html = dioxus_ssr::render(dom);
     assert!(!html.contains("class=\"ix-data-grid-editor\""), "{html}");
     let pager = html
@@ -789,7 +797,7 @@ fn host(page: usize) -> Rc<Observation> {
     Rc::get_mut(&mut data).unwrap().settings.host = true;
     data
 }
-fn finish_loading(
+pub(super) fn finish_loading(
     dom: &mut VirtualDom,
     targets: &mut Targets,
     data: &Observation,
@@ -818,7 +826,7 @@ fn start_loading(dom: &mut VirtualDom, targets: &mut Targets, data: &Observation
     settle(dom, targets, data);
     requested
 }
-fn assert_loading(dom: &VirtualDom) {
+pub(super) fn assert_loading(dom: &VirtualDom) {
     let html = dioxus_ssr::render(dom);
     let surface = html
         .split('<')

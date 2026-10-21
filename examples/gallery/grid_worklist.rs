@@ -263,6 +263,7 @@ pub fn GridWorklistExample() -> Element {
     let mut epoch = use_signal(|| 0u64);
     let mut auto_page_size = use_signal(|| false);
     let mut tab_across_pages = use_signal(|| false);
+    let mut navigate_across_pages = use_signal(|| false);
     let mut grid_height = use_signal(|| 420_u32);
     let mut csv_scope = use_signal(|| DataGridCsvRowScope::Displayed);
     let mut csv_snapshot = use_signal(|| None::<(DataGridCsvRowScope, DataGridCsv)>);
@@ -466,6 +467,7 @@ pub fn GridWorklistExample() -> Element {
                         read_only.set(false);
                         auto_page_size.set(false);
                         tab_across_pages.set(false);
+                        navigate_across_pages.set(false);
                         grid_height.set(420);
                         clear_csv.call(());
                         csv_scope.set(DataGridCsvRowScope::Displayed);
@@ -503,6 +505,12 @@ pub fn GridWorklistExample() -> Element {
                         },
                     }
                     "Paginate worklist"
+                }
+                label { r#for: "worklist-navigate-across-pages",
+                    input { id: "worklist-navigate-across-pages", r#type: "checkbox", checked: navigate_across_pages(),
+                        onchange: move |event: FormEvent| navigate_across_pages.set(event.checked()),
+                    }
+                    "Navigate across pages"
                 }
                 label { r#for: "worklist-tab-across-pages",
                     input {
@@ -601,6 +609,7 @@ pub fn GridWorklistExample() -> Element {
                     height: effective_grid_height,
                     auto_page_size: auto_page_size(),
                     tab_across_pages: tab_across_pages(),
+                    navigate_across_pages: navigate_across_pages(),
                     page_size_options: vec![12, 24, 48],
                     striped: true,
                     read_only: read_only(),
@@ -656,6 +665,7 @@ pub fn GridWorklistExample() -> Element {
             }
             p { id: "worklist-pagination-status", class: "grid-worklist-status", role: "status", hidden: !pagination_enabled,
                 "data-enabled": pagination_enabled, "data-page": page_info.page, "data-page-size": page_info.page_size,
+                "data-navigate-across-pages": navigate_across_pages(),
                 "data-tab-across-pages": tab_across_pages(),
                 "data-auto-page-size": pagination_enabled && auto_page_size(), "data-grid-height": effective_grid_height,
                 "data-page-count": page_info.page_count, "data-total": page_info.total_rows,
