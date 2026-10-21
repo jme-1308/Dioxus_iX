@@ -205,6 +205,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
     let mut tab_across_pages = use_signal(|| false);
     let mut navigate_across_pages = use_signal(|| false);
     let mut row_move = use_signal(|| false);
+    let mut drag_across_pages = use_signal(|| false);
     let on_page_row_move = row_move().then(|| {
         EventHandler::new(move |request: DataGridPageRowMove| {
             let mut next = provider.peek().clone();
@@ -309,6 +310,12 @@ fn HostPageWorkspace(generation: usize) -> Element {
                     }
                     "Reorder equipment"
                 }
+                label { r#for: "host-paged-drag-across-pages",
+                    input { id: "host-paged-drag-across-pages", r#type: "checkbox", checked: drag_across_pages(), disabled: !row_move(),
+                        onchange: move |event: FormEvent| drag_across_pages.set(event.checked()),
+                    }
+                    "Drag across pages"
+                }
                 Button { id: "host-paged-mark-service", button_type: ButtonType::Button, disabled: selected.is_empty(),
                     onclick: move |_| { let mut next = provider.peek().clone(); next.mark_selected(); provider.set(next); },
                     "Mark selected for maintenance"
@@ -351,6 +358,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
                     let mut next = provider.peek().clone(); next.select_group(request); provider.set(next);
                 },
                 onpagerowmove: on_page_row_move,
+                row_drag_across_pages: row_move() && drag_across_pages(),
             }
             p { id: "host-paged-status", class: "host-paged-status", role: "status", "aria-live": "polite",
                 "data-page": page.page, "data-page-size": page.page_size, "data-page-count": page.page_count,
@@ -361,6 +369,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
                 "data-tab-across-pages": tab_across_pages(),
                 "data-group-mode": group_mode, "data-groups": current.accepted.groups.len(), "data-auto-page-size": auto_page_size(),
                 "data-row-move": row_move(), "data-moves": current.moves, "data-row-order": serialized_order,
+                "data-row-drag-across-pages": row_move() && drag_across_pages(),
                 "Loaded records {display_start}–{page.range.end} of {current.accepted.total} matching equipment · {selected.len()} selected · {current.saved} saved edits"
             }
             p { id: "host-paged-selection", class: "host-paged-selection", "data-selected-ids": serialized_selection,
@@ -381,6 +390,7 @@ pub fn HostPagedGridExample() -> Element {
             p { class: "host-paged-intro", "The page provider filters, sorts and groups all 137 local records, then supplies the accepted page, matching total and global group summaries. An application can use the same state request to fetch its data; this example makes no network requests." }
             p { class: "host-paged-intro", "Select equipment on different pages, then mark the full selection for maintenance. Group checkboxes select matching equipment across pages; the page header selects only loaded records. Closing a group keeps its selection. Double-click Equipment or Owner to edit; save with Enter or cancel with Escape before paging." }
             p { class: "host-paged-intro", "Enable reordering, then drag an Equipment handle or use Alt+Up/Down on it. The provider follows the moved record across pages. Clear sorting, filters and grouping before moving equipment." }
+            p { class: "host-paged-intro", "With Drag across pages enabled, hold the dragged equipment near the top or bottom of the grid to change page, then drop before or after a row." }
             for owner in [generation()] { HostPageWorkspace { key: "{owner}", generation: owner } }
             Button { id: "host-paged-reset", variant: ButtonVariant::Tertiary, button_type: ButtonType::Button,
                 onclick: move |_| generation += 1, "Reset equipment provider"
@@ -392,6 +402,55 @@ pub fn HostPagedGridExample() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_accepts_loaded_page_change_before_moving_original_source_row() {
+        let mut provider = EquipmentProvider::new();
+        let mut query = provider.accepted.state.clone();
+        query.selected.insert("host-equipment-002".into());
+        provider.accept(query);
+        provider.save_edit(DataGridCellValueChanged {
+            row_id: "host-equipment-002".into(),
+            column_id: "owner".into(),
+            old_value: "Team 3".into(),
+            new_value: "Inspection team".into(),
+        });
+        // Edge paging accepts a new partial page before the drop. The provider
+        // still validates source identity against its complete managed order.
+        let mut query = provider.accepted.state.clone();
+        query.pagination.as_mut().unwrap().page = 1;
+        provider.accept(query);
+        assert!(
+            !provider
+                .accepted
+                .rows
+                .iter()
+                .any(|row| row.id == "host-equipment-002")
+        );
+        let loaded_before_drop = provider.accepted.rows.clone();
+        assert!(provider.move_row(DataGridPageRowMove {
+            row_id: "host-equipment-002".into(),
+            from_index: 2,
+            to_index: 14,
+            total_rows: 137,
+        }));
+        assert_eq!(provider.accepted.state.pagination.unwrap().page, 1);
+        assert_eq!(provider.accepted.rows[2].id, "host-equipment-002");
+        assert_eq!(provider.accepted.rows[2].value("owner"), "Inspection team");
+        assert_eq!(provider.accepted.state.row_order[14], "host-equipment-002");
+        assert_eq!(provider.accepted.state.row_order.len(), 137);
+        assert!(
+            provider
+                .accepted
+                .state
+                .selected
+                .contains("host-equipment-002")
+        );
+        assert_eq!(provider.moves, 1);
+        assert_eq!(provider.saved, 1);
+        assert_eq!(loaded_before_drop[0].id, "host-equipment-012");
+        assert_eq!(loaded_before_drop[2].id, "host-equipment-014");
+    }
 
     #[test]
     fn provider_moves_full_order_across_pages_without_losing_committed_data_or_selection() {

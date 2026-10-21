@@ -110,6 +110,8 @@ mod grid_host_row_move_review;
 mod grid_multi_sort_review;
 #[path = "dioxus_first_probe/grid_numeric_values_review.rs"]
 mod grid_numeric_values_review;
+#[path = "dioxus_first_probe/grid_page_drag_review.rs"]
+mod grid_page_drag_review;
 #[path = "dioxus_first_probe/grid_page_edit_review.rs"]
 mod grid_page_edit_review;
 #[path = "dioxus_first_probe/grid_page_navigation_review.rs"]
@@ -322,6 +324,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridpagenavigation" {
         return rsx! { grid_page_navigation_review::GridPageNavigationPreview {} };
+    }
+    if scope == "?gridpagedrag" {
+        return rsx! { grid_page_drag_review::GridPageDragPreview {} };
     }
     if scope == "?gridpageedit" {
         return rsx! { grid_page_edit_review::GridPageEditPreview {} };

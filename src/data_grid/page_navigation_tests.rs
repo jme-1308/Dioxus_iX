@@ -70,14 +70,12 @@ fn group_key(
     group: &str,
     key: Key,
 ) {
-    dispatch(
-        dom,
-        "focus",
-        targets.target("aria-label", &format!("Group: {group}")),
-        (),
-    );
+    let control = targets.mounted_target(&format!("Group: {group}"));
+    dispatch(dom, "focus", control, ());
     settle(dom, targets, data);
-    key_at(dom, targets.target("data-group-value", group), key);
+    // Native keyboard input targets the focused disclosure button and bubbles
+    // through its current Dioxus parent, never a retired row's cached ID.
+    key_at(dom, control, key);
 }
 fn assert_unchanged_selection(data: &Observation) {
     assert_eq!(

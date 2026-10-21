@@ -21,6 +21,7 @@ fn columns() -> Vec<DataGridColumn> {
 #[derive(Clone, PartialEq)]
 struct Settings {
     enabled: bool,
+    across: bool,
     host: bool,
     loading: bool,
     mounted: bool,
@@ -29,6 +30,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled: true,
+            across: false,
             host: true,
             loading: false,
             mounted: true,
@@ -50,6 +52,14 @@ impl Gate {
     }
 }
 type GeometryGate = Rc<RefCell<Option<(String, Rc<Gate>)>>>;
+#[derive(Clone, Copy, Default)]
+enum PageReply {
+    #[default]
+    Accept,
+    Hold,
+    Alter,
+    Loading,
+}
 struct Observation {
     initial: Settings,
     state: Cell<Option<Signal<DataGridState>>>,
@@ -57,6 +67,9 @@ struct Observation {
     settings: Cell<Option<Signal<Settings>>>,
     moves: RefCell<Vec<DataGridPageRowMove>>,
     accept: Cell<bool>,
+    page_reply: Cell<PageReply>,
+    page_requests: RefCell<Vec<crate::DataGridPagination>>,
+    mount_counts: RefCell<BTreeMap<String, usize>>,
     focuses: Rc<RefCell<Vec<String>>>,
     geometry: GeometryGate,
 }
@@ -69,6 +82,9 @@ impl Observation {
             settings: Cell::new(None),
             moves: RefCell::new(Vec::new()),
             accept: Cell::new(true),
+            page_reply: Cell::default(),
+            page_requests: RefCell::default(),
+            mount_counts: RefCell::default(),
             focuses: Rc::default(),
             geometry: Rc::default(),
         })
@@ -81,7 +97,7 @@ fn fixture(data: Rc<Observation>) -> Element {
         selected: BTreeSet::from(["r1".into(), "r5".into()]),
         ..Default::default()
     });
-    let settings = use_signal(|| data.initial.clone());
+    let mut settings = use_signal(|| data.initial.clone());
     data.rows.set(Some(rows));
     data.state.set(Some(state));
     data.settings.set(Some(settings));
@@ -112,11 +128,31 @@ fn fixture(data: Rc<Observation>) -> Element {
             state.set(next);
         }
     });
+    let page_owner = data.clone();
+    let onstatechange = move |mut next: DataGridState| {
+        if next.pagination != state.peek().pagination {
+            if let Some(page) = next.pagination {
+                page_owner.page_requests.borrow_mut().push(page);
+            }
+            match page_owner.page_reply.get() {
+                PageReply::Accept => {}
+                PageReply::Hold => return,
+                PageReply::Alter => {
+                    next.pagination = Some(crate::DataGridPagination::new(2, 2));
+                }
+                PageReply::Loading => {
+                    settings.write().loading = true;
+                    return;
+                }
+            }
+        }
+        state.set(next);
+    };
     rsx! {input {id:String::from("outside-row-move"),onfocus:move |_|{}}
         if current.mounted {DataGrid {columns:columns(),rows:supplied,state:accepted,label:"Movable equipment",
             row_model:if current.host {DataGridRowModel::Page{total_rows:total}}else{DataGridRowModel::Client},
-            page_loading:current.loading,onpagerowmove:current.enabled.then_some(onmove),
-            onstatechange:move|next|state.set(next),oncellvaluechanged:move|change:DataGridCellValueChanged|{assert!(change.apply_to(&mut rows.write()));},
+            page_loading:current.loading,onpagerowmove:current.enabled.then_some(onmove),row_drag_across_pages:current.across,
+            onstatechange,oncellvaluechanged:move|change:DataGridCellValueChanged|{assert!(change.apply_to(&mut rows.write()));},
             render_cell:move|cell:DataGridCellContext|Some(DataGridCellRender::display(rsx!{span {"data-page-cell":format!("{}:{}",cell.row.id,cell.column.id),"{cell.value}"}})),
         }}
     }
@@ -420,6 +456,12 @@ impl Harness {
                     .or_else(|| attrs.get("id"))
                     .cloned()
                     .unwrap_or_default();
+                *self
+                    .data
+                    .mount_counts
+                    .borrow_mut()
+                    .entry(label.clone())
+                    .or_default() += 1;
                 self.event(
                     "mounted",
                     id,
@@ -729,3 +771,6 @@ fn held_or_delayed_move_acceptance_does_not_revive_handle_focus() {
         assert_eq!(h.order(), ["r0", "r2", "r1", "r3", "r4", "r5"]);
     }
 }
+
+#[path = "page_drag_tests.rs"]
+mod page_drag_tests;

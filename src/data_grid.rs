@@ -204,12 +204,30 @@ struct GridPageMoveOrigin {
 struct GridRowDrag {
     id: String,
     page: Option<GridPageMoveOrigin>,
+    across: Option<GridDragPages>,
+    dropping: bool,
+}
+#[derive(Clone)]
+struct GridDragPages {
+    origin: Rc<GridPageMoveOrigin>,
+    model: DataGridRowModel,
+    column: String,
+    accepted: crate::DataGridPagination,
+    requested: Option<crate::DataGridPagination>,
+    attempted: Option<(usize, bool)>,
 }
 #[derive(Clone)]
 struct GridPageMoveInput {
     origin: GridPageMoveOrigin,
     to_index: usize,
     target: Option<(DataGridRow, usize)>,
+    drag: Option<Rc<GridPageMoveOrigin>>,
+}
+#[derive(Clone)]
+struct GridDragDrop {
+    origin: Rc<GridPageMoveOrigin>,
+    target: DataGridRow,
+    after: bool,
 }
 fn page_row_position(
     model: DataGridRowModel,
@@ -243,6 +261,69 @@ fn page_move_origin(
         from_index: page_row_position(model, state, rows, id)?,
         total_rows,
     })
+}
+fn drag_page_origin(
+    model: DataGridRowModel,
+    state: &DataGridState,
+    columns: &[DataGridColumn],
+    rows: &[DataGridRow],
+    id: &str,
+) -> Option<GridPageMoveOrigin> {
+    state.pagination?;
+    if model != DataGridRowModel::Client {
+        return page_move_origin(model, state, columns, rows, id);
+    }
+    let ordered = state.visible_rows_with_columns(rows, columns);
+    let from_index = ordered.iter().position(|row| row.id == id)?;
+    Some(GridPageMoveOrigin {
+        query: GridPageQuery::new(state, columns),
+        pagination: state.pagination,
+        source: (*ordered[from_index]).clone(),
+        from_index,
+        total_rows: ordered.len(),
+    })
+}
+fn drag_origin_current(
+    origin: &GridPageMoveOrigin,
+    model: DataGridRowModel,
+    state: &DataGridState,
+    columns: &[DataGridColumn],
+    rows: &[DataGridRow],
+) -> bool {
+    if !state.can_reorder()
+        || GridPageQuery::new(state, columns) != origin.query
+        || state.pagination.map(|page| page.page_size.max(1))
+            != origin.pagination.map(|page| page.page_size.max(1))
+    {
+        return false;
+    }
+    match model {
+        DataGridRowModel::Client => {
+            let ordered = state.visible_rows_with_columns(rows, columns);
+            ordered.len() == origin.total_rows
+                && ordered
+                    .get(origin.from_index)
+                    .is_some_and(|row| **row == origin.source)
+        }
+        DataGridRowModel::Page { total_rows } => {
+            total_rows == origin.total_rows
+                && rows
+                    .iter()
+                    .find(|row| row.id == origin.source.id)
+                    .is_none_or(|row| row == &origin.source)
+        }
+    }
+}
+fn grid_drag_page(state: &DataGridState, total_rows: usize) -> Option<crate::DataGridPagination> {
+    state.pagination.map(|_| {
+        let page = state.pagination_info(total_rows);
+        crate::DataGridPagination::new(page.page, page.page_size)
+    })
+}
+fn owns_page_drag(drag: &GridRowDrag, origin: &Rc<GridPageMoveOrigin>) -> bool {
+    drag.across
+        .as_ref()
+        .is_some_and(|pages| Rc::ptr_eq(&pages.origin, origin))
 }
 fn row_drop_index(from: usize, target: usize, after: bool) -> Option<usize> {
     let insertion = target.checked_add(usize::from(after))?;
@@ -1624,6 +1705,13 @@ pub fn DataGrid(
     /// Ordinary Tab and editing Tab retain their own policy.
     #[props(default)]
     navigate_across_pages: bool,
+    /// While a native row drag is active, holding near the scroll surface's
+    /// top/bottom edge requests an adjacent controlled page. The original drag
+    /// handle stays mounted until drop/cancel. Unsorted, unfiltered, ungrouped
+    /// client pages and host pages with `onpagerowmove` are supported. The host
+    /// owns fetching, query freshness and atomic page/row acceptance.
+    #[props(default)]
+    row_drag_across_pages: bool,
     /// Host-owned page loading. Paging/editing and automatic sizing pause while
     /// true. Compatible cross-page edits wait for an accepted response; changed
     /// query or independent interaction retires the intent. No fetch is started.
@@ -1691,8 +1779,10 @@ pub fn DataGrid(
     use_context_provider(|| GridLoadingContext(loading));
     let mut editing = use_signal(|| None::<GridEditSession>);
     let mut pending_page_action = use_signal(|| None::<GridPageAction>);
-    let dragging = use_signal(|| None::<GridRowDrag>);
-    let drop_target = use_signal(|| None::<String>);
+    let mut dragging = use_signal(|| None::<GridRowDrag>);
+    let mut drag_pointer = use_signal(|| None::<(f64, f64)>);
+    let mut drag_edge = use_signal(|| None::<bool>);
+    let mut drop_target = use_signal(|| None::<String>);
     let column_dragging = use_signal(|| None::<String>);
     let column_drop_target = use_signal(|| None::<String>);
     let mut resizing = use_signal(|| None::<ResizeSession>);
@@ -1797,6 +1887,7 @@ pub fn DataGrid(
             || page_loading
             || grouping_error.is_some()
             || editing.peek().is_some()
+            || dragging.peek().is_some()
             || pending_page_action.peek().is_some()
             || (navigate_across_pages && focus_context.state.peek().pending.is_some())
         {
@@ -1834,6 +1925,7 @@ pub fn DataGrid(
         onstatechange.call(next);
     });
     let edit_active = editing().is_some()
+        || dragging().is_some()
         || pending_page_action().is_some()
         || page_loading
         || (navigate_across_pages && focus_context.state.read().pending.is_some());
@@ -1911,20 +2003,35 @@ pub fn DataGrid(
         let Some(callback) = onpagerowmove else {
             return;
         };
+        let cross_drag = input.drag.as_ref().is_some_and(|origin| {
+            row_drag_across_pages
+                && dragging.peek().as_ref().is_some_and(|drag| {
+                    drag.dropping
+                        && owns_page_drag(drag, origin)
+                        && drag.across.as_ref().is_some_and(|pages| {
+                            pages.requested.is_none()
+                                && Some(pages.accepted)
+                                    == grid_drag_page(&move_state, origin.total_rows)
+                        })
+                })
+                && drag_origin_current(origin, row_model, &move_state, &move_columns, &move_rows)
+        });
         if *loading.peek()
             || editing.peek().is_some()
+            || (input.drag.is_some() && !cross_drag)
             || !move_state.can_reorder()
             || row_model
                 != (DataGridRowModel::Page {
                     total_rows: input.origin.total_rows,
                 })
-            || move_state.pagination != input.origin.pagination
+            || (!cross_drag && move_state.pagination != input.origin.pagination)
             || GridPageQuery::new(&move_state, &move_columns) != input.origin.query
             || input.to_index >= input.origin.total_rows
             || input.to_index == input.origin.from_index
-            || page_row_position(row_model, &move_state, &move_rows, &input.origin.source.id)
-                != Some(input.origin.from_index)
-            || !move_rows.iter().any(|row| row == &input.origin.source)
+            || (!cross_drag
+                && (page_row_position(row_model, &move_state, &move_rows, &input.origin.source.id)
+                    != Some(input.origin.from_index)
+                    || !move_rows.iter().any(|row| row == &input.origin.source)))
             || input.target.as_ref().is_some_and(|(row, index)| {
                 page_row_position(row_model, &move_state, &move_rows, &row.id) != Some(*index)
                     || !move_rows.iter().any(|current| current == row)
@@ -1979,6 +2086,232 @@ pub fn DataGrid(
                 && !page_loading
                 && editing().is_none()
                 && state.pagination.is_some()));
+    let drag_state = state.clone();
+    let drag_columns = columns.clone();
+    let drag_rows = Rc::new(rows.clone());
+    let complete_page_drag = use_callback(move |drop: GridDragDrop| {
+        if !row_drag_across_pages
+            || *loading.peek()
+            || editing.peek().is_some()
+            || !dragging.peek().as_ref().is_some_and(|drag| {
+                drag.dropping
+                    && owns_page_drag(drag, &drop.origin)
+                    && drag.across.as_ref().is_some_and(|pages| {
+                        pages.requested.is_none()
+                            && Some(pages.accepted)
+                                == grid_drag_page(&drag_state, drop.origin.total_rows)
+                    })
+            })
+            || !drag_origin_current(
+                &drop.origin,
+                row_model,
+                &drag_state,
+                &drag_columns,
+                &drag_rows,
+            )
+        {
+            return;
+        }
+        let target_index = if row_model == DataGridRowModel::Client {
+            let full = drag_state.visible_rows_with_columns(&drag_rows, &drag_columns);
+            full.iter()
+                .position(|row| **row == drop.target)
+                .filter(|index| drag_state.pagination_info(full.len()).range.contains(index))
+        } else {
+            drag_rows
+                .iter()
+                .any(|row| row == &drop.target)
+                .then(|| page_row_position(row_model, &drag_state, &drag_rows, &drop.target.id))
+                .flatten()
+        };
+        let Some(target_index) = target_index else {
+            return;
+        };
+        let Some(to_index) = row_drop_index(drop.origin.from_index, target_index, drop.after)
+        else {
+            return;
+        };
+        if row_model == DataGridRowModel::Client {
+            let mut next = drag_state.clone();
+            if next.move_row(
+                &drag_rows,
+                &drop.origin.source.id,
+                &drop.target.id,
+                drop.after,
+            ) {
+                onstatechange.call(next);
+            }
+        } else {
+            request_page_move.call(GridPageMoveInput {
+                origin: (*drop.origin).clone(),
+                to_index,
+                target: Some((drop.target, target_index)),
+                drag: Some(drop.origin),
+            });
+        }
+    });
+    let page_drag_enabled =
+        row_drag_across_pages && (row_model == DataGridRowModel::Client || onpagerowmove.is_some());
+    let drag_query = GridPageQuery::new(&state, &columns);
+    let drag_source_current = dragging
+        .peek()
+        .as_ref()
+        .and_then(|drag| drag.across.as_ref())
+        .is_none_or(|pages| drag_origin_current(&pages.origin, row_model, &state, &columns, &rows));
+    let accepted_drag_page = state
+        .pagination
+        .map(|_| crate::DataGridPagination::new(page.page, page.page_size));
+    use_effect(use_reactive!(
+        |page_drag_enabled,
+         row_model,
+         page_loading,
+         drag_query,
+         drag_source_current,
+         accepted_drag_page| {
+            let active = dragging();
+            let Some(mut active) = active else {
+                return;
+            };
+            let Some(pages) = active.across.as_mut() else {
+                return;
+            };
+            let compatible = page_drag_enabled
+                && pages.model == row_model
+                && drag_source_current
+                && drag_query == pages.origin.query
+                && editing().is_none()
+                && accepted_drag_page
+                    .is_some_and(|page| page.page_size == pages.accepted.page_size);
+            if !compatible {
+                dragging.set(None);
+                drop_target.set(None);
+                return;
+            }
+            if let Some(requested) = pages.requested {
+                if page_loading
+                    && (accepted_drag_page == Some(pages.accepted)
+                        || accepted_drag_page == Some(requested))
+                {
+                    return;
+                }
+                if accepted_drag_page == Some(requested) {
+                    pages.accepted = requested;
+                    pages.requested = None;
+                    dragging.set(Some(active));
+                } else {
+                    // A declined or altered controlled request ends this native
+                    // drag; a later response cannot resurrect its ownership.
+                    dragging.set(None);
+                    drop_target.set(None);
+                }
+            } else if page_loading || accepted_drag_page != Some(pages.accepted) {
+                dragging.set(None);
+                drop_target.set(None);
+            }
+        }
+    ));
+    let advance_state = state.clone();
+    let advance_columns = columns.clone();
+    let advance_rows = rows.clone();
+    let advance_drag_page = use_callback(
+        move |(origin, expected, backwards): (
+            Rc<GridPageMoveOrigin>,
+            crate::DataGridPagination,
+            bool,
+        )| {
+            let Some(mut active) = dragging.peek().clone() else {
+                return;
+            };
+            let Some(pages) = active.across.as_mut() else {
+                return;
+            };
+            if !row_drag_across_pages
+                || *loading.peek()
+                || editing.peek().is_some()
+                || active.dropping
+                || !Rc::ptr_eq(&pages.origin, &origin)
+                || pages.accepted != expected
+                || pages.requested.is_some()
+                || pages.attempted == Some((expected.page, backwards))
+                || grid_drag_page(&advance_state, origin.total_rows) != Some(expected)
+                || !drag_origin_current(
+                    &origin,
+                    row_model,
+                    &advance_state,
+                    &advance_columns,
+                    &advance_rows,
+                )
+            {
+                return;
+            }
+            let info = expected.info(origin.total_rows);
+            let Some(next_page) = adjacent_grid_page(info.page, backwards, info.page_count) else {
+                return;
+            };
+            let requested = crate::DataGridPagination::new(next_page, info.page_size);
+            pages.requested = Some(requested);
+            pages.attempted = Some((expected.page, backwards));
+            dragging.set(Some(active));
+            drop_target.set(None);
+            let mut next = advance_state.clone();
+            next.pagination = Some(requested);
+            onstatechange.call(next);
+        },
+    );
+    // One scope-owned resource cancels obsolete geometry/dwell work when the
+    // native drag, pointer edge or mounted scroll surface changes.
+    let _edge_advance = use_resource(move || async move {
+        let active = dragging();
+        let pointer = drag_pointer();
+        let root = mounted_root();
+        let busy = loading();
+        if active.is_none() && pointer.is_some() {
+            drag_pointer.set(None);
+        }
+        let job = active
+            .and_then(|drag| (!drag.dropping).then_some(drag.across).flatten())
+            .filter(|pages| pages.requested.is_none() && !busy);
+        let mut edge = None;
+        if let (Some(pages), Some((x, y)), Some(root)) = (job, pointer, root) {
+            if let Ok(rect) = root.get_client_rect().await {
+                let top = rect.origin.y + 48.0;
+                let bottom = rect.origin.y + rect.size.height;
+                if x >= rect.origin.x
+                    && x <= rect.origin.x + rect.size.width
+                    && y >= top
+                    && y <= bottom
+                {
+                    edge = if y <= top + 28.0 {
+                        Some(true)
+                    } else if y >= bottom - 28.0 {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                }
+                if *drag_edge.peek() != edge {
+                    drag_edge.set(edge);
+                }
+                if let Some(backwards) = edge {
+                    if pages.attempted != Some((pages.accepted.page, backwards))
+                        && adjacent_grid_page(
+                            pages.accepted.page,
+                            backwards,
+                            pages.accepted.info(pages.origin.total_rows).page_count,
+                        )
+                        .is_some()
+                    {
+                        futures_timer::Delay::new(std::time::Duration::from_millis(450)).await;
+                        advance_drag_page.call((pages.origin, pages.accepted, backwards));
+                    }
+                }
+                return;
+            }
+        }
+        if drag_edge.peek().is_some() {
+            drag_edge.set(None);
+        }
+    });
     let visible_count = visible.len();
     let slot_count = slots.len();
     let groups: Vec<_> = slots
@@ -2057,12 +2390,30 @@ pub fn DataGrid(
             keep_slots.push(index);
         }
     }
+    if let Some(index) = dragging
+        .read()
+        .as_ref()
+        .and_then(|drag| visible.iter().position(|row| row.id == drag.id))
+        .and_then(|index| record_slots.get(index).copied())
+    {
+        keep_slots.push(index);
+    }
     for index in keep_slots {
         if !rendered.contains(&index) {
             rendered.push(index);
         }
     }
     rendered.sort_unstable();
+    let retained_drag = dragging
+        .read()
+        .as_ref()
+        .and_then(|drag| drag.across.as_ref())
+        .filter(|pages| !visible.iter().any(|row| row.id == pages.origin.source.id))
+        .map(|pages| (pages.origin.source.clone(), pages.origin.from_index));
+    let mut rendered: Vec<Option<usize>> = rendered.into_iter().map(Some).collect();
+    if retained_drag.is_some() {
+        rendered.push(None);
+    }
     let callback_rows = Rc::new(rows.clone());
     let record_state = Rc::new(state.clone());
     let keyboard_rows = visible.clone();
@@ -3228,6 +3579,14 @@ pub fn DataGrid(
     if let Some(session) = editing() {
         keep.insert(session.column);
     }
+    if let Some(column) = dragging
+        .read()
+        .as_ref()
+        .and_then(|drag| drag.across.as_ref())
+        .map(|pages| pages.column.clone())
+    {
+        keep.insert(column);
+    }
     if let Some(session) = resizing.read().as_ref() {
         keep.insert(session.column.id.clone());
     }
@@ -3265,6 +3624,28 @@ pub fn DataGrid(
     let size_state = state.clone();
     let pagination_label = format!("{label} pages");
     let capacity_label = pagination_labels.items.clone();
+    // Yield the keyed row VNodes directly. An RSX for-body containing a raw
+    // match adds a keyless boundary on this Dioxus pin and replaces the native
+    // source when its page/position changes.
+    let rendered_rows: Vec<Element> = rendered.into_iter().map(|slot_index| {
+                        match slot_index.map(|index|&slots[index]) {
+                            Some(GroupSlot::Group {path,count,aria_index,range}) => rsx! { GridGroupRecord {key:"group:{path.key()}",path:path.clone(),count:host_group_metadata.get(path).map_or(*count,|group|group.count),host_selected_count:host_group_metadata.get(path).map(|group|group.selected_count),onpagegroupselect,index:slot_index.unwrap(),aria_index:*aria_index,row_height,members:full_visible[range.clone()].iter().map(|row|row.id.clone()).collect::<Vec<_>>(),rows:callback_rows.clone(),columns:columns.clone(),state:record_state.clone(),onstatechange,focused,onnavigate:navigate_group,editing,edit_action} },
+                            record => {
+                                let (record,index,logical,aria,retained)=if let Some(GroupSlot::Record {row,aria_index})=record {
+                                    let index=record_slots.iter().position(|slot|Some(*slot)==slot_index).expect("record slot");
+                                    (visible[index].clone(),index,if row_model==DataGridRowModel::Client {*row} else {page.range.start.saturating_add(*row)},*aria_index,false)
+                                } else {
+                                    let (row,logical)=retained_drag.as_ref().expect("retained native drag source");
+                                    (row.clone(),0,*logical,logical.saturating_add(2),true)
+                                };
+                                rsx! { GridRecord { key: "row:{record.id.len()}:{record.id}", row: record, row_label_column: row_label_column.clone(), columns: columns.clone(), column_indices:column_indices.clone(), rows: callback_rows.clone(), state: record_state.clone(),
+                                    onstatechange, row_model, page_move, dragging, drop_target, tooltip_delay_ms, index, retained,
+                                    row_drag_across_pages:page_drag_enabled, complete_page_drag,
+                                    visual_index:grouped.then_some(slot_index.unwrap_or(0)),logical_index:grouped.then_some(logical),aria_index:grouped.then_some(aria),level:grouped.then_some(state.grouping.columns().len()+1),page_offset:page.range.start, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: !retained && if grouped {index==0} else {index==window.start}, total: visible_count, editing, edit_action, read_only:read_only || retained, render_cell, render_editor,
+                                } }
+                            }
+                        }
+    }).collect();
     rsx! {
         div { id: grid_id, class: "ix-data-grid {class}", "data-row-model": matches!(row_model, DataGridRowModel::Page { .. }).then_some("page"), "data-striped": striped.to_string(), "data-paginated":state.pagination.is_some().then_some("true"), "data-virtualized": (!suppress_row_virtualisation).to_string(), "data-column-virtualized": (!suppress_column_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
             onpointerdown: move |_| {
@@ -3279,7 +3660,8 @@ pub fn DataGrid(
             },
             onkeydown: move |event: KeyboardEvent| {
                 if pending_page_action.peek().is_some() { pending_page_action.set(None); }
-                focus_context.cancel(); if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); } },
+                focus_context.cancel(); if event.key() == Key::Escape && dragging.peek().is_some() { dragging.set(None); drop_target.set(None); drag_pointer.set(None); }
+                if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); } },
             // The fixed resize overlay can become the native click target. Delegate
             // its double-click by hit-testing separators at the actual click point.
             ondoubleclick: move |event: MouseEvent| {
@@ -3289,6 +3671,21 @@ pub fn DataGrid(
                 p {class:"ix-data-grid-pagination-hint",role:"status","Loading page..."}
             }
             div { id: scroll_id, class: "ix-data-grid-scroll", role: if grouped {"treegrid"} else {"grid"}, "aria-label": label, "aria-rowcount": aria_rows.saturating_add(1), "aria-colcount": if grouped {columns.len().max(1)+1} else {columns.len()+1}, "aria-multiselectable": "true", "aria-busy": page_loading.then_some("true"),
+                "data-row-drag-source": dragging.read().as_ref().filter(|drag|drag.across.is_some()).map(|drag|drag.id.clone()),
+                "data-row-drag-edge": drag_edge().map(|backwards|if backwards {"previous"} else {"next"}),
+                ondragover: move |event:DragEvent| {
+                    if dragging.peek().as_ref().is_some_and(|drag|drag.across.is_some() && !drag.dropping) {
+                        event.prevent_default(); event.data_transfer().set_drop_effect("move");
+                        let point=event.client_coordinates(); let point=Some((point.x,point.y));
+                        if *drag_pointer.peek()!=point {drag_pointer.set(point);}
+                    }
+                },
+                ondragleave:move |event:DragEvent| {
+                    if dragging.peek().as_ref().is_some_and(|drag|drag.across.is_some()) {
+                        let point=event.client_coordinates(); let point=Some((point.x,point.y));
+                        if *drag_pointer.peek()!=point {drag_pointer.set(point);}
+                    }
+                },
                 onmounted: move |event| {
                     let node = event.data();
                     focus_context.root.set(Some(node.clone()));
@@ -3325,17 +3722,7 @@ pub fn DataGrid(
                     }
                 }
                 div { class: "ix-data-grid-body", role: "rowgroup", style: "height:{slot_count as u64 * u64::from(row_height)}px",
-                    for slot_index in rendered {
-                        match &slots[slot_index] {
-                            GroupSlot::Group {path,count,aria_index,range} => rsx! { GridGroupRecord {key:"group:{path.key()}",path:path.clone(),count:host_group_metadata.get(path).map_or(*count,|group|group.count),host_selected_count:host_group_metadata.get(path).map(|group|group.selected_count),onpagegroupselect,index:slot_index,aria_index:*aria_index,row_height,members:full_visible[range.clone()].iter().map(|row|row.id.clone()).collect::<Vec<_>>(),rows:callback_rows.clone(),columns:columns.clone(),state:record_state.clone(),onstatechange,focused,onnavigate:navigate_group,editing,edit_action} },
-                            GroupSlot::Record {row,aria_index} => {
-                                let index=record_slots.iter().position(|slot|*slot==slot_index).expect("record slot");
-                                rsx! { GridRecord { key: "row:{visible[index].id.len()}:{visible[index].id}", row: visible[index].clone(), row_label_column: row_label_column.clone(), columns: columns.clone(), column_indices:column_indices.clone(), rows: callback_rows.clone(), state: record_state.clone(),
-                                    onstatechange, row_model, page_move, dragging, drop_target, tooltip_delay_ms, index, visual_index:grouped.then_some(slot_index),logical_index:grouped.then_some(if row_model==DataGridRowModel::Client {*row} else {page.range.start.saturating_add(*row)}),aria_index:grouped.then_some(*aria_index),level:grouped.then_some(state.grouping.columns().len()+1),page_offset:page.range.start, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: if grouped {index==0} else {index==window.start}, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
-                                } }
-                            }
-                        }
-                    }
+                    {rendered_rows.into_iter()}
                 }
                 if slot_count == 0 { div { class: "ix-data-grid-empty", role: "status", if let Some(error)=grouping_error {"{error}"} else if missing_host_pagination { "Host-paged rows require pagination." } else { "No Rows To Show" } } }
             }
@@ -3837,6 +4224,9 @@ fn GridRecord(
     onstatechange: EventHandler<DataGridState>,
     #[props(default)] row_model: DataGridRowModel,
     #[props(default)] page_move: Option<Callback<GridPageMoveInput>>,
+    #[props(default)] row_drag_across_pages: bool,
+    #[props(default)] retained: bool,
+    complete_page_drag: Callback<GridDragDrop>,
     mut dragging: Signal<Option<GridRowDrag>>,
     mut drop_target: Signal<Option<String>>,
     tooltip_delay_ms: u32,
@@ -3878,7 +4268,8 @@ fn GridRecord(
     let over_id = row.id.clone();
     let loading = try_use_context::<GridLoadingContext>().map(|context| context.0);
     let host_busy = loading.is_some_and(|loading| loading()) || editing.read().is_some();
-    let can_reorder = state.can_reorder()
+    let can_reorder = !retained
+        && state.can_reorder()
         && (row_model == DataGridRowModel::Client
             || (page_move.is_some() && !host_busy && state.pagination.is_some()));
     let is_target = drop_target.read().as_deref() == Some(row.id.as_str());
@@ -3895,8 +4286,19 @@ fn GridRecord(
     let last_column = columns.last().map(|column| column.id.clone());
     let logical_index = logical_index.unwrap_or(index.saturating_add(page_offset));
     let visual_index = visual_index.unwrap_or(index);
+    let position = if retained {
+        String::from("top:-10000px;opacity:0;pointer-events:none")
+    } else {
+        // Pinned Dioxus preserves omitted inline style properties. Explicitly
+        // restore this same native row when it returns from retained position.
+        format!(
+            "top:{}px;opacity:1;pointer-events:auto",
+            visual_index as u64 * u64::from(row_height)
+        )
+    };
     rsx! { div { class: "ix-data-grid-row", role: "row", "data-row-id": row.id.clone(), "data-odd": (logical_index % 2 == 1).to_string(),
-        style: "top:{visual_index as u64 * u64::from(row_height)}px", "aria-level":level,
+        "data-drag-source-retained":retained.then_some("true"),aria_hidden:retained.then_some("true"),
+        style:position, "aria-level":level,
         "data-selected": selected.to_string(), "data-drop-target": is_target.to_string(), "aria-rowindex": aria_index.unwrap_or(index.saturating_add(page_offset).saturating_add(2)), "aria-selected": selected.to_string(),
         onmounted: move |event| mounted.set(Some(event.data())),
         onkeydown: move |event: KeyboardEvent| {
@@ -3913,20 +4315,32 @@ fn GridRecord(
         },
         ondragover: move |event: DragEvent| { if can_reorder && dragging.peek().is_some() { event.prevent_default(); event.data_transfer().set_drop_effect("move"); drop_target.set(Some(over_id.clone())); } },
         ondrop: move |event: DragEvent| {
-            if can_reorder { event.prevent_default(); let moving = dragging.peek().clone(); let node = mounted.peek().clone(); let y = event.client_coordinates().y;
+            if can_reorder && !host_busy { event.prevent_default(); let moving = dragging.peek().clone(); let node = mounted.peek().clone(); let y = event.client_coordinates().y;
+                let cross=moving.as_ref().and_then(|drag|drag.across.as_ref()).map(|pages|pages.origin.clone());
+                if cross.is_some() { if let Some(active)=dragging.write().as_mut() {active.dropping=true;} }
                 let mut next = drop_state.as_ref().clone(); let rows = drop_rows.clone(); let target = drop_id.clone();
                 spawn(async move { if let (Some(moving), Some(node)) = (moving, node) { if let Ok(rect) = node.get_client_rect().await {
                     let after=y > rect.origin.y + rect.size.height / 2.0;
-                    if let Some(origin)=moving.page {
+                    if let Some(pages)=moving.across {
+                        if mounted.try_peek().is_ok_and(|current|current.as_ref().is_some_and(|current|Rc::ptr_eq(current,&node))) {
+                            if let Some(target)=rows.iter().find(|row|row.id==target).cloned() {
+                                complete_page_drag.call(GridDragDrop {origin:pages.origin,target,after});
+                            }
+                        }
+                    } else if let Some(origin)=moving.page {
                         if mounted.try_peek().is_ok_and(|current|current.as_ref().is_some_and(|current|Rc::ptr_eq(current,&node))) {
                             if let Some((target_row,target_index))=rows.iter().find(|row|row.id==target).cloned().zip(page_row_position(row_model,&next,&rows,&target)) {
                                 if let Some(to_index)=row_drop_index(origin.from_index,target_index,after) {
-                                    if let Some(callback)=page_move {callback.call(GridPageMoveInput {origin,to_index,target:Some((target_row,target_index))});}
+                                    if let Some(callback)=page_move {callback.call(GridPageMoveInput {origin,to_index,target:Some((target_row,target_index)),drag:None});}
                                 }
                             }
                         }
                     } else if row_model==DataGridRowModel::Client && next.move_row(&rows, &moving.id, &target, after) { onstatechange.call(next); }
-                } } dragging.set(None); drop_target.set(None); });
+                } }
+                if cross.as_ref().is_none_or(|origin|dragging.try_peek().is_ok_and(|current|current.as_ref().is_some_and(|drag|owns_page_drag(drag,origin)))) {
+                    dragging.set(None); drop_target.set(None);
+                }
+                });
             }
         },
         div { class: "ix-data-grid-selection", role: "gridcell", style:"grid-column:1", "aria-colindex":1, GridCheckbox { label: format!("Select {row_label}"), checked: selected,
@@ -3937,7 +4351,7 @@ fn GridRecord(
         for (column_index, column) in column_indices.into_iter().map(|index|(index,columns[index].clone())) {
             GridCell { key: "{column.id}", text: row.value(&column.id).to_string(), tooltip: row.tooltips.get(&column.id).cloned().unwrap_or_else(|| row.value(&column.id).to_string()),
                 column: column.clone(), column_index, columns: cell_columns.clone(), row_id: row.id.clone(), row_label: row_label.clone(), rows: rows.clone(), state: state.clone(),
-                onstatechange, row_model, page_move, dragging, drop_target, tooltip_delay_ms, focused, suppress_cell_focus, entry_cell: entry_row && column_index == 0, editing, edit_action, editable: editable_cell(&row,&column,read_only),
+                onstatechange, row_model, page_move, row_drag_across_pages, retained, dragging, drop_target, tooltip_delay_ms, focused, suppress_cell_focus, entry_cell: entry_row && column_index == 0, editing, edit_action, editable: editable_cell(&row,&column,read_only),
                 render_cell, render_editor,
                 render_context: (render_cell.is_some() || render_editor.is_some()).then(|| DataGridCellContext {
                     row: row.clone(), column: column.clone(), value: row.value(&column.id).to_string(),
@@ -3963,6 +4377,8 @@ fn GridCell(
     onstatechange: EventHandler<DataGridState>,
     #[props(default)] row_model: DataGridRowModel,
     #[props(default)] page_move: Option<Callback<GridPageMoveInput>>,
+    #[props(default)] row_drag_across_pages: bool,
+    #[props(default)] retained: bool,
     mut dragging: Signal<Option<GridRowDrag>>,
     mut drop_target: Signal<Option<String>>,
     tooltip_delay_ms: u32,
@@ -4008,12 +4424,19 @@ fn GridCell(
     let drag_state = state.clone();
     let drag_rows = rows.clone();
     let drag_columns = columns.clone();
+    let drag_column_id = column.id.clone();
     let key_id = row_id.clone();
     let loading = try_use_context::<GridLoadingContext>().map(|context| context.0);
     let host_busy = loading.is_some_and(|loading| loading()) || editing.read().is_some();
     let can_reorder = state.can_reorder()
         && (row_model == DataGridRowModel::Client
             || (page_move.is_some() && !host_busy && state.pagination.is_some()));
+    let retained_handle = retained
+        && dragging
+            .read()
+            .as_ref()
+            .is_some_and(|drag| drag.id == row_id && drag.across.is_some());
+    let can_drag_handle = can_reorder || retained_handle;
     let focus_row = row_id.clone();
     let focus_column = column.id.clone();
     let drag_focus_row = row_id.clone();
@@ -4135,21 +4558,32 @@ fn GridCell(
             }
         },
         ..observations,
-        if column.row_drag { button { onmounted: drag_mount, class: "ix-data-grid-drag", r#type: "button", draggable: can_reorder.to_string(), disabled: !can_reorder,
+        if column.row_drag { button { onmounted: drag_mount, class: "ix-data-grid-drag", r#type: "button", draggable: can_drag_handle.to_string(), disabled: !can_drag_handle,tabindex:retained.then_some("-1"),
             onfocus: move |event: FocusEvent| { event.stop_propagation(); let focus = GridFocus {row:drag_focus_row.clone(),lane:GridLane::Drag(drag_focus_column.clone())}; focus_context.focused(Some(focus.clone())); focused.set(Some(focus)); },
             "aria-label": "Move {row_label}", title: if can_reorder { "Drag to move. Keyboard: Alt+Up or Alt+Down." } else if !state.grouping.columns.is_empty() { "Row movement is unavailable while grouping." } else if host_busy { "Save or cancel the edit and wait for the page before moving rows." } else if matches!(row_model, DataGridRowModel::Page { .. }) { "Row movement is controlled by the page owner." } else { "Row movement is unavailable while sorting or filtering." },
-            ondragstart: move |event: DragEvent| { if can_reorder { let transfer = event.data_transfer(); let _ = transfer.set_data("text/plain", &drag_id); transfer.set_effect_allowed("move");
+            ondragstart: move |event: DragEvent| { if can_reorder && !retained && !host_busy { let transfer = event.data_transfer(); let _ = transfer.set_data("text/plain", &drag_id); transfer.set_effect_allowed("move");
                 let page=page_move_origin(row_model,&drag_state,&drag_columns,&drag_rows,&drag_id);
-                dragging.set(Some(GridRowDrag {id:drag_id.clone(),page}));
+                let across=row_drag_across_pages.then(||drag_page_origin(row_model,&drag_state,&drag_columns,&drag_rows,&drag_id)).flatten()
+                    .and_then(|origin|grid_drag_page(&drag_state,origin.total_rows).map(|accepted|GridDragPages {
+                        origin:Rc::new(origin),model:row_model,column:drag_column_id.clone(),accepted,requested:None,attempted:None,
+                    }));
+                dragging.set(Some(GridRowDrag {id:drag_id.clone(),page,across,dropping:false}));
             } },
-            ondragend: move |_| { dragging.set(None); drop_target.set(None); },
+            ondragend: move |_| {
+                // Browser dragend follows a valid drop before asynchronous
+                // mounted geometry may answer. Only that claimed drop finishes;
+                // ordinary dragend cancels the native drag immediately.
+                if !dragging.peek().as_ref().is_some_and(|drag|drag.dropping) {
+                    dragging.set(None); drop_target.set(None);
+                }
+            },
             onkeydown: move |event: KeyboardEvent| {
                 if can_reorder && event.modifiers().alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
                     event.prevent_default(); event.stop_propagation();
                     if let Some(callback)=page_move {
                         if let Some(origin)=page_move_origin(row_model,&state,&columns,&rows,&key_id) {
                             let to_index=if event.key()==Key::ArrowDown {origin.from_index.checked_add(1).filter(|index|*index<origin.total_rows)} else {origin.from_index.checked_sub(1)};
-                            if let Some(to_index)=to_index {callback.call(GridPageMoveInput {origin,to_index,target:None});}
+                            if let Some(to_index)=to_index {callback.call(GridPageMoveInput {origin,to_index,target:None,drag:None});}
                         }
                         return;
                     }

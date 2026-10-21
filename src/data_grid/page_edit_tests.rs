@@ -333,6 +333,7 @@ dioxus::html::with_html_event_groups!(converter);
 pub(super) struct Targets {
     attrs: BTreeMap<usize, BTreeMap<String, String>>,
     mounted: Vec<dioxus::core::ElementId>,
+    mounted_targets: BTreeMap<(String, String), dioxus::core::ElementId>,
 }
 impl Targets {
     fn collect(&mut self, edits: dioxus::core::Mutations) {
@@ -372,7 +373,27 @@ impl Targets {
             }
         }
     }
+    pub(super) fn mounted_target(&self, label: &str) -> dioxus::core::ElementId {
+        // A keyed owner may retire and later return with a new native node.
+        // Historical attribute matches are not its current mounted control.
+        *self
+            .mounted_targets
+            .get(&(String::from("aria-label"), label.to_string()))
+            .unwrap_or_else(|| panic!("missing mounted control {label}"))
+    }
     pub(super) fn target(&self, name: &str, value: &str) -> dioxus::core::ElementId {
+        if let Some(id) = self
+            .mounted_targets
+            .get(&(name.to_string(), value.to_string()))
+            .filter(|id| {
+                self.attrs
+                    .get(&id.raw())
+                    .and_then(|attrs| attrs.get(name))
+                    .is_some_and(|actual| actual == value)
+            })
+        {
+            return *id;
+        }
         dioxus::core::ElementId::from_raw(
             *self
                 .attrs
@@ -404,6 +425,17 @@ pub(super) fn settle(dom: &mut VirtualDom, targets: &mut Targets, data: &Observa
                 .and_then(|attrs| attrs.get("aria-label").or_else(|| attrs.get("id")))
                 .cloned()
                 .unwrap_or_default();
+            for name in ["aria-label", "id"] {
+                if let Some(value) = targets
+                    .attrs
+                    .get(&id.raw())
+                    .and_then(|attrs| attrs.get(name))
+                {
+                    targets
+                        .mounted_targets
+                        .insert((name.to_string(), value.clone()), id);
+                }
+            }
             dispatch(
                 dom,
                 "mounted",
