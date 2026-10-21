@@ -191,9 +191,11 @@ fn TextFieldPresentation(
     show_text_as_tooltip: bool,
     max_length: Option<u32>,
     length: usize,
+    #[props(default)] onpresentationclick: EventHandler<MouseEvent>,
 ) -> Element {
     rsx! {
         div { class: "ix-text-field-wrapper",
+            onclick: onpresentationclick,
             role: invalid_alert.then_some("alert"), "aria-live": invalid_alert.then_some("polite"),
             if let Some(label) = label.filter(|text| !text.is_empty()) {
                 div { class: "ix-text-field-top",
@@ -2907,6 +2909,12 @@ pub fn Select(
                 feedback_id: help_id.clone(), required, state, invalid_alert,
                 feedback: if tooltip_available { None } else { visual_feedback.clone() },
                 show_text_as_tooltip: false, max_length: None, length: 0,
+                // Blur feedback in a preceding field can move the input between
+                // press and release. Its presentation remains the click target.
+                onpresentationclick: move |_| if focused() && !read_only {
+                    overflow_open.set(false);
+                    if !open() { active.set(usize::MAX); open.set(true); }
+                },
             div { id: control_id.clone(), class: "ix-select-control", "data-readonly": readonly.to_string(), "data-disabled": disabled.to_string(), "data-open": open().to_string(),
                 onmounted: move |event| { control_ref.set(Some(event.data())); control_revision += 1; tooltip_anchor.onmounted.call(event); },
                 onresize: move |event| { control_revision += 1; measure_layout.call(()); tooltip_anchor.onresize.call(event); },
@@ -2971,7 +2979,6 @@ pub fn Select(
                     "aria-describedby": describedby,
                     "aria-activedescendant": active_descendant,
                     onmounted: move |event| { let node = event.data(); *method_input.borrow_mut() = Some(node.clone()); trigger_ref.set(Some(node)); if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); },
-                    onclick: move |_| if !read_only { overflow_open.set(false); if !open() { active.set(usize::MAX); open.set(true); } },
                     oninput: move |event| if !read_only { let text = event.value(); query.set(text.clone()); query_dirty.set(true); active.set(usize::MAX); overflow_open.set(false); open.set(true); oninputchange.call(text); },
                     onfocus: move |_| focused.set(true),
                     onblur: move |_| {

@@ -149,6 +149,23 @@ await wait('saved descriptor focuses current input',()=>document.activeElement==
 for(const pressed of ['Home','End','ArrowLeft','ArrowRight']){if(key(input(),pressed).defaultPrevented)throw new Error('closed native editing key blocked '+pressed);}
 key(input(),'ArrowDown');await wait('ordinary opening',()=>input().getAttribute('aria-expanded')==='true');
 key(input(),'Enter');await wait('ordinary selection',()=>output().getAttribute('data-value')==='pump'&&input().getAttribute('aria-expanded')==='false');
+// Element.click() is synthetic and has no native focus default. Focus the
+// current input first; trusted Chromium separately proves real blur-retargeting.
+const wrapperClickState=()=>['data-value','data-query','data-changes'].map(name=>output().getAttribute(name));
+const beforeWrapperClick=wrapperClickState(),wrapperInput=input();outside.focus();
+await run(()=>byId('r0231-focus').click(),'controller','Ok');
+await wait('current input focused before synthetic wrapper click',()=>document.activeElement===wrapperInput);
+const fieldWrapper=wrapperInput.closest('.ix-text-field-wrapper');
+if(!fieldWrapper)throw new Error('current Select field wrapper missing');
+fieldWrapper.click();
+await wait('retargeted wrapper click opens current display',()=>input()===wrapperInput&&input().getAttribute('aria-expanded')==='true'&&document.activeElement===input()&&input().selectionStart===0&&input().selectionEnd===input().value.length);
+if(wrapperClickState().some((value,index)=>value!==beforeWrapperClick[index]))throw new Error('wrapper click changed value/query/events');
+const wrapperClickSelection={value:input().value,start:input().selectionStart,end:input().selectionEnd};
+const openInputRect=input().getBoundingClientRect();
+const openInputHit=document.elementFromPoint(openInputRect.x+openInputRect.width/2,openInputRect.y+openInputRect.height/2);
+if(openInputHit!==input()&&!input().contains(openInputHit))throw new Error('open Select input covered by '+openInputHit?.outerHTML);
+const openInputHitFacts={target:openInputHit.id||openInputHit.tagName,controlZIndex:getComputedStyle(input().closest('.ix-select-control')).zIndex};
+key(input(),'Escape');await wait('Escape closes after synthetic wrapper click',()=>input().getAttribute('aria-expanded')==='false');
 key(input(),'ArrowDown');await wait('reopen selects current display',()=>input().getAttribute('aria-expanded')==='true'&&document.activeElement===input()&&input().value.length>0&&input().selectionStart===0&&input().selectionEnd===input().value.length);
 const displaySelection={value:input().value,start:input().selectionStart,end:input().selectionEnd};
 key(input(),'Escape');await wait('Escape closes options',()=>input().getAttribute('aria-expanded')==='false');
@@ -183,5 +200,5 @@ key(outside,'F8');await wait('fresh remount',()=>input()&&input()!==old);
 await run(()=>byId('r0231-saved-focus').click(),'descriptor','NotMounted');
 if(document.activeElement!==outside)throw new Error('old descriptor retargeted fresh input');
 await run(()=>byId('r0231-focus').click(),'controller','Ok');await wait('current controller focuses fresh input',()=>document.activeElement===input());
-return {ok:true,controllerResultAndActualFocus:true,alreadyFocusedRepeat:true,savedDescriptorFocus:true,normalBlur:true,staleDescriptorNotMounted:true,noRetargetAfterRemount:true,newControllerFocus:true,ordinarySelection:true,escapeAndEditing:true,associatedFormMetadata:true,freshNoValidate:true,removedOwnerReturnsNone:true,formQueryHasNoInteractionSideEffects:true,displaySelection,dirtyQuerySelection};
+return {ok:true,controllerResultAndActualFocus:true,alreadyFocusedRepeat:true,savedDescriptorFocus:true,normalBlur:true,staleDescriptorNotMounted:true,noRetargetAfterRemount:true,newControllerFocus:true,ordinarySelection:true,escapeAndEditing:true,associatedFormMetadata:true,freshNoValidate:true,removedOwnerReturnsNone:true,formQueryHasNoInteractionSideEffects:true,displaySelection,dirtyQuerySelection,syntheticRetargetedWrapperClick:true,syntheticWrapperClickHasNoValueEvents:true,wrapperClickSelection,openInputHitFacts};
 "#;

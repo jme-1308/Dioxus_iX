@@ -498,3 +498,8 @@
 .ix-theme .ix-select.ix-select-visual[data-disabled=false][data-readonly=false].ix-field-invalid .ix-select-control { border-color: var(--ix-select--border-color--invalid); background-color: var(--ix-select--background--invalid); }
 .ix-theme .ix-select.ix-select-visual[data-disabled=false][data-readonly=false].ix-field-invalid .ix-select-control:hover { border-color: var(--ix-select--border-color--invalid--hover) !important; }
 .ix-theme .ix-select.ix-select-visual[data-disabled=false][data-readonly=false].ix-field-invalid .ix-select-control:active { border-color: var(--ix-select--border-color--invalid--active) !important; }
+
+/* Keep this Select's input and actions above its own dismissal backdrop. */
+.ix-theme .ix-select.ix-select-visual:has(> .ix-select-backdrop) .ix-select-control {
+  z-index: var(--ix-dropdown--z-index, var(--theme-z-index-dropdown, 91));
+}

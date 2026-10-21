@@ -1462,3 +1462,8 @@ mod select_mount_tests {
     use super::*;
     include!("select_mount_tests.rs");
 }
+
+mod select_press_tests {
+    use super::*;
+    include!("select_press_tests.rs");
+}
