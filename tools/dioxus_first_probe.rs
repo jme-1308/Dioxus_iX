@@ -138,6 +138,8 @@ mod header_tab_review;
 mod host_paged_grid_review;
 #[path = "dioxus_first_probe/icon_catalog_review.rs"]
 mod icon_catalog_review;
+#[path = "dioxus_first_probe/icon_tabs_review.rs"]
+mod icon_tabs_review;
 #[path = "dioxus_first_probe/inspection_groups_review.rs"]
 mod inspection_groups_review;
 #[path = "../examples/gallery/inspection_report.rs"]
@@ -574,6 +576,9 @@ fn Preview() -> Element {
     }
     if scope == "?chatmessages" {
         return rsx! { chat_messages_review::ChatMessagesPreview {} };
+    }
+    if scope == "?icontabs" {
+        return rsx! { icon_tabs_review::IconTabsPreview {} };
     }
     if scope == "?treeroots" {
         return rsx! { tree_roots_review::TreeRootsPreview {} };

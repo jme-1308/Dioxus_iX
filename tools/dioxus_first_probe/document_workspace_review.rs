@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 
 #[path = "../../examples/gallery/document_workspace.rs"]
-mod gallery_documents;
+pub(super) mod gallery_documents;
 
 #[component]
 pub fn DocumentWorkspacePreview() -> Element {

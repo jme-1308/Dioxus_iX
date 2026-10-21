@@ -58,6 +58,7 @@ pub fn DocumentWorkspaceExample() -> Element {
     let mut top = use_signal(|| false);
     let mut all_tabs = use_signal(|| false);
     let mut german = use_signal(|| false);
+    let mut icon_only = use_signal(|| false);
     let mut disable_reference = use_signal(|| false);
     let mut next_id = use_signal(|| 4_usize);
     let mut saves = use_signal(|| 0_usize);
@@ -170,6 +171,15 @@ pub fn DocumentWorkspaceExample() -> Element {
             let mut item = TabItem::new(&document.key, &document.title);
             item.closable = true;
             item.disabled = document.reference && disable_reference();
+            item.icon_only = icon_only();
+            item.icon = icon_only().then(|| {
+                (if document.reference {
+                    "info"
+                } else {
+                    "document"
+                })
+                .to_string()
+            });
             item
         })
         .collect();
@@ -204,6 +214,7 @@ pub fn DocumentWorkspaceExample() -> Element {
                     onclick: move |_| {
                         documents.set(initial_documents()); selected.set(Some("motor".into())); pending_close.set(None);
                         manual.set(false); top.set(false); all_tabs.set(false); german.set(false); disable_reference.set(false);
+                        icon_only.set(false);
                         next_id.set(4); saves.set(0); closes.set(0); additions.set(0); close_requests.set(0);
                         focus_request.set(None); fields.write().clear(); let next = epoch.peek().wrapping_add(1); epoch.set(next);
                     }, "Restore documents"
@@ -230,6 +241,7 @@ pub fn DocumentWorkspaceExample() -> Element {
             details { id: "documents-options", class: "documents-options",
                 summary { "Workspace options" }
                 div { class: "documents-option-fields",
+                    label { input { id: "documents-icon-only", r#type: "checkbox", checked: icon_only(), onchange: move |event: FormEvent| icon_only.set(event.checked()) } "Icon-only document tabs" }
                     label { input { id: "documents-manual", r#type: "checkbox", checked: manual(), onchange: move |event: FormEvent| manual.set(event.checked()) } "Manual tab activation" }
                     label { input { id: "documents-top", r#type: "checkbox", checked: top(), onchange: move |event: FormEvent| top.set(event.checked()) } "Top indicator" }
                     label { input { id: "documents-all-tabs", r#type: "checkbox", checked: all_tabs(), onchange: move |event: FormEvent| all_tabs.set(event.checked()) } "Always show all-documents menu" }

@@ -117,11 +117,17 @@ pub fn Content(
 }
 
 /// Stable-keyed tab definition for [`Tabs`].
+/// Use [`TabItem::new`] and struct update syntax to retain defaults when adding
+/// optional presentation such as `icon_only`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabItem {
     pub key: String,
     pub label: String,
     pub icon: Option<String>,
+    /// Hide visible text on ordinary tabs with a nonblank icon. Keep `label`
+    /// meaningful: it still names the tab, overflow entry and close action.
+    /// Rounded tabs retain their existing presentation.
+    pub icon_only: bool,
     pub disabled: bool,
     pub counter: Option<usize>,
     pub closable: bool,
@@ -133,6 +139,7 @@ impl TabItem {
             key: key.into(),
             label: label.into(),
             icon: None,
+            icon_only: false,
             disabled: false,
             counter: None,
             closable: false,
@@ -384,10 +391,10 @@ pub fn Tabs(
         div { class: "ix-tabs", "data-placement": placement.class(), role: "tablist", "aria-label": label, tabindex: if overflowing { 0 } else { -1 }, "data-small": small, "data-rounded": rounded, "data-stretched": stretched,
         onmounted: move |event| { strip.set(Some(event.data())); measure.call(()); },
         onresize: move |_| measure.call(()),
-        for (index, item) in items.iter().enumerate() {
+        for (index, item, icon_only) in items.iter().enumerate().map(|(index,item)| (index,item,!rounded && item.icon_only && item.icon.as_ref().is_some_and(|icon| !icon.trim().is_empty()))) {
             div { key: "{item.key}", class: "ix-tab-wrapper", "data-tab-key": item.key.clone(), "data-selected": active == Some(index),
                 onresize: move |_| measure.call(()),
-                button { class: "ix-tab", r#type: "button", role: "tab", disabled: item.disabled, "aria-label": if rounded { Some(item.label.clone()) } else { None }, title: if rounded { Some(item.label.clone()) } else { None }, "aria-selected": active == Some(index), tabindex: if active.or_else(|| items.iter().position(|item| !item.disabled)) == Some(index) { 0 } else { -1 },
+                button { class: "ix-tab", r#type: "button", role: "tab", disabled: item.disabled, "aria-label": if rounded || icon_only { Some(item.label.clone()) } else { None }, title: if rounded || icon_only { Some(item.label.clone()) } else { None }, "data-icon-only": icon_only.then_some(true), "aria-selected": active == Some(index), tabindex: if active.or_else(|| items.iter().position(|item| !item.disabled)) == Some(index) { 0 } else { -1 },
                     id: format!("{prefix}-tab-{}", crate::composition::tab_key_id(&item.key)),
                     "aria-controls": id_prefix.as_ref().map(|prefix| format!("{prefix}-panel-{}", crate::composition::tab_key_id(&item.key))),
                     onmounted: { let key = item.key.clone(); move |event| { mounted.write().insert(key.clone(), event.data()); } },
@@ -409,7 +416,7 @@ pub fn Tabs(
                         }
                     } },
                     if rounded { span { class: "ix-tab-rounded-circle", if let Some(icon) = &item.icon { Icon { name: icon.clone(), size: 32 } } else { "{item.label}" } } }
-                    else { if let Some(icon) = &item.icon { Icon { name: icon.clone() } } span { "{item.label}" } }
+                    else { if let Some(icon) = &item.icon { Icon { name: icon.clone() } } if !icon_only { span { "{item.label}" } } }
                     if let Some(counter) = item.counter { span { class: "ix-tab-counter", "{counter}" } }
                 }
                 if item.closable && !rounded { button { class: "ix-tab-close", r#type: "button", disabled: item.disabled,
