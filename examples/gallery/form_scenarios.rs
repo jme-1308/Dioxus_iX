@@ -491,25 +491,24 @@ fn UploadScenario() -> Element {
     }
 }
 
-/// The source body is retained for review while automatic first-to-second picker
-/// handoff is pending; this case is intentionally absent from SCENARIOS.
+/// Legacy form-family composition; active range previews use datetime_scenarios.
 #[component]
 fn RangeScenario() -> Element {
     let today = IxDate::new(2026, 10, 16).unwrap();
     let mut values = use_signal(|| vec![String::new(); 6]);
     rsx! { div { class: "form-source-ranges",
-        div { role: "group", "aria-label": "Date range", RangeField {
+        RangeField { aria_label: "Date range",
             DateInput { today, label: "Start date", value: values()[0].clone(), onvaluechange: move |next| values.write()[0] = next }
             DateInput { today, label: "End date", value: values()[1].clone(), onvaluechange: move |next| values.write()[1] = next }
-        } }
-        div { role: "group", "aria-label": "Time range", RangeField {
+        }
+        RangeField { aria_label: "Time range",
             TimeInput { label: "Start time", value: values()[2].clone(), onvaluechange: move |next| values.write()[2] = next }
             TimeInput { label: "End time", value: values()[3].clone(), onvaluechange: move |next| values.write()[3] = next }
-        } }
-        div { role: "group", "aria-label": "Datetime range", RangeField {
+        }
+        RangeField { aria_label: "Datetime range",
             DateTimeInput { today, label: "Start date and time", value: values()[4].clone(), onvaluechange: move |next| values.write()[4] = next }
             DateTimeInput { today, label: "End date and time", value: values()[5].clone(), onvaluechange: move |next| values.write()[5] = next }
-        } }
+        }
     } }
 }
 

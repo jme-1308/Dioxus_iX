@@ -101,3 +101,85 @@ try {
  return {ok:true,snapshots,nativeFormFacts,pickerFacts,mountedFocusFacts,layout,hitFacts,surfaceFacts,checks:['native input ArrowDown opens each actual picker with focus inside; eligible roving clock options are visible within their own lists, including initial09:30 selections','three shared top-layer Dialogs with native ARIA links, persistent hidden closed hosts, viewport containment, guarded disable and outside focus/draft preservation','three external native temporal inputs and mounted Edit actions focus current inputs without opening or saving','native required/parse/bounds reject invalid values with useful focus','exact actual FormEvent appointment and disabled optional omission','live alternate/None preserves native input/open-picker draft; empty forms cannot use Rust fallback','active/inactive Reset and Restore preserve ownership/initial validation and refresh all mounted Edit handles','single-selection calendar, time/combined confirmation and Escape with340px actual input/action hits and exact saved values'],input:'excluded synthetic typed input/change/keydown and actual DOM picker/form clicks with explicit native focus/normal page scrolling; browser text insertion/native key defaults are not simulated',trustedInput:'not established by this excluded synthetic replay; any current trusted browser evidence is recorded separately by the lead',renderer:navigator.userAgent};
 } catch(error){return {ok:false,error:String(error),snapshots,nativeFormFacts,pickerFacts,mountedFocusFacts,layout,hitFacts,surfaceFacts,failureGeometry}}
 "#;
+
+// Separate actual source-range preview; the established work-order page/replay stays unchanged.
+#[path = "../../examples/gallery/datetime_scenarios.rs"]
+mod gallery_range_sources;
+
+#[component]
+pub fn RangeGroupPreview() -> Element {
+    debug_assert!(gallery_range_sources::SCENARIOS.contains(&"range-field"));
+    #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+    let window = dioxus::desktop::window();
+    rsx! {
+        style { {STYLES} }
+        IxTheme { class: "temporal-work-order-review",
+            h1 { "Named date and time ranges" }
+            gallery_range_sources::DateTimeScenario { name: "range-field" }
+            div { onmounted: move |_| {
+                #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+                {
+                    let window = window.clone();
+                    spawn(async move {
+                        let query = crate::dom_query::eval(NATIVE_RANGE_GROUP_CHECK);
+                        if let Err(error) = query.send("rangegroup") {
+                            eprintln!("Range group native driver failed to start: {error:?}");
+                            std::process::exit(1);
+                        }
+                        match query.join::<serde_json::Value>().await {
+                            Ok(result) if result["ok"] == true => {
+                                println!("Dioxus native Range group: {result}");
+                                window.close();
+                            }
+                            result => {
+                                eprintln!("Dioxus native Range group failed: {result:?}");
+                                std::process::exit(1);
+                            }
+                        }
+                    });
+                    spawn(async move {
+                        futures_timer::Delay::new(std::time::Duration::from_secs(30)).await;
+                        eprintln!("Range group native driver timed out");
+                        std::process::exit(1);
+                    });
+                }
+            } }
+        }
+    }
+}
+
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+const NATIVE_RANGE_GROUP_CHECK: &str = r#"
+let facts={},checks=[];
+try {
+ await dioxus.recv();
+ const get=id=>document.getElementById(id),assert=(value,label)=>{if(!value)throw Error(label)},hold=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ const wait=async(label,predicate)=>{let stable=0;for(let i=0;i<150;i++){stable=predicate()?stable+1:0;if(stable===3)return;await hold(20)}throw Error(label)};
+ const groups=()=>['date','time','datetime'].map(kind=>get('source-'+kind+'-range')),inputs=group=>[...group.querySelectorAll('input[type=text]')],popup=node=>get(node.getAttribute('aria-controls')),toggle=node=>node.closest('.ix-temporal-field').querySelector('.ix-temporal-toggle'),opened=node=>node.getAttribute('aria-expanded')==='true'&&popup(node)&&!popup(node).hidden,closed=node=>node.getAttribute('aria-expanded')==='false'&&popup(node)?.hidden;
+ const focus=async node=>{node.scrollIntoView({block:'nearest',inline:'nearest'});node.focus();await wait('current native target focused',()=>document.activeElement===node)};
+ const key=(node,value)=>node.dispatchEvent(new KeyboardEvent('keydown',{key:value,code:value,bubbles:true,cancelable:true}));
+ const click=async node=>{assert(node&&!node.disabled,'actual pointer target enabled');await focus(node);const EventType=window.PointerEvent||MouseEvent;node.dispatchEvent(new EventType('pointerdown',{bubbles:true,cancelable:true,button:0}));node.click()};
+ const input=async(node,value)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(node,value);node.dispatchEvent(new Event('input',{bubbles:true,composed:true}));await wait('actual controlled raw range value',()=>node.isConnected&&node.value===value)};
+ const open=async node=>{await click(toggle(node));await wait('actual current range popup opens',()=>opened(node)&&popup(node).querySelector('.ix-date-time-card'))};
+ const escape=async node=>{await focus(toggle(node));key(toggle(node),'Escape');await wait('range Escape closes current picker',()=>closed(node))};
+ const snapshot=()=>groups().map(group=>({id:group.id,role:group.getAttribute('role'),label:group.getAttribute('aria-label'),values:inputs(group).map(node=>node.value),expanded:inputs(group).map(node=>node.getAttribute('aria-expanded'))}));
+ await wait('three actual source ranges mount',()=>groups().every(group=>group&&inputs(group).length===2));
+ const roots=groups(),fields=roots.flatMap(inputs),values=['2026/11/03','2026/11/06','09:15:00','10:45:00','2026/11/03 09:15:00','2026/11/06 10:45:00'];
+ assert(roots.every((group,index)=>group.matches('.ix-range-field[role=group]')&&group.getAttribute('aria-label')===['Date range','Time range','Datetime range'][index]&&!group.parentElement.closest('[role=group]')),'native named group is actual RangeField root without redundant group');
+ for(let index=0;index<fields.length;index++)await input(fields[index],values[index]);
+ assert(groups().every((group,index)=>group===roots[index])&&fields.every((node,index)=>node===roots.flatMap(inputs)[index]&&node.value===values[index]&&!node.form),'normal field updates retain actual group/input roots; source ranges do not claim a form owner');
+ facts.raw=snapshot();checks.push('actual named RangeField roots retain all six native raw drafts through sibling updates');
+ const [dateStart,dateEnd]=inputs(roots[0]);await open(dateStart);await click(popup(dateStart).querySelector('.ix-calendar-day[aria-label="4 November 2026"]'));
+ await wait('date pointer selection advances first to end',()=>dateStart.value==='2026/11/04'&&closed(dateStart)&&opened(dateEnd));
+ await click(popup(dateEnd).querySelector('.ix-calendar-day[aria-label="7 November 2026"]'));await wait('date end commits without another popup',()=>dateEnd.value==='2026/11/07'&&fields.every(closed));
+ await open(dateStart);const dateDay=popup(dateStart).querySelector('.ix-calendar-day[aria-label="5 November 2026"]');await focus(dateDay);key(dateDay,'Enter');dateDay.click();
+ await wait('keyboard modality plus explicit activation stays in current field',()=>dateStart.value==='2026/11/05'&&fields.every(closed));facts.date=snapshot()[0];checks.push('actual date pointer first-to-end handoff and end commit; keyboard modality with explicit click stays in current field');
+ for(const index of [1,2]){
+   const [start,end]=inputs(roots[index]),confirm=node=>index===1?popup(node).querySelector('.ix-date-card-footer button'):popup(node).querySelector('.ix-datetime-picker > .ix-date-card-footer button');
+   await open(start);await click(confirm(start));await wait('actual clock/combined first Confirm hands off',()=>closed(start)&&opened(end));await click(confirm(end));await wait('actual end Confirm completes only current range',()=>fields.every(closed));
+   await open(start);await escape(start);assert(fields.every(closed),'Escape does not open sibling');
+ }
+ assert(groups().every((group,index)=>group===roots[index])&&fields.every((node,index)=>node===roots.flatMap(inputs)[index]),'picker lifecycles retain actual root and input identity');facts.confirmed=snapshot();checks.push('actual time and combined confirmation handoff/end commit with ordinary Escape and retained siblings');
+ return{ok:true,checks,facts,viewport:{width:innerWidth,height:innerHeight},input:'Excluded synthetic input/pointerdown/click/keydown with explicit native focus on actual source gallery controls. Pointer sequences test Rust range modality/handoff; keyboard selection sends keydown then explicit click because untrusted keydown does not activate native buttons. This does not establish trusted OS/browser pointer or keyboard defaults. No app/model/controller/callback/CSS injection; trusted Chromium is separate evidence.'};
+}catch(error){return{ok:false,error:String(error),checks,facts,focus:{id:document.activeElement?.id,label:document.activeElement?.getAttribute('aria-label')},ranges:[...document.querySelectorAll('.ix-range-field')].map(group=>({id:group.id,values:[...group.querySelectorAll('input')].map(node=>({id:node.id,value:node.value,expanded:node.getAttribute('aria-expanded')}))}))}}
+"#;

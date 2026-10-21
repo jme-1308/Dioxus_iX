@@ -1663,10 +1663,29 @@ pub fn Slider(
 }
 
 /// Combines two arbitrary field controls into the upstream range-field layout.
+/// `id`, `class`, `aria_label` and `onmounted` apply to the existing group div;
+/// child controls keep their own labels and native mounted ownership.
 #[component]
-pub fn RangeField(children: Element, #[props(default)] hide_arrow: bool) -> Element {
+pub fn RangeField(
+    children: Element,
+    #[props(default)] hide_arrow: bool,
+    #[props(default)] id: Option<String>,
+    #[props(default)] class: String,
+    #[props(default)] aria_label: Option<String>,
+    #[props(default)] onmounted: EventHandler<MountedEvent>,
+) -> Element {
     crate::datetime::provide_range_navigation();
-    rsx! { div { class: if hide_arrow { "ix-range-field ix-range-no-arrow" } else { "ix-range-field" }, {children} } }
+    let mut classes = if hide_arrow {
+        "ix-range-field ix-range-no-arrow"
+    } else {
+        "ix-range-field"
+    }
+    .to_string();
+    if !class.is_empty() {
+        classes.push(' ');
+        classes.push_str(&class);
+    }
+    rsx! { div { id,class:classes,role:"group",aria_label,onmounted,{children} } }
 }
 
 fn update_selection(mut values: Vec<String>, value: String, multiple: bool) -> Vec<String> {
@@ -3680,3 +3699,7 @@ mod tests;
 #[cfg(test)]
 #[path = "forms/choice_mount_tests.rs"]
 mod choice_mount_tests;
+
+#[cfg(test)]
+#[path = "forms/range_field_tests.rs"]
+mod range_field_tests;

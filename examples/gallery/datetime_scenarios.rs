@@ -182,22 +182,22 @@ fn RangeSource(name: String, today: IxDate) -> Element {
     let mut values = use_signal(|| vec![String::new(); 6]);
     rsx! { div { class: "datetime-source-ranges",
         if name == "range-field" || name == "date-range" {
-            div { role: "group", "aria-label": if name == "date-range" { "date range" } else { "Date range" }, RangeField {
+            RangeField { id: "source-date-range", aria_label: if name == "date-range" { "date range" } else { "Date range" },
                 DateInput { today, label: "Start date", value: values()[0].clone(), onvaluechange: move |next| values.write()[0] = next }
                 DateInput { today, label: "End date", value: values()[1].clone(), onvaluechange: move |next| values.write()[1] = next }
-            } }
+            }
         }
         if name == "range-field" || name == "time-range" {
-            div { role: "group", "aria-label": "Time range", RangeField {
+            RangeField { id: "source-time-range", aria_label: "Time range",
                 TimeInput { label: "Start time", value: values()[2].clone(), onvaluechange: move |next| values.write()[2] = next }
                 TimeInput { label: "End time", value: values()[3].clone(), onvaluechange: move |next| values.write()[3] = next }
-            } }
+            }
         }
         if name == "range-field" || name == "datetime-range" {
-            div { role: "group", "aria-label": "Datetime range", RangeField {
+            RangeField { id: "source-datetime-range", aria_label: "Datetime range",
                 DateTimeInput { today, label: "Start date and time", value: values()[4].clone(), onvaluechange: move |next| values.write()[4] = next }
                 DateTimeInput { today, label: "End date and time", value: values()[5].clone(), onvaluechange: move |next| values.write()[5] = next }
-            } }
+            }
         }
     } }
 }

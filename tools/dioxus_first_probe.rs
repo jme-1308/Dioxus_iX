@@ -439,6 +439,9 @@ fn Preview() -> Element {
     if scope == "?slidercontent" {
         return rsx! { slider_content_review::SliderContentPreview {} };
     }
+    if scope == "?rangegroup" {
+        return rsx! { temporal_work_order_review::RangeGroupPreview {} };
+    }
     if scope == "?temporalforms" {
         return rsx! { temporal_work_order_review::TemporalWorkOrderPreview {} };
     }
