@@ -504,12 +504,12 @@ pub fn GridWorklistExample() -> Element {
                 }
                 label { r#for: "worklist-auto-page-size",
                     input {
-                        id: "worklist-auto-page-size", r#type: "checkbox", checked: auto_page_size(), disabled: !pagination_enabled || grouping_enabled,
-                        onchange: move |event: FormEvent| { if !grouping_enabled { auto_page_size.set(event.checked()); } },
+                        id: "worklist-auto-page-size", r#type: "checkbox", checked: auto_page_size(), disabled: !pagination_enabled,
+                        onchange: move |event: FormEvent| auto_page_size.set(event.checked()),
                     }
                     "Automatic rows per page"
                 }
-                if pagination_enabled && auto_page_size() && !grouping_enabled {
+                if pagination_enabled && auto_page_size() {
                     label { r#for: "worklist-grid-height", "View height"
                         select { id: "worklist-grid-height", class: "ix-input", value: grid_height().to_string(),
                             onchange: move |event: FormEvent| grid_height.set(match event.value().as_str() {
@@ -559,7 +559,6 @@ pub fn GridWorklistExample() -> Element {
                     select { id: "worklist-grouping", class: "ix-input", value: grouping_mode,
                         onchange: move |event: FormEvent| {
                             let next = change_worklist_grouping(&state.peek(), &event.value());
-                            if !next.grouping.columns.is_empty() { auto_page_size.set(false); }
                             state.set(next);
                         },
                         option { value: "none", "No grouping" }
@@ -579,7 +578,7 @@ pub fn GridWorklistExample() -> Element {
             p { id: "worklist-group-status", class: "grid-worklist-status", role: "status", "aria-live": "polite", hidden: !grouping_enabled,
                 "data-mode": grouping_mode, "data-groups": group_paths.len(), "data-collapsed": closed_groups,
                 "data-visible-leaves": expanded_leaves, "data-total": visible_count,
-                "{group_paths.len()} matching groups · {closed_groups} closed · {expanded_leaves} records visible on this page. Selection and CSV include matching records inside closed groups. Pages count records; collapsing groups can show fewer rows. Automatic rows per page is unavailable while grouping."
+                "{group_paths.len()} matching groups · {closed_groups} closed · {expanded_leaves} records visible on this page. Selection and CSV include matching records inside closed groups. Pages count records; collapsing groups can show fewer rows. Automatic capacity includes expanded group headers; a very small view can still scroll."
             }
             // Dioxus reconciles keys on fragment children; keep this lifecycle explicit.
             for generation in [epoch()] {
@@ -591,7 +590,7 @@ pub fn GridWorklistExample() -> Element {
                     state: current_state.clone(),
                     onstatechange: move |next| state.set(next),
                     height: effective_grid_height,
-                    auto_page_size: auto_page_size() && !grouping_enabled,
+                    auto_page_size: auto_page_size(),
                     page_size_options: vec![12, 24, 48],
                     striped: true,
                     read_only: read_only(),
@@ -647,7 +646,7 @@ pub fn GridWorklistExample() -> Element {
             }
             p { id: "worklist-pagination-status", class: "grid-worklist-status", role: "status", hidden: !pagination_enabled,
                 "data-enabled": pagination_enabled, "data-page": page_info.page, "data-page-size": page_info.page_size,
-                "data-auto-page-size": pagination_enabled && auto_page_size() && !grouping_enabled, "data-grid-height": effective_grid_height,
+                "data-auto-page-size": pagination_enabled && auto_page_size(), "data-grid-height": effective_grid_height,
                 "data-page-count": page_info.page_count, "data-total": page_info.total_rows,
                 "data-start": page_info.range.start, "data-end": page_info.range.end,
                 "Page {displayed_page} of {page_info.page_count} · {displayed_start}–{page_info.range.end} of {page_info.total_rows} matching records. Selection and CSV include matching records across all pages. Save or cancel a cell edit before paging."
@@ -781,7 +780,8 @@ mod tests {
         let mut records = worklist_rows();
         let columns = worklist_columns();
         let mut initial = DataGridState {
-            pagination: Some(DataGridPagination::new(2, 12)),
+            // A measured capacity need not match a manual page-size option.
+            pagination: Some(DataGridPagination::new(2, 7)),
             ..Default::default()
         };
         initial.selected.insert("worklist-000".into());
@@ -822,15 +822,25 @@ mod tests {
         assert_eq!(regrouped.filters, initial.filters);
         assert_eq!(regrouped.column_widths, initial.column_widths);
         assert_eq!(regrouped.sort, ordered.sort);
-        assert_eq!(
-            regrouped.pagination.unwrap(),
-            DataGridPagination::new(0, 12)
-        );
+        assert_eq!(regrouped.pagination.unwrap(), DataGridPagination::new(0, 7));
         assert_eq!(regrouped.group_paths(&records, &columns).len(), 1);
         assert!(regrouped.grouping.collapsed.is_empty());
         let csv = regrouped.export_csv(&records, &columns, &DataGridCsvOptions::default());
         assert_eq!(csv.row_ids.len(), 32);
         assert_eq!(csv.row_ids.last().unwrap(), "worklist-000");
+        let ungrouped = change_worklist_grouping(&regrouped, "none");
+        assert_eq!(ungrouped.pagination.unwrap(), DataGridPagination::new(0, 7));
+        assert_eq!(ungrouped.selected, initial.selected);
+        assert_eq!(
+            ungrouped.paged_rows_with_columns(&records, &columns).len(),
+            7
+        );
+        assert_eq!(
+            ungrouped
+                .export_csv(&records, &columns, &DataGridCsvOptions::default())
+                .row_ids,
+            csv.row_ids
+        );
     }
 
     #[test]

@@ -130,12 +130,25 @@ pub(crate) fn auto_page_request(
     measured_height: f64,
     row_height: u32,
 ) -> Option<DataGridPagination> {
+    let page_size = auto_page_capacity(measured_height, row_height)?;
+    auto_page_request_for_size(pagination, total_rows, page_size)
+}
+pub(crate) fn auto_page_capacity(measured_height: f64, row_height: u32) -> Option<usize> {
     if !measured_height.is_finite() || measured_height <= 0.0 {
         return None;
     }
-    let page_size = ((measured_height - 48.0) / f64::from(row_height.max(24)))
-        .floor()
-        .max(1.0) as usize;
+    Some(
+        ((measured_height - 48.0) / f64::from(row_height.max(24)))
+            .floor()
+            .max(1.0) as usize,
+    )
+}
+pub(crate) fn auto_page_request_for_size(
+    pagination: DataGridPagination,
+    total_rows: usize,
+    page_size: usize,
+) -> Option<DataGridPagination> {
+    let page_size = page_size.max(1);
     if pagination.page_size == page_size {
         return None;
     }

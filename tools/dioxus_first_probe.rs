@@ -86,6 +86,8 @@ mod grid_cell_renderers_review;
 mod grid_csv_review;
 #[path = "dioxus_first_probe/grid_custom_editors_review.rs"]
 mod grid_custom_editors_review;
+#[path = "dioxus_first_probe/grid_group_auto_review.rs"]
+mod grid_group_auto_review;
 #[path = "dioxus_first_probe/grid_group_review.rs"]
 mod grid_group_review;
 #[path = "dioxus_first_probe/grid_help_review.rs"]
@@ -299,6 +301,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridgroups" {
         return rsx! { grid_group_review::GridGroupPreview {} };
+    }
+    if scope == "?gridgroupauto" {
+        return rsx! { grid_group_auto_review::GridGroupAutoPreview {} };
     }
     if scope == "?gridsort" {
         return rsx! { grid_multi_sort_review::GridMultiSortPreview {} };

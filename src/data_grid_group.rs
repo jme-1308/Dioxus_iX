@@ -295,3 +295,61 @@ pub(crate) fn group_slots(
     walk.walk(0..rows.len(), 0, &DataGridGroupPath::default());
     (walk.slots, walk.total)
 }
+
+/// Expanded visual-slot intervals over the complete logical projection. A slot
+/// is present on a page exactly when its descendant interval overlaps it.
+/// Prefix counts make each candidate window's cost constant-time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GroupAutoCapacity {
+    starts: Vec<usize>,
+    ends: Vec<usize>,
+    total_rows: usize,
+}
+impl GroupAutoCapacity {
+    pub(crate) fn new(rows: &[DataGridRow], grouping: &DataGridGrouping) -> Self {
+        let total_rows = rows.len();
+        let mut starts = vec![0usize; total_rows + 1];
+        let mut ends = vec![0usize; total_rows + 1];
+        for slot in group_slots(rows, grouping, 0..total_rows).0 {
+            let range = match slot {
+                GroupSlot::Group { range, .. } => range,
+                GroupSlot::Record { row, .. } => row..row + 1,
+            };
+            starts[range.start] += 1;
+            ends[range.end] += 1;
+        }
+        for index in 1..=total_rows {
+            starts[index] += starts[index - 1];
+            ends[index] += ends[index - 1];
+        }
+        Self {
+            starts,
+            ends,
+            total_rows,
+        }
+    }
+    /// A fixed logical size that fits *every* contiguous window, rather than
+    /// only the current page alignment. This conservative bound cannot oscillate
+    /// when the owner accepts a different page size. One record remains the
+    /// minimum when even its ancestry exceeds the measured slot budget.
+    pub(crate) fn page_size(&self, budget: usize) -> usize {
+        if self.total_rows == 0 {
+            return budget.max(1);
+        }
+        let fits = |size: usize| {
+            (0..=self.total_rows - size)
+                .all(|start| self.starts[start + size - 1] - self.ends[start] <= budget)
+        };
+        let mut low = 1;
+        let mut high = self.total_rows;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if fits(middle) {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        low
+    }
+}

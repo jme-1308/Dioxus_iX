@@ -58,6 +58,7 @@ struct GroupObservation {
     state:Cell<Option<Signal<DataGridState>>>,rows:Cell<Option<Signal<Vec<DataGridRow>>>>,
     auto:Cell<Option<Signal<bool>>>,model:Cell<Option<Signal<crate::DataGridRowModel>>>,
     editor:RefCell<Option<DataGridEditorContext>>,context:Cell<Option<GridMountContext>>,
+    requests:RefCell<Vec<DataGridState>>,decline:Cell<bool>,
 }
 impl PartialEq for GroupObservation{fn eq(&self,other:&Self)->bool{std::ptr::eq(self,other)}}
 #[component]
@@ -66,9 +67,9 @@ fn grouped_fixture(data:Rc<GroupObservation>)->Element{
     let mut state=use_signal(||DataGridState{grouping:DataGridGrouping::new(["status","owner"]),pagination:Some(DataGridPagination::new(1,1)),selected:BTreeSet::from(["outside".into(),"a".into()]),..Default::default()});
     let mut rows=use_signal(grouping_rows);let auto=use_signal(||false);let model=use_signal(||crate::DataGridRowModel::Client);
     data.state.set(Some(state));data.rows.set(Some(rows));data.auto.set(Some(auto));data.model.set(Some(model));
-    let cell=data.clone();let editor=data.clone();
+    let cell=data.clone();let editor=data.clone();let requests=data.clone();
     rsx!{DataGrid {columns:grouping_columns(),rows:rows(),state:state(),row_model:model(),auto_page_size:auto(),label:"Grouped records",row_height:32,tooltip_delay_ms:0,
-        onstatechange:move|next|state.set(next),oncellvaluechanged:move|change:DataGridCellValueChanged|rows.with_mut(|rows|{change.apply_to(rows);}),
+        onstatechange:move|next:DataGridState|{requests.requests.borrow_mut().push(next.clone());if !requests.decline.get(){state.set(next);}},oncellvaluechanged:move|change:DataGridCellValueChanged|rows.with_mut(|rows|{change.apply_to(rows);}),
         render_cell:Callback::new(move|context:DataGridCellContext|Some(DataGridCellRender::display(rsx!{GroupProbe {data:cell.clone(),value:context.value}}))),
         render_editor:Callback::new(move|context:DataGridEditorContext|{*editor.editor.borrow_mut()=Some(context);None})
     }}
@@ -115,7 +116,12 @@ fn actual_group_edits_regroup_by_identity_and_unsupported_modes_never_render_fal
     dom.in_runtime(||data.model.get().unwrap().set(crate::DataGridRowModel::Page{total_rows:50}));settle_render(&mut dom,&mut attrs);
     let html=dioxus_ssr::render(&dom);assert!(html.contains("Grouping requires client rows."));assert!(!html.contains("data-row-id=")&&!html.contains("data-group-path="));
     dom.in_runtime(||{data.model.get().unwrap().set(crate::DataGridRowModel::Client);data.auto.get().unwrap().set(true);});settle_render(&mut dom,&mut attrs);
-    let html=dioxus_ssr::render(&dom);assert!(html.contains("Automatic page sizing is unavailable while grouping."));assert!(!html.contains("data-row-id="));
+    let html=dioxus_ssr::render(&dom);assert!(!html.contains("Automatic page sizing is unavailable while grouping."));assert!(html.contains("data-row-id="));
     dom.in_runtime(||{data.auto.get().unwrap().set(false);data.state.get().unwrap().with_mut(|state|state.grouping=DataGridGrouping::default());});settle_render(&mut dom,&mut attrs);
     let html=dioxus_ssr::render(&dom);assert!(!html.contains("data-group-path="));assert_eq!(group_attr(group_tag(&html,"aria-label=\"Grouped records\""),"role"),Some("grid"));assert!(html.contains("data-row-id="));
+}
+
+mod group_auto_tests {
+    use super::*;
+    include!("group_auto_tests.rs");
 }

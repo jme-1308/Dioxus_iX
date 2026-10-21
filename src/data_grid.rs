@@ -1384,6 +1384,9 @@ pub fn DataGrid(
     #[props(default = vec![10,25,50,100])] page_size_options: Vec<usize>,
     #[props(default)] hide_pagination_controls: bool,
     /// Request a controlled page size that fits the measured scroll surface.
+    /// Grouped client rows use a conservative logical size fitting every page
+    /// window, counting expanded ancestors as visual rows. At least one logical
+    /// record is retained even when its ancestry requires scrolling.
     /// Active edits defer requests until saved/canceled. Disabling auto keeps
     /// the current controlled size; no manual preference is stored internally.
     #[props(default)]
@@ -1460,14 +1463,19 @@ pub fn DataGrid(
     let grouping_requested = !state.grouping.columns.is_empty();
     let grouping_error = if grouping_requested && row_model != DataGridRowModel::Client {
         Some("Grouping requires client rows.")
-    } else if grouping_requested && auto_page_size {
-        Some("Automatic page sizing is unavailable while grouping.")
     } else {
         None
     };
     let grouped = grouping_requested && grouping_error.is_none();
+    let auto_capacity = (grouped && auto_page_size).then(|| {
+        Rc::new(crate::data_grid_group::GroupAutoCapacity::new(
+            &full_visible,
+            &state.grouping,
+        ))
+    });
     let measured_height = use_hook(|| Rc::new(Cell::new(None::<f64>)));
     let auto_state = state.clone();
+    let capacity_profile = auto_capacity.clone();
     let report_capacity = use_callback(move |measurement: Option<f64>| {
         if let Some(height) = measurement {
             if !height.is_finite() || height <= 0.0 {
@@ -1475,15 +1483,26 @@ pub fn DataGrid(
             }
             measured_height.set(Some(height));
         }
-        if !auto_page_size || grouping_requested || editing.peek().is_some() {
+        if !auto_page_size || grouping_error.is_some() || editing.peek().is_some() {
             return;
         }
         let Some((pagination, height)) = auto_state.pagination.zip(measured_height.get()) else {
             return;
         };
-        let Some(request) = crate::data_grid_pagination::auto_page_request(
-            pagination, full_count, height, row_height,
-        ) else {
+        let request = if let Some(capacity) = &capacity_profile {
+            crate::data_grid_pagination::auto_page_capacity(height, row_height).and_then(|budget| {
+                crate::data_grid_pagination::auto_page_request_for_size(
+                    pagination,
+                    full_count,
+                    capacity.page_size(budget),
+                )
+            })
+        } else {
+            crate::data_grid_pagination::auto_page_request(
+                pagination, full_count, height, row_height,
+            )
+        };
+        let Some(request) = request else {
             return;
         };
         let mut next = auto_state.clone();
@@ -1494,7 +1513,8 @@ pub fn DataGrid(
     use_effect(use_reactive(
         (
             &auto_page_size,
-            &grouping_requested,
+            &auto_capacity,
+            &grouping_error,
             &row_height,
             &state.pagination,
             &full_count,
