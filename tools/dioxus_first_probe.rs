@@ -142,6 +142,8 @@ mod host_paged_grid_review;
 mod icon_catalog_review;
 #[path = "dioxus_first_probe/icon_tabs_review.rs"]
 mod icon_tabs_review;
+#[path = "dioxus_first_probe/inert_actions_review.rs"]
+mod inert_actions_review;
 #[path = "dioxus_first_probe/inspection_groups_review.rs"]
 mod inspection_groups_review;
 #[path = "../examples/gallery/inspection_report.rs"]
@@ -469,6 +471,9 @@ fn Preview() -> Element {
     }
     if scope == "?groupfeedback" {
         return rsx! { group_feedback_review::GroupFeedbackPreview {} };
+    }
+    if scope == "?inertactions" {
+        return rsx! { inert_actions_review::InertActionsPreview {} };
     }
     if scope == "?inspectiongroups" {
         return rsx! { inspection_groups_review::InspectionGroupsPreview {} };

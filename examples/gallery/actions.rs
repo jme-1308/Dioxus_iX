@@ -52,6 +52,7 @@ pub fn ActionExamples() -> Element {
                 LinkButton { url: "#buttons", disabled: true, "Disabled link" }
             }
             p { role: "status", "{last_action}" }
+            InertActionsExample {}
         }
         section { class: "demo-section", id: "icon-buttons",
             h2 { "Icon buttons" }
@@ -146,6 +147,75 @@ pub fn ActionExamples() -> Element {
             Typography { format: TypographyFormat::BodySm, text_color: TypographyColor::Soft, "Small secondary text" }
             Typography { format: TypographyFormat::Code, "let status = MachineStatus::Running;" }
             Divider {}
+        }
+    }
+}
+
+/// An inspection note stays editable while its native action controls are suspended.
+#[component]
+pub fn InertActionsExample() -> Element {
+    let mut suspended = use_signal(|| false);
+    let mut note = use_signal(|| "Check cooling system".to_string());
+    let mut runs = use_signal(|| 0usize);
+    let mut reviews = use_signal(|| 0usize);
+    let mut refreshes = use_signal(|| 0usize);
+    let mut submissions = use_signal(|| 0usize);
+    let mut submitted_note = use_signal(String::new);
+    rsx! {
+        div { id: "inert-actions",
+            h3 { "Inspection actions" }
+            p { "Suspend the actions while preparing the inspection note. The note remains editable." }
+            form { id: "inert-actions-form",
+                onsubmit: move |event: FormEvent| {
+                    event.prevent_default();
+                    let submitted = event.values().into_iter().find_map(|(name, value)| {
+                        match value {
+                            dioxus::html::FormValue::Text(value) if name == "note" => Some(value),
+                            _ => None,
+                        }
+                    }).unwrap_or_default();
+                    submitted_note.set(submitted);
+                    submissions += 1;
+                },
+                div { class: "demo-row",
+                    label {
+                        input { id: "inert-suspend", r#type: "checkbox", checked: suspended(),
+                            onchange: move |event: FormEvent| suspended.set(event.checked()),
+                        }
+                        "Suspend inspection actions"
+                    }
+                }
+                div { class: "demo-row",
+                    Input { id: "inert-note", name: "note", label: "Inspection note", value: note(),
+                        onvaluechange: move |value| note.set(value),
+                    }
+                }
+                div { class: "demo-row",
+                    Button { id: "inert-before", variant: ButtonVariant::Secondary, "Previous action" }
+                    Button { id: "inert-run", button_type: ButtonType::Submit, inert: suspended(),
+                        onclick: move |_| runs += 1, "Run inspection" }
+                    Button { id: "inert-link", variant: ButtonVariant::Secondary, href: "#inert-actions", inert: suspended(),
+                        onclick: move |event: MouseEvent| { event.prevent_default(); reviews += 1; }, "Review inspection" }
+                    IconButton { id: "inert-icon", icon: "refresh", label: "Refresh inspection", inert: suspended(),
+                        onclick: move |_| refreshes += 1 }
+                    Button { id: "inert-after", variant: ButtonVariant::Secondary, "Next action" }
+                }
+                div { class: "demo-row",
+                    Button { id: "inert-reset", variant: ButtonVariant::SubtleSecondary,
+                        onclick: move |_| {
+                            suspended.set(false); runs.set(0); reviews.set(0); refreshes.set(0);
+                            submissions.set(0); submitted_note.set(String::new());
+                        },
+                        "Reset counts and resume actions"
+                    }
+                }
+            }
+            output { id: "inert-result", role: "status", "aria-live": "polite",
+                "data-run": runs(), "data-review": reviews(), "data-refresh": refreshes(),
+                "data-submissions": submissions(), "data-submitted-note": submitted_note(),
+                "data-suspended": suspended(),
+                "Actions suspended: {suspended}. Runs: {runs}. Reviews: {reviews}. Refreshes: {refreshes}. Submissions: {submissions}. Submitted note: {submitted_note}"
+            }
         }
     }
 }

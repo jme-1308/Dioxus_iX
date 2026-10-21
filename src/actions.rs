@@ -134,6 +134,9 @@ pub fn Button(
     #[props(default)] variant: ButtonVariant,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
+    /// Suspend interaction without disabled styling; false removes native inert.
+    #[props(default)]
+    inert: bool,
     #[props(default)] button_type: ButtonType,
     #[props(default)] alignment: ButtonAlignment,
     #[props(default)] icon_size: ButtonIconSize,
@@ -190,7 +193,7 @@ pub fn Button(
     let mount_handle = mounted;
     if let Some(href) = href {
         rsx! { a {
-            id: actual_id,
+            id: actual_id, inert: inert.then_some("true"),
             class, role: "button", href: if blocked { None } else { Some(href) },
             target, rel: rel.unwrap_or_else(|| "noopener noreferrer".into()),
             aria_label, aria_describedby, aria_disabled: blocked, aria_busy: loading,
@@ -203,12 +206,12 @@ pub fn Button(
                     handler.call(event);
                 }
             },
-            onclick: move |event| { if blocked { event.prevent_default(); event.stop_propagation(); } else if let Some(handler) = onclick { handler.call(event); } },
+            onclick: move |event| { if blocked || inert { event.prevent_default(); event.stop_propagation(); } else if let Some(handler) = onclick { handler.call(event); } },
             {content}
         } }
     } else {
         rsx! { button {
-            id: actual_id,
+            id: actual_id, inert: inert.then_some("true"),
             class, r#type: button_type.as_str(), form, disabled: blocked,
             tabindex: if blocked { -1 } else { 0 },
             aria_label, aria_describedby, aria_disabled: blocked, aria_busy: loading,
@@ -220,7 +223,7 @@ pub fn Button(
                     handler.call(event);
                 }
             },
-            onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
+            onclick: move |event| { if inert { event.prevent_default(); event.stop_propagation(); } else if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
             {content}
         } }
     }
@@ -243,6 +246,9 @@ pub fn IconButton(
     #[props(default)] size: ButtonIconSize,
     #[props(default)] disabled: bool,
     #[props(default)] loading: bool,
+    /// Suspend interaction without disabled styling; false removes native inert.
+    #[props(default)]
+    inert: bool,
     #[props(default)] oval: bool,
     #[props(default)] button_type: ButtonType,
     #[props(default)] class: String,
@@ -290,7 +296,7 @@ pub fn IconButton(
     let mount_binding = binding.clone();
     let mount_handle = mounted;
     rsx! { button {
-        id: actual_id,
+        id: actual_id, inert: inert.then_some("true"),
         class: "ix-button ix-icon-button ix-button-tokenized ix-icon-button-native ix-button-{variant.as_str()} ix-icon-size-{size.as_str()} {class}",
         class: if oval { "ix-oval" }, r#type: button_type.as_str(),
         style: icon_color.map(|name| format!("--ix-icon-button-color:var({name})")),
@@ -304,7 +310,7 @@ pub fn IconButton(
                 handler.call(event);
             }
         },
-        onclick: move |event| { if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
+        onclick: move |event| { if inert { event.prevent_default(); event.stop_propagation(); } else if !blocked { if let Some(handler) = onclick { handler.call(event); } } },
         ..native_events,
         if loading { Spinner { size: loading_size, hide_track: true } }
         else if !icon.is_empty() { crate::Icon { name: icon, size: size.pixels(), class: "ix-icon-button-glyph" } }
@@ -1038,3 +1044,6 @@ mod badge_composition_tests;
 #[cfg(test)]
 #[path = "actions/status_help_tests.rs"]
 mod status_help_tests;
+
+#[cfg(test)]
+mod inert_tests;
