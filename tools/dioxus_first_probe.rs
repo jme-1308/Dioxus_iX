@@ -154,6 +154,8 @@ mod page_recovery_review;
 mod pagination_workflow_review;
 #[path = "dioxus_first_probe/pane_equipment_review.rs"]
 mod pane_equipment_review;
+#[path = "dioxus_first_probe/pane_layers_review.rs"]
+mod pane_layers_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
 mod pane_layout_review;
 #[path = "dioxus_first_probe/progress_transfer_review.rs"]
@@ -478,6 +480,9 @@ fn Preview() -> Element {
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };
+    }
+    if scope == "?panelayers" {
+        return rsx! { pane_layers_review::PaneLayersPreview {} };
     }
     if scope == "?loadingdialog" {
         return rsx! { loading_dialog_review::LoadingDialogPreview {} };

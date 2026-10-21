@@ -120,12 +120,16 @@ fn PaneExamples() -> Element {
             h2 { "Pane layout" }
             p { "Left, top, right and bottom panes with controlled expansion, inline/floating variants and both compositions." }
             div { class: "demo-row",
-                Button { variant: ButtonVariant::Secondary, onclick: move |_| floating.set(!floating()), "Toggle Variant" }
-                Button { variant: ButtonVariant::Secondary, onclick: move |_| horizontal.set(!horizontal()), "Toggle Layout" }
-                Button { variant: ButtonVariant::Tertiary, onclick: move |_| { left.set(false); right.set(false); top.set(false); bottom.set(false); }, "Collapse all" }
+                Button { id: "pane-layers-variant", variant: ButtonVariant::Secondary, onclick: move |_| floating.set(!floating()), "Toggle Variant" }
+                Button { id: "pane-layers-layout", variant: ButtonVariant::Secondary, onclick: move |_| horizontal.set(!horizontal()), "Toggle Layout" }
+                Button { id: "pane-layers-expand-all", variant: ButtonVariant::Secondary, onclick: move |_| { left.set(true); right.set(true); top.set(true); bottom.set(true); }, "Expand all" }
+                Button { id: "pane-layers-collapse-all", variant: ButtonVariant::Tertiary, onclick: move |_| { left.set(false); right.set(false); top.set(false); bottom.set(false); }, "Collapse all" }
             }
-            p { role: "status", "Variant: {variant_label}. Layout: {layout_label}." }
-            div { class: "application-pane-demo",
+            p { id: "pane-layers-status", role: "status", "data-layout": layout_label, "data-variant": variant_label,
+                "data-left": left(), "data-right": right(), "data-top": top(), "data-bottom": bottom(),
+                "Variant: {variant_label}. Layout: {layout_label}."
+            }
+            div { id: "pane-layers-frame", class: "application-pane-demo",
                 PaneLayout { variant, borderless: floating(), layout: if horizontal() { PaneLayoutOrder::FullHorizontal } else { PaneLayoutOrder::FullVertical },
                     left: rsx! { Pane { heading: "Pane Left", expanded: left(), size: "33%", close_on_click_outside: true,
                         onbeforeexpandedchange: move |event: PaneExpandedChangeEvent| {
@@ -134,9 +138,9 @@ fn PaneExamples() -> Element {
                         onexpandedchange: move |value| { left.set(value); pane_event.set(if value { "Left pane opened" } else { "Left pane closed" }.into()); },
                         p { "This is the left pane." }
                         label { class: "application-pane-note", "Pane note"
-                            input { autofocus: true, value: note(), oninput: move |event| note.set(event.value()) }
+                            input { id: "pane-layers-note", autofocus: true, value: note(), oninput: move |event| note.set(event.value()) }
                         }
-                        Checkbox { label: "Keep pane open", checked: keep_open(), oncheckedchange: move |value| keep_open.set(value) }
+                        Checkbox { id: "pane-layers-protect", label: "Keep pane open", checked: keep_open(), oncheckedchange: move |value| keep_open.set(value) }
                     } },
                     top: rsx! { Pane { heading: "Pane Top", expanded: top(), size: "33%", onexpandedchange: move |value| top.set(value), p { "This is the top pane." } } },
                     right: rsx! { Pane { heading: "Pane Right", expanded: right(), size: "33%", onexpandedchange: move |value| right.set(value), p { "This is the right pane." } } },
