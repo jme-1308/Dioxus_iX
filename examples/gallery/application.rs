@@ -1,6 +1,7 @@
 //! Logo-free counterparts of the upstream application, menu and pane examples.
 use dioxus::prelude::*;
 use dioxus_ix::*;
+use std::rc::Rc;
 
 fn application_menu_labels(norwegian: bool) -> MenuLabels {
     if norwegian {
@@ -20,6 +21,23 @@ fn application_menu_labels(norwegian: bool) -> MenuLabels {
 #[component]
 pub fn ApplicationExamples() -> Element {
     let mut content = use_signal(|| "home".to_string());
+    let mut content_root = use_signal(|| None::<Rc<MountedData>>);
+    let mut focus_content = use_signal(|| false);
+    // Route choices own destination focus; mount and unrelated controls do not.
+    use_effect(move || {
+        let requested = focus_content();
+        let mounted = content_root();
+        if requested && let Some(node) = mounted {
+            focus_content.set(false);
+            spawn(async move {
+                let _ = node.set_focus(true).await;
+            });
+        }
+    });
+    let navigate = use_callback(move |next: &'static str| {
+        content.set(next.into());
+        focus_content.set(true);
+    });
     let mut expanded = use_signal(|| false);
     let mut forced = use_signal(|| "auto".to_string());
     let mut pinned = use_signal(|| false);
@@ -86,21 +104,22 @@ pub fn ApplicationExamples() -> Element {
                                     p { "Component library version: 0.1.0. Dioxus: 0.8.0-alpha.2." }
                                     p { "This example does not include vendor logos or claim vendor affiliation." }
                                 } },
-                                MenuItem { label: "Home", icon: "home", home: true, active: content() == "home", onclick: move |_| content.set("home".into()),
+                                MenuItem { label: "Home", icon: "home", home: true, active: content() == "home", onclick: move |_| navigate.call("home"),
                                     strong { id: "application-home-label", "Home" }
                                 }
-                                MenuItem { label: "Alarm", icon: "alarm-bell", notifications: 3, active: content() == "alarm", onclick: move |_| content.set("alarm".into()) }
+                                MenuItem { label: "Alarm", icon: "alarm-bell", notifications: 3, active: content() == "alarm", onclick: move |_| navigate.call("alarm") }
                                 MenuCategory { label: "Analysis", icon: "piechart", active: content() == "plant" || content() == "network",
-                                    MenuItem { label: "Plant", icon: "plant", active: content() == "plant", onclick: move |_| content.set("plant".into()),
+                                    MenuItem { label: "Plant", icon: "plant", active: content() == "plant", onclick: move |_| navigate.call("plant"),
                                         span { id: "application-plant-label", span { "Plant" } small { " · Operations" } }
                                     }
-                                    MenuItem { label: "Network", icon: "network-device", active: content() == "network", onclick: move |_| content.set("network".into()) }
+                                    MenuItem { label: "Network", icon: "network-device", active: content() == "network", onclick: move |_| navigate.call("network") }
                                 }
                                 MenuItem { label: "Disabled item", icon: "lock", disabled: true }
                             }
                         },
                         footer: rsx! { div { class: "application-demo-footer", "Example application footer" } },
-                        div { class: "application-demo-content",
+                        div { id: "application-content", class: "application-demo-content", tabindex: -1, role: "region", aria_label: "Application content",
+                            onmounted: move |event: MountedEvent| content_root.set(Some(event.data())),
                             ContentHeader { title: format!("Example {} content", content()), subtitle: "Application navigation example" }
                             p { "Select a menu item, expand Analysis, open Settings or inspect the user dropdown." }
                             p { "On a small viewport the rail collapses, and the header button opens navigation." }
