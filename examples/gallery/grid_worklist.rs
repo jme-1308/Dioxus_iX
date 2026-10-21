@@ -2,7 +2,7 @@
 use dioxus::prelude::*;
 use dioxus_ix::{
     Button, ButtonVariant, DataGrid, DataGridCellValueChanged, DataGridColumn, DataGridCsv,
-    DataGridCsvOptions, DataGridCsvRowScope, DataGridPagination, DataGridRow,
+    DataGridCsvOptions, DataGridCsvRowScope, DataGridGrouping, DataGridPagination, DataGridRow,
     DataGridSortDirection, DataGridState, DataGridTextEditor, DataGridTextFilter, Textarea,
 };
 use std::collections::BTreeSet;
@@ -174,6 +174,19 @@ fn ordering_summary(state: &DataGridState) -> String {
     }
 }
 
+fn change_worklist_grouping(state: &DataGridState, mode: &str) -> DataGridState {
+    let mut next = state.clone();
+    next.grouping = match mode {
+        "status" => DataGridGrouping::new(["status"]),
+        "status-owner" => DataGridGrouping::new(["status", "owner"]),
+        _ => DataGridGrouping::default(),
+    };
+    if let Some(pagination) = next.pagination.as_mut() {
+        pagination.page = 0;
+    }
+    next
+}
+
 fn csv_scope_token(scope: DataGridCsvRowScope) -> &'static str {
     match scope {
         DataGridCsvRowScope::Displayed => "displayed",
@@ -306,6 +319,35 @@ pub fn GridWorklistExample() -> Element {
     )
     .unwrap_or_default();
     let order_summary = ordering_summary(&current_state);
+    let grouping_enabled = !current_state.grouping.columns.is_empty();
+    let grouping_mode = if !grouping_enabled {
+        "none"
+    } else if current_state
+        .grouping
+        .columns
+        .iter()
+        .any(|column| column == "owner")
+    {
+        "status-owner"
+    } else {
+        "status"
+    };
+    let group_paths = if grouping_enabled {
+        current_state.group_paths(&current_rows, &worklist_columns())
+    } else {
+        vec![]
+    };
+    let closed_groups = group_paths
+        .iter()
+        .filter(|path| !current_state.group_expanded(path))
+        .count();
+    let expanded_leaves = if grouping_enabled {
+        current_state
+            .expanded_page_rows_with_columns(&current_rows, &worklist_columns())
+            .len()
+    } else {
+        current_state.pagination_info(visible_count).range.len()
+    };
     let pagination_enabled = current_state.pagination.is_some();
     let effective_grid_height = if pagination_enabled {
         grid_height()
@@ -462,12 +504,12 @@ pub fn GridWorklistExample() -> Element {
                 }
                 label { r#for: "worklist-auto-page-size",
                     input {
-                        id: "worklist-auto-page-size", r#type: "checkbox", checked: auto_page_size(), disabled: !pagination_enabled,
-                        onchange: move |event: FormEvent| auto_page_size.set(event.checked()),
+                        id: "worklist-auto-page-size", r#type: "checkbox", checked: auto_page_size(), disabled: !pagination_enabled || grouping_enabled,
+                        onchange: move |event: FormEvent| { if !grouping_enabled { auto_page_size.set(event.checked()); } },
                     }
                     "Automatic rows per page"
                 }
-                if pagination_enabled && auto_page_size() {
+                if pagination_enabled && auto_page_size() && !grouping_enabled {
                     label { r#for: "worklist-grid-height", "View height"
                         select { id: "worklist-grid-height", class: "ix-input", value: grid_height().to_string(),
                             onchange: move |event: FormEvent| grid_height.set(match event.value().as_str() {
@@ -512,6 +554,33 @@ pub fn GridWorklistExample() -> Element {
                 }
             }
             p { id: "worklist-order-status", class: "grid-worklist-status", role: "status", "aria-live": "polite", "{order_summary}" }
+            div { class: "grid-worklist-toolbar worklist-group-controls",
+                label { r#for: "worklist-grouping", "Group records"
+                    select { id: "worklist-grouping", class: "ix-input", value: grouping_mode,
+                        onchange: move |event: FormEvent| {
+                            let next = change_worklist_grouping(&state.peek(), &event.value());
+                            if !next.grouping.columns.is_empty() { auto_page_size.set(false); }
+                            state.set(next);
+                        },
+                        option { value: "none", "No grouping" }
+                        option { value: "status", "Status" }
+                        option { value: "status-owner", "Status then Owner" }
+                    }
+                }
+                Button { id: "worklist-expand-groups", variant: ButtonVariant::Secondary, disabled: !grouping_enabled || closed_groups == 0,
+                    onclick: move |_| { let mut next = state.peek().clone(); next.expand_all_groups(); state.set(next); }, "Expand all groups"
+                }
+                Button { id: "worklist-collapse-groups", variant: ButtonVariant::Secondary, disabled: !grouping_enabled || group_paths.is_empty() || closed_groups == group_paths.len(),
+                    onclick: move |_| {
+                        let mut next = state.peek().clone(); next.collapse_all_groups(&rows.peek(), &worklist_columns()); state.set(next);
+                    }, "Collapse all groups"
+                }
+            }
+            p { id: "worklist-group-status", class: "grid-worklist-status", role: "status", "aria-live": "polite", hidden: !grouping_enabled,
+                "data-mode": grouping_mode, "data-groups": group_paths.len(), "data-collapsed": closed_groups,
+                "data-visible-leaves": expanded_leaves, "data-total": visible_count,
+                "{group_paths.len()} matching groups · {closed_groups} closed · {expanded_leaves} records visible on this page. Selection and CSV include matching records inside closed groups. Pages count records; collapsing groups can show fewer rows. Automatic rows per page is unavailable while grouping."
+            }
             // Dioxus reconciles keys on fragment children; keep this lifecycle explicit.
             for generation in [epoch()] {
                 DataGrid {
@@ -522,7 +591,7 @@ pub fn GridWorklistExample() -> Element {
                     state: current_state.clone(),
                     onstatechange: move |next| state.set(next),
                     height: effective_grid_height,
-                    auto_page_size: auto_page_size(),
+                    auto_page_size: auto_page_size() && !grouping_enabled,
                     page_size_options: vec![12, 24, 48],
                     striped: true,
                     read_only: read_only(),
@@ -565,6 +634,10 @@ pub fn GridWorklistExample() -> Element {
                 "data-sort": current_sort.clone(),
                 "data-sort-chain": serialized_chain,
                 "data-row-order": serialized_row_order,
+                "data-group-mode": grouping_mode,
+                "data-group-count": group_paths.len(),
+                "data-group-collapsed": closed_groups,
+                "data-group-visible-leaves": expanded_leaves,
                 "{visible_count} of {total_count} visible · {selected_count} selected · {saved} saved · {held} held"
             }
             p {
@@ -574,7 +647,7 @@ pub fn GridWorklistExample() -> Element {
             }
             p { id: "worklist-pagination-status", class: "grid-worklist-status", role: "status", hidden: !pagination_enabled,
                 "data-enabled": pagination_enabled, "data-page": page_info.page, "data-page-size": page_info.page_size,
-                "data-auto-page-size": pagination_enabled && auto_page_size(), "data-grid-height": effective_grid_height,
+                "data-auto-page-size": pagination_enabled && auto_page_size() && !grouping_enabled, "data-grid-height": effective_grid_height,
                 "data-page-count": page_info.page_count, "data-total": page_info.total_rows,
                 "data-start": page_info.range.start, "data-end": page_info.range.end,
                 "Page {displayed_page} of {page_info.page_count} · {displayed_start}–{page_info.range.end} of {page_info.total_rows} matching records. Selection and CSV include matching records across all pages. Save or cancel a cell edit before paging."
@@ -657,7 +730,108 @@ pub const STYLES: &str = include_str!("styles/grid_worklist.css");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dioxus_ix::{DataGridFilterCondition, DataGridFilterOperator};
+    use dioxus_ix::{DataGridFilterCondition, DataGridFilterOperator, DataGridGroupPath};
+
+    #[test]
+    fn collapsed_group_selection_and_bulk_action_keep_full_csv_records() {
+        let mut records = worklist_rows();
+        let columns = worklist_columns();
+        let mut state = change_worklist_grouping(&DataGridState::default(), "status-owner");
+        let normal = DataGridGroupPath::new([("status", "Normal")]);
+        assert_eq!(state.group_paths(&records, &columns).len(), 15);
+        state.select_group(&records, &columns, &normal, true);
+        state.collapse_all_groups(&records, &columns);
+        assert_eq!(state.selected.len(), 32);
+        assert!(
+            state
+                .expanded_page_rows_with_columns(&records, &columns)
+                .is_empty()
+        );
+        let snapshot = state.export_csv(&records, &columns, &DataGridCsvOptions::default());
+        assert_eq!(snapshot.row_ids.len(), 96);
+        assert_eq!(
+            state.visible_rows_with_columns(&records, &columns).len(),
+            96
+        );
+        assert_eq!(mark_selected_for_service(&mut records, &state), (32, 0));
+        let maintenance = DataGridGroupPath::new([("status", "Maintenance")]);
+        assert_eq!(state.group_rows(&records, &columns, &maintenance).len(), 64);
+        assert_eq!(
+            state.group_selection(&records, &columns, &maintenance),
+            (false, true)
+        );
+        assert!(state.group_rows(&records, &columns, &normal).is_empty());
+        assert_eq!(
+            state
+                .export_csv(&records, &columns, &DataGridCsvOptions::default())
+                .row_ids
+                .len(),
+            96
+        );
+        assert!(
+            snapshot
+                .content
+                .contains("Asset 000,Normal,Team 1,IX-00000\r\n")
+        );
+        assert_eq!(records[0].value("status"), "Maintenance");
+    }
+
+    #[test]
+    fn owner_edit_regroups_records_and_mode_changes_preserve_query_and_selection() {
+        let mut records = worklist_rows();
+        let columns = worklist_columns();
+        let mut initial = DataGridState {
+            pagination: Some(DataGridPagination::new(2, 12)),
+            ..Default::default()
+        };
+        initial.selected.insert("worklist-000".into());
+        initial.column_widths.insert("owner".into(), 210);
+        initial.filters.insert(
+            "status".into(),
+            DataGridTextFilter {
+                first: DataGridFilterCondition {
+                    operator: DataGridFilterOperator::Equals,
+                    value: "Normal".into(),
+                },
+                ..Default::default()
+            },
+        );
+        let ordered = change_worklist_order(&initial, false, "owner-ascending");
+        let mut grouped = change_worklist_grouping(&ordered, "status-owner");
+        let old_group = DataGridGroupPath::new([("status", "Normal"), ("owner", "Team 1")]);
+        assert_eq!(grouped.group_rows(&records, &columns, &old_group).len(), 8);
+        let edit = DataGridCellValueChanged {
+            row_id: "worklist-000".into(),
+            column_id: "owner".into(),
+            old_value: "Team 1".into(),
+            new_value: "Team 5".into(),
+        };
+        assert!(matches!(
+            apply_worklist_edit(&mut records, &edit, false),
+            WorklistEditOutcome::Saved(_)
+        ));
+        let new_group = DataGridGroupPath::new([("status", "Normal"), ("owner", "Team 5")]);
+        assert_eq!(grouped.group_rows(&records, &columns, &old_group).len(), 7);
+        assert_eq!(
+            grouped.group_rows(&records, &columns, &new_group)[0].id,
+            "worklist-000"
+        );
+        grouped.set_group_expanded(&old_group, false);
+        let regrouped = change_worklist_grouping(&grouped, "status");
+        assert_eq!(regrouped.selected, initial.selected);
+        assert_eq!(regrouped.filters, initial.filters);
+        assert_eq!(regrouped.column_widths, initial.column_widths);
+        assert_eq!(regrouped.sort, ordered.sort);
+        assert_eq!(
+            regrouped.pagination.unwrap(),
+            DataGridPagination::new(0, 12)
+        );
+        assert_eq!(regrouped.group_paths(&records, &columns).len(), 1);
+        assert!(regrouped.grouping.collapsed.is_empty());
+        let csv = regrouped.export_csv(&records, &columns, &DataGridCsvOptions::default());
+        assert_eq!(csv.row_ids.len(), 32);
+        assert_eq!(csv.row_ids.last().unwrap(), "worklist-000");
+    }
 
     #[test]
     fn native_order_controls_project_filtered_rows_and_csv_without_losing_grid_state() {

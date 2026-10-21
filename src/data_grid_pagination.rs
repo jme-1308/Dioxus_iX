@@ -28,7 +28,7 @@ impl DataGridRowModel {
         columns: &[DataGridColumn],
     ) -> Vec<&'a DataGridRow> {
         match self {
-            Self::Client => state.paged_rows_with_columns(rows, columns),
+            Self::Client => state.expanded_page_rows_with_columns(rows, columns),
             Self::Page { total_rows } => state.pagination.map_or_else(Vec::new, |request| {
                 rows.iter()
                     .take(request.info(total_rows).range.len())

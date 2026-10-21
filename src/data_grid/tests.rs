@@ -2289,3 +2289,8 @@ mod sort_tests {
     use super::*;
     include!("sort_tests.rs");
 }
+
+mod group_tests {
+    use super::*;
+    include!("group_tests.rs");
+}

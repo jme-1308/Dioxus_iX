@@ -13,3 +13,6 @@
 
 #grid-worklist .worklist-order-controls select{width:auto;max-width:100%}
 @media(max-width:420px){#grid-worklist .worklist-order-controls>label{flex-wrap:wrap}}
+
+#grid-worklist .worklist-group-controls select{width:auto;max-width:100%}
+@media(max-width:420px){#grid-worklist .worklist-group-controls>label{flex-wrap:wrap}}

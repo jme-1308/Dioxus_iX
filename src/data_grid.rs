@@ -4,10 +4,12 @@
 //! resizing, content autosizing and stable-ID row/column movement. It is an independent Dioxus component;
 //! it does not embed the AG Grid JavaScript engine or implement its plugin API.
 use crate::data_grid_columns::{ColumnTrack, column_widths, column_window};
+use crate::data_grid_group::{GroupSlot, group_slots};
 use crate::{
     DataGridCellContext, DataGridCellEditor, DataGridCellRender, DataGridEditorContext,
     DataGridRowModel, DataGridValueType, Icon,
 };
+use crate::{DataGridGroupPath, DataGridGrouping};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -188,7 +190,7 @@ fn next_editable_cell(
     backwards: bool,
 ) -> Option<(String, String)> {
     next_editable_in_rows(
-        state.paged_rows_with_columns(rows, columns),
+        state.expanded_page_rows_with_columns(rows, columns),
         columns,
         state,
         row,
@@ -418,6 +420,8 @@ pub struct DataGridState {
     /// Additional priorities after the primary. Use `sort_chain` for the
     /// normalized effective order and `cycle_sort_with_append` for Shift sorting.
     pub secondary_sorts: Vec<(String, DataGridSortDirection)>,
+    /// Opt-in client grouping. Collapse affects visual slots, not logical records.
+    pub grouping: DataGridGrouping,
     pub filters: BTreeMap<String, DataGridTextFilter>,
     /// IDs absent here follow the rows' input order. Stale IDs are ignored.
     pub row_order: Vec<String>,
@@ -525,7 +529,7 @@ impl DataGridState {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
-        visible
+        crate::data_grid_group::cluster_rows(visible, &self.grouping)
     }
     /// Select or deselect visible rows. Hidden selections remain unchanged.
     pub fn select_filtered(&mut self, rows: &[DataGridRow], checked: bool) {
@@ -598,7 +602,9 @@ impl DataGridState {
     /// Managed row movement is disabled during sorting or active filtering,
     /// matching the source configuration's `rowDragManaged` restriction.
     pub fn can_reorder(&self) -> bool {
-        self.sort.is_none() && !self.filters.values().any(DataGridTextFilter::is_active)
+        self.grouping.columns.is_empty()
+            && self.sort.is_none()
+            && !self.filters.values().any(DataGridTextFilter::is_active)
     }
     /// Move one row before/after another by stable ID. Returns whether order changed.
     pub fn move_row(
@@ -735,6 +741,8 @@ enum GridLane {
     Cell(String),
     Drag(String),
     Editor(String),
+    Group(DataGridGroupPath),
+    GroupSelection(DataGridGroupPath),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GridFocus {
@@ -792,7 +800,16 @@ impl GridMountContext {
     fn request(mut self, target: Option<GridFocus>, top: Option<f64>) {
         let mut state = self.state.write();
         state.serial = state.serial.wrapping_add(1);
-        state.origin = state.active.as_ref().map(|active| active.row.clone());
+        state.origin = state
+            .active
+            .as_ref()
+            .filter(|active| {
+                !matches!(
+                    active.lane,
+                    GridLane::Group(_) | GridLane::GroupSelection(_) | GridLane::Header(_)
+                )
+            })
+            .map(|active| active.row.clone());
         state.pending = Some(GridFocusRequest {
             serial: state.serial,
             target,
@@ -996,11 +1013,19 @@ fn grid_focus_target_live(
     if let GridLane::Header(column) = &target.lane {
         return columns.iter().any(|item| item.id == *column);
     }
+    if matches!(
+        target.lane,
+        GridLane::Group(_) | GridLane::GroupSelection(_)
+    ) {
+        return false;
+    }
     if !rows.iter().any(|row| row.id == target.row) {
         return false;
     }
     match &target.lane {
-        GridLane::Header(_) => unreachable!("header membership checked above"),
+        GridLane::Header(_) | GridLane::Group(_) | GridLane::GroupSelection(_) => {
+            unreachable!("non-record membership checked above")
+        }
         GridLane::Selection => true,
         GridLane::Cell(column) => {
             !suppress_cell_focus && columns.iter().any(|item| item.id == *column)
@@ -1432,6 +1457,15 @@ pub fn DataGrid(
     };
     let missing_host_pagination =
         matches!(row_model, DataGridRowModel::Page { .. }) && state.pagination.is_none();
+    let grouping_requested = !state.grouping.columns.is_empty();
+    let grouping_error = if grouping_requested && row_model != DataGridRowModel::Client {
+        Some("Grouping requires client rows.")
+    } else if grouping_requested && auto_page_size {
+        Some("Automatic page sizing is unavailable while grouping.")
+    } else {
+        None
+    };
+    let grouped = grouping_requested && grouping_error.is_none();
     let measured_height = use_hook(|| Rc::new(Cell::new(None::<f64>)));
     let auto_state = state.clone();
     let report_capacity = use_callback(move |measurement: Option<f64>| {
@@ -1441,7 +1475,7 @@ pub fn DataGrid(
             }
             measured_height.set(Some(height));
         }
-        if !auto_page_size || editing.peek().is_some() {
+        if !auto_page_size || grouping_requested || editing.peek().is_some() {
             return;
         }
         let Some((pagination, height)) = auto_state.pagination.zip(measured_height.get()) else {
@@ -1460,6 +1494,7 @@ pub fn DataGrid(
     use_effect(use_reactive(
         (
             &auto_page_size,
+            &grouping_requested,
             &row_height,
             &state.pagination,
             &full_count,
@@ -1468,12 +1503,58 @@ pub fn DataGrid(
         move |_| report_capacity.call(None),
     ));
     let page = state.pagination_info(full_count);
-    let visible = if row_model == DataGridRowModel::Client && state.pagination.is_some() {
+    let page_rows = if row_model == DataGridRowModel::Client && state.pagination.is_some() {
         Rc::new(full_visible[page.range.clone()].to_vec())
     } else {
         full_visible.clone()
     };
+    let (slots, aria_rows) = if grouped {
+        group_slots(&full_visible, &state.grouping, page.range.clone())
+    } else if grouping_error.is_some() {
+        (Vec::new(), full_count)
+    } else {
+        (
+            (0..page_rows.len())
+                .map(|row| GroupSlot::Record {
+                    row,
+                    aria_index: page.range.start.saturating_add(row).saturating_add(2),
+                })
+                .collect(),
+            full_count,
+        )
+    };
+    let slots = Rc::new(slots);
+    let record_slots: Rc<Vec<usize>> = Rc::new(
+        slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| matches!(slot, GroupSlot::Record { .. }).then_some(index))
+            .collect(),
+    );
+    let visible = if grouped {
+        Rc::new(
+            slots
+                .iter()
+                .filter_map(|slot| match slot {
+                    GroupSlot::Record { row, .. } => Some(full_visible[*row].clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else if grouping_error.is_some() {
+        Rc::new(Vec::new())
+    } else {
+        page_rows
+    };
     let visible_count = visible.len();
+    let slot_count = slots.len();
+    let groups: Vec<_> = slots
+        .iter()
+        .filter_map(|slot| match slot {
+            GroupSlot::Group { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
     let page_identity = state.pagination.map(|_| (page.page, page.page_size));
     let previous_page = use_hook(|| Rc::new(Cell::new(page_identity)));
     use_effect(use_reactive!(|page_identity| {
@@ -1524,28 +1605,34 @@ pub fn DataGrid(
         autosize.cancel();
     }
     let window = if suppress_row_virtualisation {
-        0..visible_count
+        0..slot_count
     } else {
-        grid_window(visible_count, viewport(), row_height, row_buffer)
+        grid_window(slot_count, viewport(), row_height, row_buffer)
     };
     let mut rendered: Vec<_> = window.clone().collect();
-    // Keep the currently focused row alive when wheel scrolling moves the
-    // viewport away. This adds at most one row and avoids dropping native focus.
-    if let Some(index) =
-        focused().and_then(|focus| visible.iter().position(|row| row.id == focus.row))
-    {
-        if !window.contains(&index) {
-            rendered.push(index);
-            rendered.sort_unstable();
+    let focus_slot = |focus: &GridFocus| -> Option<usize> {
+        match &focus.lane {
+            GridLane::Group(path) | GridLane::GroupSelection(path) => slots
+                .iter()
+                .position(|slot| matches!(slot,GroupSlot::Group{path:current,..} if current==path)),
+            GridLane::Header(_) => None,
+            _ => visible
+                .iter()
+                .position(|row| row.id == focus.row)
+                .and_then(|index| record_slots.get(index).copied()),
         }
+    };
+    let mut keep_slots = Vec::new();
+    if let Some(index) = focused.read().as_ref().and_then(focus_slot) {
+        keep_slots.push(index);
     }
-    if let Some(index) =
-        editing().and_then(|edit| visible.iter().position(|row| row.id == edit.row))
+    if let Some(index) = editing
+        .read()
+        .as_ref()
+        .and_then(|edit| visible.iter().position(|row| row.id == edit.row))
+        .and_then(|index| record_slots.get(index).copied())
     {
-        if !rendered.contains(&index) {
-            rendered.push(index);
-            rendered.sort_unstable();
-        }
+        keep_slots.push(index);
     }
     if let Some(index) = focus_context
         .state
@@ -1553,20 +1640,109 @@ pub fn DataGrid(
         .origin
         .as_ref()
         .and_then(|origin| visible.iter().position(|row| &row.id == origin))
+        .and_then(|index| record_slots.get(index).copied())
     {
-        if !rendered.contains(&index) {
-            rendered.push(index);
-            rendered.sort_unstable();
+        keep_slots.push(index);
+    }
+    // Group identity is carried by its typed lane, not the compatibility row
+    // string. Keep an outgoing native group until requested focus is applied.
+    if focus_context.state.read().pending.is_some() {
+        if let Some(index) = focus_context
+            .state
+            .read()
+            .active
+            .as_ref()
+            .filter(|focus| matches!(focus.lane, GridLane::Group(_) | GridLane::GroupSelection(_)))
+            .and_then(focus_slot)
+        {
+            keep_slots.push(index);
         }
     }
+    for index in keep_slots {
+        if !rendered.contains(&index) {
+            rendered.push(index);
+        }
+    }
+    rendered.sort_unstable();
     let callback_rows = Rc::new(rows.clone());
     let record_state = Rc::new(state.clone());
     let keyboard_rows = visible.clone();
     let keyboard_columns = columns.clone();
+    let group_keyboard_slots = slots.clone();
+    let group_keyboard_rows = visible.clone();
+    let group_record_slots = record_slots.clone();
+    let navigate_group = EventHandler::new(move |(index, key): (usize, Key)| {
+        let height = ((viewport.peek().height - 48.0) / f64::from(row_height))
+            .floor()
+            .max(1.0) as usize;
+        let target = match key {
+            Key::ArrowUp => index.saturating_sub(1),
+            Key::ArrowDown => (index + 1).min(group_keyboard_slots.len().saturating_sub(1)),
+            Key::Home => 0,
+            Key::End => group_keyboard_slots.len().saturating_sub(1),
+            Key::PageUp => index.saturating_sub(height),
+            Key::PageDown => index
+                .saturating_add(height)
+                .min(group_keyboard_slots.len().saturating_sub(1)),
+            _ => return,
+        };
+        let Some(slot) = group_keyboard_slots.get(target) else {
+            return;
+        };
+        let focus = match slot {
+            GroupSlot::Group { path, .. } => GridFocus {
+                row: String::new(),
+                lane: GridLane::Group(path.clone()),
+            },
+            GroupSlot::Record { .. } => {
+                let Some(row) = group_record_slots
+                    .iter()
+                    .position(|slot| *slot == target)
+                    .and_then(|index| group_keyboard_rows.get(index))
+                else {
+                    return;
+                };
+                let lane = focused
+                    .peek()
+                    .as_ref()
+                    .map(|focus| match &focus.lane {
+                        GridLane::Cell(column) => GridLane::Cell(column.clone()),
+                        _ => GridLane::Selection,
+                    })
+                    .unwrap_or(GridLane::Selection);
+                GridFocus {
+                    row: row.id.clone(),
+                    lane,
+                }
+            }
+        };
+        reveal_grid_row(
+            focus_context,
+            focus,
+            target,
+            group_keyboard_slots.len(),
+            row_height,
+            viewport,
+            focused,
+        );
+    });
+    let navigation_record_slots = record_slots.clone();
     let navigate = move |(index, key, command, backwards): (usize, Key, bool, bool)| {
         let Some(mut focus) = focused.peek().clone() else {
             return;
         };
+        if grouped
+            && matches!(
+                key,
+                Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End | Key::PageUp | Key::PageDown
+            )
+        {
+            if let Some(slot) = navigation_record_slots.get(index) {
+                navigate_group.call((*slot, key));
+            }
+            return;
+        }
+
         let page = ((viewport.peek().height - 48.0) / f64::from(row_height))
             .floor()
             .max(1.0) as usize;
@@ -1648,8 +1824,11 @@ pub fn DataGrid(
             reveal_grid_row(
                 focus_context,
                 focus,
-                target,
-                visible_count,
+                navigation_record_slots
+                    .get(target)
+                    .copied()
+                    .unwrap_or(target),
+                slot_count,
                 row_height,
                 viewport,
                 focused,
@@ -1658,18 +1837,28 @@ pub fn DataGrid(
     };
     {
         let ids: Vec<_> = visible.iter().map(|row| row.id.clone()).collect();
-        use_effect(use_reactive!(|ids| {
+        use_effect(use_reactive!(|ids, groups| {
             if focused
                 .peek()
                 .as_ref()
-                .is_some_and(|focus| !ids.contains(&focus.row))
+                .is_some_and(|focus| !match &focus.lane {
+                    GridLane::Group(path) | GridLane::GroupSelection(path) => groups.contains(path),
+                    GridLane::Header(_) => true,
+                    _ => ids.contains(&focus.row),
+                })
             {
                 let owned = focus_context
                     .state
                     .peek()
                     .active
                     .as_ref()
-                    .is_some_and(|focus| !ids.contains(&focus.row));
+                    .is_some_and(|focus| !match &focus.lane {
+                        GridLane::Group(path) | GridLane::GroupSelection(path) => {
+                            groups.contains(path)
+                        }
+                        GridLane::Header(_) => true,
+                        _ => ids.contains(&focus.row),
+                    });
                 focused.set(None);
                 focus_context.cancel();
                 // Typed ownership proves the removed row still owned grid focus.
@@ -1694,7 +1883,7 @@ pub fn DataGrid(
             editing.set(None);
             let current_focus = focused.peek().clone();
             if current_focus.as_ref().is_some_and(|focus| {
-                focus.row == session.row && matches!(focus.lane, GridLane::Editor(_))
+                matches!(focus.lane, GridLane::Editor(_)) && focus.row == session.row
             }) {
                 focused.set((!suppress_cell_focus).then_some(GridFocus {
                     row: session.row,
@@ -1710,6 +1899,9 @@ pub fn DataGrid(
         .as_ref()
         .and_then(|request| request.target.as_ref())
         .is_some_and(|target| {
+            if let GridLane::Group(path) | GridLane::GroupSelection(path) = &target.lane {
+                return !groups.contains(path);
+            }
             !grid_focus_target_live(
                 target,
                 &visible,
@@ -1729,6 +1921,23 @@ pub fn DataGrid(
         let reveal = |session: &GridEditSession, records: &[DataGridRow], editor: bool| {
             let displayed = row_model.projected_rows(&edit_state, records, &edit_columns);
             if let Some(index) = displayed.iter().position(|row| row.id == session.row) {
+                let (visual_index, visual_total) = if grouped {
+                    let full: Vec<_> = edit_state
+                        .visible_rows_with_columns(records, &edit_columns)
+                        .into_iter()
+                        .cloned()
+                        .collect();
+                    let (slots, _) = group_slots(
+                        &full,
+                        &edit_state.grouping,
+                        edit_state.pagination_info(full.len()).range,
+                    );
+                    let index=slots.iter().position(|slot|matches!(slot,GroupSlot::Record{row,..} if full[*row].id==session.row)).unwrap_or(index);
+                    (index, slots.len())
+                } else {
+                    (index, displayed.len())
+                };
+
                 reveal_grid_row(
                     focus_context,
                     GridFocus {
@@ -1739,8 +1948,8 @@ pub fn DataGrid(
                             GridLane::Cell(session.column.clone())
                         },
                     },
-                    index,
-                    displayed.len(),
+                    visual_index,
+                    visual_total,
                     row_height,
                     viewport,
                     focused,
@@ -1922,7 +2131,7 @@ pub fn DataGrid(
             | GridLane::Drag(column) => {
                 keep.insert(column);
             }
-            GridLane::Selection => {}
+            GridLane::Selection | GridLane::Group(_) | GridLane::GroupSelection(_) => {}
         }
     }
     if let Some(session) = editing() {
@@ -1975,7 +2184,7 @@ pub fn DataGrid(
             ondoubleclick: move |event: MouseEvent| {
                 let point = event.client_coordinates(); resizing.set(None); hit_autosize.fit_at(point.x,point.y);
             },
-            div { id: scroll_id, class: "ix-data-grid-scroll", role: "grid", "aria-label": label, "aria-rowcount": full_count.saturating_add(1), "aria-colcount": columns.len() + 1, "aria-multiselectable": "true",
+            div { id: scroll_id, class: "ix-data-grid-scroll", role: if grouped {"treegrid"} else {"grid"}, "aria-label": label, "aria-rowcount": aria_rows.saturating_add(1), "aria-colcount": if grouped {columns.len().max(1)+1} else {columns.len()+1}, "aria-multiselectable": "true",
                 onmounted: move |event| {
                     let node = event.data();
                     focus_context.root.set(Some(node.clone()));
@@ -2002,7 +2211,7 @@ pub fn DataGrid(
                 },
                 div { class: "ix-data-grid-header", role: "row", "aria-rowindex": "1",
                     div { class: "ix-data-grid-selection", role: "columnheader", style:"grid-column:1", "aria-colindex":1,
-                        GridCheckbox { label: if row_model == DataGridRowModel::Client { "Select all filtered rows" } else { "Select all loaded rows" }, checked, mixed, disabled: full_visible.is_empty(),
+                        GridCheckbox { label: if row_model == DataGridRowModel::Client { "Select all filtered rows" } else { "Select all loaded rows" }, checked, mixed, disabled: full_visible.is_empty() || grouping_error.is_some(),
                             onmounted: header_mount, onfocus: move |_| focus_context.focused(None),
                             onchange: move |_| { let mut next = header_state.clone(); for row in header_rows.iter() { if checked { next.selected.remove(&row.id); } else { next.selected.insert(row.id.clone()); } } onstatechange.call(next); },
                         }
@@ -2011,16 +2220,22 @@ pub fn DataGrid(
                         GridHeader { key: "{columns[column_index].id}", column:columns[column_index].clone(), column_index, columns: columns.clone(), state: state.clone(), onstatechange, resizing, column_dragging, column_drop_target, focused }
                     }
                 }
-                div { class: "ix-data-grid-body", role: "rowgroup", style: "height:{visible_count as u64 * u64::from(row_height)}px",
-                    for index in rendered {
-                        GridRecord { key: "{visible[index].id}", row: visible[index].clone(), row_label_column: row_label_column.clone(), columns: columns.clone(), column_indices:column_indices.clone(), rows: callback_rows.clone(), state: record_state.clone(),
-                            onstatechange, row_model, dragging, drop_target, tooltip_delay_ms, index, page_offset:page.range.start, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: index == window.start, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
+                div { class: "ix-data-grid-body", role: "rowgroup", style: "height:{slot_count as u64 * u64::from(row_height)}px",
+                    for slot_index in rendered {
+                        match &slots[slot_index] {
+                            GroupSlot::Group {path,count,aria_index,range} => rsx! { GridGroupRecord {key:"group:{path.key()}",path:path.clone(),count:*count,index:slot_index,aria_index:*aria_index,row_height,members:full_visible[range.clone()].iter().map(|row|row.id.clone()).collect::<Vec<_>>(),rows:callback_rows.clone(),columns:columns.clone(),state:record_state.clone(),onstatechange,focused,onnavigate:navigate_group,editing,edit_action} },
+                            GroupSlot::Record {row,aria_index} => {
+                                let index=record_slots.iter().position(|slot|*slot==slot_index).expect("record slot");
+                                rsx! { GridRecord { key: "row:{visible[index].id.len()}:{visible[index].id}", row: visible[index].clone(), row_label_column: row_label_column.clone(), columns: columns.clone(), column_indices:column_indices.clone(), rows: callback_rows.clone(), state: record_state.clone(),
+                                    onstatechange, row_model, dragging, drop_target, tooltip_delay_ms, index, visual_index:grouped.then_some(slot_index),logical_index:grouped.then_some(*row),aria_index:grouped.then_some(*aria_index),level:grouped.then_some(state.grouping.columns().len()+1),page_offset:page.range.start, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: if grouped {index==0} else {index==window.start}, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
+                                } }
+                            }
                         }
                     }
                 }
-                if visible_count == 0 { div { class: "ix-data-grid-empty", role: "status", if missing_host_pagination { "Host-paged rows require pagination." } else { "No Rows To Show" } } }
+                if slot_count == 0 { div { class: "ix-data-grid-empty", role: "status", if let Some(error)=grouping_error {"{error}"} else if missing_host_pagination { "Host-paged rows require pagination." } else { "No Rows To Show" } } }
             }
-            if state.pagination.is_some() && !hide_pagination_controls {
+            if state.pagination.is_some() && !hide_pagination_controls && grouping_error.is_none() {
                 fieldset {class:"ix-data-grid-pagination",disabled:editing().is_some(),
                     crate::Pagination {count:page.page_count,selected_page:page.page,advanced:true,item_count:page.page_size,item_count_options:page_size_options,hide_item_count:auto_page_size,label:pagination_label,labels:pagination_labels,
                         onpage:move|requested:usize| {
@@ -2407,6 +2622,96 @@ fn GridFilterInput(
 }
 
 #[component]
+fn GridGroupRecord(
+    path: DataGridGroupPath,
+    count: usize,
+    index: usize,
+    aria_index: usize,
+    row_height: u32,
+    members: Vec<String>,
+    rows: Rc<Vec<DataGridRow>>,
+    columns: Vec<DataGridColumn>,
+    state: Rc<DataGridState>,
+    onstatechange: EventHandler<DataGridState>,
+    mut focused: Signal<Option<GridFocus>>,
+    onnavigate: EventHandler<(usize, Key)>,
+    editing: Signal<Option<GridEditSession>>,
+    edit_action: EventHandler<GridEditAction>,
+) -> Element {
+    let context = use_context::<GridMountContext>();
+    let focus = GridFocus {
+        row: String::new(),
+        lane: GridLane::Group(path.clone()),
+    };
+    let selection_focus = GridFocus {
+        row: String::new(),
+        lane: GridLane::GroupSelection(path.clone()),
+    };
+    let mounted = use_grid_focus_lane(Some(focus.clone()), None);
+    let selection_mounted = use_grid_focus_lane(Some(selection_focus.clone()), None);
+    let expanded = state.group_expanded(&path);
+    let selected = members
+        .iter()
+        .filter(|id| state.selected.contains(*id))
+        .count();
+    let (checked, mixed) = (
+        !members.is_empty() && selected == members.len(),
+        selected > 0 && selected < members.len(),
+    );
+    let (column, value) = path
+        .as_slice()
+        .last()
+        .expect("nonempty projected group")
+        .clone();
+    let title = columns
+        .iter()
+        .find(|item| item.id == column)
+        .map(|item| item.title.as_str())
+        .unwrap_or(&column);
+    let value_label = if value.is_empty() { "(Empty)" } else { &value };
+    let label = format!("{title}: {value_label}");
+    let toggle_state = state.clone();
+    let toggle_path = path.clone();
+    let toggle = EventHandler::new(move |expanded: bool| {
+        let mut next = toggle_state.as_ref().clone();
+        next.set_group_expanded(&toggle_path, expanded);
+        onstatechange.call(next);
+    });
+    let selection_state = state.clone();
+    let selection_path = path.clone();
+    let selection_rows = rows.clone();
+    let selection_columns = columns.clone();
+    let indent = path.as_slice().len().saturating_sub(1).saturating_mul(16);
+    rsx! {div {class:"ix-data-grid-group",role:"row",style:"top:{index as u64 * u64::from(row_height)}px;--ix-grid-group-indent:{indent}px",
+        "data-group-path":path.key(),"data-group-column":column,"data-group-value":value,
+        "data-group-level":path.as_slice().len(),"aria-level":path.as_slice().len(),"aria-expanded":expanded,"aria-rowindex":aria_index,
+        onkeydown:move|event:KeyboardEvent|{
+            match event.key(){
+                Key::ArrowLeft=>{event.prevent_default();event.stop_propagation();toggle.call(false);},
+                Key::ArrowRight=>{event.prevent_default();event.stop_propagation();toggle.call(true);},
+                key @ (Key::ArrowUp|Key::ArrowDown|Key::Home|Key::End|Key::PageUp|Key::PageDown)=>{event.prevent_default();event.stop_propagation();onnavigate.call((index,key));},
+                _=>{}
+            }
+        },
+        div {class:"ix-data-grid-selection",role:"gridcell","aria-colindex":1,
+            GridCheckbox {label:format!("Select group {label}"),checked,mixed,onmounted:selection_mounted,
+                onfocus:move |_|{context.focused(Some(selection_focus.clone()));focused.set(Some(selection_focus.clone()));if editing.peek().is_some(){edit_action.call(GridEditAction::Commit{tab:None,restore_focus:false});}},
+                onchange:move |_|{let mut next=selection_state.as_ref().clone();next.select_group(&selection_rows,&selection_columns,&selection_path,!checked);onstatechange.call(next);}
+            }
+        }
+        div {role:"gridcell","aria-colindex":2,"aria-colspan":columns.len().max(1),
+            button {class:"ix-data-grid-group-toggle",r#type:"button",onmounted:mounted,"aria-label":label.clone(),"aria-description":"{count} matching rows","aria-expanded":expanded,
+                onfocus:move |_|{context.focused(Some(focus.clone()));focused.set(Some(focus.clone()));if editing.peek().is_some(){edit_action.call(GridEditAction::Commit{tab:None,restore_focus:false});}},
+                onclick:move |_|toggle.call(!expanded),
+                Icon {name:if expanded{"chevron-down-small"}else{"chevron-right-small"},size:16}
+                span {class:"ix-data-grid-group-label","{label}"}
+                span {class:"ix-data-grid-group-count",aria_hidden:true,"({count})"}
+            }
+        }
+    }}
+}
+
+#[component]
 fn GridRecord(
     row: DataGridRow,
     row_label_column: Option<String>,
@@ -2421,6 +2726,10 @@ fn GridRecord(
     tooltip_delay_ms: u32,
     index: usize,
     #[props(default)] page_offset: usize,
+    #[props(default)] visual_index: Option<usize>,
+    #[props(default)] logical_index: Option<usize>,
+    #[props(default)] aria_index: Option<usize>,
+    #[props(default)] level: Option<usize>,
     row_height: u32,
     mut focused: Signal<Option<GridFocus>>,
     onnavigate: EventHandler<(usize, Key, bool, bool)>,
@@ -2464,9 +2773,11 @@ fn GridRecord(
     let focus_id = row.id.clone();
     let first_column = columns.first().map(|column| column.id.clone());
     let last_column = columns.last().map(|column| column.id.clone());
-    rsx! { div { class: "ix-data-grid-row", role: "row", "data-row-id": row.id.clone(), "data-odd": (index.saturating_add(page_offset) % 2 == 1).to_string(),
-        style: "top:{index as u64 * u64::from(row_height)}px",
-        "data-selected": selected.to_string(), "data-drop-target": is_target.to_string(), "aria-rowindex": index.saturating_add(page_offset).saturating_add(2), "aria-selected": selected.to_string(),
+    let logical_index = logical_index.unwrap_or(index.saturating_add(page_offset));
+    let visual_index = visual_index.unwrap_or(index);
+    rsx! { div { class: "ix-data-grid-row", role: "row", "data-row-id": row.id.clone(), "data-odd": (logical_index % 2 == 1).to_string(),
+        style: "top:{visual_index as u64 * u64::from(row_height)}px", "aria-level":level,
+        "data-selected": selected.to_string(), "data-drop-target": is_target.to_string(), "aria-rowindex": aria_index.unwrap_or(index.saturating_add(page_offset).saturating_add(2)), "aria-selected": selected.to_string(),
         onmounted: move |event| mounted.set(Some(event.data())),
         onkeydown: move |event: KeyboardEvent| {
             if event.modifiers().alt() { return; }
@@ -2501,7 +2812,7 @@ fn GridRecord(
                 render_cell, render_editor,
                 render_context: (render_cell.is_some() || render_editor.is_some()).then(|| DataGridCellContext {
                     row: row.clone(), column: column.clone(), value: row.value(&column.id).to_string(),
-                    row_index: index.saturating_add(page_offset), selected, editable: editable_cell(&row,&column,read_only) && !suppress_cell_focus,
+                    row_index: logical_index, selected, editable: editable_cell(&row,&column,read_only) && !suppress_cell_focus,
                     grid_read_only: read_only,
                 }),
             }
@@ -2571,8 +2882,8 @@ fn GridCell(
     let drag_focus_row = row_id.clone();
     let drag_focus_column = column.id.clone();
     let is_active = focused.read().as_ref().is_some_and(|focus| {
-        focus.row == row_id
-            && matches!(&focus.lane,GridLane::Cell(id)|GridLane::Editor(id) if *id==column.id)
+        matches!(&focus.lane,GridLane::Cell(id)|GridLane::Editor(id) if *id==column.id)
+            && focus.row == row_id
     });
     let edit_row = row_id.clone();
     let edit_column = column.id.clone();
@@ -2631,7 +2942,7 @@ fn GridCell(
             .active
             .as_ref()
             .is_some_and(|focus| {
-                focus.row == row_id && focus.lane == GridLane::Cell(column.id.clone())
+                focus.lane == GridLane::Cell(column.id.clone()) && focus.row == row_id
             });
     let focus_help = tooltip_binding.clone();
     // Native return focus can arrive while the outgoing editor is retained.
@@ -2689,7 +3000,7 @@ fn GridCell(
         ..observations,
         if column.row_drag { button { onmounted: drag_mount, class: "ix-data-grid-drag", r#type: "button", draggable: can_reorder.to_string(), disabled: !can_reorder,
             onfocus: move |event: FocusEvent| { event.stop_propagation(); let focus = GridFocus {row:drag_focus_row.clone(),lane:GridLane::Drag(drag_focus_column.clone())}; focus_context.focused(Some(focus.clone())); focused.set(Some(focus)); },
-            "aria-label": "Move {row_label}", title: if can_reorder { "Drag to move. Keyboard: Alt+Up or Alt+Down." } else if matches!(row_model, DataGridRowModel::Page { .. }) { "Row movement is controlled by the page owner." } else { "Row movement is unavailable while sorting or filtering." },
+            "aria-label": "Move {row_label}", title: if can_reorder { "Drag to move. Keyboard: Alt+Up or Alt+Down." } else if !state.grouping.columns.is_empty() { "Row movement is unavailable while grouping." } else if matches!(row_model, DataGridRowModel::Page { .. }) { "Row movement is controlled by the page owner." } else { "Row movement is unavailable while sorting or filtering." },
             ondragstart: move |event: DragEvent| { if can_reorder { let transfer = event.data_transfer(); let _ = transfer.set_data("text/plain", &drag_id); transfer.set_effect_allowed("move"); dragging.set(Some(drag_id.clone())); } },
             ondragend: move |_| { dragging.set(None); drop_target.set(None); },
             onkeydown: move |event: KeyboardEvent| {
