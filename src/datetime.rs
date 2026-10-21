@@ -1408,6 +1408,54 @@ pub fn TimePicker(
             labels.millisecond.clone(),
         ));
     }
+    // Mounted ownership follows rendered options, including disabled values.
+    // Period/interval/precision changes retire only keys and lists absent from
+    // this view; valid provisional focus and current native handles stay owned.
+    let rendered_units: BTreeSet<_> = columns.iter().map(|(unit, _, _)| *unit).collect();
+    let rendered_keys: BTreeSet<_> = columns
+        .iter()
+        .flat_map(|(unit, interval, _)| {
+            clock_unit_values(*unit, *interval, format, time)
+                .into_iter()
+                .map(|value| (*unit, value))
+        })
+        .collect();
+    if references
+        .peek()
+        .keys()
+        .any(|key| !rendered_keys.contains(key))
+    {
+        references
+            .write()
+            .retain(|key, _| rendered_keys.contains(key));
+    }
+    if containers
+        .peek()
+        .keys()
+        .any(|unit| !rendered_units.contains(unit))
+    {
+        containers
+            .write()
+            .retain(|unit, _| rendered_units.contains(unit));
+    }
+    if visible_columns
+        .peek()
+        .iter()
+        .any(|unit| !rendered_units.contains(unit))
+    {
+        visible_columns
+            .write()
+            .retain(|unit| rendered_units.contains(unit));
+    }
+    completed_reveals
+        .borrow_mut()
+        .retain(|unit, (value, _, _)| rendered_keys.contains(&(*unit, *value)));
+    if focused_option
+        .peek()
+        .is_some_and(|key| !rendered_keys.contains(&key))
+    {
+        focused_option.set(None);
+    }
     let columns: Vec<_> = columns
         .into_iter()
         .map(|(unit, interval, label)| {
@@ -2344,3 +2392,7 @@ mod clock_reveal_tests;
 #[cfg(test)]
 #[path = "datetime/calendar_mount_tests.rs"]
 mod calendar_mount_tests;
+
+#[cfg(test)]
+#[path = "datetime/clock_mount_tests.rs"]
+mod clock_mount_tests;
