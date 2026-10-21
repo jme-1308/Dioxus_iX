@@ -435,3 +435,133 @@ fn interactive_default_extends_only_the_source_default_hide_delay() {
         50
     );
 }
+
+struct Visibility(bool);
+impl dioxus::html::HasVisibleData for Visibility {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn is_intersecting(&self) -> dioxus::html::VisibleResult<bool> {
+        Ok(self.0)
+    }
+    fn get_intersection_rect(
+        &self,
+    ) -> dioxus::html::VisibleResult<dioxus::html::geometry::PixelsRect> {
+        Ok(dioxus::html::geometry::PixelsRect::new(
+            dioxus::html::geometry::euclid::Point2D::new(100.0, 100.0),
+            dioxus::html::geometry::euclid::Size2D::new(if self.0 { 80.0 } else { 0.0 }, 30.0),
+        ))
+    }
+    fn get_root_bounds(&self) -> dioxus::html::VisibleResult<dioxus::html::geometry::PixelsRect> {
+        Ok(dioxus::html::geometry::PixelsRect::new(
+            dioxus::html::geometry::euclid::Point2D::new(0.0, 0.0),
+            dioxus::html::geometry::euclid::Size2D::new(400.0, 300.0),
+        ))
+    }
+}
+struct AnchorFocus;
+impl dioxus::html::HasFocusData for AnchorFocus {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+fn visibility(dom: &VirtualDom, binding: &TooltipAnchorBinding, intersects: bool) {
+    dom.in_scope(ScopeId::ROOT, || {
+        binding.onvisible.call(Event::new(
+            Rc::new(dioxus::html::VisibleData::new(Visibility(intersects))),
+            false,
+        ))
+    });
+}
+fn focus_anchor(dom: &VirtualDom, binding: &TooltipAnchorBinding) {
+    dom.in_scope(ScopeId::ROOT, || {
+        binding.onfocusin.call(Event::new(
+            Rc::new(dioxus::html::FocusData::new(AnchorFocus)),
+            true,
+        ))
+    });
+}
+#[test]
+fn current_registered_interaction_survives_prior_offscreen_fact_but_not_dismissal_or_removal() {
+    let capture: OwnerCapture = Rc::new(RefCell::new(None));
+    let mut dom = VirtualDom::new(registered_owner_fixture).with_root_context(capture.clone());
+    dom.rebuild_in_place();
+    settle(&mut dom);
+    let (controller, first, _, mut show) = capture.borrow().clone().unwrap();
+    {
+        let mut model = controller.model.borrow_mut();
+        model.viewport = (400.0, 300.0);
+        model.anchors.get_mut(&first.token).unwrap().mount = Some(mounted(scene().anchor));
+        model.panel.as_mut().unwrap().mount = Some(mounted(Rect {
+            width: 120.0,
+            height: 50.0,
+            ..Default::default()
+        }));
+    }
+    visibility(&dom, &first, false);
+    focus_anchor(&dom, &first);
+    settle(&mut dom);
+    assert!(controller.model.borrow().lifecycle.visible.is_none());
+    visibility(&dom, &first, true);
+    settle(&mut dom);
+    assert_eq!(
+        controller.model.borrow().current_anchor(),
+        Some(first.token)
+    );
+    assert!(
+        controller.model.borrow().coordinates.is_some(),
+        "current help opens and positions after automatic scrolling becomes visible"
+    );
+
+    visibility(&dom, &first, false);
+    visibility(&dom, &first, true);
+    settle(&mut dom);
+    assert!(
+        controller.model.borrow().lifecycle.visible.is_none(),
+        "actual clipping still hides an already shown tooltip"
+    );
+    visibility(&dom, &first, false);
+    focus_anchor(&dom, &first);
+    dom.in_scope(ScopeId::ROOT, || first.hide());
+    visibility(&dom, &first, true);
+    settle(&mut dom);
+    assert!(
+        controller.model.borrow().lifecycle.visible.is_none(),
+        "leaving cancels an interaction awaiting visibility"
+    );
+
+    visibility(&dom, &first, false);
+    focus_anchor(&dom, &first);
+    dom.in_scope(ScopeId::ROOT, || controller.dismiss());
+    visibility(&dom, &first, true);
+    settle(&mut dom);
+    assert!(
+        controller.model.borrow().lifecycle.visible.is_none(),
+        "Escape dismissal cannot be replayed by late visibility"
+    );
+
+    visibility(&dom, &first, false);
+    focus_anchor(&dom, &first);
+    dom.in_scope(ScopeId::ROOT, || show.set(false));
+    settle(&mut dom);
+    visibility(&dom, &first, true);
+    dom.in_scope(ScopeId::ROOT, || show.set(true));
+    settle(&mut dom);
+    visibility(&dom, &first, true);
+    settle(&mut dom);
+    assert!(
+        controller.model.borrow().lifecycle.visible.is_none(),
+        "a replaced panel does not inherit the old interaction"
+    );
+
+    visibility(&dom, &first, false);
+    focus_anchor(&dom, &first);
+    controller.model.borrow_mut().remove_anchor(first.token);
+    visibility(&dom, &first, true);
+    settle(&mut dom);
+    assert!(controller.model.borrow().interaction.is_none());
+    assert!(
+        controller.model.borrow().lifecycle.visible.is_none(),
+        "removed anchors cannot be reopened by their retained binding"
+    );
+}

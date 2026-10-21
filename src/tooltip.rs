@@ -227,6 +227,8 @@ struct TooltipModel {
     next: u64,
     anchors: std::collections::BTreeMap<u64, Anchor>,
     panel: Option<Panel>,
+    // Latest mounted interaction, including one waiting for visibility after scroll.
+    interaction: Option<u64>,
     lifecycle: Lifecycle,
     coordinates: Option<Position>,
     viewport: (f64, f64),
@@ -237,6 +239,7 @@ impl TooltipModel {
         self.measurement = self.measurement.wrapping_add(1);
     }
     fn hide(&mut self) {
+        self.interaction = None;
         let generation = self.lifecycle.leave();
         self.lifecycle.hide(generation);
         self.coordinates = None;
@@ -247,6 +250,9 @@ impl TooltipModel {
     }
     fn remove_anchor(&mut self, token: u64) {
         self.anchors.remove(&token);
+        if self.interaction == Some(token) {
+            self.interaction = None;
+        }
         let key = token.to_string();
         if self.lifecycle.visible.as_ref() == Some(&key)
             || self.lifecycle.pending.as_ref() == Some(&key)
@@ -284,16 +290,19 @@ impl TooltipController {
         let request = {
             let mut model = self.model.borrow_mut();
             if !model.alive
-                || !model
-                    .anchors
-                    .get(&token)
-                    .is_some_and(|a| a.mount.is_some() && a.intersecting)
+                || !model.anchors.get(&token).is_some_and(|a| a.mount.is_some())
+                || model.panel.is_none()
             {
                 return;
             }
-            let Some(panel) = model.panel.as_ref() else {
+            if model.interaction != Some(token) && model.lifecycle.pending.is_some() {
+                model.lifecycle.leave();
+            }
+            model.interaction = Some(token);
+            if !model.anchors[&token].intersecting {
                 return;
-            };
+            }
+            let panel = model.panel.as_ref().unwrap();
             let (panel_token, delay) = (panel.token, panel.config.show_delay);
             model
                 .lifecycle
@@ -310,13 +319,23 @@ impl TooltipController {
             }
             let shown = {
                 let mut model = controller.model.borrow_mut();
-                if !model.alive
-                    || model.panel.as_ref().map(|p| p.token) != Some(panel_token)
+                if !model.alive || model.panel.as_ref().map(|p| p.token) != Some(panel_token) {
+                    return;
+                }
+                if model.interaction != Some(token)
                     || !model
                         .anchors
                         .get(&token)
                         .is_some_and(|a| a.mount.is_some() && a.intersecting)
                 {
+                    // A native visibility update can overtake this existing
+                    // delayed show. Release its pending slot, keeping only the
+                    // current interaction for a later visible notification.
+                    if model.lifecycle.generation == generation
+                        && model.lifecycle.pending.as_deref() == Some(token.to_string().as_str())
+                    {
+                        model.lifecycle.leave();
+                    }
                     return;
                 }
                 let shown = model.lifecycle.show(generation, token.to_string());
@@ -335,6 +354,9 @@ impl TooltipController {
     fn leave(&self, token: Option<u64>) {
         let request = {
             let mut model = self.model.borrow_mut();
+            if token.is_none() || model.interaction == token {
+                model.interaction = None;
+            }
             if let Some(token) = token {
                 let key = token.to_string();
                 if model.lifecycle.visible.as_ref() != Some(&key)
@@ -481,6 +503,7 @@ fn use_tooltip_owner(id: String, native: bool) -> TooltipController {
             next: 0,
             anchors: Default::default(),
             panel: None,
+            interaction: None,
             lifecycle: Default::default(),
             coordinates: None,
             viewport: (0.0, 0.0),
@@ -629,7 +652,7 @@ pub fn use_tooltip_anchor(
                 && event
                     .get_intersection_rect()
                     .is_ok_and(|r| r.width() > 0.0 && r.height() > 0.0);
-            {
+            let retry = {
                 let mut model = visible.model.borrow_mut();
                 if let Some(anchor) = model.anchors.get_mut(&token) {
                     anchor.intersecting = intersects;
@@ -642,8 +665,12 @@ pub fn use_tooltip_anchor(
                 if !intersects && model.current_anchor() == Some(token) {
                     model.hide();
                 }
-            }
+                intersects && model.interaction == Some(token)
+            };
             visible.notify();
+            if retry {
+                visible.enter(token);
+            }
             visible.measure();
         }),
         onmouseenter: use_callback(move |_: MouseEvent| entered.enter(token)),

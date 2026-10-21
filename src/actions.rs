@@ -432,7 +432,12 @@ pub fn Spinner(
     } }
 }
 
-/// Read-only semantic status label.
+static NEXT_STATUS_HELP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// Read-only semantic status label. Nonblank `tooltip` supplies shared styled
+/// help and makes the status focusable by default; `tabindex` can override it.
+/// Pass explicit Rust text, including the visible label when desired. Existing
+/// description tokens and an explicit accessible name remain caller-owned.
 #[component]
 pub fn Pill(
     children: Element,
@@ -445,20 +450,54 @@ pub fn Pill(
     color: Option<String>,
     tooltip: Option<String>,
     aria_label: Option<String>,
+    #[props(default)] id: Option<String>,
+    #[props(default)] tabindex: Option<i64>,
+    #[props(default)] aria_describedby: Option<String>,
     #[props(default)] class: String,
 ) -> Element {
+    let anchor_id = use_hook(|| {
+        format!(
+            "ix-pill-{}",
+            NEXT_STATUS_HELP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    let tooltip_id = format!("{anchor_id}-tooltip");
+    let controller = crate::use_tooltip(tooltip_id.clone());
+    // Registration identity is stable; geometry comes from the mounted handle,
+    // independently of a caller's current DOM id.
+    let binding = crate::use_tooltip_anchor(controller.clone(), anchor_id.clone());
+    let root_id = id.unwrap_or(anchor_id);
+    let text = tooltip.filter(|text| !text.trim().is_empty());
+    let observations = if text.is_some() {
+        Vec::<Attribute>::new()
+            .onresize(binding.onresize)
+            .onvisible(binding.onvisible)
+    } else {
+        Vec::new()
+    };
+    let root_tabindex = tabindex.or_else(|| text.as_ref().map(|_| 0));
+    let describedby = binding.describedby(aria_describedby.as_deref().unwrap_or_default());
     let custom = custom_status_style(variant, background.as_deref(), color.as_deref());
     rsx! { span {
         class: "ix-pill ix-status-{variant.as_str()} {class}", class: if outline { "ix-outline" },
-        class: if align_left { "ix-align-start" }, style: custom, title: tooltip,
+        class: if align_left { "ix-align-start" }, style: custom,
+        id:root_id,tabindex:root_tabindex,aria_describedby:describedby,
+        onmounted:binding.onmounted,
+        onmouseenter:binding.onmouseenter,onmouseleave:binding.onmouseleave,
+        onfocusin:binding.onfocusin,onfocusout:binding.onfocusout,onkeydown:binding.onkeydown,
         role: aria_label.as_ref().map(|_| "img"), aria_label,
+        ..observations,
         if let Some(name) = icon { crate::Icon { name, size: 16, label: aria_label_icon } }
         span { class: "ix-status-label", {children} }
+        if let Some(text)=text {crate::TooltipFor {id:tooltip_id,controller,"{text}"}}
     } }
 }
 
 /// Interactive tag with an independently operable close button.
 /// `inactive` disables only the main chip; the close button remains available.
+/// Nonblank `tooltip` describes both buttons with shared styled help. The main
+/// button's Dioxus mount supplies geometry; the outer tag adds no Tab stop.
+/// `id` applies to that main button, and existing description tokens are kept.
 #[component]
 pub fn Chip(
     children: Element,
@@ -473,25 +512,52 @@ pub fn Chip(
     color: Option<String>,
     tooltip: Option<String>,
     aria_label: Option<String>,
+    #[props(default)] id: Option<String>,
+    #[props(default)] aria_describedby: Option<String>,
     #[props(default)] class: String,
     #[props(default = "Close chip".to_string())] close_label: String,
     onclick: Option<EventHandler<MouseEvent>>,
     onclose: Option<EventHandler<MouseEvent>>,
 ) -> Element {
+    let anchor_id = use_hook(|| {
+        format!(
+            "ix-chip-{}",
+            NEXT_STATUS_HELP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    let tooltip_id = format!("{anchor_id}-tooltip");
+    let controller = crate::use_tooltip(tooltip_id.clone());
+    let binding = crate::use_tooltip_anchor(controller.clone(), anchor_id.clone());
+    let main_id = id.unwrap_or(anchor_id);
+    let text = tooltip.filter(|text| !text.trim().is_empty());
+    let observations = if text.is_some() {
+        Vec::<Attribute>::new()
+            .onresize(binding.onresize)
+            .onvisible(binding.onvisible)
+    } else {
+        Vec::new()
+    };
+    let describedby = binding.describedby(aria_describedby.as_deref().unwrap_or_default());
+    let close_describedby = describedby.clone();
     rsx! { span {
         class: "ix-chip ix-status-{variant.as_str()} {class}", class: if outline { "ix-outline" },
-        style: custom_status_style(variant, background.as_deref(), color.as_deref()), title: tooltip,
+        style: custom_status_style(variant, background.as_deref(), color.as_deref()),
+        onmouseenter:binding.onmouseenter,onmouseleave:binding.onmouseleave,
+        onfocusin:binding.onfocusin,onfocusout:binding.onfocusout,onkeydown:binding.onkeydown,
         button { class: "ix-chip-main", class: if center_content { "ix-center-content" },
-            r#type: "button", disabled: inactive, aria_label,
+            r#type: "button", disabled: inactive, aria_label,id:main_id,aria_describedby:describedby,
+            onmounted:binding.onmounted,
             onclick: move |event| { if !inactive { if let Some(handler) = onclick { handler.call(event); } } },
+            ..observations,
             if let Some(name) = icon { crate::Icon { name, size: 20, label: aria_label_icon } }
             span { class: "ix-status-label", {children} }
         }
         if closable { button {
-            class: "ix-chip-close", r#type: "button", aria_label: close_label,
+            class: "ix-chip-close", r#type: "button", aria_label: close_label,aria_describedby:close_describedby,
             onclick: move |event| { event.stop_propagation(); if let Some(handler) = onclose { handler.call(event); } },
             crate::Icon { name: "close-small".to_string(), size: 16 }
         } }
+        if let Some(text)=text {crate::TooltipFor {id:tooltip_id,controller,"{text}"}}
     } }
 }
 
@@ -961,3 +1027,7 @@ mod link_button_tests;
 #[cfg(test)]
 #[path = "actions/badge_composition_tests.rs"]
 mod badge_composition_tests;
+
+#[cfg(test)]
+#[path = "actions/status_help_tests.rs"]
+mod status_help_tests;

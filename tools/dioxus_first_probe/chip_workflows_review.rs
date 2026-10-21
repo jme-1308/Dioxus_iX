@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 
 #[path = "../../examples/gallery/chip_workflows.rs"]
-mod gallery_chips;
+pub(super) mod gallery_chips;
 
 #[component]
 pub fn ChipWorkflowsPreview() -> Element {

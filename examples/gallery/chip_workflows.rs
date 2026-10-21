@@ -53,7 +53,16 @@ pub fn ChipWorkflowsExample() -> Element {
                             class: if index == 2 { "chip-workflow-bounded" } else { "" },
                             Chip { variant: StatusVariant::Neutral, outline: true, icon: if index == 2 { "document" } else { "pin" },
                                 inactive: index == 1, closable: true, class: if index == 2 { "chip-workflow-wide" } else { "" },
-                                tooltip: title, aria_label: format!("Inspect {label}"), close_label: format!("Remove {label}"),
+                                tooltip: format!("{} {}", match index {
+                                    0 => "Motor A is ready for the next service window. Select to inspect its details.",
+                                    1 => "Compressor B is unavailable for inspection. Its pin can still be removed.",
+                                    _ => "Commissioning and safety review notes for Compressor B. Select to inspect the notes.",
+                                }, if keep_closed() {
+                                    "The host currently keeps this pin after a remove request."
+                                } else {
+                                    "Remove only the pin; its asset details are unchanged."
+                                }),
+                                aria_label: format!("Inspect {label}"), close_label: format!("Remove {label}"),
                                 onclick: move |_| {
                                     inspections += 1; last.set(id.into());
                                     details.set(format!("Inspecting {label}. {}", match index {

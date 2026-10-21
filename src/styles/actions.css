@@ -54,3 +54,5 @@
 .ix-theme .ix-link-button-label{min-width:0;overflow-wrap:anywhere;text-decoration:underline;text-underline-offset:3px}
 .ix-theme .ix-link-button[aria-disabled=true]>.ix-link-button-label{text-decoration:none}
 
+
+.ix-theme .ix-pill[tabindex]:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:2px}

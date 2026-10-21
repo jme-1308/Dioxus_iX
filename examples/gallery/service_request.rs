@@ -443,9 +443,11 @@ pub fn ServiceRequestExample() -> Element {
                 "data-submissions": current_submissions.to_string(),
                 div { class: "service-request-status-bar",
                     Pill {
+                        id: "service-status-pill",
                         variant: status.pill_variant(),
                         outline: true,
                         icon: status.pill_icon(),
+                        tooltip: status_summary(status),
                         "{status.pill_label()}"
                     }
                     span { class: "service-request-status-text",

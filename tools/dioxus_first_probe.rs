@@ -158,6 +158,8 @@ mod service_request_review;
 mod slider_content_review;
 #[path = "dioxus_first_probe/split_actions_review.rs"]
 mod split_actions_review;
+#[path = "dioxus_first_probe/status_help_review.rs"]
+mod status_help_review;
 #[path = "../examples/gallery/svg_data_uri.rs"]
 mod svg_data_uri;
 #[path = "dioxus_first_probe/tab_exit_review.rs"]
@@ -282,6 +284,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridautopage" {
         return rsx! { grid_auto_page_review::GridAutoPagePreview {} };
+    }
+    if scope == "?statushelp" {
+        return rsx! { status_help_review::StatusHelpPreview {} };
     }
     if scope == "?gridworklist" {
         return rsx! { grid_worklist_review::GridWorklistPreview {} };

@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 
 #[path = "../../examples/gallery/service_request.rs"]
-mod gallery_request;
+pub(super) mod gallery_request;
 
 #[component]
 pub fn ServiceRequestPreview() -> Element {
