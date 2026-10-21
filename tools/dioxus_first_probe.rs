@@ -43,6 +43,8 @@ mod css_grid_workspace_review;
 mod cue_review;
 #[path = "../examples/gallery/custom_field_workflow.rs"]
 mod custom_field_workflow;
+#[path = "dioxus_first_probe/custom_temporal_formats_review.rs"]
+mod custom_temporal_formats_review;
 #[path = "dioxus_first_probe/custom_validation_review.rs"]
 mod custom_validation_review;
 #[path = "dioxus_first_probe/date_time_card_review.rs"]
@@ -290,6 +292,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridautopage" {
         return rsx! { grid_auto_page_review::GridAutoPagePreview {} };
+    }
+    if scope == "?temporaltext" {
+        return rsx! { custom_temporal_formats_review::CustomTemporalFormatsPreview {} };
     }
     if scope == "?cardcomposition" {
         return rsx! { date_time_card_review::DateTimeCardPreview {} };

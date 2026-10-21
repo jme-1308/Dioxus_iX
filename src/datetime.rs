@@ -8,6 +8,8 @@
 pub use crate::date_dropdown_controller::{
     DateDropdownController, DateDropdownError, use_date_dropdown,
 };
+use crate::temporal_text_format::{format_text, parse_text};
+use crate::{DateTextFormat, DateTimeTextFormat, TimeTextFormat};
 use dioxus::prelude::*;
 use std::{
     cell::{Cell, RefCell},
@@ -1570,7 +1572,15 @@ pub fn validate_date_input(
     min: Option<IxDate>,
     max: Option<IxDate>,
 ) -> DateInputValidity {
-    let date = format.parse(value);
+    date_input_validity(value, format.parse(value), required, min, max)
+}
+fn date_input_validity(
+    value: &str,
+    date: Option<IxDate>,
+    required: bool,
+    min: Option<IxDate>,
+    max: Option<IxDate>,
+) -> DateInputValidity {
     DateInputValidity {
         value_missing: required && value.trim().is_empty(),
         bad_input: !value.trim().is_empty() && date.is_none(),
@@ -1586,8 +1596,16 @@ pub fn validate_time_input(
     min: Option<IxTime>,
     max: Option<IxTime>,
 ) -> DateInputValidity {
+    time_input_validity(value, format.parse(value), required, min, max)
+}
+fn time_input_validity(
+    value: &str,
+    time: Option<IxTime>,
+    required: bool,
+    min: Option<IxTime>,
+    max: Option<IxTime>,
+) -> DateInputValidity {
     let (min, max) = normalized_time_bounds(min, max);
-    let time = format.parse(value);
     DateInputValidity {
         value_missing: required && value.trim().is_empty(),
         bad_input: !value.trim().is_empty() && time.is_none(),
@@ -1751,6 +1769,10 @@ pub fn DateInput(
     today: IxDate,
     #[props(default)] value: String,
     #[props(default)] format: DateFormat,
+    /// Authoritative host text codec; calendar labels/options remain separate.
+    /// Change its revision when stable callbacks acquire new configuration.
+    #[props(default)]
+    text_format: Option<DateTextFormat>,
     min_date: Option<IxDate>,
     max_date: Option<IxDate>,
     #[props(default)] required: bool,
@@ -1795,13 +1817,13 @@ pub fn DateInput(
     });
     let id = id.unwrap_or(generated_id);
     let dropdown = crate::use_dropdown();
-    let validity = validate_date_input(&value, format, required, min_date, max_date);
+    let selected = parse_text(&value, text_format, |value| format.parse(value));
+    let validity = date_input_validity(&value, selected, required, min_date, max_date);
     let error = if validity.valid() {
         None
     } else {
         invalid_text.clone().or_else(|| validity.message("Date"))
     };
-    let selected = format.parse(&value);
     let range_open = use_callback(move |_| dropdown.open());
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
     rsx! {
@@ -1809,16 +1831,17 @@ pub fn DateInput(
             disabled, readonly, required, alignment: text_alignment, suppress_submit_on_enter, error, helper_text, state, info_text, warning_text, valid_text, invalid_text, start, end, range_binding: range_binding.clone(),
             button_label: calendar_button_label, icon: "calendar", dropdown, enable_top_layer,
             onvaluechange: move |value: String| {
-                let validity = validate_date_input(&value, format, required, min_date, max_date);
+                let parsed = parse_text(&value, text_format, |value| format.parse(value));
+                let validity = date_input_validity(&value, parsed, required, min_date, max_date);
                 if let Some(handler) = onvaliditychange { handler.call(validity); }
-                if let Some(handler) = ondatechange { handler.call(if validity.valid() { format.parse(&value) } else { None }); }
+                if let Some(handler) = ondatechange { handler.call(if validity.valid() { parsed } else { None }); }
                 onvaluechange.call(value);
             },
             DatePicker { today, from: selected, min_date, max_date, single_selection: true, auto_focus: true, week_start_index, show_week_numbers, labels,
                 ondatechange: |_| {},
                 onselect: move |selection: DateSelection| {
                     if let Some(date) = selection.from {
-                        onvaluechange.call(format.format(date));
+                        onvaluechange.call(format_text(date, text_format, |date| format.format(date)));
                         if let Some(handler) = ondatechange { handler.call(Some(date)); }
                         if let Some(handler) = onvaliditychange { handler.call(DateInputValidity::default()); }
                         dropdown.close(!range_binding.advance());
@@ -1834,6 +1857,10 @@ pub fn DateInput(
 pub fn TimeInput(
     #[props(default)] value: String,
     #[props(default)] format: TimeFormat,
+    /// Authoritative host text codec; the preset still controls picker layout.
+    /// Change its revision when stable callbacks acquire new configuration.
+    #[props(default)]
+    text_format: Option<TimeTextFormat>,
     min_time: Option<IxTime>,
     max_time: Option<IxTime>,
     #[props(default)] required: bool,
@@ -1880,11 +1907,12 @@ pub fn TimeInput(
     });
     let id = id.unwrap_or(generated_id);
     let dropdown = crate::use_dropdown();
-    let mut draft = use_signal(|| format.parse(&value).unwrap_or_default());
-    let selected = format.parse(&value).unwrap_or_default();
+    let parsed = parse_text(&value, text_format, |value| format.parse(value));
+    let selected = parsed.unwrap_or_default();
+    let mut draft = use_signal(|| selected);
     let range_open = use_callback(move |_| dropdown.open());
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
-    let validity = validate_time_input(&value, format, required, min_time, max_time);
+    let validity = time_input_validity(&value, parsed, required, min_time, max_time);
     let error = if validity.valid() {
         None
     } else {
@@ -1896,15 +1924,16 @@ pub fn TimeInput(
             button_label: time_button_label, icon: "clock", dropdown, enable_top_layer,
             onprepare: move |_| draft.set(selected),
             onvaluechange: move |value: String| {
-                let validity = validate_time_input(&value, format, required, min_time, max_time);
+                let parsed = parse_text(&value, text_format, |value| format.parse(value));
+                let validity = time_input_validity(&value, parsed, required, min_time, max_time);
                 if let Some(handler) = onvaliditychange { handler.call(validity); }
-                if let Some(handler) = ontimechange { handler.call(if validity.valid() { format.parse(&value) } else { None }); }
+                if let Some(handler) = ontimechange { handler.call(if validity.valid() { parsed } else { None }); }
                 onvaluechange.call(value);
             },
             TimePicker { time: draft(), format, min_time, max_time, hour_interval, minute_interval, second_interval, millisecond_interval, labels, auto_focus: true,
                 ontimechange: move |time| draft.set(time),
                 onselect: move |time| {
-                    onvaluechange.call(format.format(time));
+                    onvaluechange.call(format_text(time, text_format, |time| format.format(time)));
                     if let Some(handler) = ontimechange { handler.call(Some(time)); }
                     if let Some(handler) = onvaliditychange { handler.call(DateInputValidity::default()); }
                     dropdown.close(!range_binding.advance());
@@ -1952,6 +1981,10 @@ pub fn DateTimeInput(
     #[props(default)] value: String,
     #[props(default)] date_format: DateFormat,
     #[props(default)] time_format: TimeFormat,
+    /// Authoritative host text codec; `time_format` still controls clock columns.
+    /// Change its revision when stable callbacks acquire new configuration.
+    #[props(default)]
+    text_format: Option<DateTimeTextFormat>,
     min_date: Option<IxDate>,
     max_date: Option<IxDate>,
     min_time: Option<IxTime>,
@@ -1999,23 +2032,21 @@ pub fn DateTimeInput(
         )
     });
     let id = id.unwrap_or(generated_id);
-    let selected = IxDateTime::parse(&value, date_format, time_format);
+    let selected = parse_text(&value, text_format, |value| {
+        IxDateTime::parse(value, date_format, time_format)
+    });
     let dropdown = crate::use_dropdown();
     let mut draft_date = use_signal(|| Some(selected.map_or(today, |value| value.date)));
     let mut draft_time = use_signal(|| selected.map_or(IxTime::default(), |value| value.time));
     let range_open = use_callback(move |_| dropdown.open());
     let range_binding = use_range_binding(range_open, !disabled && !readonly);
-    let validate = use_callback(move |value: String| {
-        let parsed = IxDateTime::parse(&value, date_format, time_format);
-        datetime_input_validity(
-            &value,
-            parsed,
-            required,
-            (min_date, max_date),
-            (min_time, max_time),
-        )
-    });
-    let validity = validate.call(value.clone());
+    let validity = datetime_input_validity(
+        &value,
+        selected,
+        required,
+        (min_date, max_date),
+        (min_time, max_time),
+    );
     let error = if validity.valid() {
         None
     } else {
@@ -2029,9 +2060,10 @@ pub fn DateTimeInput(
             button_label: calendar_button_label, icon: "calendar", dropdown, enable_top_layer,
             onprepare: move |_| { draft_date.set(Some(selected.map_or(today, |value| value.date))); draft_time.set(selected.map_or(IxTime::default(), |value| value.time)); },
             onvaluechange: move |value: String| {
-                let validity = validate.call(value.clone());
+                let parsed = parse_text(&value, text_format, |value| IxDateTime::parse(value, date_format, time_format));
+                let validity = datetime_input_validity(&value, parsed, required, (min_date, max_date), (min_time, max_time));
                 if let Some(handler) = onvaliditychange { handler.call(validity); }
-                if let Some(handler) = ondatetimechange { handler.call(if validity.valid() { IxDateTime::parse(&value, date_format, time_format) } else { None }); }
+                if let Some(handler) = ondatetimechange { handler.call(if validity.valid() { parsed } else { None }); }
                 onvaluechange.call(value);
             },
             DateTimePicker { today, from: draft_date(), time: draft_time(), single_selection: true, auto_focus: true, time_format, min_date, max_date, min_time, max_time, week_start_index, show_week_numbers, calendar_labels, time_labels, done_label,
@@ -2040,7 +2072,7 @@ pub fn DateTimeInput(
                 onselect: move |selection: DateTimeSelection| {
                     if let Some(date) = selection.dates.from {
                         let datetime = IxDateTime { date, time: selection.time };
-                        onvaluechange.call(datetime.format(date_format, time_format));
+                        onvaluechange.call(format_text(datetime, text_format, |datetime| datetime.format(date_format, time_format)));
                         if let Some(handler) = ondatetimechange { handler.call(Some(datetime)); }
                         if let Some(handler) = onvaliditychange { handler.call(DateInputValidity::default()); }
                         dropdown.close(!range_binding.advance());
@@ -2226,3 +2258,7 @@ mod tests;
 #[cfg(test)]
 #[path = "datetime/card_tests.rs"]
 mod card_tests;
+
+#[cfg(test)]
+#[path = "datetime/text_format_tests.rs"]
+mod text_format_tests;
