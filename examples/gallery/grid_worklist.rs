@@ -2,8 +2,8 @@
 use dioxus::prelude::*;
 use dioxus_ix::{
     Button, ButtonVariant, DataGrid, DataGridCellValueChanged, DataGridColumn, DataGridCsv,
-    DataGridCsvOptions, DataGridCsvRowScope, DataGridRow, DataGridSortDirection, DataGridState,
-    DataGridTextEditor, DataGridTextFilter, Textarea,
+    DataGridCsvOptions, DataGridCsvRowScope, DataGridPagination, DataGridRow,
+    DataGridSortDirection, DataGridState, DataGridTextEditor, DataGridTextFilter, Textarea,
 };
 use std::collections::BTreeSet;
 
@@ -178,6 +178,18 @@ pub fn GridWorklistExample() -> Element {
         .values()
         .any(DataGridTextFilter::is_active);
     let current_sort = sort_token(&current_state);
+    let pagination_enabled = current_state.pagination.is_some();
+    let page_info = current_state.pagination_info(visible_count);
+    let displayed_page = if page_info.page_count == 0 {
+        0
+    } else {
+        page_info.page + 1
+    };
+    let displayed_start = if page_info.total_rows == 0 {
+        0
+    } else {
+        page_info.range.start + 1
+    };
     let snapshot = csv_snapshot();
     let snapshot_scope = snapshot
         .as_ref()
@@ -258,6 +270,7 @@ pub fn GridWorklistExample() -> Element {
                     onclick: move |_| {
                         let mut next = state.peek().clone();
                         next.filters.clear();
+                        if let Some(pagination) = next.pagination.as_mut() { pagination.page = 0; }
                         state.set(next);
                         feedback.set("Cleared active column filters.".into());
                     },
@@ -301,6 +314,17 @@ pub fn GridWorklistExample() -> Element {
                     }
                     "Read-only worklist"
                 }
+                label { r#for: "worklist-pagination",
+                    input {
+                        id: "worklist-pagination", r#type: "checkbox", checked: pagination_enabled,
+                        onchange: move |event: FormEvent| {
+                            let mut next = state.peek().clone();
+                            next.pagination = event.checked().then(|| DataGridPagination::new(0, 12));
+                            state.set(next);
+                        },
+                    }
+                    "Paginate worklist"
+                }
             }
             // Dioxus reconciles keys on fragment children; keep this lifecycle explicit.
             for generation in [epoch()] {
@@ -311,7 +335,8 @@ pub fn GridWorklistExample() -> Element {
                     rows: current_rows.clone(),
                     state: current_state.clone(),
                     onstatechange: move |next| state.set(next),
-                    height: 300,
+                    height: if pagination_enabled { 420 } else { 300 },
+                    page_size_options: vec![12, 24, 48],
                     striped: true,
                     read_only: read_only(),
                     label: "Maintenance worklist",
@@ -357,6 +382,12 @@ pub fn GridWorklistExample() -> Element {
                 id: "worklist-feedback",
                 class: "grid-worklist-feedback",
                 "{feedback}"
+            }
+            p { id: "worklist-pagination-status", class: "grid-worklist-status", role: "status", hidden: !pagination_enabled,
+                "data-enabled": pagination_enabled, "data-page": page_info.page, "data-page-size": page_info.page_size,
+                "data-page-count": page_info.page_count, "data-total": page_info.total_rows,
+                "data-start": page_info.range.start, "data-end": page_info.range.end,
+                "Page {displayed_page} of {page_info.page_count} · {displayed_start}–{page_info.range.end} of {page_info.total_rows} matching records. Selection and CSV include matching records across all pages. Save or cancel a cell edit before paging."
             }
             section { id: "worklist-csv", class: "grid-worklist-csv",
                 h3 { "Export worklist" }

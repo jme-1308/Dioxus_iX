@@ -188,7 +188,7 @@ fn next_editable_cell(
     column: &str,
     backwards: bool,
 ) -> Option<(String, String)> {
-    let displayed = state.visible_rows_with_columns(rows, columns);
+    let displayed = state.paged_rows_with_columns(rows, columns);
     let columns = state.ordered_columns(columns);
     let current_row = displayed.iter().position(|item| item.id == row)?;
     let current_column = columns.iter().position(|item| item.id == column)?;
@@ -392,6 +392,9 @@ pub enum DataGridSortDirection {
 /// than displayed indices, so filtering, sorting and reordering preserve identity.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DataGridState {
+    /// Optional client pagination. Selection, CSV export and autosizing retain
+    /// the full filtered model; keyboard/edit navigation uses the current page.
+    pub pagination: Option<crate::DataGridPagination>,
     pub selected: BTreeSet<String>,
     /// Most recently selected row, used by Shift+checkbox range selection.
     pub selection_anchor: Option<String>,
@@ -495,6 +498,7 @@ impl DataGridState {
         visible
     }
     pub fn cycle_sort(&mut self, column: &str) {
+        self.reset_pagination_page();
         self.sort = match &self.sort {
             Some((current, DataGridSortDirection::Ascending)) if current == column => {
                 Some((column.into(), DataGridSortDirection::Descending))
@@ -1296,6 +1300,9 @@ pub fn DataGrid(
     #[props(default = 500)] tooltip_delay_ms: u32,
     #[props(default = "Data grid".into())] label: String,
     #[props(default)] class: String,
+    #[props(default)] pagination_labels: crate::PaginationLabels,
+    #[props(default = vec![10,25,50,100])] page_size_options: Vec<usize>,
+    #[props(default)] hide_pagination_controls: bool,
 ) -> Element {
     let mut editing = use_signal(|| None::<GridEditSession>);
     let dragging = use_signal(|| None::<String>);
@@ -1352,17 +1359,60 @@ pub fn DataGrid(
         .into_iter()
         .cloned()
         .collect();
-    let visible = Rc::new(
+    let full_visible = Rc::new(
         state
             .visible_rows_with_columns(&rows, &columns)
             .into_iter()
             .cloned()
             .collect::<Vec<_>>(),
     );
+    let full_count = full_visible.len();
+    let page = state.pagination_info(full_count);
+    let visible = if state.pagination.is_some() {
+        Rc::new(full_visible[page.range.clone()].to_vec())
+    } else {
+        full_visible.clone()
+    };
     let visible_count = visible.len();
+    let page_identity = state.pagination.map(|_| (page.page, page.page_size));
+    let previous_page = use_hook(|| Rc::new(Cell::new(page_identity)));
+    use_effect(use_reactive!(|page_identity| {
+        if previous_page.replace(page_identity) == page_identity {
+            return;
+        }
+        focus_context.cancel();
+        let mut current = *viewport.peek();
+        current.top = 0.0;
+        viewport.set(current);
+        let node = mounted_root.peek().clone();
+        let previous_page = previous_page.clone();
+        spawn(async move {
+            let Some(node) = node else {
+                return;
+            };
+            let Ok(offset) = node.get_scroll_offset().await else {
+                return;
+            };
+            if previous_page.get() != page_identity
+                || !mounted_root.try_peek().is_ok_and(|current| {
+                    current
+                        .as_ref()
+                        .is_some_and(|current| Rc::ptr_eq(current, &node))
+                })
+            {
+                return;
+            }
+            let _ = node
+                .scroll(
+                    dioxus::html::geometry::PixelsVector2D::new(offset.x, 0.0),
+                    dioxus::html::ScrollBehavior::Instant,
+                )
+                .await;
+        });
+    }));
     *autosize.inputs.borrow_mut() = GridAutosizeInputs {
         columns: columns.clone(),
-        rows: visible.clone(),
+        rows: full_visible.clone(),
         state: state.clone(),
     };
     let stale_fit = autosize
@@ -1577,7 +1627,7 @@ pub fn DataGrid(
     let edit_state = state.clone();
     let edit_action = EventHandler::new(move |action: GridEditAction| {
         let reveal = |session: &GridEditSession, records: &[DataGridRow], editor: bool| {
-            let displayed = edit_state.visible_rows_with_columns(records, &edit_columns);
+            let displayed = edit_state.paged_rows_with_columns(records, &edit_columns);
             if let Some(index) = displayed.iter().position(|row| row.id == session.row) {
                 reveal_grid_row(
                     focus_context,
@@ -1678,7 +1728,7 @@ pub fn DataGrid(
                         if let Some((row, column)) = next {
                             if let Some(record) = projected.iter().find(|record| record.id == row) {
                                 if edit_state
-                                    .visible_rows_with_columns(&projected, &edit_columns)
+                                    .paged_rows_with_columns(&projected, &edit_columns)
                                     .iter()
                                     .any(|record| record.id == row)
                                 {
@@ -1797,8 +1847,11 @@ pub fn DataGrid(
     let hit_autosize = autosize.clone();
     let measured_autosize = autosize.clone();
     let validation_error = editing().and_then(|session| session.error);
+    let page_state = state.clone();
+    let size_state = state.clone();
+    let pagination_label = format!("{label} pages");
     rsx! {
-        div { id: grid_id, class: "ix-data-grid {class}", "data-striped": striped.to_string(), "data-virtualized": (!suppress_row_virtualisation).to_string(), "data-column-virtualized": (!suppress_column_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
+        div { id: grid_id, class: "ix-data-grid {class}", "data-striped": striped.to_string(), "data-paginated":state.pagination.is_some().then_some("true"), "data-virtualized": (!suppress_row_virtualisation).to_string(), "data-column-virtualized": (!suppress_column_virtualisation).to_string(), style: "height:{height}px;--ix-grid-row-height:{row_height}px;--ix-grid-columns:{template};--ix-grid-min-width:{min_width}px",
             onpointerdown: move |_| focus_context.cancel(),
             onfocusout: move |_| focus_context.blurred(),
             onkeydown: move |event: KeyboardEvent| { focus_context.cancel(); if event.key() == Key::Escape && resizing.peek().is_some() { event.prevent_default(); event.stop_propagation(); resizing.set(None); } },
@@ -1807,7 +1860,7 @@ pub fn DataGrid(
             ondoubleclick: move |event: MouseEvent| {
                 let point = event.client_coordinates(); resizing.set(None); hit_autosize.fit_at(point.x,point.y);
             },
-            div { id: scroll_id, class: "ix-data-grid-scroll", role: "grid", "aria-label": label, "aria-rowcount": visible_count + 1, "aria-colcount": columns.len() + 1, "aria-multiselectable": "true",
+            div { id: scroll_id, class: "ix-data-grid-scroll", role: "grid", "aria-label": label, "aria-rowcount": full_count.saturating_add(1), "aria-colcount": columns.len() + 1, "aria-multiselectable": "true",
                 onmounted: move |event| {
                     let node = event.data();
                     focus_context.root.set(Some(node.clone()));
@@ -1832,7 +1885,7 @@ pub fn DataGrid(
                 },
                 div { class: "ix-data-grid-header", role: "row", "aria-rowindex": "1",
                     div { class: "ix-data-grid-selection", role: "columnheader", style:"grid-column:1", "aria-colindex":1,
-                        GridCheckbox { label: "Select all filtered rows", checked, mixed, disabled: visible_count == 0,
+                        GridCheckbox { label: "Select all filtered rows", checked, mixed, disabled: full_count == 0,
                             onmounted: header_mount, onfocus: move |_| focus_context.focused(None),
                             onchange: move |_| { let mut next = header_state.clone(); next.select_filtered_with_columns(&header_rows, &header_columns, !checked); onstatechange.call(next); },
                         }
@@ -1844,11 +1897,30 @@ pub fn DataGrid(
                 div { class: "ix-data-grid-body", role: "rowgroup", style: "height:{visible_count as u64 * u64::from(row_height)}px",
                     for index in rendered {
                         GridRecord { key: "{visible[index].id}", row: visible[index].clone(), row_label_column: row_label_column.clone(), columns: columns.clone(), column_indices:column_indices.clone(), rows: callback_rows.clone(), state: record_state.clone(),
-                            onstatechange, dragging, drop_target, tooltip_delay_ms, index, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: index == window.start, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
+                            onstatechange, dragging, drop_target, tooltip_delay_ms, index, page_offset:page.range.start, row_height, focused, onnavigate: navigate.clone(), suppress_cell_focus, entry_row: index == window.start, total: visible_count, editing, edit_action, read_only, render_cell, render_editor,
                         }
                     }
                 }
                 if visible_count == 0 { div { class: "ix-data-grid-empty", role: "status", "No Rows To Show" } }
+            }
+            if state.pagination.is_some() && !hide_pagination_controls {
+                fieldset {class:"ix-data-grid-pagination",disabled:editing().is_some(),
+                    crate::Pagination {count:page.page_count,selected_page:page.page,advanced:true,item_count:page.page_size,item_count_options:page_size_options,label:pagination_label,labels:pagination_labels,
+                        onpage:move|requested:usize| {
+                            if editing.peek().is_some() {return;}
+                            let mut next=page_state.clone();
+                            next.pagination=Some(crate::DataGridPagination::new(requested,page.page_size));
+                            onstatechange.call(next);
+                        },
+                        onitemcount:move|requested:usize| {
+                            if editing.peek().is_some() {return;}
+                            let mut next=size_state.clone();
+                            next.pagination=Some(crate::DataGridPagination::new(0,requested.max(1)));
+                            onstatechange.call(next);
+                        }
+                    }
+                }
+                if editing().is_some() {p {class:"ix-data-grid-pagination-hint",role:"status","Save or cancel the cell edit before changing pages."}}
             }
             if let Some(request)=autosize.pending.read().clone() {
                 GridAutosizeProbe {key:"{request.serial}",request:request.clone(),onmeasure:{let context=measured_autosize.clone();move |width|context.complete(request.serial,width,onstatechange)}}
@@ -2066,7 +2138,7 @@ fn GridHeader(
             }
             div { id: filter_id.clone(), class: "ix-data-grid-filter", role: "dialog", "aria-label": "Filter {column.title}", "popover": "auto", style: "position-anchor:--{filter_id}",
                 GridFilterEditor { column: column.clone(), state: state.clone(), onstatechange }
-                button { r#type: "button", class: "ix-data-grid-filter-clear", onclick: move |_| { let mut next = reset_state.clone(); next.filters.remove(&reset_column); onstatechange.call(next); }, "Reset" }
+                button { r#type: "button", class: "ix-data-grid-filter-clear", onclick: move |_| { let mut next = reset_state.clone(); next.filters.remove(&reset_column); next.reset_pagination_page(); onstatechange.call(next); }, "Reset" }
             }
         }
         if column.resizable {
@@ -2136,7 +2208,7 @@ fn GridFilterEditor(
         if filter.first.is_active() || filter.second.is_active() {
             label { class: "ix-data-grid-filter-join", span { class: "ix-sr-only", "Combine filter conditions" }
                 select { value: if filter.match_any { "or" } else { "and" }, "aria-label": "Combine filter conditions",
-                    onchange: move |event: FormEvent| { let mut next = join_state.clone(); let mut filter = join_filter.clone(); filter.match_any = event.value() == "or"; next.filters.insert(join_column.clone(), filter); onstatechange.call(next); },
+                    onchange: move |event: FormEvent| { let mut next = join_state.clone(); let mut filter = join_filter.clone(); filter.match_any = event.value() == "or"; next.filters.insert(join_column.clone(), filter); next.reset_pagination_page(); onstatechange.call(next); },
                     option { value: "and", selected: !filter.match_any, "AND" } option { value: "or", selected: filter.match_any, "OR" }
                 }
             }
@@ -2183,14 +2255,14 @@ fn GridFilterInput(
             onchange: move |event: FormEvent| {
                 let mut filter = operator_filter.clone(); let condition = if second { &mut filter.second } else { &mut filter.first };
                 condition.operator = DataGridFilterOperator::from_token(&event.value());
-                let mut next = operator_state.clone(); next.filters.insert(operator_column.clone(), filter); onstatechange.call(next);
+                let mut next = operator_state.clone(); next.filters.insert(operator_column.clone(), filter); next.reset_pagination_page(); onstatechange.call(next);
             },
             for operator in operators.iter().copied() { option { value: operator.token(), selected: operator == condition.operator, "{operator.label()}" } }
         }
         if condition.operator.needs_value() { input { r#type: input_type, step: if input_type == "number" { Some("any") } else { None }, value: condition.value, placeholder: "Filter...", autofocus: !second, "aria-label": "{column.title} filter value {number}",
             oninput: move |event: FormEvent| {
                 let mut filter = text_filter.clone(); let condition = if second { &mut filter.second } else { &mut filter.first }; condition.value = event.value();
-                let mut next = text_state.clone(); next.filters.insert(text_column.clone(), filter); onstatechange.call(next);
+                let mut next = text_state.clone(); next.filters.insert(text_column.clone(), filter); next.reset_pagination_page(); onstatechange.call(next);
             },
         } }
     } }
@@ -2209,6 +2281,7 @@ fn GridRecord(
     mut drop_target: Signal<Option<String>>,
     tooltip_delay_ms: u32,
     index: usize,
+    #[props(default)] page_offset: usize,
     row_height: u32,
     mut focused: Signal<Option<GridFocus>>,
     onnavigate: EventHandler<(usize, Key, bool, bool)>,
@@ -2252,9 +2325,9 @@ fn GridRecord(
     let focus_id = row.id.clone();
     let first_column = columns.first().map(|column| column.id.clone());
     let last_column = columns.last().map(|column| column.id.clone());
-    rsx! { div { class: "ix-data-grid-row", role: "row", "data-row-id": row.id.clone(), "data-odd": (index % 2 == 1).to_string(),
+    rsx! { div { class: "ix-data-grid-row", role: "row", "data-row-id": row.id.clone(), "data-odd": (index.saturating_add(page_offset) % 2 == 1).to_string(),
         style: "top:{index as u64 * u64::from(row_height)}px",
-        "data-selected": selected.to_string(), "data-drop-target": is_target.to_string(), "aria-rowindex": index + 2, "aria-selected": selected.to_string(),
+        "data-selected": selected.to_string(), "data-drop-target": is_target.to_string(), "aria-rowindex": index.saturating_add(page_offset).saturating_add(2), "aria-selected": selected.to_string(),
         onmounted: move |event| mounted.set(Some(event.data())),
         onkeydown: move |event: KeyboardEvent| {
             if event.modifiers().alt() { return; }
@@ -2289,7 +2362,7 @@ fn GridRecord(
                 render_cell, render_editor,
                 render_context: (render_cell.is_some() || render_editor.is_some()).then(|| DataGridCellContext {
                     row: row.clone(), column: column.clone(), value: row.value(&column.id).to_string(),
-                    row_index: index, selected, editable: editable_cell(&row,&column,read_only) && !suppress_cell_focus,
+                    row_index: index.saturating_add(page_offset), selected, editable: editable_cell(&row,&column,read_only) && !suppress_cell_focus,
                     grid_read_only: read_only,
                 }),
             }
@@ -2451,7 +2524,7 @@ fn GridCell(
             onkeydown: move |event: KeyboardEvent| {
                 if can_reorder && event.modifiers().alt() && matches!(event.key(), Key::ArrowUp | Key::ArrowDown) {
                     event.prevent_default(); event.stop_propagation();
-                    let ids: Vec<_> = state.visible_rows_with_columns(&rows, &columns).into_iter().map(|row| row.id.clone()).collect();
+                    let ids: Vec<_> = state.paged_rows_with_columns(&rows, &columns).into_iter().map(|row| row.id.clone()).collect();
                     if let Some(index) = ids.iter().position(|id| *id == key_id) {
                         let down = event.key() == Key::ArrowDown;
                         let adjacent = if down { index.checked_add(1).and_then(|next| ids.get(next)) } else { index.checked_sub(1).and_then(|next| ids.get(next)) };
@@ -2731,3 +2804,7 @@ pub(crate) const STYLES: &str = include_str!("styles/data_grid.css");
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "data_grid/pagination_tests.rs"]
+mod pagination_tests;

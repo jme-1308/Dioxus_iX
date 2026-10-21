@@ -52,3 +52,10 @@
 .ix-data-grid-tooltip{position:fixed;z-index:1000;left:clamp(8px,var(--ix-grid-tip-x),max(8px,calc(100vw - 320px)));top:min(var(--ix-grid-tip-y),calc(100dvh - 64px));max-width:min(304px,calc(100vw - 16px));padding:6px 10px;color:var(--ix-color-text);background:var(--ix-color-surface-1);box-shadow:0 6px 18px #0005;white-space:normal;overflow-wrap:anywhere;pointer-events:none;font-weight:400;line-height:1.4}
 @media(hover:none){.ix-data-grid-filter-trigger{opacity:1}}
 .ix-data-grid-heading:focus-visible{outline:2px solid var(--ix-color-focus);outline-offset:-2px}
+
+/* Optional client pagination leaves the unpaged scroll surface unchanged. */
+.ix-data-grid[data-paginated=true]{display:flex;flex-direction:column;min-height:0}
+.ix-data-grid[data-paginated=true]>.ix-data-grid-scroll{height:auto;flex:1;min-height:0}
+.ix-data-grid-pagination{flex:none;min-width:0;margin:0;padding:8px 12px;border:0;border-top:1px solid var(--ix-color-border);font:inherit}
+.ix-data-grid-pagination>.ix-pagination{flex-wrap:wrap;row-gap:8px}
+.ix-data-grid-pagination-hint{flex:none;margin:0;padding:0 12px 8px;color:var(--ix-color-text-secondary);font-size:12px;line-height:18px}

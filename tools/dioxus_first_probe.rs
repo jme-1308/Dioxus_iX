@@ -82,6 +82,8 @@ mod grid_csv_review;
 mod grid_custom_editors_review;
 #[path = "dioxus_first_probe/grid_numeric_values_review.rs"]
 mod grid_numeric_values_review;
+#[path = "dioxus_first_probe/grid_pagination_review.rs"]
+mod grid_pagination_review;
 #[path = "dioxus_first_probe/grid_typed_editors_review.rs"]
 mod grid_typed_editors_review;
 #[path = "dioxus_first_probe/grid_worklist_review.rs"]
@@ -272,6 +274,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridcsv" {
         return rsx! { grid_csv_review::GridCsvPreview {} };
+    }
+    if scope == "?gridpagination" {
+        return rsx! { grid_pagination_review::GridPaginationPreview {} };
     }
     if scope == "?gridworklist" {
         return rsx! { grid_worklist_review::GridWorklistPreview {} };
