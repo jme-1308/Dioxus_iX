@@ -28,6 +28,7 @@ fn equipment_columns() -> Vec<DataGridColumn> {
     asset.sortable = true;
     asset.filterable = true;
     asset.editable = true;
+    asset.row_drag = true;
     asset.editor = DataGridTextEditor {
         required: true,
         max_length: Some(64),
@@ -85,6 +86,7 @@ struct EquipmentProvider {
     source: Vec<DataGridRow>,
     accepted: AcceptedPage,
     saved: usize,
+    moves: usize,
     feedback: String,
 }
 
@@ -100,6 +102,7 @@ impl EquipmentProvider {
             source,
             accepted,
             saved: 0,
+            moves: 0,
             feedback: "Choose equipment across pages, or edit its name or owner.".into(),
         }
     }
@@ -164,6 +167,35 @@ impl EquipmentProvider {
             self.feedback = "The edit could not be applied because its original value no longer matches the source.".into();
         }
     }
+
+    fn move_row(&mut self, request: DataGridPageRowMove) -> bool {
+        let mut requested = self.accepted.state.clone();
+        if !request.apply_to(&mut requested, &self.source) {
+            self.feedback = "The move no longer matches the current equipment order. Try again from the current page.".into();
+            return false;
+        }
+        // The provider owns the full ordering and follows the moved record,
+        // including a request crossing an unloaded page boundary.
+        let page_size = requested.pagination_info(self.source.len()).page_size;
+        requested.pagination = Some(DataGridPagination::new(
+            request.to_index / page_size,
+            page_size,
+        ));
+        self.accept(requested);
+        self.moves += 1;
+        let asset = self
+            .source
+            .iter()
+            .find(|row| row.id == request.row_id)
+            .map(|row| row.value("asset"))
+            .unwrap_or("Equipment");
+        self.feedback = format!(
+            "Moved {asset} to position {} of {}.",
+            request.to_index + 1,
+            self.source.len()
+        );
+        true
+    }
 }
 
 #[component]
@@ -172,6 +204,14 @@ fn HostPageWorkspace(generation: usize) -> Element {
     let mut auto_page_size = use_signal(|| false);
     let mut tab_across_pages = use_signal(|| false);
     let mut navigate_across_pages = use_signal(|| false);
+    let mut row_move = use_signal(|| false);
+    let on_page_row_move = row_move().then(|| {
+        EventHandler::new(move |request: DataGridPageRowMove| {
+            let mut next = provider.peek().clone();
+            next.move_row(request);
+            provider.set(next);
+        })
+    });
     let current = provider();
     let group_mode = match current.accepted.state.grouping.columns.as_slice() {
         [status, owner] if status == "status" && owner == "owner" => "status-owner",
@@ -190,6 +230,12 @@ fn HostPageWorkspace(generation: usize) -> Element {
         .collect();
     let selected_ids: Vec<_> = selected.iter().map(|row| row.id.as_str()).collect();
     let serialized_selection = serde_json::to_string(&selected_ids).unwrap_or_default();
+    let ordered_ids: Vec<_> = if current.accepted.state.row_order.is_empty() {
+        current.source.iter().map(|row| row.id.clone()).collect()
+    } else {
+        current.accepted.state.row_order.clone()
+    };
+    let serialized_order = serde_json::to_string(&ordered_ids).unwrap_or_default();
     let mut selected_summary = selected
         .iter()
         .take(5)
@@ -257,6 +303,12 @@ fn HostPageWorkspace(generation: usize) -> Element {
                     }
                     "Fit equipment page to height"
                 }
+                label { r#for: "host-paged-row-move",
+                    input { id: "host-paged-row-move", r#type: "checkbox", checked: row_move(),
+                        onchange: move |event: FormEvent| row_move.set(event.checked()),
+                    }
+                    "Reorder equipment"
+                }
                 Button { id: "host-paged-mark-service", button_type: ButtonType::Button, disabled: selected.is_empty(),
                     onclick: move |_| { let mut next = provider.peek().clone(); next.mark_selected(); provider.set(next); },
                     "Mark selected for maintenance"
@@ -298,6 +350,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
                 onpagegroupselect: move |request: DataGridPageGroupSelection| {
                     let mut next = provider.peek().clone(); next.select_group(request); provider.set(next);
                 },
+                onpagerowmove: on_page_row_move,
             }
             p { id: "host-paged-status", class: "host-paged-status", role: "status", "aria-live": "polite",
                 "data-page": page.page, "data-page-size": page.page_size, "data-page-count": page.page_count,
@@ -307,6 +360,7 @@ fn HostPageWorkspace(generation: usize) -> Element {
                 "data-navigate-across-pages": navigate_across_pages(),
                 "data-tab-across-pages": tab_across_pages(),
                 "data-group-mode": group_mode, "data-groups": current.accepted.groups.len(), "data-auto-page-size": auto_page_size(),
+                "data-row-move": row_move(), "data-moves": current.moves, "data-row-order": serialized_order,
                 "Loaded records {display_start}–{page.range.end} of {current.accepted.total} matching equipment · {selected.len()} selected · {current.saved} saved edits"
             }
             p { id: "host-paged-selection", class: "host-paged-selection", "data-selected-ids": serialized_selection,
@@ -326,6 +380,7 @@ pub fn HostPagedGridExample() -> Element {
             h2 { "Equipment supplied one page at a time" }
             p { class: "host-paged-intro", "The page provider filters, sorts and groups all 137 local records, then supplies the accepted page, matching total and global group summaries. An application can use the same state request to fetch its data; this example makes no network requests." }
             p { class: "host-paged-intro", "Select equipment on different pages, then mark the full selection for maintenance. Group checkboxes select matching equipment across pages; the page header selects only loaded records. Closing a group keeps its selection. Double-click Equipment or Owner to edit; save with Enter or cancel with Escape before paging." }
+            p { class: "host-paged-intro", "Enable reordering, then drag an Equipment handle or use Alt+Up/Down on it. The provider follows the moved record across pages. Clear sorting, filters and grouping before moving equipment." }
             for owner in [generation()] { HostPageWorkspace { key: "{owner}", generation: owner } }
             Button { id: "host-paged-reset", variant: ButtonVariant::Tertiary, button_type: ButtonType::Button,
                 onclick: move |_| generation += 1, "Reset equipment provider"
@@ -337,6 +392,105 @@ pub fn HostPagedGridExample() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_moves_full_order_across_pages_without_losing_committed_data_or_selection() {
+        let mut provider = EquipmentProvider::new();
+        let mut query = provider.accepted.state.clone();
+        query
+            .selected
+            .extend(["host-equipment-011".into(), "host-equipment-100".into()]);
+        provider.accept(query);
+        provider.save_edit(DataGridCellValueChanged {
+            row_id: "host-equipment-011".into(),
+            column_id: "owner".into(),
+            old_value: "Team 4".into(),
+            new_value: "On-call team".into(),
+        });
+        let previous = provider.accepted.clone();
+        assert!(provider.move_row(DataGridPageRowMove {
+            row_id: "host-equipment-011".into(),
+            from_index: 11,
+            to_index: 12,
+            total_rows: 137,
+        }));
+        assert_eq!(provider.accepted.state.pagination.unwrap().page, 1);
+        assert_eq!(provider.accepted.rows[0].id, "host-equipment-011");
+        assert_eq!(provider.accepted.rows[0].value("owner"), "On-call team");
+        assert_eq!(provider.accepted.state.row_order.len(), 137);
+        assert_eq!(
+            &provider.accepted.state.row_order[10..14],
+            [
+                "host-equipment-010",
+                "host-equipment-012",
+                "host-equipment-011",
+                "host-equipment-013"
+            ]
+        );
+        assert_eq!(provider.accepted.state.selected, previous.state.selected);
+        assert_eq!(previous.rows[11].id, "host-equipment-011");
+        assert!(previous.state.row_order.is_empty());
+        assert_eq!(provider.moves, 1);
+        assert_eq!(provider.saved, 1);
+        assert!(provider.move_row(DataGridPageRowMove {
+            row_id: "host-equipment-011".into(),
+            from_index: 12,
+            to_index: 0,
+            total_rows: 137,
+        }));
+        assert_eq!(provider.accepted.state.pagination.unwrap().page, 0);
+        assert_eq!(provider.accepted.rows[0].id, "host-equipment-011");
+        assert_eq!(provider.accepted.state.selected, previous.state.selected);
+        provider.group_by("owner");
+        let group = DataGridGroupPath::new([("owner", "On-call team")]);
+        assert_eq!(summary(&provider, &group).count, 1);
+        assert_eq!(summary(&provider, &group).selected_count, 1);
+        assert_eq!(provider.moves, 2);
+    }
+
+    #[test]
+    fn stale_provider_move_preserves_accepted_page_order_and_selection() {
+        let mut provider = EquipmentProvider::new();
+        let mut query = provider.accepted.state.clone();
+        query.selected.insert("host-equipment-000".into());
+        query.pagination.as_mut().unwrap().page = 1;
+        provider.accept(query);
+        let request = DataGridPageRowMove {
+            row_id: "host-equipment-012".into(),
+            from_index: 12,
+            to_index: 11,
+            total_rows: 137,
+        };
+        assert!(provider.move_row(request.clone()));
+        let accepted = provider.accepted.clone();
+        assert!(!provider.move_row(request));
+        assert_eq!(provider.moves, 1);
+        assert_eq!(provider.accepted.state, accepted.state);
+        assert_eq!(
+            provider
+                .accepted
+                .rows
+                .iter()
+                .map(|row| &row.id)
+                .collect::<Vec<_>>(),
+            accepted.rows.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        assert_eq!(provider.accepted.total, 137);
+        assert!(provider.feedback.contains("no longer matches"));
+        // Existing grouping remains a supported provider workflow, but it must
+        // not accidentally admit a delayed managed move from the flat view.
+        provider.group_by("status");
+        let grouped = provider.accepted.clone();
+        assert!(!provider.move_row(DataGridPageRowMove {
+            row_id: "host-equipment-012".into(),
+            from_index: 11,
+            to_index: 12,
+            total_rows: 137,
+        }));
+        assert_eq!(provider.accepted.state, grouped.state);
+        assert_eq!(provider.accepted.groups.len(), grouped.groups.len());
+        assert_eq!(provider.moves, 1);
+    }
 
     fn summary<'a>(
         provider: &'a EquipmentProvider,

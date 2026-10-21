@@ -1,0 +1,52 @@
+//! Excluded actual-gallery opt-in host row movement and retained page state.
+use super::host_paged_grid_review::gallery_host;
+use dioxus::prelude::*;
+use dioxus_ix::*;
+
+#[component]
+pub fn GridHostRowMovePreview() -> Element {
+    #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+    let window = dioxus::desktop::window();
+    rsx! {
+        style { {STYLES} }
+        IxTheme { class:"grid-host-row-move-review",
+            gallery_host::HostPagedGridExample {}
+            div { onmounted:move |_| {
+                #[cfg(all(feature="desktop",not(target_arch="wasm32")))]
+                {let window=window.clone();spawn(async move {
+                    let query=crate::dom_query::eval(NATIVE_HOST_ROW_MOVE_CHECK);let _=query.send("gridhostrowmove");
+                    match query.join::<serde_json::Value>().await {
+                        Ok(value)if value["ok"]==true=>{println!("Dioxus native Grid host row move: {value}");window.close();}
+                        value=>{eprintln!("Dioxus native Grid host row move failed: {value:?}");std::process::exit(1);}
+                    }
+                });spawn(async move {futures_timer::Delay::new(std::time::Duration::from_secs(60)).await;eprintln!("Grid host row move native replay timed out");std::process::exit(1);});}
+            } }
+        }
+    }
+}
+const STYLES: &str = "body{margin:0}.grid-host-row-move-review{box-sizing:border-box;min-height:100vh;padding:24px}@media(max-width:600px){.grid-host-row-move-review{padding:16px}}";
+
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+const NATIVE_HOST_ROW_MOVE_CHECK: &str = r#"
+let snapshots={};
+try{
+ await dioxus.recv();
+ const get=id=>document.getElementById('host-paged-'+id),host=()=>get('grid'),status=()=>get('status'),grid=()=>host()?.querySelector('[aria-label="Host-paged equipment"][role=grid],[aria-label="Host-paged equipment"][role=treegrid]'),row=id=>grid()?.querySelector('[data-row-id="'+id+'"]'),handle=id=>row(id)?.querySelector('.ix-data-grid-drag'),cell=(id,col)=>row(id)?.querySelector('[role=gridcell][data-column-id="'+col+'"]'),editor=()=>host()?.querySelector('.ix-data-grid-editor:not([readonly])'),order=()=>JSON.parse(status().dataset.rowOrder),state=()=>({...status().dataset});
+ const assert=(v,label)=>{if(!v)throw Error(label)},wait=async(label,predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20))}throw Error(label+'; state='+status()?.outerHTML+'; focus='+document.activeElement?.outerHTML)};
+ const key=(node,value,altKey=false)=>node.dispatchEvent(new KeyboardEvent('keydown',{key:value,code:value,altKey,bubbles:true,cancelable:true}));
+ const setInput=(node,value)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(node,value);node.dispatchEvent(new Event('input',{bubbles:true,composed:true}))};
+ const focus=async node=>{assert(node,'current mounted control exists');node.scrollIntoView({block:'nearest',inline:'nearest'});node.focus();await wait('actual current native focus',()=>document.activeElement===node)};
+ const admitted=async(id,index,moves)=>wait('accepted managed identity/page/actual handle focus',()=>status().dataset.moves===String(moves)&&status().dataset.page===String(Math.floor(index/Number(status().dataset.pageSize)))&&order()[index]===id&&document.activeElement===handle(id));
+ const move=async(id,down,index,moves)=>{await focus(handle(id));key(handle(id),down?'ArrowDown':'ArrowUp',true);await admitted(id,index,moves)};
+ const allDisabled=()=>{const handles=[...grid().querySelectorAll('.ix-data-grid-drag')];return handles.length>0&&handles.every(n=>n.disabled&&n.draggable===false)};
+ const reset=async()=>{const generation=get('owner').dataset.generation;get('reset').click();await wait('fresh current provider resets opt-in and order',()=>get('owner').dataset.generation!==generation&&status().dataset.rowMove==='false'&&status().dataset.moves==='0'&&status().dataset.saved==='0'&&status().dataset.selected==='0'&&status().dataset.page==='0'&&order().length===137&&order()[0]==='host-equipment-000'&&order()[136]==='host-equipment-136'&&allDisabled())};
+ await wait('actual new opt-in/current page mounted',()=>get('row-move')&&handle('host-equipment-001')&&status().dataset.rowOrder);assert(!get('row-move').checked&&allDisabled(),'default host handles disabled until registered owner opts in');get('row-move').click();await wait('actual host request callback admitted',()=>status().dataset.rowMove==='true'&&!handle('host-equipment-001').disabled);
+ row('host-equipment-011').querySelector('[role=checkbox]').click();await wait('selected identity accepted before movement',()=>status().dataset.selected==='1'&&row('host-equipment-011').getAttribute('aria-selected')==='true');
+ await move('host-equipment-001',true,2,1);assert(order()[1]==='host-equipment-002','adjacent loaded move has final index semantics');await move('host-equipment-001',false,1,2);snapshots.loaded=state();
+ await move('host-equipment-011',true,12,3);assert(status().dataset.firstRow==='host-equipment-011'&&status().dataset.selectedIds==='["host-equipment-011"]'&&row('host-equipment-011').getAttribute('aria-selected')==='true','provider follows same selected row across unloaded boundary');const rect=handle('host-equipment-011').getBoundingClientRect(),hit=document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2);assert(hit===handle('host-equipment-011')||handle('host-equipment-011').contains(hit),'followed current handle is visibly exposed');snapshots.followed={state:state(),focus:document.activeElement.getAttribute('aria-label'),rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}};await move('host-equipment-011',false,11,4);assert(order().every((id,index)=>id==='host-equipment-'+String(index).padStart(3,'0')),'reverse returns complete original order without selection loss');
+ const sort=grid().querySelector('button[aria-label="Sort Equipment"]');sort.click();await wait('sorting disables all movement',()=>grid().querySelector('[role=columnheader][data-column-id=asset]').getAttribute('aria-sort')==='ascending'&&allDisabled());sort.click();await wait('descending accepted',()=>grid().querySelector('[role=columnheader][data-column-id=asset]').getAttribute('aria-sort')==='descending');sort.click();await wait('sort cleared and handles usable',()=>grid().querySelector('[role=columnheader][data-column-id=asset]').getAttribute('aria-sort')==='none'&&!handle('host-equipment-000').disabled);
+ const trigger=grid().querySelector('button[aria-label="Filter Status"]');trigger.click();await wait('actual native filter opens',()=>document.getElementById(trigger.getAttribute('popovertarget'))?.matches(':popover-open'));const filter=document.getElementById(trigger.getAttribute('popovertarget')).querySelector('input[aria-label="Status filter value 1"]');setInput(filter,'Warning');await wait('filtered source disables movement',()=>status().dataset.total==='46'&&allDisabled());trigger.click();get('clear-filters').click();await wait('clear filters restores movement',()=>status().dataset.total==='137'&&!handle('host-equipment-000').disabled);get('grouping').value='status';get('grouping').dispatchEvent(new Event('change',{bubbles:true}));await wait('grouped host restrictions active',()=>status().dataset.groupMode==='status'&&grid().getAttribute('role')==='treegrid'&&allDisabled());get('grouping').value='none';get('grouping').dispatchEvent(new Event('change',{bubbles:true}));await wait('flat movement restored',()=>status().dataset.groupMode==='none'&&!handle('host-equipment-000').disabled);assert(status().dataset.moves==='4'&&status().dataset.selected==='1','restriction controls never mutate movement/order/selection');snapshots.restrictions=state();
+ await focus(cell('host-equipment-000','asset'));key(cell('host-equipment-000','asset'),'F2');await wait('actual current editor guarded',()=>editor()&&document.activeElement===editor()&&allDisabled());setInput(editor(),'Renamed equipment 000');key(editor(),'Enter');await wait('ordinary cell commit retains source and restores handles',()=>!editor()&&status().dataset.saved==='1'&&cell('host-equipment-000','asset').textContent.includes('Renamed equipment 000')&&!handle('host-equipment-000').disabled);await move('host-equipment-000',true,1,5);assert(status().dataset.selected==='1'&&cell('host-equipment-000','asset').textContent.includes('Renamed equipment 000'),'row movement retains committed cell data and global selection');snapshots.edited=state();await reset();snapshots.restored=state();
+ return{ok:true,snapshots,checks:['default host movement is disabled; explicit callback opt-in enables loaded AltUp/Down and preserves selected identity','Alt movement across unloaded adjacent boundary requests global final ordinal, provider follows accepted page, actual exposed mounted handle keeps focus and reverse restores order','sorting/filtering/grouping disable handles; normal clearing restores movement without changing managed order or global selection','active editor disables movement; Enter preserves committed cell value through later move; fresh keyed Reset clears option/count/order/selection'],input:'Excluded synthetic DOM click/input/change/Alt keydown and explicit actual native focus invoke the actual synchronous local137 provider. Current accepted order/page/selection and mounted handle geometry/focus are observed; no application/model/controller/callback/CSS injection. Pointer drag placement is exercised separately by trusted automated Chromium, and loading/stale asynchronous geometry guards by actual-component tests; this native replay does not claim trusted keyboard defaults, physical OS/AT or invented async fetch.',renderer:navigator.userAgent};
+}catch(error){return{ok:false,error:String(error),snapshots}}
+"#;

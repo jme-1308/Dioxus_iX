@@ -172,7 +172,7 @@ fn editor_transfer_probe(fixture: GridEditorTransferFixture) -> Element {
         id: "transfer-error".into(),
     });
     let editing = use_signal(|| Some(edit_session("row999", "status", "Normal", "Normal")));
-    let dragging = use_signal(|| None::<String>);
+    let dragging = use_signal(|| None::<GridRowDrag>);
     let drop_target = use_signal(|| None::<String>);
     let focused = use_signal(|| None::<GridFocus>);
     fixture.context.set(Some(context));
