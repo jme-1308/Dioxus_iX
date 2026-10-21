@@ -88,7 +88,7 @@ pub fn FormExamples() -> Element {
         section { class: "demo-section", id: "textarea",
             h2 { "Textarea" }
             div { class: "form-demo-grid",
-                Textarea { label: "Some label", placeholder: "Some placeholder", value: notes(), max_length: 200,
+                Textarea { id: "choice-retained-notes", label: "Some label", placeholder: "Some placeholder", value: notes(), max_length: 200,
                     helper_text: format!("{} / 200 characters", notes().chars().count()), onvaluechange: move |value| notes.set(value) }
                 Textarea { label: "Read-only", value: "Some example text", readonly: true }
             }
@@ -96,14 +96,18 @@ pub fn FormExamples() -> Element {
         section { class: "demo-section", id: "checkboxes",
             h2 { "Checkbox" }
             div { class: "demo-row",
-                Checkbox { label: "I agree everything", name: "agreed", checked: agreed(), oncheckedchange: move |value| agreed.set(value) }
+                Checkbox { id: "choice-composed-agreed", label: "I agree everything", name: "agreed", checked: agreed(), oncheckedchange: move |value| agreed.set(value),
+                    span { strong { "I agree" } " everything" }
+                }
                 Checkbox { label: "Disabled", disabled: true }
                 Checkbox { label: "Disabled checked", disabled: true, checked: true }
             }
             h3 { "Checkbox group / indeterminate" }
             CheckboxGroup { label: "Options", helper_text: "The parent follows the state of its three sub options.",
-                Checkbox { label: "Option group", checked: all_checked, indeterminate: some_checked && !all_checked,
-                    oncheckedchange: move |value| children.set([value; 3]) }
+                Checkbox { id: "choice-composed-all", label: "Option group", checked: all_checked, indeterminate: some_checked && !all_checked,
+                    oncheckedchange: move |value| children.set([value; 3]),
+                    span { "Option group · " span { id: "choice-selected-count", "{children.read().iter().filter(|value| **value).count()} selected" } }
+                }
                 div { class: "form-demo-indent",
                     for index in 0..3 {
                         Checkbox { label: if index == 0 { "Sub option one" } else { "Another sub option" }, checked: children()[index],
@@ -111,12 +115,13 @@ pub fn FormExamples() -> Element {
                     }
                 }
             }
-            p { role: "status", "Agreed: {agreed}. Selected sub options: {children.read().iter().filter(|value| **value).count()}." }
+            p { id: "choice-checkbox-status", role: "status", "Agreed: {agreed}. Selected sub options: {children.read().iter().filter(|value| **value).count()}." }
         }
         section { class: "demo-section", id: "radios-toggles",
             h2 { "Radio and toggle" }
             div { class: "form-demo-grid",
                 RadioGroup { label: "Storage", name: "storage", value: storage(),
+                    render_label: move |option: SelectOption| rsx! { span { id: format!("choice-label-{}", option.value), strong { "{option.label}" } } },
                     options: vec![SelectOption::new("256", "256GB SSD storage"), SelectOption::new("512", "512GB SSD storage"), SelectOption::new("1024", "1TB SSD storage").disabled()],
                     onvaluechange: move |value| storage.set(value) }
                 div { class: "form-demo-stack",
@@ -126,7 +131,7 @@ pub fn FormExamples() -> Element {
                     Toggle { indeterminate: true, label: "Mixed toggle", disabled: true }
                 }
             }
-            p { role: "status", "Storage: {storage}GB. Toggle: {toggle}." }
+            p { id: "choice-radio-status", role: "status", "Storage: {storage}GB. Toggle: {toggle}." }
         }
         section { class: "demo-section", id: "selects",
             h2 { "Select" }

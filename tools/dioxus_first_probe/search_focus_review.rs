@@ -2,8 +2,7 @@
 use dioxus::prelude::*;
 use dioxus_ix::*;
 
-#[path = "../../examples/gallery/forms.rs"]
-mod gallery_forms;
+use crate::gallery_forms;
 
 #[component]
 pub fn SearchFocusReview() -> Element {

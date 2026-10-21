@@ -39,6 +39,8 @@ mod chat_messages_review;
 mod chat_workspace_review;
 #[path = "dioxus_first_probe/chip_workflows_review.rs"]
 mod chip_workflows_review;
+#[path = "dioxus_first_probe/choice_labels_review.rs"]
+mod choice_labels_review;
 #[path = "dioxus_first_probe/clock_composition_review.rs"]
 mod clock_composition_review;
 #[path = "dioxus_first_probe/clock_reveal_review.rs"]
@@ -95,6 +97,9 @@ mod flip_tile_workflow_review;
 #[allow(dead_code)]
 #[path = "../examples/gallery/actions.rs"]
 mod gallery_actions;
+#[allow(dead_code)]
+#[path = "../examples/gallery/forms.rs"]
+mod gallery_forms;
 #[path = "dioxus_first_probe/generic_focus_review.rs"]
 mod generic_focus_review;
 #[path = "dioxus_first_probe/grid_auto_page_review.rs"]
@@ -542,6 +547,9 @@ fn Preview() -> Element {
     }
     if scope == "?paneequipment" {
         return rsx! { pane_equipment_review::PaneEquipmentPreview {} };
+    }
+    if scope == "?choicelabels" {
+        return rsx! { choice_labels_review::ChoiceLabelsPreview {} };
     }
     if scope == "?searchfocus" {
         return rsx! { search_focus_review::SearchFocusReview {} };

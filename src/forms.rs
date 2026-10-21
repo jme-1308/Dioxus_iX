@@ -762,6 +762,12 @@ pub fn Textarea(
 pub fn Checkbox(
     #[props(default)] checked: bool,
     #[props(default)] label: String,
+    /// Optional noninteractive visible label content, rendered by Dioxus in the
+    /// existing typography. Replaces `label` visually; a supplied `aria_label`
+    /// wins, otherwise nonempty `label` names composed content explicitly.
+    /// Without either string, the native checkbox uses its visible child text.
+    #[props(default)]
+    children: Option<Element>,
     /// Stable ID of the native interactive control, not its form mirror.
     /// Keep the ID stable for this mounted component scope.
     #[props(default)]
@@ -788,6 +794,9 @@ pub fn Checkbox(
     let surface_focus_mount = use_surface_focus_mount(id.clone());
     let mut button = use_signal(|| None::<Rc<MountedData>>);
     let mut attempted = use_signal(|| false);
+    let label_less = label.is_empty() && children.is_none();
+    let aria_label =
+        aria_label.or_else(|| (children.is_some() && !label.is_empty()).then(|| label.clone()));
     let invalid = invalid || state == FieldState::Invalid || (attempted() && required && !checked);
     crate::form_control::use_custom_field_state(if invalid {
         FieldState::Invalid
@@ -797,7 +806,7 @@ pub fn Checkbox(
     rsx! {
         span { class: "ix-checkbox-field ix-checkbox-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-mixed": indeterminate.to_string(),
-            "data-invalid": invalid.to_string(), "data-label-less": label.is_empty().to_string(),
+            "data-invalid": invalid.to_string(), "data-label-less": label_less.to_string(),
             input { class: "ix-check-native", r#type: "checkbox", name, form, value, checked, disabled, required,
                 "aria-hidden": "true", tabindex: "-1",
                 oninvalid: move |event| {
@@ -825,7 +834,7 @@ pub fn Checkbox(
                 }
                 crate::Typography { format: crate::TypographyFormat::Body,
                     text_color: if disabled { crate::TypographyColor::Weak } else { crate::TypographyColor::Std },
-                    class: "ix-checkbox-label", "{label}"
+                    class: "ix-checkbox-label", if let Some(children) = children { {children} } else { "{label}" }
                 }
             }
             if attempted() && required && !checked { span { class: "ix-helper ix-field-invalid", role: "alert", "Please select this option" } }
@@ -973,6 +982,11 @@ pub fn CheckboxGroup(
 pub fn Radio(
     value: String,
     #[props(default)] label: String,
+    /// Optional noninteractive visible label content owned by Dioxus, replacing
+    /// `label` in the existing typography. Supply `label` or `aria_label` as its
+    /// semantic name, including when only composed content is visible.
+    #[props(default)]
+    children: Option<Element>,
     /// Stable ID of the native interactive control, not its form mirror.
     /// Keep the ID stable for this mounted component scope.
     #[props(default)]
@@ -999,11 +1013,12 @@ pub fn Radio(
         state, &class,
     ));
     let selected = value.clone();
+    let label_less = label.is_empty() && children.is_none();
     let accessible_label = aria_label.unwrap_or_else(|| label.clone());
     rsx! {
         label { class: "ix-check ix-radio ix-radio-native {state.class()} {class}",
             "data-checked": checked.to_string(), "data-disabled": disabled.to_string(),
-            "data-label-less": label.is_empty().to_string(),
+            "data-label-less": label_less.to_string(),
             input { id, r#type: "radio", name, form, value, checked, disabled, required,
                 onmounted: move |event| { if let Some(mount) = surface_focus_mount { mount.call(event.clone()); } onmounted.call(event); },
                 "aria-label": accessible_label,
@@ -1017,10 +1032,10 @@ pub fn Radio(
                     span { class: "ix-radio-dot" }
                 }
             }
-            if !label.is_empty() {
+            if !label_less {
                 crate::Typography { format: crate::TypographyFormat::Body,
                     text_color: if disabled { crate::TypographyColor::Weak } else { crate::TypographyColor::Std },
-                    class: "ix-radio-label", "{label}"
+                    class: "ix-radio-label", if let Some(children) = children { {children} } else { "{label}" }
                 }
             }
         }
@@ -1060,6 +1075,11 @@ impl SelectOption {
 #[component]
 pub fn RadioGroup(
     options: Vec<SelectOption>,
+    /// Optional noninteractive visible option labels. Each current option keeps
+    /// its semantic `label`, value and native selection behavior. Return a child
+    /// component when the content needs hooks; do not call hooks in this callback.
+    #[props(default)]
+    render_label: Option<Callback<SelectOption, Element>>,
     #[props(default)] value: String,
     #[props(default)] label: String,
     #[props(default)] name: Option<String>,
@@ -1112,7 +1132,8 @@ pub fn RadioGroup(
             GroupLayout { label, required, state, feedback, invalid_alert,feedback_id,show_text_as_tooltip,
                 div { class: if horizontal { "ix-group-choices ix-group-row" } else { "ix-group-choices" },
                     for option in options {
-                        Radio { key: "{option.value}", name: name.clone(), form:form.clone(), checked: option.value == value,
+                        Radio { key: "{option.value}", children: render_label.map(|renderer| renderer.call(option.clone())),
+                            name: name.clone(), form:form.clone(), checked: option.value == value,
                             value: option.value.clone(), label: option.label, disabled: disabled || option.disabled, required, state, onvaluechange,
                             onmounted: move |event| onoptionmounted.call((option.value.clone(), event)) }
                     }
@@ -3703,3 +3724,6 @@ mod choice_mount_tests;
 #[cfg(test)]
 #[path = "forms/range_field_tests.rs"]
 mod range_field_tests;
+
+#[cfg(test)]
+mod choice_label_tests;
