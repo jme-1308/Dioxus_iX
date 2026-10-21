@@ -102,6 +102,8 @@ mod grid_help_review;
 mod grid_multi_sort_review;
 #[path = "dioxus_first_probe/grid_numeric_values_review.rs"]
 mod grid_numeric_values_review;
+#[path = "dioxus_first_probe/grid_page_edit_review.rs"]
+mod grid_page_edit_review;
 #[path = "dioxus_first_probe/grid_pagination_review.rs"]
 mod grid_pagination_review;
 #[path = "dioxus_first_probe/grid_typed_editors_review.rs"]
@@ -303,6 +305,9 @@ fn Preview() -> Element {
     }
     if scope == "?gridpagination" {
         return rsx! { grid_pagination_review::GridPaginationPreview {} };
+    }
+    if scope == "?gridpageedit" {
+        return rsx! { grid_page_edit_review::GridPageEditPreview {} };
     }
     if scope == "?gridautopage" {
         return rsx! { grid_auto_page_review::GridAutoPagePreview {} };

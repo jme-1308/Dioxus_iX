@@ -166,6 +166,12 @@ struct GridEditSession {
     select_all: bool,
 }
 #[derive(Clone)]
+struct GridPageEdit {
+    row: String,
+    column: String,
+    pagination: crate::DataGridPagination,
+}
+#[derive(Clone)]
 enum GridEditAction {
     Start {
         row: String,
@@ -1348,13 +1354,21 @@ pub fn DataGrid(
     /// checkboxes are disabled; header selection still covers loaded records.
     #[props(default)]
     onpagegroupselect: Option<EventHandler<crate::DataGridPageGroupSelection>>,
+    /// Commit Tab/Shift+Tab edits across client pages. The next editor is
+    /// admitted only when the owner echoes the requested pagination on the next
+    /// render; rejected/altered requests retire the continuation. Host pages
+    /// retain page-local editing and report this unsupported option explicitly.
+    #[props(default)]
+    tab_across_pages: bool,
     /// Accepted edits are requests; apply them to the controlled `rows`.
     /// Client rows are sorted/filtered again; host pages keep accepted order.
     /// Enter/F2, double-click and
     /// printable characters start text/number editing. Choice and checkbox
     /// editors use Enter/F2 or double-click. Escape discards, Enter saves,
     /// Tab/Shift+Tab saves and edits the next/previous editable cell.
-    /// At the first/last editable cell, Tab finishes editing in that cell.
+    /// By default Tab finishes at the current page boundary. With
+    /// `tab_across_pages`, client pages continue until the first/last editable
+    /// cell of the full expanded query result.
     #[props(default)]
     oncellvaluechanged: EventHandler<DataGridCellValueChanged>,
     /// Compose visible cells with Dioxus content. Returning `None` retains text;
@@ -1405,6 +1419,7 @@ pub fn DataGrid(
     auto_page_size: bool,
 ) -> Element {
     let mut editing = use_signal(|| None::<GridEditSession>);
+    let mut pending_page_edit = use_signal(|| None::<GridPageEdit>);
     let dragging = use_signal(|| None::<String>);
     let drop_target = use_signal(|| None::<String>);
     let column_dragging = use_signal(|| None::<String>);
@@ -1507,7 +1522,11 @@ pub fn DataGrid(
             }
             measured_height.set(Some(height));
         }
-        if !auto_page_size || grouping_error.is_some() || editing.peek().is_some() {
+        if !auto_page_size
+            || grouping_error.is_some()
+            || editing.peek().is_some()
+            || pending_page_edit.peek().is_some()
+        {
             return;
         }
         let Some((pagination, height)) = auto_state.pagination.zip(measured_height.get()) else {
@@ -1541,7 +1560,7 @@ pub fn DataGrid(
         next.pagination = Some(request);
         onstatechange.call(next);
     });
-    let edit_active = editing().is_some();
+    let edit_active = editing().is_some() || pending_page_edit().is_some();
     use_effect(use_reactive(
         (
             &auto_page_size,
@@ -1620,40 +1639,6 @@ pub fn DataGrid(
         .collect();
     let page_identity = state.pagination.map(|_| (page.page, page.page_size));
     let previous_page = use_hook(|| Rc::new(Cell::new(page_identity)));
-    use_effect(use_reactive!(|page_identity| {
-        if previous_page.replace(page_identity) == page_identity {
-            return;
-        }
-        focus_context.cancel();
-        let mut current = *viewport.peek();
-        current.top = 0.0;
-        viewport.set(current);
-        let node = mounted_root.peek().clone();
-        let previous_page = previous_page.clone();
-        spawn(async move {
-            let Some(node) = node else {
-                return;
-            };
-            let Ok(offset) = node.get_scroll_offset().await else {
-                return;
-            };
-            if previous_page.get() != page_identity
-                || !mounted_root.try_peek().is_ok_and(|current| {
-                    current
-                        .as_ref()
-                        .is_some_and(|current| Rc::ptr_eq(current, &node))
-                })
-            {
-                return;
-            }
-            let _ = node
-                .scroll(
-                    dioxus::html::geometry::PixelsVector2D::new(offset.x, 0.0),
-                    dioxus::html::ScrollBehavior::Instant,
-                )
-                .await;
-        });
-    }));
     *autosize.inputs.borrow_mut() = GridAutosizeInputs {
         columns: columns.clone(),
         rows: full_visible.clone(),
@@ -2026,6 +2011,9 @@ pub fn DataGrid(
                 column,
                 initial,
             } => {
+                if pending_page_edit.peek().is_some() {
+                    pending_page_edit.set(None);
+                }
                 let Some(record) = edit_rows.iter().find(|record| record.id == row) else {
                     return;
                 };
@@ -2065,6 +2053,9 @@ pub fn DataGrid(
                 editing.set(Some(session));
             }
             GridEditAction::Cancel => {
+                if pending_page_edit.peek().is_some() {
+                    pending_page_edit.set(None);
+                }
                 let current = editing.peek().clone();
                 if let Some(session) = current {
                     editing.set(None);
@@ -2083,6 +2074,18 @@ pub fn DataGrid(
                     }
                     Ok(change) => {
                         let next = tab.and_then(|backwards| match row_model {
+                            DataGridRowModel::Client if tab_across_pages => next_editable_in_rows(
+                                edit_state
+                                    .visible_rows_with_columns(&edit_rows, &edit_columns)
+                                    .into_iter()
+                                    .filter(|row| edit_state.grouping.row_visible(row))
+                                    .collect(),
+                                &edit_columns,
+                                &edit_state,
+                                &session.row,
+                                &session.column,
+                                backwards,
+                            ),
                             DataGridRowModel::Client => next_editable_cell(
                                 &edit_rows,
                                 &edit_columns,
@@ -2107,6 +2110,38 @@ pub fn DataGrid(
                         }
                         editing.set(None);
                         if let Some((row, column)) = next {
+                            if tab_across_pages
+                                && row_model == DataGridRowModel::Client
+                                && edit_state.pagination.is_some()
+                            {
+                                let full =
+                                    edit_state.visible_rows_with_columns(&projected, &edit_columns);
+                                if let Some(index) = full.iter().position(|record| {
+                                    record.id == row && edit_state.grouping.row_visible(record)
+                                }) {
+                                    let current = edit_state.pagination_info(full.len());
+                                    let requested = crate::DataGridPagination::new(
+                                        index / current.page_size,
+                                        current.page_size,
+                                    );
+                                    if requested.page != current.page {
+                                        // Keep no off-page session while waiting for the owner's
+                                        // next rendered response. Preserve the normal origin-cell
+                                        // return for a held/rejected request; accepted page liveness
+                                        // retires it before admitting the target editor.
+                                        reveal(&session, &projected, false);
+                                        pending_page_edit.set(Some(GridPageEdit {
+                                            row,
+                                            column,
+                                            pagination: requested,
+                                        }));
+                                        let mut next = edit_state.clone();
+                                        next.pagination = Some(requested);
+                                        onstatechange.call(next);
+                                        return;
+                                    }
+                                }
+                            }
                             if let Some(record) = projected.iter().find(|record| record.id == row) {
                                 if row_model
                                     .projected_rows(&edit_state, &projected, &edit_columns)
@@ -2135,6 +2170,87 @@ pub fn DataGrid(
             }
         }
     });
+    let accepted_pagination = state.pagination;
+    let continuation_rows = visible.clone();
+    let continuation_columns = columns.clone();
+    use_effect(use_reactive!(
+        |page_identity,
+         accepted_pagination,
+         tab_across_pages,
+         row_model,
+         read_only,
+         suppress_cell_focus| {
+            let continuation = pending_page_edit();
+            let page_changed = previous_page.replace(page_identity) != page_identity;
+            if !page_changed && continuation.is_none() {
+                return;
+            }
+            if continuation.is_some() {
+                pending_page_edit.set(None);
+            }
+            if page_changed {
+                focus_context.cancel();
+                let mut current = *viewport.peek();
+                current.top = 0.0;
+                viewport.set(current);
+            }
+            if let Some(continuation) = continuation {
+                let accepted = tab_across_pages
+                    && row_model == DataGridRowModel::Client
+                    && accepted_pagination == Some(continuation.pagination)
+                    && !read_only
+                    && !suppress_cell_focus
+                    && editing.peek().is_none()
+                    && continuation_rows
+                        .iter()
+                        .find(|row| row.id == continuation.row)
+                        .zip(
+                            continuation_columns
+                                .iter()
+                                .find(|column| column.id == continuation.column),
+                        )
+                        .is_some_and(|(row, column)| editable_cell(row, column, false));
+                if accepted {
+                    edit_action.call(GridEditAction::Start {
+                        row: continuation.row,
+                        column: continuation.column,
+                        initial: None,
+                    });
+                    // Existing editor focus owns the one target scroll. A separate
+                    // page-reset scroll must not overwrite its grouped row reveal.
+                    return;
+                }
+            }
+            if !page_changed {
+                return;
+            }
+            let node = mounted_root.peek().clone();
+            let previous_page = previous_page.clone();
+            spawn(async move {
+                let Some(node) = node else {
+                    return;
+                };
+                let Ok(offset) = node.get_scroll_offset().await else {
+                    return;
+                };
+                if previous_page.get() != page_identity
+                    || !mounted_root.try_peek().is_ok_and(|current| {
+                        current
+                            .as_ref()
+                            .is_some_and(|current| Rc::ptr_eq(current, &node))
+                    })
+                {
+                    return;
+                }
+                let _ = node
+                    .scroll(
+                        dioxus::html::geometry::PixelsVector2D::new(offset.x, 0.0),
+                        dioxus::html::ScrollBehavior::Instant,
+                    )
+                    .await;
+            });
+        }
+    ));
     let selected_loaded = full_visible
         .iter()
         .filter(|row| state.selected.contains(&row.id))
@@ -2248,6 +2364,9 @@ pub fn DataGrid(
             ondoubleclick: move |event: MouseEvent| {
                 let point = event.client_coordinates(); resizing.set(None); hit_autosize.fit_at(point.x,point.y);
             },
+            if tab_across_pages && row_model != DataGridRowModel::Client {
+                p {class:"ix-data-grid-pagination-hint",role:"status","Cross-page editing requires client rows."}
+            }
             div { id: scroll_id, class: "ix-data-grid-scroll", role: if grouped {"treegrid"} else {"grid"}, "aria-label": label, "aria-rowcount": aria_rows.saturating_add(1), "aria-colcount": if grouped {columns.len().max(1)+1} else {columns.len()+1}, "aria-multiselectable": "true",
                 onmounted: move |event| {
                     let node = event.data();
@@ -3373,3 +3492,7 @@ mod tooltip_tests;
 #[cfg(test)]
 #[path = "data_grid/host_page_tests.rs"]
 mod host_page_tests;
+
+#[cfg(test)]
+#[path = "data_grid/page_edit_tests.rs"]
+mod page_edit_tests;
