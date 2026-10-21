@@ -13,7 +13,6 @@ mod asset_hierarchy;
 mod asset_properties;
 mod asset_workspace;
 mod badge_alert_queue;
-mod button_review;
 mod card_collections;
 mod chart_scenarios;
 mod chart_workflows;
@@ -59,10 +58,8 @@ mod header_layout_review;
 mod header_nested_review;
 mod header_switch_review;
 mod host_paged_grid;
-mod icon_button_review;
 mod icon_catalog;
 mod icon_scenarios;
-mod icon_toggle_button_review;
 mod inspection_groups;
 mod inspection_report;
 mod layout;
@@ -94,7 +91,6 @@ mod service_package;
 mod service_request;
 mod slider_limits;
 mod source_examples;
-mod spinner_review;
 mod split_work_orders;
 mod svg_data_uri;
 mod tabs_review;
@@ -102,7 +98,6 @@ mod temporal_work_order;
 mod text_commit_review;
 mod theme_review;
 mod toast_review;
-mod toggle_button_review;
 mod tree;
 mod upload_review;
 mod wide_equipment_grid;
@@ -334,7 +329,16 @@ fn Gallery() -> Element {
                     }
                     p { class: "review-intro", "Interactive Rust ports of iX examples, with recognizable styling and useful core interactions. This independent port uses public theme fallbacks." }
                     match page {
-                        GalleryPage::Actions => rsx! { badge_alert_queue::BadgeAlertQueueExample {} progress_transfer::ProgressTransferExample {} link_navigation::MaintenanceReferencesExample {} operator_profile::OperatorProfileExample {} split_work_orders::SplitWorkOrdersExample {} chip_workflows::ChipWorkflowsExample {} progress_review::ProgressReview {} spinner_review::SpinnerReview {} icon_toggle_button_review::IconToggleButtonReview {} toggle_button_review::ToggleButtonReview {} icon_button_review::IconButtonReview {} button_review::ButtonReview {} actions::ActionExamples {} },
+                        GalleryPage::Actions => rsx! {
+                            badge_alert_queue::BadgeAlertQueueExample {}
+                            progress_transfer::ProgressTransferExample {}
+                            link_navigation::MaintenanceReferencesExample {}
+                            operator_profile::OperatorProfileExample {}
+                            split_work_orders::SplitWorkOrdersExample {}
+                            chip_workflows::ChipWorkflowsExample {}
+                            progress_review::ProgressReview {}
+                            actions::ActionExamples {}
+                        },
                         GalleryPage::Sources => rsx! { source_examples::SourceExamples { location } },
                         GalleryPage::Forms => rsx! {
                             custom_field_workflow::CustomFieldWorkflowExample {}
