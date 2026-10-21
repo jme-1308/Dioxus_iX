@@ -285,15 +285,113 @@ fn popover_controller_fixture() -> Element {
 
 #[test]
 fn popover_hide_is_cancelable_and_reentrant_requests_are_coalesced() {
+    use dioxus::document::{Document, Eval, EvalError, Evaluator};
+    use std::task::{Context, Poll, Waker};
+
+    #[derive(Default)]
+    struct NativeHide {
+        expected: Option<serde_json::Value>,
+        sent: Vec<serde_json::Value>,
+        reply: Option<bool>,
+        waiter: Option<Waker>,
+        evaluations: usize,
+        acknowledgements: usize,
+    }
+    struct HideReply(Rc<RefCell<NativeHide>>);
+    impl Evaluator for HideReply {
+        fn send(&self, message: serde_json::Value) -> Result<(), EvalError> {
+            let mut wire = self.0.borrow_mut();
+            if message["kind"] == "finish" {
+                wire.acknowledgements += 1;
+            } else {
+                assert_eq!(message["kind"], "data");
+                assert_eq!(
+                    Some(&message["value"]),
+                    wire.expected.as_ref(),
+                    "only the owned current-generation hide is accepted"
+                );
+            }
+            wire.sent.push(message);
+            Ok(())
+        }
+        fn poll_recv(
+            &mut self,
+            context: &mut Context<'_>,
+        ) -> Poll<Result<serde_json::Value, EvalError>> {
+            let mut wire = self.0.borrow_mut();
+            if let Some(reply) = wire.reply.take() {
+                Poll::Ready(Ok(serde_json::json!({"value":reply,"error":null})))
+            } else {
+                wire.waiter = Some(context.waker().clone());
+                Poll::Pending
+            }
+        }
+        fn poll_join(&mut self, _: &mut Context<'_>) -> Poll<Result<serde_json::Value, EvalError>> {
+            panic!("native hide uses the acknowledged one-shot receive channel")
+        }
+    }
+    struct HideDocument {
+        owner: dioxus::signals::Owner,
+        wire: Rc<RefCell<NativeHide>>,
+    }
+    impl Document for HideDocument {
+        fn eval(&self, _: String) -> Eval {
+            self.wire.borrow_mut().evaluations += 1;
+            Eval::new(
+                self.owner
+                    .insert(Box::new(HideReply(self.wire.clone())) as Box<dyn Evaluator>),
+            )
+        }
+    }
+    fn drive_until(dom: &mut VirtualDom, ready: impl Fn() -> bool) {
+        // A bounded work driver, not a frame/timing assertion. The predicate
+        // observes the native request or real production completion queue.
+        for _ in 0..32 {
+            dom.render_immediate_to_vec();
+            dom.process_events();
+            if ready() {
+                return;
+            }
+        }
+        assert!(
+            ready(),
+            "Dioxus work did not reach the expected fixture state"
+        );
+    }
+
+    let wire = Rc::new(RefCell::new(NativeHide::default()));
+    let document: Rc<dyn Document> = Rc::new(HideDocument {
+        owner: Default::default(),
+        wire: wire.clone(),
+    });
+    let native = cfg!(any(
+        all(feature = "web", target_arch = "wasm32"),
+        all(feature = "desktop", not(target_arch = "wasm32"))
+    ));
     let capture = Rc::new(RefCell::new(None));
-    let mut dom = VirtualDom::new(popover_controller_fixture).with_root_context(capture.clone());
+    let mut dom = VirtualDom::new(popover_controller_fixture)
+        .with_root_context(capture.clone())
+        .with_root_context(document);
     dom.rebuild_in_place();
     let mut popover: PopoverHandle = capture.borrow().unwrap();
     let completions = Rc::new(RefCell::new(Vec::new()));
     dom.in_scope(ScopeId::ROOT, || {
+        // Native presentation requires the same explicit mounted ownership as
+        // the actual component. This controller-only fixture renders no node.
+        popover
+            .surface
+            .node
+            .set(Some(Rc::new(MountedData::new(()))));
         popover.surface.open.set(true);
         popover.reported_open.set(true);
         let generation = *popover.surface.generation.peek();
+        wire.borrow_mut().expected = Some(serde_json::json!([
+            popover.id(),
+            false,
+            ["data-surface-generation", (generation + 1).to_string()],
+            null,
+            "popover"
+        ]));
         popover
             .onshowchange
             .set(Some(EventHandler::new(|event: ToggleEvent| {
@@ -312,6 +410,11 @@ fn popover_hide_is_cancelable_and_reentrant_requests_are_coalesced() {
         );
         assert_eq!(*popover.surface.generation.peek(), generation);
         assert!(completions.borrow().is_empty());
+        assert_eq!(
+            wire.borrow().evaluations,
+            0,
+            "a veto cannot issue a native hide"
+        );
         popover
             .onshowchange
             .set(Some(EventHandler::new(move |_| popover.hide())));
@@ -323,21 +426,56 @@ fn popover_hide_is_cancelable_and_reentrant_requests_are_coalesced() {
             "close completion waits for its Dioxus effect"
         );
     });
-    for _ in 0..4 {
-        dom.render_immediate_to_vec();
-        dom.process_events();
+    if native {
+        drive_until(&mut dom, || !wire.borrow().sent.is_empty());
+        assert!(
+            completions.borrow().is_empty(),
+            "native completion waits for the confirmed hide reply"
+        );
+        assert_eq!(wire.borrow().acknowledgements, 0);
+        let waiter = {
+            let mut wire = wire.borrow_mut();
+            wire.reply = Some(true);
+            wire.waiter
+                .take()
+                .expect("hide is awaiting its native result")
+        };
+        waiter.wake();
     }
+    drive_until(&mut dom, || !completions.borrow().is_empty());
     assert_eq!(
         &*completions.borrow(),
         &[false],
         "one completion for a reentrant hide"
     );
+    if native {
+        let wire = wire.borrow();
+        assert_eq!(wire.evaluations, 1);
+        assert_eq!(wire.acknowledgements, 1);
+        assert_eq!(
+            wire.sent,
+            vec![
+                serde_json::json!({"kind":"data","value":wire.expected.as_ref().unwrap()}),
+                serde_json::json!({"kind":"finish"}),
+            ]
+        );
+    } else {
+        assert!(
+            wire.borrow().sent.is_empty(),
+            "SSR requires no native presentation query"
+        );
+    }
     dom.in_scope(ScopeId::ROOT, || popover.hide());
     for _ in 0..4 {
         dom.render_immediate_to_vec();
         dom.process_events();
     }
     assert_eq!(completions.borrow().len(), 1);
+    assert_eq!(
+        wire.borrow().evaluations,
+        usize::from(native),
+        "already-hidden requests do not duplicate native operations"
+    );
 }
 
 type PopoverOverlayCapture =
