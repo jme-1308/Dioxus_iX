@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_ix::*;
 
 #[path = "../../examples/gallery/composition.rs"]
-mod gallery_composition;
+pub(super) mod gallery_composition;
 
 #[component]
 pub fn DropdownButtonPreview() -> Element {

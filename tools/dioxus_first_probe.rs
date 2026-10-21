@@ -68,6 +68,8 @@ mod document_workspace_review;
 mod dom_query;
 #[path = "dioxus_first_probe/dropdown_button_review.rs"]
 mod dropdown_button_review;
+#[path = "dioxus_first_probe/dropdown_parts_review.rs"]
+mod dropdown_parts_review;
 #[path = "dioxus_first_probe/equipment_events_review.rs"]
 mod equipment_events_review;
 #[path = "dioxus_first_probe/equipment_readings_review.rs"]
@@ -420,6 +422,9 @@ fn Preview() -> Element {
     }
     if scope == "?dropdownbutton" {
         return rsx! { dropdown_button_review::DropdownButtonPreview {} };
+    }
+    if scope == "?dropdownparts" {
+        return rsx! { dropdown_parts_review::DropdownPartsPreview {} };
     }
     if scope == "?bundledimages" {
         return rsx! { bundled_images_review::BundledImagesPreview {} };

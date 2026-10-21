@@ -110,14 +110,14 @@ pub fn FeedbackScenario(name: String) -> Element {
         "dropdown-quick-actions" => {
             rsx! { DropdownTrigger { dropdown, "Open" } Dropdown { controller: dropdown, label: "Open", variant: ButtonVariant::Primary,
                 DropdownQuickActions {
-                    DropdownItem { compact: true, icon: "cut", label: "Cut", onclick: move |_| selected.set("Cut".into()) }
-                    DropdownItem { compact: true, icon: "bulb", label: "Light", onclick: move |_| selected.set("Light".into()) }
-                    DropdownItem { compact: true, icon: "trashcan", label: "Delete", onclick: move |_| selected.set("Delete".into()) }
+                    IconButton { icon: "cut", label: "Cut", variant: ButtonVariant::Tertiary, onclick: move |_| selected.set("Cut".into()) }
+                    IconButton { icon: "bulb", label: "Light", variant: ButtonVariant::Tertiary, onclick: move |_| selected.set("Light".into()) }
+                    IconButton { icon: "trashcan", label: "Delete", variant: ButtonVariant::Tertiary, onclick: move |_| selected.set("Delete".into()) }
                 }
                 Divider {}
-                DropdownItem { icon: "star", label: "Item 1", onclick: move |_| selected.set("Item 1".into()) }
-                DropdownItem { icon: "document", label: "Item 2", onclick: move |_| selected.set("Item 2".into()) }
-                DropdownItem { icon: "bulb", label: "Item 3", onclick: move |_| selected.set("Item 3".into()) }
+                DropdownItem { icon: "star", label: "Item 1", onitemclick: move |_| selected.set("Item 1".into()) }
+                DropdownItem { icon: "document", label: "Item 2", onitemclick: move |_| selected.set("Item 2".into()) }
+                DropdownItem { icon: "bulb", label: "Item 3", onitemclick: move |_| selected.set("Item 3".into()) }
             } }
         }
         "dropdown-icon" => {
@@ -142,11 +142,11 @@ pub fn FeedbackScenario(name: String) -> Element {
             rsx! { DropdownTrigger { dropdown, "Open" } Dropdown { controller: dropdown, label: "Open", variant: ButtonVariant::Primary,
                 navigation_mode: if name == "dropdown-roving-tabindex" { DropdownNavigationMode::RovingTabindex } else { DropdownNavigationMode::ActiveDescendant },
                 DropdownHeader { label: "Category" }
-                DropdownItem { label: "Item 2", onclick: move |_| selected.set("Item 2".into()) }
-                DropdownItem { label: "Item 3", onclick: move |_| selected.set("Item 3".into()) }
-                DropdownItem { label: "Item 4", onclick: move |_| selected.set("Item 4".into()) }
+                DropdownItem { label: "Item 2", onitemclick: move |_| selected.set("Item 2".into()) }
+                DropdownItem { label: "Item 3", onitemclick: move |_| selected.set("Item 3".into()) }
+                DropdownItem { label: "Item 4", onitemclick: move |_| selected.set("Item 4".into()) }
                 Divider {}
-                DropdownItem { label: "Item 5", onclick: move |_| selected.set("Item 5".into()) }
+                DropdownItem { label: "Item 5", onitemclick: move |_| selected.set("Item 5".into()) }
             } }
         }
         _ => rsx! { p { "This feedback source has not been reproduced yet." } },

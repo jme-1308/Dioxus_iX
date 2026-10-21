@@ -48,14 +48,14 @@ pub fn CompositionExamples() -> Element {
             p { "The upstream cut, bulb, trashcan, star, and document example, with visible action feedback." }
             Dropdown { label: "Open",
                 DropdownQuickActions {
-                    DropdownItem { icon: "cut", label: "Cut", compact: true, onclick: move |_| last_action.set("Cut".into()) }
-                    DropdownItem { icon: "bulb", label: "Light", compact: true, onclick: move |_| last_action.set("Light".into()) }
-                    DropdownItem { icon: "trashcan", label: "Delete", compact: true, onclick: move |_| last_action.set("Delete".into()) }
+                    IconButton { icon: "cut", label: "Cut", variant: ButtonVariant::Tertiary, onclick: move |_| last_action.set("Cut".into()) }
+                    IconButton { icon: "bulb", label: "Light", variant: ButtonVariant::Tertiary, onclick: move |_| last_action.set("Light".into()) }
+                    IconButton { icon: "trashcan", label: "Delete", variant: ButtonVariant::Tertiary, onclick: move |_| last_action.set("Delete".into()) }
                 }
                 Divider {}
-                DropdownItem { icon: "star", label: "Item 1", onclick: move |_| last_action.set("Item 1".into()) }
-                DropdownItem { icon: "document", label: "Item 2", onclick: move |_| last_action.set("Item 2".into()) }
-                DropdownItem { icon: "bulb", label: "Item 3", onclick: move |_| last_action.set("Item 3".into()) }
+                DropdownItem { icon: "star", label: "Item 1", onitemclick: move |_| last_action.set("Item 1".into()) }
+                DropdownItem { icon: "document", label: "Item 2", onitemclick: move |_| last_action.set("Item 2".into()) }
+                DropdownItem { icon: "bulb", label: "Item 3", onitemclick: move |_| last_action.set("Item 3".into()) }
             }
             p { role: "status", "{last_action}" }
         }
