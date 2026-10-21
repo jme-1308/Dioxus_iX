@@ -53,6 +53,48 @@ struct PaneLayoutContext {
     dimensions: Signal<Option<(f64, f64)>>,
 }
 
+/// One layout's current opening owners. Weak registrations neither retain panes
+/// nor coordinate layouts; only co-pending Open intents participate.
+#[derive(Clone)]
+struct PaneOpeningGroup {
+    layout: Memo<PaneLayoutOrder>,
+    owners: Rc<RefCell<Vec<std::rc::Weak<PaneFocusOwner>>>>,
+}
+impl PaneOpeningGroup {
+    fn register(&self, owner: &Rc<PaneFocusOwner>) {
+        let mut owners = self.owners.borrow_mut();
+        owners.retain(|owner| owner.strong_count() > 0);
+        owners.push(Rc::downgrade(owner));
+    }
+    fn unregister(&self, owner: &Rc<PaneFocusOwner>) {
+        let owner = Rc::downgrade(owner);
+        self.owners.borrow_mut().retain(|candidate| candidate.strong_count() > 0 && !candidate.ptr_eq(&owner));
+    }
+    fn admit(&self, requested: &Rc<PaneFocusOwner>) -> bool {
+        let owners: Vec<_> = self.owners.borrow().iter().filter_map(std::rc::Weak::upgrade).collect();
+        let winner = owners.iter().filter(|owner| {
+            let model = owner.model.borrow();
+            model.alive && model.expanded && model.floating && matches!(model.intent,Some(PaneFocusIntent::Open))
+        }).max_by_key(|owner| owner.opening_rank.get());
+        let Some(winner) = winner else {return false;};
+        for owner in &owners {
+            if !Rc::ptr_eq(owner,winner) {
+                let mut model = owner.model.borrow_mut();
+                if matches!(model.intent,Some(PaneFocusIntent::Open)) {model.intent = None;}
+            }
+        }
+        Rc::ptr_eq(requested,winner)
+    }
+}
+fn pane_opening_rank(layout: PaneLayoutOrder, composition: PaneComposition, mobile: bool) -> (u8,u8) {
+    let vertical = matches!(composition,PaneComposition::Left|PaneComposition::Right);
+    let priority = if mobile { !vertical } else { vertical == (layout == PaneLayoutOrder::FullVertical) };
+    // Equal paint layers follow the layout's authored Left/Right/Top/Bottom
+    // slot order. Multiple owners in one slot retain registration/render order.
+    let slot = match composition {PaneComposition::Left=>0,PaneComposition::Right=>1,PaneComposition::Top=>2,PaneComposition::Bottom=>3};
+    (if priority {3} else {2},slot)
+}
+
 /// Cancelable expansion request. Vetoing it preserves both the current pane
 /// state and the post-change notification. `slot` is empty outside a layout.
 #[derive(Clone)]
@@ -203,6 +245,11 @@ pub fn PaneLayout(
 ) -> Element {
     let mut close_requested = use_signal(|| 0_u64);
     let dimensions = use_signal(|| None::<(f64, f64)>);
+    let opening_layout = use_memo(use_reactive!(|layout|layout));
+    use_context_provider(|| PaneOpeningGroup {
+        layout: opening_layout,
+        owners: Rc::new(RefCell::new(Vec::new())),
+    });
     let measurement = use_hook(|| PaneLayoutMeasure {
         model: Rc::new(RefCell::new(PaneLayoutMeasureModel {
             alive: true,
@@ -274,6 +321,8 @@ struct PaneFocusOwner {
     registration: Cell<u64>,
     model: Rc<RefCell<PaneFocusModel>>,
     revision: Signal<u64>,
+    opening: Option<PaneOpeningGroup>,
+    opening_rank: Cell<(u8,u8)>,
 }
 impl std::ops::Deref for PaneFocusController {
     type Target = PaneFocusOwner;
@@ -285,12 +334,14 @@ impl std::ops::Deref for PaneFocusController {
 #[derive(Clone, Default)]
 struct PaneFocusCapture(Rc<RefCell<Option<PaneFocusController>>>);
 impl PaneFocusController {
-    fn new(runtime: crate::overlay_runtime::RuntimeHandle, root_id: String) -> Self {
+    fn new(runtime: crate::overlay_runtime::RuntimeHandle, root_id: String, opening: Option<PaneOpeningGroup>) -> Self {
         let controller = Self(Rc::new(PaneFocusOwner {
             runtime,
             root_id,
             registration: Cell::new(0),
             revision: Signal::new(0),
+            opening,
+            opening_rank: Cell::new((0,0)),
             model: Rc::new(RefCell::new(PaneFocusModel {
                 alive: true,
                 expanded: false,
@@ -312,6 +363,7 @@ impl PaneFocusController {
             }),
         );
         controller.registration.set(generation);
+        if let Some(opening) = &controller.opening {opening.register(&controller.0);}
         controller
     }
     fn transition(&self, expanded: bool, floating: bool) {
@@ -390,8 +442,15 @@ impl PaneFocusController {
             };
             let changed = model.facts != facts;
             model.facts = facts;
-            (request.and_then(|_| model.intent.take()), changed)
+            (request.and_then(|_| model.intent), changed)
         };
+        // Rank while every owner's intent is still present and no model is
+        // borrowed. A losing observation retires its Open; the winner waits for
+        // its own current observation and uses the existing mounted queue.
+        let intent = if matches!(intent,Some(PaneFocusIntent::Open))
+            && self.opening.as_ref().is_some_and(|opening| !opening.admit(&self.0)) {
+            None
+        } else if intent.is_some() {self.model.borrow_mut().intent.take()} else {None};
         if changed {
             let mut revision = self.revision;
             let next = revision.peek().wrapping_add(1);
@@ -500,6 +559,7 @@ impl PaneFocusController {
         true
     }
     fn dispose(&self) {
+        if let Some(opening) = &self.opening {opening.unregister(&self.0);}
         self.runtime.unregister_focus_observer(&self.root_id, self.registration.get());
         let task = {
             let mut model = self.model.borrow_mut();
@@ -596,7 +656,10 @@ pub fn Pane(
     let toggle_id = format!("{id}-toggle");
     let toggle_mount = crate::dropdown::use_focus_mount(toggle_id.clone());
     let runtime = crate::overlay_runtime::use_overlay_runtime();
-    let focus = use_hook(|| PaneFocusController::new(runtime.clone(), root_id.clone()));
+    let opening = try_consume_context::<PaneOpeningGroup>();
+    let opening_layout = opening.as_ref().map(|group|(group.layout)()).unwrap_or_default();
+    let focus = use_hook(|| PaneFocusController::new(runtime.clone(), root_id.clone(), opening));
+    focus.opening_rank.set(pane_opening_rank(opening_layout,composition,mobile));
     use_context_provider(|| PaneFocusScope);
     #[cfg(test)]
     if let Some(capture) = try_consume_context::<PaneFocusCapture>() {
@@ -867,4 +930,9 @@ mod pane_layout_measure_tests {
         assert_eq!(pane_expanded_size("600px", 501.0), 251.0);
         assert_eq!(pane_expanded_size("not-allowed", 1000.0), 320.0);
     }
+}
+
+#[cfg(test)]
+mod pane_opening_tests {
+    include!("pane_opening_tests.rs");
 }

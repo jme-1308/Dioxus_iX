@@ -1,6 +1,6 @@
 //! Excluded actual-gallery pane layering and ordinary retained-note workflows.
 #[path = "../../examples/gallery/application.rs"]
-mod gallery_application;
+pub(super) mod gallery_application;
 use dioxus::prelude::*;
 use dioxus_ix::*;
 

@@ -164,6 +164,8 @@ mod pane_equipment_review;
 mod pane_layers_review;
 #[path = "dioxus_first_probe/pane_layout_review.rs"]
 mod pane_layout_review;
+#[path = "dioxus_first_probe/pane_opening_review.rs"]
+mod pane_opening_review;
 #[path = "dioxus_first_probe/progress_transfer_review.rs"]
 mod progress_transfer_review;
 #[path = "dioxus_first_probe/release_news_review.rs"]
@@ -495,6 +497,9 @@ fn Preview() -> Element {
     }
     if scope == "?panelayout" {
         return rsx! { pane_layout_review::PaneLayoutReview {} };
+    }
+    if scope == "?paneopening" {
+        return rsx! { pane_opening_review::PaneOpeningPreview {} };
     }
     if scope == "?panelayers" {
         return rsx! { pane_layers_review::PaneLayersPreview {} };
